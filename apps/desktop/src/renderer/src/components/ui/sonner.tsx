@@ -9,11 +9,13 @@ import {
 } from "lucide-react"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
-// design.md Decision 6 rejects next-themes; Phase 4B wires our own theme store
-// into this wrapper. Until then, default to "system" so Sonner matches the
-// `prefers-color-scheme` media query automatically.
+import { usePreference } from "@/features/theme/theme-store"
+
+// design.md Decision 6 rejects next-themes; this wrapper reads the renderer's
+// own theme store so Sonner reflects the user's explicit Light/Dark choice
+// (falling back to `prefers-color-scheme` when the preference is "system").
 const Toaster = ({ ...props }: ToasterProps) => {
-  const theme: ToasterProps["theme"] = "system"
+  const theme: ToasterProps["theme"] = usePreference()
 
   return (
     <Sonner

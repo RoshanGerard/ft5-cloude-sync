@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 // Vitest 3.2.4: `typecheck` is a first-class config key (see `TypecheckConfig`
@@ -15,6 +17,15 @@ export default defineConfig({
   // JSX to automatic here so Vitest matches the Next.js build.
   esbuild: {
     jsx: "automatic",
+  },
+  resolve: {
+    alias: {
+      // Mirror the renderer tsconfig `@/*` path alias so renderer tests can
+      // import via the same specifiers that production code uses. Scoped to
+      // the renderer `src/` directory; main / preload / packages / services
+      // never use this alias so the extra entry is inert for them.
+      "@": fileURLToPath(new URL("./apps/desktop/src/renderer/src", import.meta.url)),
+    },
   },
   test: {
     include: [
