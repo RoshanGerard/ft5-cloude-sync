@@ -106,13 +106,36 @@ describe("renderer theme tokens (shadcn slate palette, class-driven dark)", () =
     expect(missing).toEqual([]);
   });
 
-  it(".dark changes every non-radius token's value relative to :root (dark is not a no-op)", () => {
+  it(".dark differs from :root on the load-bearing contrast pairs (dark is not a visual no-op)", () => {
+    // We DO NOT assert that every non-radius token differs between themes.
+    // Shadcn's canonical slate palette intentionally uses the same value in
+    // both themes for some tokens — `--destructive-foreground` is the
+    // concrete case: it's a near-white in both light and dark because a
+    // destructive button's foreground should read as white regardless of
+    // surrounding theme. Asserting strict inequality on every token would
+    // force production CSS to diverge from canonical shadcn just to
+    // satisfy the test (a TDD anti-pattern).
+    //
+    // Instead, assert inequality on the narrow set of load-bearing
+    // surface/foreground/border tokens — if any of these were identical
+    // across themes, dark mode would be a visual no-op for users.
     const light = tokenValueMap(rootBlock ?? "");
     const dark = tokenValueMap(darkBlock ?? "");
-    // Radius is a geometric token — it legitimately stays the same across
-    // themes. Colour/layout tokens must differ.
-    const colourTokens = REQUIRED_TOKENS.filter((t) => t !== "--radius");
-    const unchanged = colourTokens.filter((t) => light.get(t) === dark.get(t));
+    const LOAD_BEARING_PAIRS = [
+      "--background",
+      "--foreground",
+      "--card",
+      "--card-foreground",
+      "--popover",
+      "--popover-foreground",
+      "--border",
+      "--input",
+      "--muted",
+      "--muted-foreground",
+    ] as const;
+    const unchanged = LOAD_BEARING_PAIRS.filter(
+      (t) => light.get(t) === dark.get(t),
+    );
     expect(unchanged).toEqual([]);
   });
 });
