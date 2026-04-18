@@ -7,5 +7,5 @@
     "outDir": "./.tsbuild"
   },
   "include": [],
-  "references": []
+  "references": [{ "path": "packages/ipc-contracts" }]
 }

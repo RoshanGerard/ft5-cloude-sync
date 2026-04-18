@@ -16,8 +16,8 @@
 
 ## 3. IPC contract package
 
-- [ ] 3.1 Create `packages/ipc-contracts/package.json` (name `@ft5/ipc-contracts`, `main`/`types` pointing at `src/index.ts`, no build step) and `tsconfig.json` extending the base, marked as composite.
-- [ ] 3.2 Write a failing Vitest test in `packages/ipc-contracts/src/__tests__/ping.test-d.ts` that type-asserts `PingRequest` is `void` and `PingResponse` is `{ ok: true; ts: number }`; make it pass by exporting those types from `src/index.ts`.
+- [x] 3.1 Create `packages/ipc-contracts/package.json` (name `@ft5/ipc-contracts`, `main`/`types` pointing at `src/index.ts`, no build step) and `tsconfig.json` extending the base, marked as composite.
+- [x] 3.2 Write a failing Vitest test in `packages/ipc-contracts/src/__tests__/ping.test-d.ts` that type-asserts `PingRequest` is `void` and `PingResponse` is `{ ok: true; ts: number }`; make it pass by exporting those types from `src/index.ts`.
 
 ## 4. Main process (Electron)
 
