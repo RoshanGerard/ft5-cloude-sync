@@ -46,7 +46,7 @@
 ## 8. Packaging (electron-builder)
 
 - [x] 8.1 Add `apps/desktop/electron-builder.yml` targeting macOS (dmg), Windows (nsis), Linux (AppImage + deb); reference signing env vars but do not require them to be present.
-- [ ] 8.2 Add `pnpm --filter @ft5/desktop package:mac`, `package:win`, `package:linux` scripts wrapping `electron-builder --mac` / `--win` / `--linux`; verify locally on the current platform that an unsigned artifact builds.
+- [x] 8.2 Add `pnpm --filter @ft5/desktop package:mac`, `package:win`, `package:linux` scripts wrapping `electron-builder --mac` / `--win` / `--linux`; verify locally on the current platform that an unsigned artifact builds. (Win: `release/win-unpacked/FT5 Claude Sync.exe` produced; NSIS installer step requires Windows Developer Mode or elevation for winCodeSign symlinks — deferred to signing-capable CI host.)
 
 ## 9. End-to-end test (Playwright)
 
