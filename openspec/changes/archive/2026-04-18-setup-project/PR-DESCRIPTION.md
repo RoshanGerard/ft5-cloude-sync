@@ -21,7 +21,7 @@ All on `feature/setup-project` at commit `$(git rev-parse --short HEAD)` on Wind
 | Lint | `pnpm -w lint` | exit 0 |
 | Format | `pnpm -w format:check` | exit 0 |
 | Unit tests | `pnpm -w test` | 28/28 passed (11 test files) |
-| Package | `pnpm --filter @ft5/desktop package:win` | `release/win-unpacked/FT5 Claude Sync.exe` produced; NSIS installer step requires Windows Developer Mode on this host and is deferred to CI |
+| Package | `pnpm --filter @ft5/desktop package:win` | `release/win-unpacked/FT5 Cloude Sync.exe` produced; NSIS installer step requires Windows Developer Mode on this host and is deferred to CI |
 | E2E | `pnpm --filter @ft5/desktop e2e` | 1/1 passed (launched packaged exe, asserted 13-digit ts in DOM, closed) |
 
 ## Spec-scenario → test map (task 11.2)
@@ -61,7 +61,7 @@ Spec file: `openspec/changes/setup-project/specs/app-shell/spec.md`.
 
 ## Manual verification (task 11.3)
 
-The Section 9 e2e test (`apps/desktop/e2e/ping.spec.ts`) performs the task-11.3 check programmatically: launches `release/win-unpacked/FT5 Claude Sync.exe`, observes the 13-digit `ts` render in the main window, and closes cleanly. Playwright's 1-pass result is the machine-checked equivalent of the human observation the task describes.
+The Section 9 e2e test (`apps/desktop/e2e/ping.spec.ts`) performs the task-11.3 check programmatically: launches `release/win-unpacked/FT5 Cloude Sync.exe`, observes the 13-digit `ts` render in the main window, and closes cleanly. Playwright's 1-pass result is the machine-checked equivalent of the human observation the task describes.
 
 ## Known follow-ups
 
