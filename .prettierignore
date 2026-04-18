@@ -2,6 +2,7 @@
 **/dist/**
 **/out/**
 **/.next/**
+**/.tsbuild/**
 **/release/**
 **/coverage/**
 pnpm-lock.yaml

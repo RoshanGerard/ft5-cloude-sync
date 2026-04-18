@@ -34,9 +34,9 @@
 
 ## 6. Renderer (Next.js 16 static export)
 
-- [ ] 6.1 Create `apps/desktop/src/renderer/package.json` and `next.config.mjs` with `output: 'export'`, `images: { unoptimized: true }`, and an empty `basePath`; add `tsconfig.json` extending the base with `jsx: preserve` and DOM libs only.
-- [ ] 6.2 Write a failing Vitest + jsdom test `apps/desktop/src/renderer/src/app/__tests__/ping-page.test.tsx` that renders the root page with `window.api.ping` stubbed to return `{ ok: true, ts: 1712345678901 }` and asserts the rendered DOM contains the string `1712345678901`; implement the page under `apps/desktop/src/renderer/src/app/page.tsx` to call `window.api.ping()` on mount and render the `ts` value.
-- [ ] 6.3 Add the `window.api` ambient declaration under `apps/desktop/src/renderer/src/types/window-api.d.ts`, typed against `@ft5/ipc-contracts`.
+- [x] 6.1 Create `apps/desktop/src/renderer/package.json` and `next.config.mjs` with `output: 'export'`, `images: { unoptimized: true }`, and an empty `basePath`; add `tsconfig.json` extending the base with `jsx: preserve` and DOM libs only.
+- [x] 6.2 Write a failing Vitest + jsdom test `apps/desktop/src/renderer/src/app/__tests__/ping-page.test.tsx` that renders the root page with `window.api.ping` stubbed to return `{ ok: true, ts: 1712345678901 }` and asserts the rendered DOM contains the string `1712345678901`; implement the page under `apps/desktop/src/renderer/src/app/page.tsx` to call `window.api.ping()` on mount and render the `ts` value.
+- [x] 6.3 Add the `window.api` ambient declaration under `apps/desktop/src/renderer/src/types/window-api.d.ts`, typed against `@ft5/ipc-contracts`.
 
 ## 7. fs-monitor service stub
 

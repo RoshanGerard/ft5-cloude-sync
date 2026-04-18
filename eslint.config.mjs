@@ -20,6 +20,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/out/**",
       "**/.next/**",
+      "**/.tsbuild/**",
       "**/release/**",
       "**/coverage/**",
       "pnpm-lock.yaml",

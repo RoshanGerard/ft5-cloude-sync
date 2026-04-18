@@ -1,0 +1,24 @@
+{
+  "//": "Renderer scope is DOM-only (no Node ambients). `jsx: preserve` emits JSX for Next.js to transform. Three targeted overrides of the base config, all driven by Next.js 16 internals: (1) `moduleResolution: bundler` (+ `module: esnext`) because Next's own `.d.ts` files expect bundler-style resolution and NodeNext can't find `next/dist/compiled/@vercel/og/satori`; (2) `skipLibCheck: true` because Next 16's compiled/@vercel/og types reference a sibling `.d.ts` file the package does not ship, which is a Next-side issue we cannot fix; (3) `lib` includes `ES2024` so `PromiseWithResolvers` (used inside next/dist) resolves - base `target: ES2023` is kept.",
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "jsx": "preserve",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["DOM", "DOM.Iterable", "ES2023", "ES2024.Promise"],
+    "allowJs": false,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "types": [],
+    "rootDir": "src",
+    "outDir": ".tsbuild",
+    "tsBuildInfoFile": ".tsbuild/.tsbuildinfo",
+    "plugins": [{ "name": "next" }],
+    "incremental": true,
+    "noEmit": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", "out", ".next", "src/**/__tests__/**"],
+  "references": [{ "path": "../../../../packages/ipc-contracts" }]
+}

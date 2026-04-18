@@ -2,3 +2,8 @@ packages:
   - "apps/*"
   - "services/*"
   - "packages/*"
+  # Renderer is a nested package under apps/desktop/src/renderer. Listed
+  # explicitly (not via an `apps/*/src/*` glob) so that sibling dirs
+  # `main/` and `preload/` cannot be picked up as phantom workspaces if
+  # someone later drops a package.json into them.
+  - "apps/desktop/src/renderer"
