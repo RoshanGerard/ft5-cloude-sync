@@ -1,13 +1,10 @@
-import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { BrowserWindow, app, protocol, shell } from "electron";
 import { buildMainWindowOptions } from "./window-options.js";
 import { registerIpcHandlers } from "./ipc/index.js";
 
-// Resolve `__dirname` in an ES module. `import.meta.url` is the file URL of
-// THIS compiled module (which will live under `dist/main/` at runtime).
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
+// is a built-in and points at `dist/main/` at runtime.
 
 // Enforce one app instance. If another instance already holds the lock, exit
 // immediately — the already-running instance will be focused by OS shell
@@ -24,12 +21,15 @@ async function bootstrap(): Promise<void> {
 
   // Register `app://` to serve the renderer's exported static files.
   //
-  // TODO(section-8): When Next.js static export (Section 6) + packaging
-  // (Section 8) are wired, confirm this relative path against the packaged
-  // layout. For now we assume the renderer output lives at `../renderer`
-  // relative to the compiled `main/index.js` (i.e. `dist/renderer/` alongside
-  // `dist/main/`).
-  const rendererRoot = path.join(__dirname, "..", "renderer");
+  // Packaged: electron-builder copies `src/renderer/out/` into the app's
+  // `resources/renderer/` directory (see `electron-builder.yml`
+  // `extraResources`), so `process.resourcesPath + "/renderer"` is the root.
+  // Dev (unpackaged): the main bundle runs from `dist/main/`, and Next.js
+  // emits to `src/renderer/out/`, so we resolve back up out of `dist/main/`
+  // to the repo's renderer output directory.
+  const rendererRoot = app.isPackaged
+    ? path.join(process.resourcesPath, "renderer")
+    : path.join(__dirname, "../../src/renderer/out");
   protocol.registerFileProtocol("app", (request, callback) => {
     const url = new URL(request.url);
     // Strip the leading slash so `app://index.html` resolves to

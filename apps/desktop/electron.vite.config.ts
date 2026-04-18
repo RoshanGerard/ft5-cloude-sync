@@ -1,36 +1,39 @@
-import { defineConfig } from "electron-vite";
+import { defineConfig, externalizeDepsPlugin } from "electron-vite";
+import { resolve } from "node:path";
 
-// Three-target electron-vite config. Main and preload compile through Vite/
-// Rollup and emit into `dist/main` and `dist/preload` respectively (matching
-// the `main` field in `package.json` and the preload path referenced from
-// `main/index.ts`). The renderer block is intentionally a placeholder for
-// Section 4: Next.js 16 static export (added in Section 6) will replace this
-// with a delegation to `next build` output. Until then, keep the block minimal
-// so `electron-vite build` for main + preload still parses the config without
-// attempting to bundle a non-existent renderer entry.
+// Main and preload compile through Vite/Rollup into CJS modules under
+// `dist/main` and `dist/preload`. The renderer is intentionally omitted
+// from this config: Next.js 16 emits a fully static bundle to
+// `src/renderer/out/` via `next build`, and electron-builder picks it up
+// through `extraResources` in `electron-builder.yml`. Bundling the renderer
+// through electron-vite would duplicate work and fight the Next toolchain.
 export default defineConfig({
   main: {
+    plugins: [externalizeDepsPlugin()],
     build: {
       outDir: "dist/main",
       lib: {
-        entry: "src/main/index.ts",
+        entry: resolve(__dirname, "src/main/index.ts"),
+        formats: ["cjs"],
+        fileName: () => "index.js",
+      },
+      rollupOptions: {
+        output: { format: "cjs" },
       },
     },
   },
   preload: {
+    plugins: [externalizeDepsPlugin()],
     build: {
       outDir: "dist/preload",
       lib: {
-        entry: "src/preload/index.ts",
+        entry: resolve(__dirname, "src/preload/index.ts"),
+        formats: ["cjs"],
+        fileName: () => "index.js",
       },
-    },
-  },
-  // TODO(section-6): Replace with a delegation to the Next.js 16 static export
-  // output directory. For now, this placeholder keeps the config shape valid.
-  renderer: {
-    root: "src/renderer",
-    build: {
-      outDir: "dist/renderer",
+      rollupOptions: {
+        output: { format: "cjs" },
+      },
     },
   },
 });

@@ -6,7 +6,16 @@
     "outDir": "dist",
     "declarationDir": "dist",
     "tsBuildInfoFile": "dist/.tsbuildinfo",
-    "types": ["node"]
+    "types": ["node"],
+    // The compiled runtime for main+preload is CJS (see
+    // `electron.vite.config.ts`'s `formats: ["cjs"]`), and `package.json` no
+    // longer declares `"type": "module"` (Section 8). Under NodeNext that
+    // makes TS treat sources as CJS, which conflicts with the ESM `import`
+    // syntax we use when `verbatimModuleSyntax: true` is inherited from the
+    // base config. Vite/Rollup transforms the `import`s to `require`s at
+    // bundle time, so the source form is fine — we just need TS to stop
+    // policing it here.
+    "verbatimModuleSyntax": false
   },
   "include": ["src/main/**/*.ts", "src/preload/**/*.ts"],
   "exclude": ["src/**/__tests__/**", "dist", "node_modules"],

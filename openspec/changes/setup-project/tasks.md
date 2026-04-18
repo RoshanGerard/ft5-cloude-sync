@@ -45,7 +45,7 @@
 
 ## 8. Packaging (electron-builder)
 
-- [ ] 8.1 Add `apps/desktop/electron-builder.yml` targeting macOS (dmg), Windows (nsis), Linux (AppImage + deb); reference signing env vars but do not require them to be present.
+- [x] 8.1 Add `apps/desktop/electron-builder.yml` targeting macOS (dmg), Windows (nsis), Linux (AppImage + deb); reference signing env vars but do not require them to be present.
 - [ ] 8.2 Add `pnpm --filter @ft5/desktop package:mac`, `package:win`, `package:linux` scripts wrapping `electron-builder --mac` / `--win` / `--linux`; verify locally on the current platform that an unsigned artifact builds.
 
 ## 9. End-to-end test (Playwright)

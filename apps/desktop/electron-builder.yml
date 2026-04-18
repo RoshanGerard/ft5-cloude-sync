@@ -1,0 +1,25 @@
+appId: tech.forti5.ft5-claude-sync
+productName: FT5 Claude Sync
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: src/renderer/out
+    to: renderer
+    filter:
+      - "**/*"
+asar: true
+asarUnpack:
+  - "**/*.node"
+mac:
+  target: dmg
+win:
+  target: nsis
+linux:
+  target:
+    - AppImage
+    - deb
+publish: null
