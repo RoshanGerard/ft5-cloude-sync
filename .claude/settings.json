@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openspec:*)",
+      "Bash(git:*)",
+      "Bash(npm:*)",
+      "Bash(pnpm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)"
+    ]
+  }
+}
