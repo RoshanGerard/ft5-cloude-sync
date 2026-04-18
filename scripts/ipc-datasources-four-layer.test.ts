@@ -11,7 +11,7 @@ const repoRoot = path.resolve(__dirname, "..");
 //   (1) a handler file under apps/desktop/src/main/ipc/datasources/
 //       (except upload:progress which is main→renderer only, no handler)
 //   (2) an ipcMain.handle or webContents.send registration in ipc/index.ts
-//   (3) a preload exposure — added in Phase 3; test extended there.
+//   (3) a preload exposure via contextBridge in apps/desktop/src/preload/index.ts
 
 const EXPECTED_CHANNELS = [
   "datasources:list",
@@ -77,6 +77,25 @@ describe("datasources IPC four-layer consistency", () => {
         contents.includes(`DATASOURCES_CHANNELS.${channelConstKey}`) ||
           contents.includes(`"${channel}"`),
         `ipc/index.ts must register handler for ${channel}`,
+      ).toBe(true);
+    }
+  });
+
+  it("preload/index.ts exposes every channel via contextBridge", () => {
+    const preloadPath = path.join(
+      repoRoot,
+      "apps/desktop/src/preload/index.ts",
+    );
+    const contents = readFileSync(preloadPath, "utf8");
+    for (const channel of EXPECTED_CHANNELS) {
+      const channelConstKey =
+        channel === "datasources:upload:progress"
+          ? "uploadProgress"
+          : channel.replace(/^datasources:/, "");
+      expect(
+        contents.includes(`DATASOURCES_CHANNELS.${channelConstKey}`) ||
+          contents.includes(`"${channel}"`),
+        `preload/index.ts must reference channel ${channel} (via DATASOURCES_CHANNELS.${channelConstKey} or literal)`,
       ).toBe(true);
     }
   });

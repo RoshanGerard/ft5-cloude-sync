@@ -16,8 +16,8 @@
 
 ## 3. Preload exposure
 
-- [ ] 3.1 Write a failing Playwright test fragment (or direct harness script) that launches the app, evaluates `typeof window.api.datasources.list === 'function'` in the renderer, and asserts `true` for all five methods. Until preload is wired, this fails.
-- [ ] 3.2 Extend `apps/desktop/src/preload/index.ts` to expose `window.api.datasources.{list, add, remove, action, upload}` via `contextBridge`. Each wraps `ipcRenderer.invoke` (or `ipcRenderer.on` for upload progress) and nothing else — no application logic. Pass 3.1.
+- [x] 3.1 Added failing Vitest cases in `apps/desktop/src/preload/__tests__/exposed-api.test.ts` (switched from Playwright to Vitest to reuse the existing preload harness that mocks `electron` at module load). Asserts `window.api.datasources.{list,add,remove,action,upload}` are functions, `onUploadProgress(id, cb)` delegates to `ipcRenderer.on` with client-side transactionId filtering, and the returned unsubscribe calls `removeListener` with the same listener ref. Confirmed RED: 8 new tests fail against the pre-existing preload with `Cannot read properties of undefined (reading 'list')`, and the updated `Object.keys(exposed).sort()` assertion flips to `["datasources","ping"]`.
+- [x] 3.2 Extended `apps/desktop/src/preload/index.ts` to expose `window.api.datasources.{list,add,remove,action,upload,onUploadProgress}` via `contextBridge`. Each mutating/read method is a thin `ipcRenderer.invoke(DATASOURCES_CHANNELS.*, req)` wrapper with explicit return-type annotations from `@ft5/ipc-contracts` — no hardcoded channel strings. `onUploadProgress` filters by `transactionId` in the preload (per spec) so renderer subscribers never see unrelated events. Updated `apps/desktop/src/preload/window-api.d.ts` to mirror the runtime surface in the ambient `Window.api` type. Lifted the preload-layer skip in `scripts/ipc-datasources-four-layer.test.ts`; all three four-layer assertions now pass.
 
 ## 4. Renderer foundation (shadcn/ui + themes)
 
