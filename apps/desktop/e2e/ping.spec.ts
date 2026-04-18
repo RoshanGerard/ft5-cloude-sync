@@ -6,8 +6,8 @@ import process from "node:process";
 // electron-builder emits platform-specific layouts under `apps/desktop/release/`;
 // pick the right one for the current OS.
 const platformExe = {
-  win32: "release/win-unpacked/FT5 Claude Sync.exe",
-  darwin: "release/mac/FT5 Claude Sync.app/Contents/MacOS/FT5 Claude Sync",
+  win32: "release/win-unpacked/FT5 Cloude Sync.exe",
+  darwin: "release/mac/FT5 Cloude Sync.app/Contents/MacOS/FT5 Cloude Sync",
   linux: "release/linux-unpacked/ft5-cloude-sync",
 } as const;
 

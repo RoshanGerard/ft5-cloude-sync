@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
   title: "ft5-cloude-sync",
-  description: "Forti5 Claude sync desktop shell",
+  description: "Forti5 Cloude sync desktop shell",
 };
 
 export const viewport: Viewport = {
