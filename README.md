@@ -37,3 +37,88 @@ targeted form, which reruns the desktop workspace's `postinstall` hook
 ```bash
 pnpm --filter @ft5/desktop run postinstall
 ```
+
+## Build and package
+
+### Local development build
+
+For iterative work, use electron-vite's dev server — it rebuilds the main and
+preload processes on save and hot-reloads the renderer:
+
+```bash
+pnpm --filter @ft5/desktop run dev
+```
+
+For a one-shot production build (without packaging), run:
+
+```bash
+pnpm --filter @ft5/desktop run build:all
+```
+
+This produces the compiled main and preload bundles under
+`apps/desktop/dist/` (e.g. `dist/main/index.js`, `dist/preload/index.js`) and
+the static Next.js renderer export under `apps/desktop/src/renderer/out/`.
+End-to-end on the dev host this finishes in ~5 seconds.
+
+### Packaging for the current OS
+
+The root wrapper is:
+
+```bash
+pnpm package:current-os
+```
+
+It's currently hard-wired to the Windows target (the repo is developed on a
+Windows host). For an explicit target, use the per-platform form from the
+desktop workspace:
+
+```bash
+pnpm --filter @ft5/desktop package:win
+pnpm --filter @ft5/desktop package:mac
+pnpm --filter @ft5/desktop package:linux
+```
+
+Each command runs `build:all` internally and then `electron-builder --<os>`.
+Outputs land under `apps/desktop/release/`:
+
+- `win`: `release/win-unpacked/FT5 Cloude Sync.exe` (directly runnable
+  unpackaged app) and, on a host that can finish the NSIS step,
+  `release/FT5 Cloude Sync Setup.exe` (the installer).
+- `mac`: `release/*.dmg`.
+- `linux`: `release/*.AppImage` and `release/*.deb`.
+
+### Windows caveat: NSIS installer needs Developer Mode
+
+On Windows hosts **without Developer Mode enabled**, `package:win` always
+produces the unpackaged exe — you'll find a ~220 MB
+`apps/desktop/release/win-unpacked/FT5 Cloude Sync.exe` that launches and runs
+identically to the installed app. That's sufficient for local smoke-testing.
+
+The NSIS step that would produce the `Setup.exe` installer fails with:
+
+```
+ERROR: Cannot create symbolic link : A required privilege is not held by the
+client. : C:\Users\<you>\AppData\Local\electron-builder\Cache\winCodeSign
+\<hash>\darwin\10.12\lib\libcrypto.dylib
+ERROR: Cannot create symbolic link : A required privilege is not held by the
+client. : C:\Users\<you>\AppData\Local\electron-builder\Cache\winCodeSign
+\<hash>\darwin\10.12\lib\libssl.dylib
+
+⨯ cannot execute  cause=exit status 2
+```
+
+`winCodeSign`'s macOS codesigning tarball contains symlinks (`libcrypto.dylib`
+and `libssl.dylib` under `darwin/10.12/lib/`). Creating them on NTFS requires
+a privilege the default Windows user account doesn't hold. Three recovery
+paths, any one of which fixes it:
+
+1. **Enable Windows Developer Mode** — Settings → System → For developers →
+   "Developer Mode" on. One-time setting, grants `SeCreateSymbolicLinkPrivilege`
+   to the current user. The command re-run from a normal shell then succeeds.
+2. **Run the command from an elevated (Administrator) shell** — works without
+   toggling Developer Mode, but every future `package:win` also needs to be
+   run elevated.
+3. **Leave it to CI** — GitHub Actions Windows runners have the privilege
+   already, so pushing a commit that should produce an installer and letting
+   the existing workflow build it is the friction-free path. This is what the
+   archived `setup-project` change recommends for day-to-day development.
