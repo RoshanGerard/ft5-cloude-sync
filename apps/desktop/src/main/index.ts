@@ -2,6 +2,8 @@ import path from "node:path";
 import { BrowserWindow, app, protocol, shell } from "electron";
 import { buildMainWindowOptions } from "./window-options.js";
 import { registerIpcHandlers } from "./ipc/index.js";
+import { enforceSingleInstance } from "./single-instance.js";
+import { willNavigatePolicy, windowOpenPolicy } from "./navigation-policy.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -9,10 +11,7 @@ import { registerIpcHandlers } from "./ipc/index.js";
 // Enforce one app instance. If another instance already holds the lock, exit
 // immediately — the already-running instance will be focused by OS shell
 // behavior (we can wire a second-instance listener later when that matters).
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.exit(0);
-} else {
+if (enforceSingleInstance(app) === "acquired") {
   void bootstrap();
 }
 
@@ -56,26 +55,36 @@ async function bootstrap(): Promise<void> {
   // other protocol we deny silently. This matches the threat model where
   // the renderer is loaded exclusively from our own static bundle and no
   // in-window navigation to third-party origins is ever desired.
+  //
+  // The policy itself lives in `./navigation-policy.ts` as a pure function
+  // so it can be unit tested without booting Electron. `will-navigate`
+  // short-circuits on `app:` URLs so internal navigation continues to work
+  // (the policy helper returns `deny` for `app:`, but the caller never
+  // applies that decision to internal traffic).
   window.webContents.on("will-navigate", (event, targetUrl) => {
-    const target = new URL(targetUrl);
+    let target: URL;
+    try {
+      target = new URL(targetUrl);
+    } catch {
+      event.preventDefault();
+      return;
+    }
     if (target.protocol === "app:") {
       return;
     }
+    const decision = willNavigatePolicy(targetUrl);
     event.preventDefault();
-    if (target.protocol === "https:") {
-      void shell.openExternal(targetUrl);
+    if ("openExternal" in decision) {
+      void shell.openExternal(decision.openExternal);
     }
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    const target = new URL(url);
-    if (target.protocol === "app:") {
-      // Still deny: we never open secondary windows even for our own origin
-      // in this skeleton. Later changes can relax this if needed.
-      return { action: "deny" };
-    }
-    if (target.protocol === "https:") {
-      void shell.openExternal(url);
+    // Secondary windows are always denied, even for our own `app:` origin.
+    // For `https:` the helper additionally asks us to open externally.
+    const decision = windowOpenPolicy(url);
+    if ("openExternal" in decision) {
+      void shell.openExternal(decision.openExternal);
     }
     return { action: "deny" };
   });
