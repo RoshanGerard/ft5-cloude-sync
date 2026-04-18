@@ -11,12 +11,13 @@ import type { BrowserWindowConstructorOptions } from "electron";
 // at runtime — the unit test runs in Node (not Electron), and importing the
 // `electron` package from a plain Node process fails. `import type` is erased
 // at transpile time, so the test harness never tries to resolve the module.
-export function buildMainWindowOptions(): BrowserWindowConstructorOptions {
+export function buildMainWindowOptions(preloadPath: string): BrowserWindowConstructorOptions {
   return {
     width: 1200,
     height: 800,
     show: false,
     webPreferences: {
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

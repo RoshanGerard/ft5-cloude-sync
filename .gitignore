@@ -13,6 +13,8 @@ release/
 
 # Test output
 coverage/
+test-results/
+playwright-report/
 
 # Logs
 *.log

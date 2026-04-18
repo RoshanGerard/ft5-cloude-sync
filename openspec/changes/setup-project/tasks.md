@@ -50,8 +50,8 @@
 
 ## 9. End-to-end test (Playwright)
 
-- [ ] 9.1 Add `apps/desktop/playwright.config.ts` using Playwright's Electron launcher, pointing at the packaged build output of the current platform.
-- [ ] 9.2 Write a failing e2e test `apps/desktop/e2e/ping.spec.ts` that launches the packaged app, waits for the main window, asserts the DOM contains a 13-digit `ts` value, and closes the app; make it pass end-to-end on the dev machine.
+- [x] 9.1 Add `apps/desktop/playwright.config.ts` using Playwright's Electron launcher, pointing at the packaged build output of the current platform.
+- [x] 9.2 Write a failing e2e test `apps/desktop/e2e/ping.spec.ts` that launches the packaged app, waits for the main window, asserts the DOM contains a 13-digit `ts` value, and closes the app; make it pass end-to-end on the dev machine.
 
 ## 10. Continuous integration
 

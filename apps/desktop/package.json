@@ -12,7 +12,9 @@
     "dev": "electron-vite dev",
     "package:mac": "pnpm build:all && electron-builder --mac",
     "package:win": "pnpm build:all && electron-builder --win",
-    "package:linux": "pnpm build:all && electron-builder --linux"
+    "package:linux": "pnpm build:all && electron-builder --linux",
+    "e2e": "playwright test --config=playwright.config.ts",
+    "e2e:ui": "playwright test --config=playwright.config.ts --ui"
   },
   "dependencies": {
     "@ft5/ipc-contracts": "workspace:*",
@@ -22,6 +24,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "4.0.3",
+    "@playwright/test": "1.59.1",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "24.12.2",
     "electron": "41.2.1",
