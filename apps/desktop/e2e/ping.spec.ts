@@ -8,7 +8,7 @@ import process from "node:process";
 const platformExe = {
   win32: "release/win-unpacked/FT5 Claude Sync.exe",
   darwin: "release/mac/FT5 Claude Sync.app/Contents/MacOS/FT5 Claude Sync",
-  linux: "release/linux-unpacked/ft5-claude-sync",
+  linux: "release/linux-unpacked/ft5-cloude-sync",
 } as const;
 
 const rel = platformExe[process.platform as keyof typeof platformExe];

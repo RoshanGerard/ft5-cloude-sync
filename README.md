@@ -1,4 +1,4 @@
-# ft5-claude-sync
+# ft5-cloude-sync
 
 Electron desktop app that syncs a local Claude Code workspace to remote backends.
 

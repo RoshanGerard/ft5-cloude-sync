@@ -1,4 +1,4 @@
-appId: tech.forti5.ft5-claude-sync
+appId: tech.forti5.ft5-cloude-sync
 productName: FT5 Claude Sync
 directories:
   output: release
