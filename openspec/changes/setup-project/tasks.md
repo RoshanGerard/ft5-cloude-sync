@@ -29,8 +29,8 @@
 
 ## 5. Preload script
 
-- [ ] 5.1 Write a failing Vitest test `apps/desktop/src/preload/__tests__/exposed-api.test.ts` that loads the preload module with a mocked `contextBridge` and asserts exactly one call to `exposeInMainWorld('api', <obj>)` where the exposed object has a `ping: () => Promise<PingResponse>` property and nothing else.
-- [ ] 5.2 Implement `apps/desktop/src/preload/index.ts` calling `contextBridge.exposeInMainWorld('api', { ping: () => ipcRenderer.invoke('ping') })`; add the matching `Window` type declaration in a preload-local `.d.ts` that re-exports `PingResponse` from `@ft5/ipc-contracts`.
+- [x] 5.1 Write a failing Vitest test `apps/desktop/src/preload/__tests__/exposed-api.test.ts` that loads the preload module with a mocked `contextBridge` and asserts exactly one call to `exposeInMainWorld('api', <obj>)` where the exposed object has a `ping: () => Promise<PingResponse>` property and nothing else.
+- [x] 5.2 Implement `apps/desktop/src/preload/index.ts` calling `contextBridge.exposeInMainWorld('api', { ping: () => ipcRenderer.invoke('ping') })`; add the matching `Window` type declaration in a preload-local `.d.ts` that re-exports `PingResponse` from `@ft5/ipc-contracts`.
 
 ## 6. Renderer (Next.js 16 static export)
 
