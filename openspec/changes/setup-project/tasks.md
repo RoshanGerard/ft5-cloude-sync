@@ -40,8 +40,8 @@
 
 ## 7. fs-monitor service stub
 
-- [ ] 7.1 Create `services/fs-monitor/package.json` and `tsconfig.json` extending the base (Node target, no DOM libs).
-- [ ] 7.2 Write a failing Vitest test `services/fs-monitor/src/__tests__/entry.test.ts` that imports the entry module and asserts it exports a `start()` function whose call is a no-op returning `{ started: true }`; implement `services/fs-monitor/src/index.ts` accordingly.
+- [x] 7.1 Create `services/fs-monitor/package.json` and `tsconfig.json` extending the base (Node target, no DOM libs).
+- [x] 7.2 Write a failing Vitest test `services/fs-monitor/src/__tests__/entry.test.ts` that imports the entry module and asserts it exports a `start()` function whose call is a no-op returning `{ started: true }`; implement `services/fs-monitor/src/index.ts` accordingly.
 
 ## 8. Packaging (electron-builder)
 

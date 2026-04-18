@@ -10,6 +10,7 @@
   "references": [
     { "path": "packages/ipc-contracts" },
     { "path": "apps/desktop" },
-    { "path": "apps/desktop/src/renderer" }
+    { "path": "apps/desktop/src/renderer" },
+    { "path": "services/fs-monitor" }
   ]
 }
