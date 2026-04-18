@@ -55,8 +55,8 @@
 
 ## 10. Continuous integration
 
-- [ ] 10.1 Add `.github/workflows/ci.yml` with a 3-OS matrix (macOS-latest, windows-latest, ubuntu-latest), running: install, typecheck, lint, unit tests, package, and Playwright e2e. Each job caches the pnpm store keyed on the lockfile hash.
-- [ ] 10.2 Add a dedicated CI step (shell, not ESLint) that fails the job if `drizzle-orm` appears anywhere outside `apps/desktop/src/main/**`. Seed a temporary fixture to confirm the step fails, then remove it.
+- [x] 10.1 Add `.github/workflows/ci.yml` with a 3-OS matrix (macOS-latest, windows-latest, ubuntu-latest), running: install, typecheck, lint, unit tests, package, and Playwright e2e. Each job caches the pnpm store keyed on the lockfile hash.
+- [x] 10.2 Add a dedicated CI step (shell, not ESLint) that fails the job if `drizzle-orm` appears anywhere outside `apps/desktop/src/main/**`. Seed a temporary fixture to confirm the step fails, then remove it.
 
 ## 11. Verification before archive
 

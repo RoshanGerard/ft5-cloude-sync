@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.14.1
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Enable corepack BEFORE setup-node's pnpm cache step: setup-node@v4
+      # with `cache: 'pnpm'` shells out to `pnpm store path` to compute the
+      # cache path, which requires pnpm on PATH. Root package.json pins
+      # `packageManager: pnpm@10.33.0`, so corepack will activate that exact
+      # version on first invocation.
+      - name: Enable corepack (activates pnpm 10.33.0)
+        shell: bash
+        run: corepack enable
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+          cache-dependency-path: "pnpm-lock.yaml"
+
+      - name: Install dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        shell: bash
+        run: pnpm -w typecheck
+
+      - name: Lint
+        shell: bash
+        run: pnpm -w lint
+
+      - name: Format check
+        shell: bash
+        run: pnpm -w format:check
+
+      - name: Unit tests
+        shell: bash
+        run: pnpm -w test
+
+      - name: Build desktop (main + preload + renderer)
+        shell: bash
+        run: pnpm --filter @ft5/desktop build:all
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: pnpm --filter @ft5/desktop package:mac
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: pnpm --filter @ft5/desktop package:win
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: pnpm --filter @ft5/desktop package:linux
+
+      # Playwright e2e — Section 9 of the setup-project change will add the
+      # `e2e` script under @ft5/desktop. Until then this step will fail; the
+      # workflow is not activated in branch protection yet, so that is
+      # acceptable.
+      - name: Playwright e2e
+        shell: bash
+        run: pnpm --filter @ft5/desktop e2e
+
+  drizzle-boundary:
+    name: drizzle-orm boundary check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Dedicated CI guard (shell, not ESLint) enforcing the architectural
+      # rule that `drizzle-orm` must only be referenced from the Electron
+      # main process. This runs once on ubuntu-latest: drizzle import
+      # presence is OS-invariant, ubuntu is the cheapest/fastest runner, and
+      # a single guard job avoids redundant grep work across the 3-OS matrix.
+      - name: Forbid drizzle-orm outside apps/desktop/src/main/**
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=$(grep -rInE "from ['\"]drizzle-orm|require\(['\"]drizzle-orm" \
+            --include='*.ts' --include='*.tsx' --include='*.mts' --include='*.cts' \
+            --include='*.mjs' --include='*.cjs' --include='*.js' --include='*.jsx' \
+            --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=out \
+            --exclude-dir=.next --exclude-dir=release \
+            . | grep -v '^\./apps/desktop/src/main/' || true)
+          if [ -n "$bad" ]; then
+            echo "ERROR: drizzle-orm referenced outside apps/desktop/src/main/:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK: no drizzle-orm imports outside apps/desktop/src/main/"
