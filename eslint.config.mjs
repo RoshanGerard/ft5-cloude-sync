@@ -88,4 +88,14 @@ export default tseslint.config(
       ],
     },
   },
+  // Test files under the renderer's `__tests__` dirs are compile-excluded
+  // from the renderer's tsconfig and run in Node (via Vitest), never bundled
+  // into the browser. They may read repo sources (e.g. globals.css for token-
+  // parity assertions) through `node:fs`.
+  {
+    files: ["apps/desktop/src/renderer/src/**/__tests__/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": "off",
+    },
+  },
 );
