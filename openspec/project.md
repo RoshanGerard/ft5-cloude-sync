@@ -4,9 +4,9 @@ Cloud file sync desktop app to manager local file sync to multiple datasources s
 Users can swtich between different datasources and manager file sync, auto sync, sheduled sync, manual sync.
 
 ## Stack
-- Runtime: Node.js 24.14.1 LTS, Electron v41.2.1 LTS
+- Runtime: Node.js 24.14.1 LTS, Electron v41.2.1
 - Language: TypeScript 6.0.3 (strict mode)
-- Framework: React JS 19.2.5 (App Router)
+- Framework: React 19.2.5 (rendered by Next.js 16 static export — see renderer section)
 - Database: SQLite via Drizzle ORM
 - Test runner: Vitest
 - Package manager: pnpm
@@ -17,20 +17,20 @@ Users can swtich between different datasources and manager file sync, auto sync,
 
 #### Main process — `apps/desktop/src/main/`
 - Runtime: **Electron** (pin the major version in `package.json`; the embedded Node.js and Chromium versions come from the Electron release and are not independently selectable)
-- Language: TypeScript 5.4 (strict mode)
+- Language: TypeScript 6.0.3 (strict mode)
 - DB client: Drizzle ORM against SQLite (the ONLY place Drizzle may be imported)
 - IPC: `ipcMain` handlers in `src/main/ipc/*`, one handler per renderer-facing operation
 - Test runner: Vitest (unit) + Playwright (end-to-end across processes)
 
 #### Preload script — `apps/desktop/src/preload/`
-- Language: TypeScript 5.4
+- Language: TypeScript 6.0.3 (strict mode)
 - Purpose: expose a typed API via `contextBridge.exposeInMainWorld('api', …)`
 - Must not import application code. Must not import Drizzle, `fs`, `child_process`, or any Node built-in beyond what the exposed API surface strictly requires.
 
 #### Renderer — `apps/desktop/src/renderer/`
 - Runtime: **Electron renderer** (sandboxed Chromium; version is determined by the Electron major above, not pinned independently)
-- Language: TypeScript 5.4 (strict mode)
-- Framework: Next.js 15 with `output: 'export'` (static HTML loaded via custom `app://` protocol). NOT a running Next.js server.
+- Language: TypeScript 6.0.3 (strict mode)
+- Framework: Next.js 16 with `output: 'export'` (static HTML loaded via custom `app://` protocol). NOT a running Next.js server.
 - UI data access: ONLY through `window.api.*` exposed by the preload script
 - Test runner: Vitest with jsdom
 
