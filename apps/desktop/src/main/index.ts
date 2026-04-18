@@ -42,13 +42,15 @@ async function bootstrap(): Promise<void> {
     callback({ path: resolved });
   });
 
-  registerIpcHandlers();
-
   // `__dirname` resolves to `dist/main/` at runtime in both packaged and dev
   // builds, and the preload bundle is emitted to `dist/preload/index.js`, so
   // a single relative path works in both modes (no `app.isPackaged` branch).
   const preloadPath = path.join(__dirname, "..", "preload", "index.js");
   const window = new BrowserWindow(buildMainWindowOptions(preloadPath));
+
+  // Register IPC handlers AFTER window creation so upload progress events can
+  // be routed to the correct renderer via webContents.send.
+  registerIpcHandlers(window);
 
   // Deflect any attempt to navigate away from `app://`. For `https://` we
   // hand the URL off to the OS browser via `shell.openExternal`; for any

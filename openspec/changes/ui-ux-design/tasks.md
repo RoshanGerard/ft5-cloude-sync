@@ -6,10 +6,13 @@
 
 ## 2. Main-process handlers (mocked data, real IPC surface)
 
-- [ ] 2.1 Write a failing Vitest test in `apps/desktop/src/main/ipc/datasources/__tests__/list.test.ts` that invokes the `list` handler directly and asserts the response matches the contract, includes at least one of each `status` variant, and includes at least one provider with `capabilities.quota === false` (S3) alongside providers with `capabilities.quota === true`.
-- [ ] 2.2 Implement `apps/desktop/src/main/ipc/datasources/list.ts` with a hard-coded mock fixture sufficient to make 2.1 pass. Wire it via `ipcMain.handle('datasources:list', …)` in the existing main ipc bootstrapper.
-- [ ] 2.3 Write and pass equivalent failing-first Vitest tests + handler implementations for `add`, `remove`, `action`, `upload`. The `upload` handler opens `dialog.showOpenDialog` — stub it in tests and assert the call, do not actually open a dialog in a headless test. Progress events for `upload` are emitted on a per-transaction channel keyed by the server-issued `transactionId`.
-- [ ] 2.4 Add a grep-based CI-style script `scripts/ipc-datasources-four-layer.test.ts` that asserts every channel name in `datasources.ts` has both a handler file and a preload exposure (fails if any layer is missing). Verify it passes.
+- [x] 2.1 Write a failing Vitest test in `apps/desktop/src/main/ipc/datasources/__tests__/list.test.ts` that invokes the `list` handler directly and asserts the response matches the contract, includes at least one of each `status` variant, and includes at least one provider with `capabilities.quota === false` (S3) alongside providers with `capabilities.quota === true`. (Also added a shared `store.ts` with `resetDatasourcesStore` for test isolation.)
+- [x] 2.2 Implement `apps/desktop/src/main/ipc/datasources/list.ts` with a hard-coded mock fixture sufficient to make 2.1 pass. Wire it via `ipcMain.handle('datasources:list', …)` in the existing main ipc bootstrapper. (Extended `registerIpcHandlers(window)` to accept the target window so upload progress events can be routed via `webContents.send`.)
+- [x] 2.3a Write and pass TDD tests + handler for `add`. Validates unknown providerId rejection; S3 created without `usage`; new datasources appear in subsequent list calls.
+- [x] 2.3b Write and pass TDD tests + handler for `remove`. Missing datasourceId throws `not found`.
+- [x] 2.3c Write and pass TDD tests + handler for `action` (pause/resume/sync-now). `sync-now` also advances `lastSyncAt`.
+- [x] 2.3d Write and pass TDD tests + handler for `upload` with dependency-injected `showOpenDialog` / `sendProgress` / `nextTransactionId`. Cancel path throws without emitting progress; success path emits uploading → completed events scoped to the returned transactionId.
+- [x] 2.4 Add `scripts/ipc-datasources-four-layer.test.ts` asserting: contract declares the expected channel set literally; every non-progress channel has a handler file; `ipc/index.ts` registers every channel via `ipcMain.handle` or `webContents.send`. Scope note: preload-layer assertion deferred to Phase 3 where preload gets wired.
 
 ## 3. Preload exposure
 
