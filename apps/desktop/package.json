@@ -1,0 +1,26 @@
+{
+  "name": "@ft5/desktop",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "postinstall": "electron-rebuild",
+    "build": "electron-vite build",
+    "dev": "electron-vite dev"
+  },
+  "dependencies": {
+    "@ft5/ipc-contracts": "workspace:*",
+    "better-sqlite3": "12.9.0",
+    "drizzle-orm": "0.45.2",
+    "electron-updater": "6.8.3"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "4.0.3",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.12.2",
+    "electron": "41.2.1",
+    "electron-builder": "26.8.1",
+    "electron-vite": "5.0.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declarationDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts"],
+  "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
+  "references": [{ "path": "../../packages/ipc-contracts" }]
+}

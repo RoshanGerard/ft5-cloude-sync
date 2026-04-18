@@ -13,6 +13,8 @@ export default defineConfig({
       "scripts/**/*.test.ts",
       "packages/**/src/**/*.test.ts",
       "packages/**/src/**/*.test-d.ts",
+      "apps/**/src/**/*.test.ts",
+      "services/**/src/**/*.test.ts",
     ],
     typecheck: {
       enabled: true,
