@@ -1,18 +1,18 @@
 ## 1. Repo baseline
 
-- [ ] 1.1 Add `.nvmrc` pinning Node 24.14.1 and `package.json` at repo root with `packageManager: pnpm@<latest>`, `engines.node: "24.14.1"`, and `private: true`.
-- [ ] 1.2 Add `pnpm-workspace.yaml` declaring `apps/*`, `services/*`, and `packages/*`.
-- [ ] 1.3 Add `.editorconfig`, `.gitattributes` (enforce LF in repo), and a `.gitignore` covering `node_modules/`, `dist/`, `out/`, `.next/`, `release/`, `coverage/`, `*.log`, OS cruft.
-- [ ] 1.4 Write a failing `scripts/verify-repo-layout.test.ts` (Vitest, runnable with `pnpm -w vitest run scripts/`) that asserts the presence of each mandated directory (`apps/desktop/src/{main,preload,renderer}`, `services/fs-monitor/src`, `packages/ipc-contracts`); make it pass by creating the empty directories with `.gitkeep`.
-- [ ] 1.5 Add a root `README.md` with a "Native module rebuild recovery" section documenting `pnpm rebuild` (and `pnpm --filter @ft5/desktop run postinstall` as a targeted fallback) as the recovery path when `better-sqlite3` fails to load due to an Electron/Node ABI mismatch after a dependency upgrade or switch of machine.
+- [x] 1.1 Add `.nvmrc` pinning Node 24.14.1 and `package.json` at repo root with `packageManager: pnpm@<latest>`, `engines.node: "24.14.1"`, and `private: true`.
+- [x] 1.2 Add `pnpm-workspace.yaml` declaring `apps/*`, `services/*`, and `packages/*`.
+- [x] 1.3 Add `.editorconfig`, `.gitattributes` (enforce LF in repo), and a `.gitignore` covering `node_modules/`, `dist/`, `out/`, `.next/`, `release/`, `coverage/`, `*.log`, OS cruft.
+- [x] 1.4 Write a failing `scripts/verify-repo-layout.test.ts` (Vitest, runnable with `pnpm -w vitest run scripts/`) that asserts the presence of each mandated directory (`apps/desktop/src/{main,preload,renderer}`, `services/fs-monitor/src`, `packages/ipc-contracts`); make it pass by creating the empty directories with `.gitkeep`.
+- [x] 1.5 Add a root `README.md` with a "Native module rebuild recovery" section documenting `pnpm rebuild` (and `pnpm --filter @ft5/desktop run postinstall` as a targeted fallback) as the recovery path when `better-sqlite3` fails to load due to an Electron/Node ABI mismatch after a dependency upgrade or switch of machine.
 
 ## 2. TypeScript + shared tooling
 
-- [ ] 2.1 Add `tsconfig.base.json` at repo root with `strict: true`, `target: ES2023`, `module: NodeNext`, `moduleResolution: NodeNext`, `verbatimModuleSyntax: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, and `skipLibCheck: false`.
-- [ ] 2.2 Install `typescript@6.0.3` at the root as a dev dep and wire `pnpm -w typecheck` to run `tsc -b` across project references.
-- [ ] 2.3 Add root ESLint config (`eslint.config.js`, flat config) with `@typescript-eslint`, `eslint-plugin-import`, and the `no-restricted-paths` rule scoped to `apps/desktop/src/renderer/**` forbidding imports from `fs`, `child_process`, `electron`, any `node:*` specifier, `apps/desktop/src/main/**`, and `apps/desktop/src/preload/**`.
-- [ ] 2.4 Add Prettier config (`.prettierrc`) and `pnpm -w format` / `pnpm -w format:check` scripts.
-- [ ] 2.5 Write a failing ESLint-rule unit test (fixture file under `apps/desktop/src/renderer/__forbidden__/fs-import.ts` that imports `fs`) and assert `pnpm lint` exits non-zero; satisfy by confirming the ESLint rule fires; then delete the fixture.
+- [x] 2.1 Add `tsconfig.base.json` at repo root with `strict: true`, `target: ES2023`, `module: NodeNext`, `moduleResolution: NodeNext`, `verbatimModuleSyntax: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, and `skipLibCheck: false`.
+- [x] 2.2 Install `typescript@6.0.3` at the root as a dev dep and wire `pnpm -w typecheck` to run `tsc -b` across project references.
+- [x] 2.3 Add root ESLint config (`eslint.config.js`, flat config) with `@typescript-eslint`, `eslint-plugin-import`, and the `no-restricted-paths` rule scoped to `apps/desktop/src/renderer/**` forbidding imports from `fs`, `child_process`, `electron`, any `node:*` specifier, `apps/desktop/src/main/**`, and `apps/desktop/src/preload/**`.
+- [x] 2.4 Add Prettier config (`.prettierrc`) and `pnpm -w format` / `pnpm -w format:check` scripts.
+- [x] 2.5 Write a failing ESLint-rule unit test (fixture file under `apps/desktop/src/renderer/__forbidden__/fs-import.ts` that imports `fs`) and assert `pnpm lint` exits non-zero; satisfy by confirming the ESLint rule fires; then delete the fixture.
 
 ## 3. IPC contract package
 

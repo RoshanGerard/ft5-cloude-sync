@@ -1,0 +1,11 @@
+{
+  "//": "Solution-style root config. Downstream packages append themselves to `references` in sections 3/4/6/7. `include: []` avoids TS18002 (empty files) and keeps `tsc -b` a no-op with exit 0 until references are added.",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./.tsbuild"
+  },
+  "include": [],
+  "references": []
+}

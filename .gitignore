@@ -1,2 +1,21 @@
 # Worktrees for /opsx:apply implementation (see CLAUDE.md)
 .worktrees/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+.next/
+release/
+
+# Test output
+coverage/
+
+# Logs
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db

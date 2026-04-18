@@ -1,0 +1,25 @@
+{
+  "name": "ft5-claude-sync",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": "24.14.1",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier . --write",
+    "format:check": "prettier . --check"
+  },
+  "devDependencies": {
+    "eslint": "10.2.1",
+    "eslint-plugin-import-x": "4.16.2",
+    "prettier": "3.8.3",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.58.2",
+    "vitest": "3.2.4"
+  }
+}
