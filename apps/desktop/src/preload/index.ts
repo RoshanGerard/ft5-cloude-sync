@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
-import { DATASOURCES_CHANNELS } from "@ft5/ipc-contracts";
+import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
   DatasourcesActionRequest,
   DatasourcesActionResponse,
@@ -12,6 +12,18 @@ import type {
   DatasourcesUploadProgressEvent,
   DatasourcesUploadRequest,
   DatasourcesUploadResponse,
+  FilesDownloadRequest,
+  FilesDownloadResponse,
+  FilesListRequest,
+  FilesListResponse,
+  FilesRemoveRequest,
+  FilesRemoveResponse,
+  FilesRenameRequest,
+  FilesRenameResponse,
+  FilesSearchRequest,
+  FilesSearchResponse,
+  FilesStatRequest,
+  FilesStatResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
 
@@ -69,6 +81,20 @@ const api = {
         );
       };
     },
+  },
+  files: {
+    list: (req: FilesListRequest): Promise<FilesListResponse> =>
+      ipcRenderer.invoke(FILES_CHANNELS.list, req),
+    stat: (req: FilesStatRequest): Promise<FilesStatResponse> =>
+      ipcRenderer.invoke(FILES_CHANNELS.stat, req),
+    search: (req: FilesSearchRequest): Promise<FilesSearchResponse> =>
+      ipcRenderer.invoke(FILES_CHANNELS.search, req),
+    rename: (req: FilesRenameRequest): Promise<FilesRenameResponse> =>
+      ipcRenderer.invoke(FILES_CHANNELS.rename, req),
+    remove: (req: FilesRemoveRequest): Promise<FilesRemoveResponse> =>
+      ipcRenderer.invoke(FILES_CHANNELS.remove, req),
+    download: (req: FilesDownloadRequest): Promise<FilesDownloadResponse> =>
+      ipcRenderer.invoke(FILES_CHANNELS.download, req),
   },
 };
 

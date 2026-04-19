@@ -6,13 +6,13 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 - [x] 1.1 Write failing `packages/ipc-contracts/src/__tests__/files.test-d.ts` asserting the shape of `FileEntry`, `FilesListRequest/Response`, `FilesStatRequest/Response`, `FilesSearchRequest/Response`, `FilesRenameRequest/Response`, `FilesRemoveRequest/Response`, `FilesDownloadRequest/Response` per design.md Decision 2.
 - [x] 1.2 Implement `packages/ipc-contracts/src/files.ts` with the types in Decision 2. Export from the package's index.
-- [ ] 1.3 Extend the four-layer IPC guardrail test (`scripts/ipc-datasources-four-layer.test.ts` — rename to `ipc-four-layer.test.ts` if it doesn't already cover multiple surfaces) to also assert every `files.*` method has all four layers present.
+- [x] 1.3 Extend the four-layer IPC guardrail test (`scripts/ipc-datasources-four-layer.test.ts` — rename to `ipc-four-layer.test.ts` if it doesn't already cover multiple surfaces) to also assert every `files.*` method has all four layers present.
 - [x] 1.4 Write failing tests for the in-memory mock file system in `apps/desktop/src/main/ipc/files/__tests__/mock-fs.test.ts` — seeding per datasource id, directory listing, stat, rename (files only), remove (partial failure supported), download.
 - [x] 1.5 Implement `apps/desktop/src/main/ipc/files/mock-fs.ts` with plausible fixture trees per datasource (Google Drive: document-heavy; OneDrive: mixed; S3: image / video / archive mix). Enforce the 300-entry per-directory ceiling inline and export a helper for the ceiling guardrail test.
 - [x] 1.6 Write failing guardrail test `scripts/mock-fs-ceiling.test.ts` asserting no seeded directory exceeds 300 entries.
 - [x] 1.7 Implement `apps/desktop/src/main/ipc/files/handlers.ts` (one `ipcMain.handle` per method) delegating to `mock-fs.ts`. Register via the existing `registerIpcHandlers` entry point.
-- [ ] 1.8 Extend `apps/desktop/src/preload/index.ts` to expose `window.api.files.{list,stat,search,rename,remove,download}`. Update `preload-bundle.test.ts` to ensure the `@ft5/ipc-contracts` external still resolves correctly.
-- [ ] 1.9 Write failing test `apps/desktop/src/renderer/src/features/file-explorer/__tests__/ipc-round-trip.test.ts` calling each `window.api.files.*` method against a mocked preload bridge, asserting structured-clone-safe round-trip.
+- [x] 1.8 Extend `apps/desktop/src/preload/index.ts` to expose `window.api.files.{list,stat,search,rename,remove,download}`. Update `preload-bundle.test.ts` to ensure the `@ft5/ipc-contracts` external still resolves correctly.
+- [x] 1.9 Write failing test `apps/desktop/src/renderer/src/features/file-explorer/__tests__/ipc-round-trip.test.ts` calling each `window.api.files.*` method against a mocked preload bridge, asserting structured-clone-safe round-trip.
 
 ## Phase 2 — Explorer route, store, and history
 

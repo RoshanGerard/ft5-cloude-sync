@@ -9,6 +9,18 @@ import type {
   DatasourcesUploadProgressEvent,
   DatasourcesUploadRequest,
   DatasourcesUploadResponse,
+  FilesDownloadRequest,
+  FilesDownloadResponse,
+  FilesListRequest,
+  FilesListResponse,
+  FilesRemoveRequest,
+  FilesRemoveResponse,
+  FilesRenameRequest,
+  FilesRenameResponse,
+  FilesSearchRequest,
+  FilesSearchResponse,
+  FilesStatRequest,
+  FilesStatResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
 
@@ -43,6 +55,14 @@ declare global {
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,
         ): () => void;
+      };
+      files: {
+        list(req: FilesListRequest): Promise<FilesListResponse>;
+        stat(req: FilesStatRequest): Promise<FilesStatResponse>;
+        search(req: FilesSearchRequest): Promise<FilesSearchResponse>;
+        rename(req: FilesRenameRequest): Promise<FilesRenameResponse>;
+        remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
+        download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
       };
     };
   }
