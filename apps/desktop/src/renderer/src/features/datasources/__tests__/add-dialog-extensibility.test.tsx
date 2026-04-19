@@ -144,22 +144,88 @@ describe("AddDatasourceDialog — extensibility (task 6.2)", () => {
   it("dialog and picker source contain NO `providerId === \"...\"` branches", () => {
     // File-scan guardrail: if someone adds a hardcoded provider-id branch,
     // the extensibility contract breaks silently. This test catches it.
+    //
+    // Comments are stripped before matching so prose/doc callouts explaining
+    // the guardrail (including this test's own comment style echoed inside
+    // the dialog source) do not trigger. Mirrors the comment-stripping pattern
+    // used by scripts/literals-ban.test.ts.
     const scanFiles = [
       path.join(FEATURE_ROOT, "add-dialog.tsx"),
       path.join(FEATURE_ROOT, "provider-picker.tsx"),
     ];
     // Matches `providerId === "<lit>"` and `providerId === '<lit>'` with any
-    // whitespace in between. Comments are not stripped — a comment containing
-    // the literal form would also be flagged, which is the intent (the
-    // pattern must not appear in any conditional position).
+    // whitespace in between. Applied AFTER comment stripping.
     const forbidden = /providerId\s*===\s*["'][^"']+["']/;
 
     for (const file of scanFiles) {
-      const text = readFileSync(file, "utf8");
+      const raw = readFileSync(file, "utf8");
+      const text = stripComments(raw);
       expect(
         forbidden.test(text),
         `Expected ${path.relative(FEATURE_ROOT, file)} to contain no \`providerId === "..."\` branches — extensibility requires dispatch on credentialsSchema.`,
       ).toBe(false);
     }
+  });
+});
+
+// Strips `//` line comments and `/* ... */` block comments. String-literal
+// boundaries are respected so a `//` inside a string isn't treated as a
+// comment. Sufficient for TSX source where the worst case is a JSX attribute
+// with a URL — we don't need to parse templates or regex literals.
+function stripComments(source: string): string {
+  let out = "";
+  let i = 0;
+  const n = source.length;
+  let inString: '"' | "'" | "`" | null = null;
+
+  while (i < n) {
+    const ch = source[i]!;
+    const next = source[i + 1];
+
+    if (inString !== null) {
+      out += ch;
+      if (ch === "\\" && i + 1 < n) {
+        out += source[i + 1]!;
+        i += 2;
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inString = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      // Line comment — skip to end-of-line.
+      while (i < n && source[i] !== "\n") i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      // Block comment — skip until `*/`.
+      i += 2;
+      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) i += 1;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+describe("AddDatasourceDialog — extensibility epilogue", () => {
+  it("stripComments removes line and block comments while preserving strings", () => {
+    const src = `const x = "//not a comment"; // actual comment\n/* block */const y = 1;`;
+    const stripped = stripComments(src);
+    expect(stripped).toContain('"//not a comment"');
+    expect(stripped).not.toContain("actual comment");
+    expect(stripped).not.toContain("block");
   });
 });

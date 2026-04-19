@@ -6,7 +6,7 @@
 // toolbar (Add Datasource button + ThemeSwitcher) lives in its own component
 // so it can be tested independently and re-used if we ever split the page.
 
-import { useCallback } from "react";
+import { useCallback, useRef, useState, type MouseEvent, type Ref } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,20 +14,24 @@ import { Card } from "@/components/ui/card";
 
 import { ThemeSwitcher } from "@/features/theme/theme-switcher";
 
+import { AddDatasourceDialog } from "./add-dialog";
 import { DatasourceCard } from "./card";
 import { EmptyDatasourcesIllustration } from "./illustrations/empty-datasources";
 import { useDatasourceActions, useDatasources } from "./store";
 
 export function DatasourcesToolbar({
   onAddDatasourceClick,
+  triggerRef,
 }: {
-  onAddDatasourceClick: () => void;
+  onAddDatasourceClick: (event: MouseEvent<HTMLElement>) => void;
+  triggerRef?: Ref<HTMLButtonElement>;
 }) {
   return (
     <div className="flex items-center justify-between gap-3 border-b border-border p-4">
       <h1 className="text-base font-semibold">Datasources</h1>
       <div className="flex items-center gap-2">
         <Button
+          ref={triggerRef}
           size="sm"
           onClick={onAddDatasourceClick}
           data-testid="add-datasource-trigger"
@@ -43,7 +47,7 @@ export function DatasourcesToolbar({
 export function DashboardStates({
   onAddDatasourceClick,
 }: {
-  onAddDatasourceClick: () => void;
+  onAddDatasourceClick: (event: MouseEvent<HTMLElement>) => void;
 }) {
   const state = useDatasources();
   const actions = useDatasourceActions();
@@ -90,7 +94,7 @@ function DashboardLoading() {
 function DashboardEmpty({
   onAddDatasourceClick,
 }: {
-  onAddDatasourceClick: () => void;
+  onAddDatasourceClick: (event: MouseEvent<HTMLElement>) => void;
 }) {
   return (
     <div
@@ -155,17 +159,46 @@ function DashboardPopulated({
 }
 
 export function DatasourcesDashboard() {
-  // TODO(phase-6): wire AddDatasourceDialog opener; Phase 6 will lift real
-  // dialog-open state to this component and pass a setter down instead of the
-  // stub no-op below.
-  const onAddDatasourceClick = useCallback(() => {
-    // no-op until Phase 6
-  }, []);
+  // Phase 6.3: lift dialog-open state here so both the toolbar trigger and
+  // the empty-state CTA open the same dialog.
+  //
+  // Focus restoration: we remember which HTMLElement fired the click (the
+  // toolbar trigger or the empty-state CTA) and hand it to
+  // `AddDatasourceDialog` via `returnFocusTo`. The dialog uses Radix's
+  // `onCloseAutoFocus` (with `preventDefault`) to redirect focus there —
+  // Radix's default restoration relies on the element being focused at
+  // open time, which is unreliable in jsdom where `fireEvent.click` does
+  // not implicitly focus the button. The toolbar-trigger fallback handles
+  // the case where the empty-state CTA unmounts after the add succeeds.
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const toolbarTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const onAddDatasourceClick = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      openerRef.current = event.currentTarget;
+      setAddDialogOpen(true);
+    },
+    [],
+  );
+
+  const returnFocusTo =
+    openerRef.current && openerRef.current.isConnected
+      ? openerRef.current
+      : toolbarTriggerRef.current;
 
   return (
     <main className="flex min-h-dvh flex-col">
-      <DatasourcesToolbar onAddDatasourceClick={onAddDatasourceClick} />
+      <DatasourcesToolbar
+        onAddDatasourceClick={onAddDatasourceClick}
+        triggerRef={toolbarTriggerRef}
+      />
       <DashboardStates onAddDatasourceClick={onAddDatasourceClick} />
+      <AddDatasourceDialog
+        open={addDialogOpen}
+        onOpenChange={setAddDialogOpen}
+        returnFocusTo={returnFocusTo}
+      />
     </main>
   );
 }

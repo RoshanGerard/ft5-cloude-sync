@@ -186,11 +186,11 @@ describe("AddDatasourceDialog — task 6.1", () => {
       } else if (schema === "aws-access-key") {
         // AWS access-key form — look for the three primary inputs.
         const accessKey = await within(dialog).findByLabelText(
-          /access key/i,
+          /access key id/i,
         );
         expect(accessKey).toBeInTheDocument();
         expect(
-          within(dialog).getByLabelText(/secret/i),
+          within(dialog).getByLabelText(/secret access key/i),
         ).toBeInTheDocument();
         expect(
           within(dialog).getByLabelText(/bucket/i),
@@ -208,9 +208,17 @@ describe("AddDatasourceDialog — task 6.1", () => {
     addMock.mockResolvedValue({ datasource: returnedSummary });
 
     renderDashboard();
-    const dialog = await openDialog();
-
+    await screen.findByTestId("datasources-empty");
     const trigger = screen.getByTestId("add-datasource-trigger");
+    // Focus the trigger before opening so Radix has a meaningful element to
+    // restore focus to on close. `fireEvent.click` does not implicitly focus
+    // under jsdom (unlike a real browser click), so we do it explicitly.
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /add datasource/i,
+    });
     const option = within(dialog).getByTestId("provider-option-google-drive");
     fireEvent.click(option);
 
@@ -260,8 +268,8 @@ describe("AddDatasourceDialog — task 6.1", () => {
     const option = within(dialog).getByTestId("provider-option-amazon-s3");
     fireEvent.click(option);
 
-    const accessKey = await within(dialog).findByLabelText(/access key/i);
-    const secret = within(dialog).getByLabelText(/secret/i);
+    const accessKey = await within(dialog).findByLabelText(/access key id/i);
+    const secret = within(dialog).getByLabelText(/secret access key/i);
     const bucket = within(dialog).getByLabelText(/bucket/i);
 
     fireEvent.change(accessKey, { target: { value: "AKIAEXAMPLE" } });
