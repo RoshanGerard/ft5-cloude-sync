@@ -49,10 +49,10 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 4 — Selection, keyboard, and context menu
 
-- [ ] 4.1 Write failing test for the selection reducer — click, shift-click, ctrl-click, select-all, clear.
-- [ ] 4.2 Implement the shared selection + keyboard-nav hooks consumed by every view mode.
-- [ ] 4.3 Write failing test for keyboard bindings — arrow keys move focus, Enter activates, Delete initiates delete (opens confirm dialog), F2 starts rename, Ctrl/Cmd+A selects all.
-- [ ] 4.4 Wire the bindings into each view mode; keep the binding layer in one shared hook so the six modes share semantics.
+- [x] 4.1 Write failing test for the selection reducer — click, shift-click, ctrl-click, select-all, clear. *(Impl note: substantive coverage already shipped via `store.test.ts` (Phase 2, commit d92ae2b) + per-view-mode click tests (Phase 3). The new `keyboard-nav.test.tsx` includes the "click routes through `useSelection` and sets focus" case as the residual integration assertion.)*
+- [x] 4.2 Implement the shared selection + keyboard-nav hooks consumed by every view mode. *(Impl note: `useSelection` already landed in Phase 3 (click translation only); `useKeyboardNav` in `features/file-explorer/use-keyboard-nav.ts` composes alongside it.)*
+- [x] 4.3 Write failing test for keyboard bindings — arrow keys move focus, Enter activates, Delete initiates delete (opens confirm dialog), F2 starts rename, Ctrl/Cmd+A selects all. *(Impl note: landed as `features/file-explorer/__tests__/keyboard-nav.test.tsx` (15 tests) composing DetailsView with the hook. Delete + F2 assert their callback stubs fire — Phase 6 wires the confirm dialog / inline rename UI.)*
+- [x] 4.4 Wire the bindings into each view mode; keep the binding layer in one shared hook so the six modes share semantics. *(Impl note: every view mode now accepts `{ focusedId, setFocusedId }`, applies a `ring-ring ring-2 ring-inset` highlight on the focused cell, and uses a roving-tabindex pattern (focused cell `tabIndex=0`; others `-1`). `ViewModeSwitcher` takes an optional `keyboardNav` bag and binds `onKeyDown` on its outer container so arrow keys fire regardless of which cell holds browser focus.)*
 - [ ] 4.5 Write failing test for `features/file-explorer/context-menu.tsx` — six items in order, directory disables Rename, Escape closes and restores focus.
 - [ ] 4.6 Implement the context menu, trigger on right-click and on Shift+F10 / Menu key.
 - [ ] 4.7 Write failing test for the `aria-live` status row — announces selection changes without announcing unrelated re-renders.

@@ -19,9 +19,15 @@ import { IconAboveNameCell } from "./icon-above-name-cell.js";
 
 export interface MediumIconsViewProps {
   store: ExplorerStore;
+  focusedId?: string | null;
+  setFocusedId?: (id: string | null) => void;
 }
 
-export function MediumIconsView({ store }: MediumIconsViewProps) {
+export function MediumIconsView({
+  store,
+  focusedId,
+  setFocusedId,
+}: MediumIconsViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
@@ -50,6 +56,7 @@ export function MediumIconsView({ store }: MediumIconsViewProps) {
       {state.entries.map((entry) => {
         const isSelected = selection.has(entry.id);
         const pending = state.pendingOps[entry.id] !== undefined;
+        const isFocused = focusedId === entry.id;
         return (
           <IconAboveNameCell
             key={entry.id}
@@ -57,7 +64,11 @@ export function MediumIconsView({ store }: MediumIconsViewProps) {
             iconSize="size-16"
             selected={isSelected}
             pending={pending}
-            onClick={(e) => onEntryClick(entry.id, e)}
+            focused={isFocused}
+            onClick={(e) => {
+              onEntryClick(entry.id, e);
+              setFocusedId?.(entry.id);
+            }}
           />
         );
       })}

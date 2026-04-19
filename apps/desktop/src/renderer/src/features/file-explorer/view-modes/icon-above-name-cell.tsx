@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
@@ -36,6 +37,11 @@ export interface IconAboveNameCellProps {
   iconSize: IconAboveNameCellSize;
   selected: boolean;
   pending: boolean;
+  /**
+   * Phase 4 roving-focus state. Optional so the presentational cell can
+   * still render standalone from its existing view-mode tests.
+   */
+  focused?: boolean;
   onClick: (event: ReactMouseEvent) => void;
 }
 
@@ -44,23 +50,32 @@ export function IconAboveNameCell({
   iconSize,
   selected,
   pending,
+  focused = false,
   onClick,
 }: IconAboveNameCellProps) {
   const iconName = iconForEntry(entry);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focused && ref.current !== null && document.activeElement !== ref.current) {
+      ref.current.focus();
+    }
+  }, [focused]);
   return (
     <div
+      ref={ref}
       role="gridcell"
       data-testid="explorer-cell"
       data-entry-id={entry.id}
       aria-selected={selected}
-      tabIndex={0}
+      tabIndex={focused ? 0 : -1}
       onClick={onClick}
       className={cn(
         "flex cursor-default flex-col items-center gap-2 rounded-md p-3 outline-none",
         "hover:bg-accent/50",
-        "focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+        "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset",
         selected && "bg-accent",
         pending && "opacity-60 animate-sync-pulse",
+        focused && "ring-ring ring-2 ring-inset",
       )}
     >
       <Icon

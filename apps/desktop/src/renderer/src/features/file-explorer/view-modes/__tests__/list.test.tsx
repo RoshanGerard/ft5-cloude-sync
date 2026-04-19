@@ -109,15 +109,30 @@ describe("ListView", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 
-  it("rows are tabbable (tabIndex=0) for Phase 4 keyboard nav wiring", () => {
+  it("rows use roving tabindex — unfocused rows are tabindex=-1, focused row is 0", () => {
+    // Phase 4.4 migrated the six view modes from "every row tabIndex=0"
+    // to a roving-tabindex pattern: only the focused row is tab-reachable,
+    // arrow keys move focus within the container (see
+    // `features/file-explorer/use-keyboard-nav.ts`).
     const store = makeStore();
     act(() => {
-      store.setEntries([seedEntry({ id: "e1", name: "a", path: "/a" })]);
+      store.setEntries([
+        seedEntry({ id: "e1", name: "a", path: "/a" }),
+        seedEntry({ id: "e2", name: "b", path: "/b" }),
+      ]);
     });
-    render(<ListView store={store} />);
+    const { rerender } = render(<ListView store={store} />);
 
-    const row = getListRows()[0]!;
-    expect(row.getAttribute("tabindex")).toBe("0");
+    // No focused entry → all rows tabindex=-1 (container is the tab stop).
+    const rowsInitial = getListRows();
+    expect(rowsInitial[0]!.getAttribute("tabindex")).toBe("-1");
+    expect(rowsInitial[1]!.getAttribute("tabindex")).toBe("-1");
+
+    // When e2 is focused, only e2 is tab-reachable.
+    rerender(<ListView store={store} focusedId="e2" />);
+    const rowsFocused = getListRows();
+    expect(rowsFocused[0]!.getAttribute("tabindex")).toBe("-1");
+    expect(rowsFocused[1]!.getAttribute("tabindex")).toBe("0");
   });
 
   it("clicking a row replaces selection with that entry", () => {

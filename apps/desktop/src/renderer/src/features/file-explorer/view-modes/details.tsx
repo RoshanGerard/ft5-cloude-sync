@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
@@ -38,6 +38,15 @@ import { formatDate, formatSize, formatType } from "./details-format.js";
 
 export interface DetailsViewProps {
   store: ExplorerStore;
+  /**
+   * Phase 4 keyboard-nav wiring. All three props are optional so the
+   * view mode still renders standalone (existing view-mode tests mount
+   * it without the hook); when the composite explorer provides them,
+   * the view mode paints the focus ring, updates `tabIndex`, and
+   * syncs focus on click.
+   */
+  focusedId?: string | null;
+  setFocusedId?: (id: string | null) => void;
 }
 
 interface ColumnDef {
@@ -55,7 +64,11 @@ const COLUMNS: readonly ColumnDef[] = [
 
 const ICON_COLUMN_CLASS = "w-8 shrink-0 flex items-center justify-center";
 
-export function DetailsView({ store }: DetailsViewProps) {
+export function DetailsView({
+  store,
+  focusedId,
+  setFocusedId,
+}: DetailsViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
@@ -86,13 +99,18 @@ export function DetailsView({ store }: DetailsViewProps) {
           {state.entries.map((entry) => {
             const isSelected = selection.has(entry.id);
             const pendingOp = state.pendingOps[entry.id];
+            const isFocused = focusedId === entry.id;
             return (
               <DataRow
                 key={entry.id}
                 entry={entry}
                 selected={isSelected}
                 pending={pendingOp !== undefined}
-                onClick={(e) => onEntryClick(entry.id, e)}
+                focused={isFocused}
+                onClick={(e) => {
+                  onEntryClick(entry.id, e);
+                  setFocusedId?.(entry.id);
+                }}
               />
             );
           })}
@@ -160,23 +178,46 @@ interface DataRowProps {
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
+  focused: boolean;
   onClick: (event: ReactMouseEvent) => void;
 }
 
-function DataRow({ entry, selected, pending, onClick }: DataRowProps) {
+function DataRow({
+  entry,
+  selected,
+  pending,
+  focused,
+  onClick,
+}: DataRowProps) {
   const iconName = iconForEntry(entry);
+  const ref = useRef<HTMLDivElement | null>(null);
+  // Roving-tabindex: only the focused row is tab-reachable. On focus
+  // change, also call `element.focus()` so browser focus tracks the
+  // hook's `focusedId`. `:focus-visible` handles the ring; the ring
+  // utilities below paint a constant highlight during programmatic
+  // focus so keyboard navigation is visible without requiring the
+  // `:focus-visible` pseudo-class.
+  useEffect(() => {
+    if (focused && ref.current !== null && document.activeElement !== ref.current) {
+      ref.current.focus();
+    }
+  }, [focused]);
   return (
     <div
+      ref={ref}
       role="row"
       data-testid="explorer-row"
       data-entry-id={entry.id}
       aria-selected={selected}
+      tabIndex={focused ? 0 : -1}
       onClick={onClick}
       className={cn(
-        "border-border/50 flex cursor-default items-center gap-2 border-b px-2 py-1.5",
+        "border-border/50 flex cursor-default items-center gap-2 border-b px-2 py-1.5 outline-none",
         "hover:bg-accent/50",
+        "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset",
         selected && "bg-accent",
         pending && "opacity-60",
+        focused && "ring-ring ring-2 ring-inset",
       )}
     >
       <div role="cell" className={ICON_COLUMN_CLASS}>

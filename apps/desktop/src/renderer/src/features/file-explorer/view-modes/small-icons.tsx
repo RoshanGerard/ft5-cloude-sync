@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
@@ -32,9 +32,15 @@ import { useSelection } from "../use-selection.js";
 
 export interface SmallIconsViewProps {
   store: ExplorerStore;
+  focusedId?: string | null;
+  setFocusedId?: (id: string | null) => void;
 }
 
-export function SmallIconsView({ store }: SmallIconsViewProps) {
+export function SmallIconsView({
+  store,
+  focusedId,
+  setFocusedId,
+}: SmallIconsViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
@@ -63,13 +69,18 @@ export function SmallIconsView({ store }: SmallIconsViewProps) {
       {state.entries.map((entry) => {
         const isSelected = selection.has(entry.id);
         const pendingOp = state.pendingOps[entry.id];
+        const isFocused = focusedId === entry.id;
         return (
           <Cell
             key={entry.id}
             entry={entry}
             selected={isSelected}
             pending={pendingOp !== undefined}
-            onClick={(e) => onEntryClick(entry.id, e)}
+            focused={isFocused}
+            onClick={(e) => {
+              onEntryClick(entry.id, e);
+              setFocusedId?.(entry.id);
+            }}
           />
         );
       })}
@@ -81,24 +92,40 @@ interface CellProps {
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
+  focused: boolean;
   onClick: (event: ReactMouseEvent) => void;
 }
 
-function Cell({ entry, selected, pending, onClick }: CellProps) {
+function Cell({
+  entry,
+  selected,
+  pending,
+  focused,
+  onClick,
+}: CellProps) {
   const iconName = iconForEntry(entry);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focused && ref.current !== null && document.activeElement !== ref.current) {
+      ref.current.focus();
+    }
+  }, [focused]);
   return (
     <div
+      ref={ref}
       role="listitem"
       data-testid="explorer-cell"
       data-entry-id={entry.id}
-      tabIndex={0}
+      tabIndex={focused ? 0 : -1}
       aria-selected={selected}
       onClick={onClick}
       className={cn(
-        "flex cursor-default items-center gap-1 rounded-md px-1.5 py-1",
+        "flex cursor-default items-center gap-1 rounded-md px-1.5 py-1 outline-none",
         "hover:bg-accent/50",
+        "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset",
         selected && "bg-accent",
         pending && "opacity-60",
+        focused && "ring-ring ring-2 ring-inset",
       )}
     >
       <Icon

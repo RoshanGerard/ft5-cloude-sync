@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
@@ -32,9 +32,15 @@ import { formatSize, formatType } from "./details-format.js";
 
 export interface TilesViewProps {
   store: ExplorerStore;
+  focusedId?: string | null;
+  setFocusedId?: (id: string | null) => void;
 }
 
-export function TilesView({ store }: TilesViewProps) {
+export function TilesView({
+  store,
+  focusedId,
+  setFocusedId,
+}: TilesViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
@@ -63,13 +69,18 @@ export function TilesView({ store }: TilesViewProps) {
       {state.entries.map((entry) => {
         const isSelected = selection.has(entry.id);
         const pendingOp = state.pendingOps[entry.id];
+        const isFocused = focusedId === entry.id;
         return (
           <Tile
             key={entry.id}
             entry={entry}
             selected={isSelected}
             pending={pendingOp !== undefined}
-            onClick={(e) => onEntryClick(entry.id, e)}
+            focused={isFocused}
+            onClick={(e) => {
+              onEntryClick(entry.id, e);
+              setFocusedId?.(entry.id);
+            }}
           />
         );
       })}
@@ -81,24 +92,40 @@ interface TileProps {
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
+  focused: boolean;
   onClick: (event: ReactMouseEvent) => void;
 }
 
-function Tile({ entry, selected, pending, onClick }: TileProps) {
+function Tile({
+  entry,
+  selected,
+  pending,
+  focused,
+  onClick,
+}: TileProps) {
   const iconName = iconForEntry(entry);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focused && ref.current !== null && document.activeElement !== ref.current) {
+      ref.current.focus();
+    }
+  }, [focused]);
   return (
     <div
+      ref={ref}
       role="gridcell"
       data-testid="explorer-tile"
       data-entry-id={entry.id}
-      tabIndex={0}
+      tabIndex={focused ? 0 : -1}
       aria-selected={selected}
       onClick={onClick}
       className={cn(
-        "border-border flex cursor-default items-start gap-3 rounded-md border p-3",
+        "border-border flex cursor-default items-start gap-3 rounded-md border p-3 outline-none",
         "hover:bg-accent/50",
+        "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset",
         selected && "bg-accent",
         pending && "opacity-60",
+        focused && "ring-ring ring-2 ring-inset",
       )}
     >
       <Icon

@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
@@ -40,9 +40,11 @@ import { useSelection } from "../use-selection.js";
 
 export interface ListViewProps {
   store: ExplorerStore;
+  focusedId?: string | null;
+  setFocusedId?: (id: string | null) => void;
 }
 
-export function ListView({ store }: ListViewProps) {
+export function ListView({ store, focusedId, setFocusedId }: ListViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
@@ -69,13 +71,18 @@ export function ListView({ store }: ListViewProps) {
       {state.entries.map((entry) => {
         const isSelected = selection.has(entry.id);
         const pendingOp = state.pendingOps[entry.id];
+        const isFocused = focusedId === entry.id;
         return (
           <ListRow
             key={entry.id}
             entry={entry}
             selected={isSelected}
             pending={pendingOp !== undefined}
-            onClick={(e) => onEntryClick(entry.id, e)}
+            focused={isFocused}
+            onClick={(e) => {
+              onEntryClick(entry.id, e);
+              setFocusedId?.(entry.id);
+            }}
           />
         );
       })}
@@ -87,24 +94,40 @@ interface ListRowProps {
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
+  focused: boolean;
   onClick: (event: ReactMouseEvent) => void;
 }
 
-function ListRow({ entry, selected, pending, onClick }: ListRowProps) {
+function ListRow({
+  entry,
+  selected,
+  pending,
+  focused,
+  onClick,
+}: ListRowProps) {
   const iconName = iconForEntry(entry);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focused && ref.current !== null && document.activeElement !== ref.current) {
+      ref.current.focus();
+    }
+  }, [focused]);
   return (
     <div
+      ref={ref}
       role="listitem"
-      tabIndex={0}
+      tabIndex={focused ? 0 : -1}
       data-testid="explorer-list-row"
       data-entry-id={entry.id}
       aria-selected={selected}
       onClick={onClick}
       className={cn(
-        "flex cursor-default items-center gap-2 px-2 py-1",
+        "flex cursor-default items-center gap-2 px-2 py-1 outline-none",
         "hover:bg-accent/50",
+        "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset",
         selected && "bg-accent text-accent-foreground",
         pending && "opacity-60",
+        focused && "ring-ring ring-2 ring-inset",
       )}
     >
       <Icon
