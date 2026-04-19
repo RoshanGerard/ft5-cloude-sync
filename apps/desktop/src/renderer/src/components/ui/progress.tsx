@@ -12,7 +12,14 @@ function Progress({
     <ProgressPrimitive.Root
       data-slot="progress"
       className={cn(
-        "relative h-2 w-full overflow-hidden rounded-full bg-primary/20",
+        // Review-round-3, Task 3: swapped `bg-primary/20` → `bg-muted`. On
+        // the dark theme `--primary` is near-white (oklch 0.929), so 20%
+        // white over a dark canvas read as a too-bright track ("secondary
+        // white color on progress bar is too bright" — user review-round-3).
+        // `bg-muted` is a single theme-scoped token that reads as a
+        // subdued-but-visible track on every theme (light / dark / serene-
+        // blue) without opacity layering.
+        "relative h-2 w-full overflow-hidden rounded-full bg-muted",
         className
       )}
       {...props}

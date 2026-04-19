@@ -45,38 +45,39 @@
 }
 
 .dark {
-  /* Decision 13 (review-round-1): warm near-black neutrals. Lightness stays
-     in the 0.10–0.20 range; hue ~50 (warm/brown) with low chroma (~0.010)
-     reads as "considered dark" rather than the previous slate-blue. --primary
-     / --primary-foreground / --destructive / --destructive-foreground are
-     intentionally left at their pre-refinement values — Decision 13 says the
-     accent tokens stay unchanged so CTAs and destructive surfaces read
-     identically across themes. --border stays at the transparent-white
-     idiom (same formula as before) because a warm-tinted border would read
-     as a coloured hairline, not a neutral separator. */
-  --background: oklch(0.110 0.010 50);
-  --foreground: oklch(0.950 0.006 50);
-  --card: oklch(0.145 0.010 50);
-  --card-foreground: oklch(0.950 0.006 50);
-  --popover: oklch(0.150 0.010 50);
-  --popover-foreground: oklch(0.950 0.006 50);
+  /* Review-round-3 reversal of Decision 13: the warm-hue-50 "near-black"
+     experiment shipped in round-1 was judged too warm on user live-review.
+     Reverted to a cool near-black — hue ~265 (cool slate) with low chroma
+     (~0.025). Lightness gap between `--background` (0.110) and `--card`
+     (0.175) is now ~0.065 so cards read with visible elevation over the
+     canvas (addresses "cards not highlighting" review-round-3 complaint).
+     --primary / --primary-foreground / --destructive / --destructive-
+     foreground / --border stay at their pre-refinement values — accent
+     tokens read identically across themes and the transparent-white
+     border is hue-neutral. */
+  --background: oklch(0.110 0.025 265);
+  --foreground: oklch(0.950 0.010 260);
+  --card: oklch(0.175 0.025 265);
+  --card-foreground: oklch(0.950 0.010 260);
+  --popover: oklch(0.180 0.025 265);
+  --popover-foreground: oklch(0.950 0.010 260);
   --primary: oklch(0.929 0.013 255.508);
   --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.220 0.010 50);
-  --secondary-foreground: oklch(0.950 0.006 50);
-  --muted: oklch(0.200 0.010 50);
-  --muted-foreground: oklch(0.680 0.010 50);
-  --accent: oklch(0.220 0.010 50);
-  --accent-foreground: oklch(0.950 0.006 50);
+  --secondary: oklch(0.240 0.025 265);
+  --secondary-foreground: oklch(0.950 0.010 260);
+  --muted: oklch(0.220 0.025 265);
+  --muted-foreground: oklch(0.700 0.010 260);
+  --accent: oklch(0.240 0.025 265);
+  --accent-foreground: oklch(0.950 0.010 260);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: oklch(0.984 0.003 247.858);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.560 0.010 50);
+  --ring: oklch(0.560 0.025 265);
   --radius: 0.5rem;
 
   /* Theme-invariant brand primary — same value as :root (Decision 14). The
-     crimson reads well on both the slate-light and warm-near-black dark
+     crimson reads well on both the light and cool-near-black dark
      backgrounds, so no theme-specific override is needed. Declared in both
      blocks only so a future refinement can diverge the two without a
      cascade footgun. */
@@ -85,8 +86,38 @@
   /* Review-round-2, Task 2: the dark-theme override for the removed
      `--watermark-image` is gone alongside the :root declaration. The
      hex-network <DashboardBackground /> uses `currentColor`, which
-     resolves to the theme `--foreground` (warm-near-white in .dark),
+     resolves to the theme `--foreground` (cool-near-white in .dark),
      so no per-theme duplicate is needed. */
+}
+
+/* Review-round-3, Task 6: "Serene Blue" — a third named theme alongside
+   Light and Dark. Always-explicit (System still resolves only to light or
+   dark per OS preference; Serene Blue is never inferred). Applied via a
+   `data-theme="serene-blue"` attribute on <html>, orthogonal to the `.dark`
+   class so the two can never collide. Palette concept: soft sky-blue bg,
+   muted blue accents, cool-but-light (NOT a dark mode — a light-mode
+   alternative). `--brand-primary` cascades from :root (theme-invariant). */
+[data-theme="serene-blue"] {
+  --background: oklch(0.975 0.015 230);
+  --foreground: oklch(0.280 0.050 230);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.280 0.050 230);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.280 0.050 230);
+  --primary: oklch(0.208 0.042 264.695);
+  --primary-foreground: oklch(0.984 0.003 247.858);
+  --secondary: oklch(0.920 0.025 230);
+  --secondary-foreground: oklch(0.280 0.050 230);
+  --muted: oklch(0.935 0.020 230);
+  --muted-foreground: oklch(0.480 0.040 230);
+  --accent: oklch(0.920 0.025 230);
+  --accent-foreground: oklch(0.280 0.050 230);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.984 0.003 247.858);
+  --border: oklch(0.880 0.025 230);
+  --input: oklch(0.880 0.025 230);
+  --ring: oklch(0.600 0.100 230);
+  --radius: 0.625rem;
 }
 
 @theme inline {
