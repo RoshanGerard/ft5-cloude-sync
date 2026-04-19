@@ -1,75 +1,56 @@
-// Forti5 brand logo — Decision 14 (review-round-1).
+// Forti5 brand logo — real geometry (review-round-2, Task 1).
 //
-// A 5-fold rotationally-symmetric pentagonal mark. Five crimson chevron
-// wedges radiate from a small central pentagon. The geometry is a
-// simplified-but-faithful interpretation of the original brand mark:
-//   - outer chevron ring anchors "Forti(ve)5" — the 5-count is the
-//     load-bearing brand signal;
-//   - central pentagon sits in the foreground colour so it reads as a
-//     contrasting "hole" rather than a red blob.
+// The round-1 component was a simplified chevron-and-pentagon mark. The
+// user supplied the authoritative SVG (`dpc_glyph_dark.svg`) — a central
+// small pentagon plus 5 outer petals in a 174.16 x 166.81 viewBox — and
+// this component embeds those exact polygon points.
 //
-// Colour strategy (matches empty-datasources.tsx — feature code cannot
-// emit oklch/hsl/rgb literals per the literals-ban guardrail):
-//   - Chevrons fill with `var(--brand-primary)` (theme-invariant crimson,
-//     declared in globals.css for both :root and .dark).
-//   - Central pentagon fills with `var(--foreground)`, so on dark mode
-//     it's the warm off-white, and on light mode it's the slate-black.
-//     The visual intent is "contrasts with the chevrons," which both
-//     themes satisfy.
+// Theme-colour strategy (matches the literals-ban guardrail — no hex,
+// rgb, hsl, or oklch functions allowed in feature code):
+//   - the 5 outer petals fill with `var(--brand-primary)` (theme-
+//     invariant crimson, declared in globals.css at both :root and .dark
+//     scope),
+//   - the central pentagon fills with `var(--background)` so it reads
+//     as a theme-reactive "hole in the middle" — near-white on light
+//     theme, warm-near-black on dark theme, mirroring the original
+//     brand-mark's black dot on crimson petals.
 //
-// Default size is 28px (the chrome-iconography size from Decision 8's
-// revised visual direction: 18px in chrome, with the logo sized up to
-// match a lowercase-x-height "product name" word typeset alongside).
+// The viewBox is no longer square (1.044:1), so rendering with
+// `width={size} height={size}` intentionally letterboxes inside the
+// bounding box under the SVG default `preserveAspectRatio`. At 28px
+// chrome size the letterbox is imperceptible.
 
 import type { SVGProps } from "react";
 
 export interface Forti5LogoProps extends Omit<SVGProps<SVGSVGElement>, "width" | "height"> {
   /**
-   * Pixel size for both width and height (the mark is square). Defaults to 28.
+   * Pixel size for both width and height. The viewBox itself is
+   * slightly taller than wide (174.16 x 166.81); the SVG
+   * preserveAspectRatio ("xMidYMid meet" by default) letterboxes rather
+   * than distorts. Defaults to 28.
    */
   size?: number;
 }
 
-// Geometry is authored in a 100-unit viewBox centered at (50, 50) so scaling
-// to any render size is a single `width`/`height` attribute change.
-const CENTER = 50;
+// Exact polygon points from `dpc_glyph_dark.svg`. The first entry is the
+// small central pentagon; the 5 remaining entries are the outer petals
+// in the same DOM order as the source file (so the mark reads visually
+// identical to the vendor PNG).
+const CENTER_PENTAGON_POINTS =
+  "74.52 87.6 86.87 78.51 99.64 87.79 94.8 103.07 79.53 103.17";
 
-// Outer chevron: a triangular wedge with its apex pointing toward the center,
-// sized so five copies around the ring meet edge-to-edge at the boundary.
-// Authored once at rotation 0° (apex pointing up toward center from below),
-// then rotated 5 times via SVG <g transform="rotate(…)"> wrappers.
-//
-// The specific point set was hand-tuned to:
-//   - leave ~4 units of gap at the center (so the central pentagon shows
-//     through),
-//   - span a ~72° arc at the outer rim (so all 5 chevrons pack around 360°),
-//   - read as a "wedge" not a "triangle" — the base is slightly concave so
-//     adjacent chevrons kiss rather than overlap.
-//
-// Apex at (50, 14): ~36 units from center along +y (after rotation, this
-//   becomes the outward tip).
-// Base points at (32, 50) and (68, 50): the wide end, 18 units either side
-//   of the vertical axis.
-// Inner cut at (50, 46): pulls the base inward slightly so the central
-//   pentagon has breathing room.
-const CHEVRON_PATH = "M50 14 L32 50 L50 46 L68 50 Z";
-
-// Central pentagon. Authored as an explicit five-point polygon centered at
-// (50, 50). Radius 7 units — just big enough to read as a discrete central
-// element at 28px render size without crowding the chevron apexes.
-function pentagonPoints(cx: number, cy: number, r: number): string {
-  const pts: string[] = [];
-  for (let i = 0; i < 5; i++) {
-    // Top-pointing pentagon: first vertex at 12 o'clock, subsequent vertices
-    // rotated 72° clockwise.
-    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
-    const x = cx + r * Math.cos(angle);
-    const y = cy + r * Math.sin(angle);
-    // Keep 3 significant digits to stabilise snapshot diffs.
-    pts.push(`${x.toFixed(2)},${y.toFixed(2)}`);
-  }
-  return pts.join(" ");
-}
+const PETAL_POINTS: readonly string[] = [
+  // Top petal (apex toward the top-right).
+  "120.25 24.18 86.97 0 49.63 28.19 106 69.14 120.25 24.18",
+  // Upper-right petal (warms the right edge).
+  "135.71 36.84 114.76 102.95 161.42 102.66 174.16 63.54 135.71 36.84",
+  // Lower-left petal (anchors the left side).
+  "20.48 127.66 33.14 166.81 80.48 166.16 59.19 99.2 20.48 127.66",
+  // Upper-left petal.
+  "33.45 39.38 0 63.32 15.43 108.38 71.55 67.06 33.45 39.38",
+  // Lower-right petal.
+  "100.21 166.05 141.35 166.46 155.56 120.76 85.94 121.7 100.21 166.05",
+];
 
 export function Forti5Logo({
   size = 28,
@@ -77,11 +58,10 @@ export function Forti5Logo({
   "aria-label": ariaLabel = "FT5 Unified Cloud Sync",
   ...rest
 }: Forti5LogoProps) {
-  const rotations = [0, 72, 144, 216, 288];
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 100 100"
+      viewBox="0 0 174.16 166.81"
       width={size}
       height={size}
       role={role}
@@ -89,21 +69,19 @@ export function Forti5Logo({
       data-testid="forti5-logo"
       {...rest}
     >
-      {/* Five crimson chevrons at 72° spacing — 5-fold rotational symmetry. */}
+      {/* Five outer petals in theme-invariant brand crimson. Grouping under
+          a <g fill> avoids repeating the attribute per polygon. */}
       <g fill="var(--brand-primary)">
-        {rotations.map((deg) => (
-          <path
-            key={deg}
-            d={CHEVRON_PATH}
-            transform={`rotate(${deg} ${CENTER} ${CENTER})`}
-          />
+        {PETAL_POINTS.map((points, idx) => (
+          <polygon key={idx} points={points} />
         ))}
       </g>
-      {/* Central pentagon in the foreground colour — reads as a contrasting
-          "well" at the pinwheel's hub. Theme-reactive via --foreground. */}
+      {/* Central pentagon in the theme background colour — reads as a
+          contrasting "hole" that flips with the theme (near-white on
+          light, warm-near-black on dark). */}
       <polygon
-        points={pentagonPoints(CENTER, CENTER, 7)}
-        fill="var(--foreground)"
+        points={CENTER_PENTAGON_POINTS}
+        fill="var(--background)"
       />
     </svg>
   );
