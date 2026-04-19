@@ -224,30 +224,40 @@ function statusBadgeVariant(
 // Both animations are gated by `motion-safe:` so `prefers-reduced-motion:
 // reduce` users see a static, non-animating dot (no ring motion).
 function SyncingDot() {
+  // viewBox is intentionally 3x the visible dot size so the ring has room
+  // to expand to scale(2.4) without hitting the SVG clip boundary. At
+  // viewBox="0 0 24 24" with dot radius 4 at centre (12, 12), the ring's
+  // bounding box at peak scale is (12 ± 9.6) = 2.4 → 21.6, inside the
+  // 0..24 window. overflow="visible" is belt-and-braces in case a
+  // descendant parent applies overflow:hidden.
+  //
+  // Render size: `size-3` (12px). Rendered ring radius 2px → peak 4.8px.
+  // Visible but subtle; badge height unchanged (text dominates).
   return (
     <svg
       data-testid="datasource-syncing-dot"
-      viewBox="0 0 10 10"
+      viewBox="0 0 24 24"
+      overflow="visible"
       role="presentation"
       aria-hidden
-      className={cn("size-2.5 shrink-0 fill-current")}
+      className={cn("size-3 shrink-0 fill-current")}
     >
       {/* Expanding ring — radar-ping. Pivot around centre via fill-box. */}
       <circle
-        cx="5"
-        cy="5"
-        r="2.5"
+        cx="12"
+        cy="12"
+        r="4"
         fill="none"
         stroke="currentColor"
-        strokeWidth="1"
+        strokeWidth="1.5"
         className={cn("motion-safe:animate-sync-ripple")}
         style={{ transformOrigin: "center", transformBox: "fill-box" }}
       />
       {/* Solid dot with the existing gentle pulse breathing. */}
       <circle
-        cx="5"
-        cy="5"
-        r="2"
+        cx="12"
+        cy="12"
+        r="4"
         className={cn("motion-safe:animate-sync-pulse")}
         style={{ transformOrigin: "center", transformBox: "fill-box" }}
       />
