@@ -55,8 +55,8 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 - [x] 4.4 Wire the bindings into each view mode; keep the binding layer in one shared hook so the six modes share semantics. *(Impl note: every view mode now accepts `{ focusedId, setFocusedId }`, applies a `ring-ring ring-2 ring-inset` highlight on the focused cell, and uses a roving-tabindex pattern (focused cell `tabIndex=0`; others `-1`). `ViewModeSwitcher` takes an optional `keyboardNav` bag and binds `onKeyDown` on its outer container so arrow keys fire regardless of which cell holds browser focus.)*
 - [ ] 4.5 Write failing test for `features/file-explorer/context-menu.tsx` — six items in order, directory disables Rename, Escape closes and restores focus.
 - [ ] 4.6 Implement the context menu, trigger on right-click and on Shift+F10 / Menu key.
-- [ ] 4.7 Write failing test for the `aria-live` status row — announces selection changes without announcing unrelated re-renders.
-- [ ] 4.8 Implement the status row.
+- [x] 4.7 Write failing test for the `aria-live` status row — announces selection changes without announcing unrelated re-renders.
+- [x] 4.8 Implement the status row.
 
 ## Phase 5 — Details pane and Properties modal
 
