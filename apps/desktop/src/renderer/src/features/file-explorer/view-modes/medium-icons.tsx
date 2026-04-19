@@ -93,6 +93,7 @@ export function MediumIconsView({
                 onEntryClick(entry.id, e);
                 setFocusedId?.(entry.id);
               }}
+              onDoubleClick={() => onOpen?.(entry)}
             />
           </FileContextMenu>
         );

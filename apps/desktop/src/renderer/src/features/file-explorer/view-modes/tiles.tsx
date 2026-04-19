@@ -107,6 +107,7 @@ export function TilesView({
                 onEntryClick(entry.id, e);
                 setFocusedId?.(entry.id);
               }}
+              onDoubleClick={() => onOpen?.(entry)}
             />
           </FileContextMenu>
         );

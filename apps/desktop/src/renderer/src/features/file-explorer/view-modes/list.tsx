@@ -113,6 +113,7 @@ export function ListView({
                 onEntryClick(entry.id, e);
                 setFocusedId?.(entry.id);
               }}
+              onDoubleClick={() => onOpen?.(entry)}
             />
           </FileContextMenu>
         );

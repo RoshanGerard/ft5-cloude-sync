@@ -288,4 +288,60 @@ describe("FileExplorer composite (Subagent P)", () => {
       ).toBe(2);
     });
   });
+
+  // Regression: double-click on a directory should navigate into it, matching
+  // the universal file-explorer gesture. Single click selects; right-click
+  // Open also navigates; this test covers the double-click path specifically.
+  // The original Phase 4 composite did not wire `onDoubleClick` on any view-
+  // mode cell, so the user had to right-click → Open. Fixed by passing
+  // `onDoubleClick={() => onOpen?.(entry)}` through every cell's spread.
+  it("double-clicking a directory navigates into it and re-fetches entries", async () => {
+    const root = [
+      seedEntry({
+        id: "d1",
+        name: "reports",
+        path: "/reports",
+        kind: "directory",
+        size: null,
+        mimeFamily: "unknown",
+        mimeType: null,
+      }),
+    ];
+    const reports = [
+      seedEntry({ id: "r1", name: "q1.pdf", path: "/reports/q1.pdf" }),
+    ];
+    installApiMock({
+      responses: new Map([
+        ["/", { entries: root, nextCursor: null }],
+        ["/reports", { entries: reports, nextCursor: null }],
+      ]),
+    });
+
+    render(<FileExplorer datasourceId="ds-gdrive-personal" />);
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(1);
+    });
+
+    const dirRow = document.querySelector(
+      '[data-testid="explorer-row"][data-entry-id="d1"]',
+    );
+    expect(dirRow).not.toBeNull();
+
+    fireEvent.doubleClick(dirRow!);
+
+    await waitFor(() => {
+      expect(filesListMock).toHaveBeenCalledWith({
+        datasourceId: "ds-gdrive-personal",
+        path: "/reports",
+      });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(1);
+    });
+    expect(
+      document.querySelector('[data-entry-id="r1"]'),
+    ).not.toBeNull();
+  });
 });

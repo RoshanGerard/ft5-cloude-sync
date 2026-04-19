@@ -144,6 +144,7 @@ export function DetailsView({
                     onEntryClick(entry.id, e);
                     setFocusedId?.(entry.id);
                   }}
+                  onDoubleClick={() => onOpen?.(entry)}
                 />
               </FileContextMenu>
             );
