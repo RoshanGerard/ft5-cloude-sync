@@ -8,6 +8,7 @@ import { AppFooter } from "../components/app-footer";
 import { AppHeader } from "../components/app-header";
 import { THEME_BOOTSTRAP_SCRIPT } from "../features/theme/theme-script";
 import { MOTION_BOOTSTRAP_SCRIPT } from "../features/settings/motion-script";
+import { DiagnosticsShortcut } from "../features/diagnostics/diagnostics-shortcut";
 
 export const metadata: Metadata = {
   title: "ft5-cloude-sync",
@@ -54,6 +55,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           refactor in this decision swaps that root for a <div> so we don't
           end up with nested <main> elements (invalid HTML + a11y regression). */}
       <body className="min-h-dvh flex flex-col">
+        {/* Developer keyboard shortcut — Ctrl/Cmd+Shift+D jumps to the
+            /diagnostics route from anywhere. Side-effect-only component;
+            returns null. Mounted at layout level so the binding is live on
+            every route, not just the dashboard. See
+            features/diagnostics/diagnostics-shortcut.tsx. */}
+        <DiagnosticsShortcut />
         <AppHeader />
         <main className="flex-1 min-h-0">{children}</main>
         <AppFooter />
