@@ -77,11 +77,40 @@ export default tseslint.config(
               message:
                 "Renderer must not import electron directly. Use window.api exposed by contextBridge.",
             },
+            // Phase 9.2: provider SDKs belong in main-process code (or
+            // dedicated services packages), not in the sandboxed renderer.
+            // They carry large transitive graphs, many need Node built-ins
+            // the renderer does not have, and they break the preload bridge
+            // contract. Complement guardrail:
+            // scripts/provider-sdk-forbidden-import.test.ts.
+            {
+              name: "googleapis",
+              message:
+                "Provider SDKs are forbidden in the renderer. Route through main via window.api.",
+            },
+            {
+              name: "@microsoft/microsoft-graph-client",
+              message:
+                "Provider SDKs are forbidden in the renderer. Route through main via window.api.",
+            },
+            {
+              name: "@aws-sdk/client-s3",
+              message:
+                "Provider SDKs are forbidden in the renderer. Route through main via window.api.",
+            },
           ],
           patterns: [
             {
               group: ["node:*"],
               message: "Node built-ins (node:*) are forbidden in the renderer.",
+            },
+            // Any AWS SDK subpackage is forbidden, not just client-s3. The
+            // AWS JS SDK v3 is split into ~200 subpackages; listing them
+            // individually in the `paths` array would be fragile.
+            {
+              group: ["@aws-sdk/*"],
+              message:
+                "Provider SDKs are forbidden in the renderer. Route through main via window.api.",
             },
           ],
         },
