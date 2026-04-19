@@ -23,7 +23,14 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    // Exclude `@ft5/ipc-contracts` from externalization so it's bundled
+    // into the preload's CJS output. Electron's sandboxed preload context
+    // can only resolve "electron" at runtime; any other specifier left as
+    // a runtime `require(...)` (the default behavior of
+    // externalizeDepsPlugin) will fail with "module not found" inside the
+    // sandbox and silently break `window.api` exposure. Regression guard
+    // lives at `scripts/preload-bundle.test.ts`.
+    plugins: [externalizeDepsPlugin({ exclude: ["@ft5/ipc-contracts"] })],
     build: {
       outDir: "dist/preload",
       lib: {
