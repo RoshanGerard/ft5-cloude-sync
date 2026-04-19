@@ -17,12 +17,12 @@
 
 ## 3. BaseDatasourceClient template
 
-- [ ] 3.1 RED: write `packages/fs-datasource-engine/src/base-client.test.ts` against a `FakeDatasourceClient extends BaseDatasourceClient<"fake">` test fixture covering: (a) successful op emits pre + post events in order, (b) failing op emits pre + failed event and throws normalized error, (c) single-flight refresh on 5 concurrent 401s triggers exactly one `refreshToken`, (d) refresh success persists via `CredentialStore.put` before retry, (e) refresh failure emits `token-expired` + `authentication-failed` and throws AuthExpired, (f) strategies cannot emit events directly (grep test over concrete class source).
-- [ ] 3.2 GREEN: implement `BaseDatasourceClient<T>` in `packages/fs-datasource-engine/src/base-client.ts` with the abstract `doX` surface and concrete `uploadFile` / `deleteFile` / `createFile` / `listDirectory` / `search` / `getMetadata` / `authenticate` / `status` / `testConnection` wrappers. Single-flight mutex is a `Map<datasourceId, Promise<AuthResult>>`.
-- [ ] 3.3 GREEN: implement `deleteDirectory` as a final method that unconditionally throws `DatasourceError.Unsupported` with `raw: "disabled-for-product-stability"`.
-- [ ] 3.4 GREEN: implement `getQuota` that consults the injected `ProviderDescriptor.capabilities.quota` flag and throws `Unsupported` with `raw: "not-supported-by-provider"` when false, otherwise delegates to `protected abstract doGetQuota()`.
-- [ ] 3.5 Refactor: review the event emission boilerplate for duplication; extract a `withEvents(methodName, op)` helper if it eliminates drift. Keep tests green.
-- [ ] 3.6 Request code review for Phase 3.
+- [x] 3.1 RED: write `packages/fs-datasource-engine/src/base-client.test.ts` against a `FakeDatasourceClient extends BaseDatasourceClient<"fake">` test fixture covering: (a) successful op emits pre + post events in order, (b) failing op emits pre + failed event and throws normalized error, (c) single-flight refresh on 5 concurrent 401s triggers exactly one `refreshToken`, (d) refresh success persists via `CredentialStore.put` before retry, (e) refresh failure emits `token-expired` + `authentication-failed` and throws AuthExpired, (f) strategies cannot emit events directly (grep test over concrete class source).
+- [x] 3.2 GREEN: implement `BaseDatasourceClient<T>` in `packages/fs-datasource-engine/src/base-client.ts` with the abstract `doX` surface and concrete `uploadFile` / `deleteFile` / `createFile` / `listDirectory` / `search` / `getMetadata` / `authenticate` / `status` / `testConnection` wrappers. Single-flight mutex is a `Map<datasourceId, Promise<AuthResult>>`.
+- [x] 3.3 GREEN: implement `deleteDirectory` as a final method that unconditionally throws `DatasourceError.Unsupported` with `raw: "disabled-for-product-stability"`.
+- [x] 3.4 GREEN: implement `getQuota` that consults the injected `ProviderDescriptor.capabilities.quota` flag and throws `Unsupported` with `raw: "not-supported-by-provider"` when false, otherwise delegates to `protected abstract doGetQuota()`.
+- [x] 3.5 Refactor: review the event emission boilerplate for duplication; extract a `withEvents(methodName, op)` helper if it eliminates drift. Keep tests green.
+- [x] 3.6 Request code review for Phase 3.
 
 ## 4. CredentialStore port + SqliteCredentialStore
 

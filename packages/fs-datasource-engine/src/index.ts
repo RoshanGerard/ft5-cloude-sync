@@ -31,3 +31,13 @@ export type {
   EventBus,
   EventBusOptions,
 } from "./event-bus.js";
+
+// Phase 3: Template base class + Strategy interface + credential-store port.
+// Concrete strategies (S3, OneDrive, Google Drive) land in Phases 6-8.
+export { BaseDatasourceClient } from "./base-client.js";
+export type {
+  BaseClientContext,
+  BaseClientInit,
+  CredentialStore,
+  DatasourceClient,
+} from "./base-client.js";
