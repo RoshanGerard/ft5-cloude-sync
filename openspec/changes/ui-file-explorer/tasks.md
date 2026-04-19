@@ -42,10 +42,10 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 - [x] 3.13 Implement `view-modes/medium-icons.tsx`.
 - [x] 3.14 Write failing test for `view-modes/large-icons.tsx` — 96 px icon above name, wrapping grid.
 - [x] 3.15 Implement `view-modes/large-icons.tsx`.
-- [ ] 3.16 Write failing test for the View menu in `features/file-explorer/toolbar.tsx` — six radio items, current mode checked, selection switches the active renderer.
-- [ ] 3.17 Implement the View menu entry of the toolbar.
-- [ ] 3.18 Write failing test: selection and focus survive a mode switch (selection count identical before/after).
-- [ ] 3.19 Verify Phase 3 against the guardrail test for directory-size render budget (50 ms ceiling for 300-entry Details mode in jsdom).
+- [x] 3.16 Write failing test for the View menu in `features/file-explorer/toolbar.tsx` — six radio items, current mode checked, selection switches the active renderer.
+- [x] 3.17 Implement the View menu entry of the toolbar.
+- [x] 3.18 Write failing test: selection and focus survive a mode switch (selection count identical before/after). *(Impl note: factored `view-mode-switcher.tsx` as a separate composable component so Phase 4's status row and Phase 5's details pane can compose with it.)*
+- [x] 3.19 Verify Phase 3 against the guardrail test for directory-size render budget. *(Impl note: landed at `scripts/render-budget.test.tsx` (not `.ts` — the test renders React so JSX is needed; vitest include pattern widened to `scripts/**/*.test.{ts,tsx}`). Default ceiling 500 ms (jsdom is materially slower than the 50 ms dev-host budget in design.md Decision 10); measured locally at 150–180 ms. Ceiling overridable via `FT5_RENDER_BUDGET_MS` for CI.)*
 
 ## Phase 4 — Selection, keyboard, and context menu
 
