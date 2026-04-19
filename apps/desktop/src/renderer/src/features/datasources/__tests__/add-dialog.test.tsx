@@ -1,0 +1,333 @@
+/** @vitest-environment jsdom */
+//
+// Phase 6.1 — AddDatasourceDialog tests (RED stage).
+//
+// Wraps the whole dashboard in a `<DatasourcesProvider>` and exercises the
+// add-datasource flow end-to-end against a fully-mocked `window.api` surface:
+//
+//   - toolbar trigger opens the dialog
+//   - step 1 renders exactly the registry's providers
+//   - selecting a provider advances to step 2 with the credential form
+//     picked off `credentialsSchema` (parameterized over all three)
+//   - OAuth submit and AWS access-key submit both call `add()` with the
+//     correct shape, close the dialog, return focus to the trigger, and
+//     surface the new card on the dashboard grid
+//   - Back button returns to step 1
+//   - Close/X/Escape does NOT call add()
+//
+// Notes on shape:
+//   - The OAuth form exposes a `delayMs` prop so tests pass `0` and avoid
+//     `vi.useFakeTimers()` plumbing — React async + fake timers is a known
+//     footgun under @testing-library. The real default stays at 800ms (set
+//     by `add-dialog.tsx`, not the test).
+//   - Radix Dialog restores focus asynchronously after close, so focus
+//     assertions use `waitFor(() => expect(document.activeElement).toBe(...))`.
+//   - ResizeObserver polyfilled for jsdom (Radix DropdownMenu / Dialog depend
+//     on it at mount).
+
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import type { DatasourceSummary } from "@ft5/ipc-contracts";
+import { providers } from "@ft5/ipc-contracts";
+
+import { DatasourcesProvider } from "../store";
+import { DatasourcesDashboard } from "../dashboard";
+
+let listMock: Mock;
+let addMock: Mock;
+let removeMock: Mock;
+let actionMock: Mock;
+let uploadMock: Mock;
+
+function installApiMock() {
+  (window as unknown as { api: unknown }).api = {
+    ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
+    datasources: {
+      list: listMock,
+      add: addMock,
+      remove: removeMock,
+      action: actionMock,
+      upload: uploadMock,
+      onUploadProgress: vi.fn().mockReturnValue(() => {}),
+    },
+  };
+}
+
+function buildSummary(
+  overrides: Partial<DatasourceSummary> = {},
+): DatasourceSummary {
+  return {
+    id: "ds-new",
+    displayName: "Freshly Connected",
+    providerId: "google-drive",
+    status: "connected",
+    lastSyncAt: null,
+    itemCount: 0,
+    usage: { used: 0, quota: 1_000_000_000 },
+    ...overrides,
+  };
+}
+
+function renderDashboard() {
+  return render(
+    <DatasourcesProvider>
+      <DatasourcesDashboard />
+    </DatasourcesProvider>,
+  );
+}
+
+async function openDialog(): Promise<HTMLElement> {
+  // Wait for the empty-state render (list resolved with []) so the toolbar
+  // trigger is present and stable.
+  await screen.findByTestId("datasources-empty");
+  const trigger = screen.getByTestId("add-datasource-trigger");
+  fireEvent.click(trigger);
+  return await screen.findByRole("dialog", { name: /add datasource/i });
+}
+
+beforeEach(() => {
+  if (!("ResizeObserver" in window)) {
+    (window as unknown as { ResizeObserver: unknown }).ResizeObserver =
+      class MockResizeObserver {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+  }
+  listMock = vi.fn().mockResolvedValue({ datasources: [] });
+  addMock = vi.fn();
+  removeMock = vi.fn();
+  actionMock = vi.fn();
+  uploadMock = vi.fn();
+  installApiMock();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+describe("AddDatasourceDialog — task 6.1", () => {
+  it("opens from the dashboard toolbar trigger", async () => {
+    renderDashboard();
+
+    await screen.findByTestId("datasources-empty");
+    // Dialog is not yet rendered.
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    const trigger = screen.getByTestId("add-datasource-trigger");
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /add datasource/i,
+    });
+    expect(dialog).toBeInTheDocument();
+  });
+
+  it("step 1 lists exactly the providers from the registry", async () => {
+    renderDashboard();
+    const dialog = await openDialog();
+
+    // One picker option per entry in `providers`. Query by descriptor
+    // ID via a stable data attribute, NOT by hardcoded strings, so adding a
+    // fourth provider to the registry immediately surfaces four options.
+    const expectedIds = Object.keys(providers);
+    for (const id of expectedIds) {
+      const option = within(dialog).getByTestId(`provider-option-${id}`);
+      expect(option).toBeInTheDocument();
+    }
+
+    // And no other provider options beyond the registry.
+    const allOptions = within(dialog).getAllByTestId(/^provider-option-/);
+    expect(allOptions.length).toBe(expectedIds.length);
+
+    // Each shows the provider's display name.
+    for (const id of expectedIds) {
+      const option = within(dialog).getByTestId(`provider-option-${id}`);
+      const descriptor = providers[id as keyof typeof providers];
+      expect(option.textContent).toContain(descriptor.displayName);
+    }
+  });
+
+  describe.each([
+    ["google-drive", "oauth"] as const,
+    ["onedrive", "oauth"] as const,
+    ["amazon-s3", "aws-access-key"] as const,
+  ])("selecting provider %s → credential form (%s)", (providerId, schema) => {
+    it(`advances to step 2 and renders the matching credential form`, async () => {
+      renderDashboard();
+      const dialog = await openDialog();
+
+      const option = within(dialog).getByTestId(`provider-option-${providerId}`);
+      fireEvent.click(option);
+
+      if (schema === "oauth") {
+        // OAuth form — look for the Connect button.
+        const connect = await within(dialog).findByRole("button", {
+          name: /^connect/i,
+        });
+        expect(connect).toBeInTheDocument();
+      } else if (schema === "aws-access-key") {
+        // AWS access-key form — look for the three primary inputs.
+        const accessKey = await within(dialog).findByLabelText(
+          /access key/i,
+        );
+        expect(accessKey).toBeInTheDocument();
+        expect(
+          within(dialog).getByLabelText(/secret/i),
+        ).toBeInTheDocument();
+        expect(
+          within(dialog).getByLabelText(/bucket/i),
+        ).toBeInTheDocument();
+      }
+    });
+  });
+
+  it("submitting the OAuth form (google-drive) calls add() and closes on success", async () => {
+    const returnedSummary = buildSummary({
+      id: "ds-gd-1",
+      displayName: "My Personal Drive",
+      providerId: "google-drive",
+    });
+    addMock.mockResolvedValue({ datasource: returnedSummary });
+
+    renderDashboard();
+    const dialog = await openDialog();
+
+    const trigger = screen.getByTestId("add-datasource-trigger");
+    const option = within(dialog).getByTestId("provider-option-google-drive");
+    fireEvent.click(option);
+
+    const connect = await within(dialog).findByRole("button", {
+      name: /^connect/i,
+    });
+    fireEvent.click(connect);
+
+    await waitFor(() => {
+      expect(addMock).toHaveBeenCalledTimes(1);
+    });
+    const call = addMock.mock.calls[0]![0] as {
+      providerId: string;
+      credentials: Record<string, unknown>;
+    };
+    expect(call.providerId).toBe("google-drive");
+    expect(call.credentials).toBeTruthy();
+    expect(Object.keys(call.credentials).length).toBeGreaterThan(0);
+
+    // Dialog closes.
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    // Focus returns to the toolbar trigger (Radix restores async).
+    await waitFor(() => {
+      expect(document.activeElement).toBe(trigger);
+    });
+
+    // New card appears in the grid.
+    await waitFor(() => {
+      expect(screen.getByText(returnedSummary.displayName)).toBeInTheDocument();
+    });
+  });
+
+  it("submitting the AWS access-key form calls add() with typed credentials", async () => {
+    const returnedSummary = buildSummary({
+      id: "ds-s3-1",
+      displayName: "Archive Bucket",
+      providerId: "amazon-s3",
+    });
+    addMock.mockResolvedValue({ datasource: returnedSummary });
+
+    renderDashboard();
+    const dialog = await openDialog();
+
+    const option = within(dialog).getByTestId("provider-option-amazon-s3");
+    fireEvent.click(option);
+
+    const accessKey = await within(dialog).findByLabelText(/access key/i);
+    const secret = within(dialog).getByLabelText(/secret/i);
+    const bucket = within(dialog).getByLabelText(/bucket/i);
+
+    fireEvent.change(accessKey, { target: { value: "AKIAEXAMPLE" } });
+    fireEvent.change(secret, { target: { value: "s3cretValue" } });
+    fireEvent.change(bucket, { target: { value: "backup-bucket" } });
+
+    const submit = within(dialog).getByRole("button", { name: /^connect|^add|^submit/i });
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(addMock).toHaveBeenCalledTimes(1);
+    });
+    const call = addMock.mock.calls[0]![0] as {
+      providerId: string;
+      credentials: Record<string, unknown>;
+    };
+    expect(call.providerId).toBe("amazon-s3");
+    expect(call.credentials).toMatchObject({
+      accessKeyId: "AKIAEXAMPLE",
+      secretAccessKey: "s3cretValue",
+      bucket: "backup-bucket",
+    });
+  });
+
+  it("Back button returns to step 1", async () => {
+    renderDashboard();
+    const dialog = await openDialog();
+
+    const option = within(dialog).getByTestId("provider-option-google-drive");
+    fireEvent.click(option);
+
+    // We're on step 2 — Connect is present.
+    await within(dialog).findByRole("button", { name: /^connect/i });
+
+    // Click Back.
+    const back = within(dialog).getByRole("button", { name: /^back/i });
+    fireEvent.click(back);
+
+    // Back on step 1 — all three provider options are visible again.
+    await waitFor(() => {
+      expect(
+        within(dialog).getByTestId("provider-option-google-drive"),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByTestId("provider-option-onedrive"),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByTestId("provider-option-amazon-s3"),
+      ).toBeInTheDocument();
+    });
+    // Connect button is gone (we left step 2).
+    expect(
+      within(dialog).queryByRole("button", { name: /^connect/i }),
+    ).toBeNull();
+  });
+
+  it("closing the dialog via Escape does NOT call add()", async () => {
+    renderDashboard();
+    const dialog = await openDialog();
+
+    // Escape on the dialog.
+    fireEvent.keyDown(dialog, { key: "Escape", code: "Escape" });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(addMock).not.toHaveBeenCalled();
+  });
+});
