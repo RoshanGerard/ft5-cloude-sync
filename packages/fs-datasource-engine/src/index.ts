@@ -32,12 +32,16 @@ export type {
   EventBusOptions,
 } from "./event-bus.js";
 
-// Phase 3: Template base class + Strategy interface + credential-store port.
+// Phase 3: Template base class + Strategy interface.
 // Concrete strategies (S3, OneDrive, Google Drive) land in Phases 6-8.
 export { BaseDatasourceClient } from "./base-client.js";
 export type {
   BaseClientContext,
   BaseClientInit,
-  CredentialStore,
   DatasourceClient,
 } from "./base-client.js";
+
+// Phase 4: CredentialStore port. The concrete implementation
+// (SqliteCredentialStore + safeStorage) lives in `apps/desktop` because it
+// depends on Electron; the engine package stays framework-agnostic.
+export type { CredentialStore } from "./credential-store.js";

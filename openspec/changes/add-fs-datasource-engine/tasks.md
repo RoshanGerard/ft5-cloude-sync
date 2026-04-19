@@ -26,12 +26,12 @@
 
 ## 4. CredentialStore port + SqliteCredentialStore
 
-- [ ] 4.1 Author the `CredentialStore` port interface in `packages/fs-datasource-engine/src/credential-store.ts` (abstract, no impl).
-- [ ] 4.2 RED: write `apps/desktop/src/main/credential-store.test.ts` covering: (a) put + get round-trips, (b) encrypted blob does not contain plaintext credential strings, (c) `safeStorage.isEncryptionAvailable() === false` at construction throws, (d) `schema_version === 1` on writes, (e) delete removes the row.
-- [ ] 4.3 GREEN: add a Drizzle (or direct) SQLite migration creating `datasource_credentials` with the columns specified in the spec. Wire it into the existing main-process DB init.
-- [ ] 4.4 GREEN: implement `SqliteCredentialStore` in `apps/desktop/src/main/datasources/sqlite-credential-store.ts` implementing the port. Use `safeStorage.encryptString` / `decryptString` around `JSON.stringify` / `JSON.parse`. Check `isEncryptionAvailable()` in the constructor.
-- [ ] 4.5 Refactor: review key-rotation extensibility; confirm the `schema_version` tag leaves room for a future re-encryption helper without changing the port.
-- [ ] 4.6 Request code review for Phase 4.
+- [x] 4.1 Author the `CredentialStore` port interface in `packages/fs-datasource-engine/src/credential-store.ts` (abstract, no impl).
+- [x] 4.2 RED: write `apps/desktop/src/main/credential-store.test.ts` covering: (a) put + get round-trips, (b) encrypted blob does not contain plaintext credential strings, (c) `safeStorage.isEncryptionAvailable() === false` at construction throws, (d) `schema_version === 1` on writes, (e) delete removes the row.
+- [x] 4.3 GREEN: add a Drizzle (or direct) SQLite migration creating `datasource_credentials` with the columns specified in the spec. Wire it into the existing main-process DB init.
+- [x] 4.4 GREEN: implement `SqliteCredentialStore` in `apps/desktop/src/main/datasources/sqlite-credential-store.ts` implementing the port. Use `safeStorage.encryptString` / `decryptString` around `JSON.stringify` / `JSON.parse`. Check `isEncryptionAvailable()` in the constructor.
+- [x] 4.5 Refactor: review key-rotation extensibility; confirm the `schema_version` tag leaves room for a future re-encryption helper without changing the port.
+- [x] 4.6 Request code review for Phase 4.
 
 ## 5. ProviderRegistry + ClientFactory
 

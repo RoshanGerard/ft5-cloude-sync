@@ -45,22 +45,16 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError } from "@ft5/ipc-contracts";
 
+import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
 
-// ---------------------------------------------------------------------------
-// Public port: CredentialStore
-// ---------------------------------------------------------------------------
-
-/**
- * Encrypted credential storage port. The engine stays framework-agnostic;
- * the Electron host supplies a concrete implementation (Phase 4 —
- * `SqliteCredentialStore`).
- */
-export interface CredentialStore {
-  get(datasourceId: string): Promise<StoredCredentials | null>;
-  put(datasourceId: string, creds: StoredCredentials): Promise<void>;
-  delete(datasourceId: string): Promise<void>;
-}
+// Re-export the port so callers that were already importing `CredentialStore`
+// from "./base-client.js" keep compiling during the move. The canonical
+// source of truth is `./credential-store.js` (Phase 4.1). The top-level
+// package entrypoint `src/index.ts` exports `CredentialStore` directly from
+// `./credential-store.js`, so public consumers are unaffected by the
+// relocation.
+export type { CredentialStore } from "./credential-store.js";
 
 // ---------------------------------------------------------------------------
 // Public port: DatasourceClient Strategy interface
