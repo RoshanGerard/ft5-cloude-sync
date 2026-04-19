@@ -19,8 +19,8 @@ test("ping page renders a 13-digit ts", async () => {
   try {
     const window = await app.firstWindow();
     await window.waitForLoadState("domcontentloaded");
-    // Task 5.5 relocated the ping probe from `app://./` (now the datasources
-    // dashboard) to `app://./diagnostics`. Navigate there so we can assert
+    // Task 5.5 relocated the ping probe from `app://local/` (now the datasources
+    // dashboard) to `app://local/diagnostics`. Navigate there so we can assert
     // the ping IPC wiring still round-trips.
     //
     // NOTE: This e2e file can't be executed in the dev sandbox (it needs a
@@ -29,7 +29,7 @@ test("ping page renders a 13-digit ts", async () => {
     // against a fresh `pnpm --filter @ft5/desktop package:{win|mac|linux}`
     // output. See task 10.3 in the OpenSpec change for the manual
     // verification checklist.
-    await window.goto("app://./diagnostics");
+    await window.goto("app://local/diagnostics");
     await window.waitForLoadState("domcontentloaded");
 
     // The renderer calls window.api.ping() on mount; the main handler returns
