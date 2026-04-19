@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
@@ -53,6 +53,14 @@ export interface KeyboardNavOptions {
   onActivate?: (entry: FileEntry) => void;
   onRenameRequested?: (entry: FileEntry) => void;
   onDeleteRequested?: (entries: FileEntry[]) => void;
+  /**
+   * Fires when the user presses Shift+F10 or the ContextMenu key on a
+   * focused entry — the keyboard equivalent of a right click, per the
+   * "Right-click context menu" requirement. The composite explorer
+   * wires this to open `FileContextMenu` programmatically at the
+   * focused entry. If no entry is focused, the key presses are a no-op.
+   */
+  onContextMenuRequested?: (entry: FileEntry) => void;
 }
 
 export interface UseKeyboardNavResult {
@@ -65,8 +73,26 @@ export function useKeyboardNav(
   store: ExplorerStore,
   options: KeyboardNavOptions,
 ): UseKeyboardNavResult {
-  const { entries, onActivate, onRenameRequested, onDeleteRequested } = options;
-  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const {
+    entries,
+    onActivate,
+    onRenameRequested,
+    onDeleteRequested,
+    onContextMenuRequested,
+  } = options;
+  const [focusedId, setFocusedIdState] = useState<string | null>(null);
+  // Mirror focusedId in a ref so rapid synchronous onKeyDown calls see the
+  // updated value without waiting for a re-render. Without this, two
+  // sequential ArrowDown calls inside a single React batch both read the
+  // stale closed-over `focusedId === null` and compute index 0 twice. In
+  // real UI key events land on separate frames so the stale-closure
+  // scenario is only a test concern; the ref still makes the hook honest
+  // under any caller's dispatch pattern.
+  const focusedIdRef = useRef<string | null>(null);
+  const setFocusedId = useCallback((id: string | null) => {
+    focusedIdRef.current = id;
+    setFocusedIdState(id);
+  }, []);
 
   const onKeyDown = useCallback(
     (event: ReactKeyboardEvent) => {
@@ -79,10 +105,32 @@ export function useKeyboardNav(
         return;
       }
 
+      // Shift+F10 / ContextMenu key — the keyboard equivalent of right
+      // click. These are handled before the `entries.length === 0`
+      // guard only inasmuch as they rely on a focused entry, which
+      // itself implies non-empty entries (focus can only be seeded from
+      // within the list). Kept here (ahead of the switch) so they don't
+      // tangle with the arrow-key case block below.
+      if (
+        (event.shiftKey && event.key === "F10") ||
+        event.key === "ContextMenu"
+      ) {
+        const currentFocus = focusedIdRef.current;
+        if (currentFocus === null) return;
+        const entry = entries.find((e) => e.id === currentFocus);
+        if (entry === undefined) return;
+        event.preventDefault();
+        onContextMenuRequested?.(entry);
+        return;
+      }
+
       if (entries.length === 0) return;
 
+      const currentFocus = focusedIdRef.current;
       const currentIdx =
-        focusedId === null ? -1 : entries.findIndex((e) => e.id === focusedId);
+        currentFocus === null
+          ? -1
+          : entries.findIndex((e) => e.id === currentFocus);
 
       const focus = (idx: number): void => {
         const target = entries[idx];
@@ -154,7 +202,15 @@ export function useKeyboardNav(
           return;
       }
     },
-    [store, entries, focusedId, onActivate, onRenameRequested, onDeleteRequested],
+    [
+      store,
+      entries,
+      setFocusedId,
+      onActivate,
+      onRenameRequested,
+      onDeleteRequested,
+      onContextMenuRequested,
+    ],
   );
 
   return { focusedId, onKeyDown, setFocusedId };
