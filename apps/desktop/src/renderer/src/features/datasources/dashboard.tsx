@@ -201,7 +201,7 @@ export function DatasourcesDashboard() {
     // height of its slot.
     <div
       data-testid="datasources-dashboard-root"
-      className="flex h-full flex-col"
+      className="dashboard-canvas flex h-full flex-col"
     >
       <DatasourcesToolbar
         onAddDatasourceClick={onAddDatasourceClick}
