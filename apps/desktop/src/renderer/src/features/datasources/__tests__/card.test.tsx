@@ -3,7 +3,7 @@
 // Phase 5.3 — DatasourceCard test suite. Covers the spec scenarios (required
 // fields, S3 omits usage bar, quick-action menu + keyboard behaviour, error
 // status exposes the reason) plus visual-refinement sub-scenarios (p-4,
-// tabular-nums, animate-sync-pulse on syncing, no backdrop-blur) and the
+// tabular-nums, radar-ping sync animation, no backdrop-blur) and the
 // provider-registry-driven icon lookup.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -243,15 +243,22 @@ describe("DatasourceCard — visual refinement", () => {
     expect(usageRendersTabular).toBe(true);
   });
 
-  it("syncing status dot uses motion-safe:animate-sync-pulse", () => {
+  it("syncing status dot uses the radar-ping composition (pulse dot + ripple ring)", () => {
     const summary = buildSummary({ status: "syncing" });
     renderWithProvider(<DatasourceCard summary={summary} />);
     const dot = screen.getByTestId("datasource-syncing-dot");
-    // `className` on an SVGElement is an `SVGAnimatedString` object, not a
-    // plain string — read the class attribute directly.
-    const classAttr = dot.getAttribute("class") ?? "";
-    expect(classAttr).toMatch(/\bmotion-safe:animate-sync-pulse\b/);
-    expect(classAttr).toMatch(/animate-sync-pulse/);
+    // Round-3: SyncingDot is now a two-circle SVG — the inner solid circle
+    // keeps `motion-safe:animate-sync-pulse` (gentle opacity breathing),
+    // and an outer ring uses `motion-safe:animate-sync-ripple` (expanding
+    // radar ping). Read `class` attribute strings from each child circle;
+    // SVGElement.className is an SVGAnimatedString, not a plain string.
+    const circles = Array.from(dot.querySelectorAll<SVGCircleElement>("circle"));
+    expect(circles.length).toBe(2);
+    const classes = circles.map((c) => c.getAttribute("class") ?? "");
+    const hasPulse = classes.some((c) => /\bmotion-safe:animate-sync-pulse\b/.test(c));
+    const hasRipple = classes.some((c) => /\bmotion-safe:animate-sync-ripple\b/.test(c));
+    expect(hasPulse).toBe(true);
+    expect(hasRipple).toBe(true);
   });
 
   it("card root does NOT carry any backdrop-blur-* class (glass is overlays-only)", () => {
@@ -327,18 +334,27 @@ describe("DatasourceCard — feature-level reduced-motion gating", () => {
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     const dot = screen.getByTestId("datasource-syncing-dot");
-    // Structural assertion: the animate-sync-pulse utility is gated behind
-    // motion-safe: — so under the reduce media query it is a no-op. jsdom
-    // does not actually evaluate Tailwind stylesheets, so we verify the
-    // class-list shape rather than computed animation-duration (which would
-    // be empty-string regardless of gating). SVG `className` is an animated
-    // string object — read the class attribute directly.
-    const classAttr = dot.getAttribute("class") ?? "";
-    expect(classAttr).toMatch(/\bmotion-safe:animate-sync-pulse\b/);
-    expect(classAttr).not.toMatch(/(^|\s)animate-sync-pulse(\s|$)/);
-    // NOTE: the regex above rejects the BARE form while allowing the
-    // motion-safe: variant — if both were present the test would pass too,
-    // but the canonical authoring shape uses only the gated form.
+    // Structural assertion: both motion utilities on the SyncingDot
+    // composition (pulse on the inner dot, ripple on the outer ring)
+    // must be motion-safe-gated so `prefers-reduced-motion: reduce`
+    // users see no animation. jsdom does not actually evaluate the
+    // Tailwind stylesheet, so we verify the class-list shape on each
+    // child circle rather than `computed animation-duration` (empty
+    // regardless of gating under jsdom).
+    const circles = Array.from(dot.querySelectorAll<SVGCircleElement>("circle"));
+    for (const c of circles) {
+      const cls = c.getAttribute("class") ?? "";
+      // Each child circle may carry one motion utility (or none, if it's
+      // the static mid-layer). Whichever it carries, the bare form is
+      // forbidden — it must be gated.
+      expect(cls).not.toMatch(/(^|\s)animate-sync-pulse(\s|$)/);
+      expect(cls).not.toMatch(/(^|\s)animate-sync-ripple(\s|$)/);
+    }
+    // And at least one circle DOES carry the gated pulse + one carries
+    // the gated ripple — confirming the canonical authoring shape.
+    const classes = circles.map((c) => c.getAttribute("class") ?? "");
+    expect(classes.some((c) => /\bmotion-safe:animate-sync-pulse\b/.test(c))).toBe(true);
+    expect(classes.some((c) => /\bmotion-safe:animate-sync-ripple\b/.test(c))).toBe(true);
 
     // Restore.
     (window as unknown as { matchMedia: typeof window.matchMedia }).matchMedia =

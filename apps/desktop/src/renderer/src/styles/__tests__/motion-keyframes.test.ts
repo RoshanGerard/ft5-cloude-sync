@@ -87,16 +87,26 @@ describe("motion keyframes — task 4b.4", () => {
     expect(block!).toMatch(/@keyframes\s+sync-pulse\s*\{/);
   });
 
-  it("skeleton-shimmer keyframes are NOT declared at the top level (must stay gated)", () => {
+  it("sync-ripple @keyframes is nested inside the reduced-motion media block (round-3)", () => {
+    const block = extractMediaBlock(
+      css,
+      /@media\s*\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)/,
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(/@keyframes\s+sync-ripple\s*\{/);
+  });
+
+  it("all motion keyframes are NOT declared at the top level (must stay gated)", () => {
     // Strip media blocks from the source, then assert no bare @keyframes
-    // skeleton-shimmer remains. If the author accidentally moved the rule
-    // outside the media gate, this catches it.
+    // remains. If the author accidentally moved any rule outside the
+    // media gate, this catches it.
     const stripped = css.replace(
       /@media\s*\([^)]*\)\s*\{[\s\S]*?\n\}/g,
       "",
     );
     expect(stripped).not.toMatch(/@keyframes\s+skeleton-shimmer/);
     expect(stripped).not.toMatch(/@keyframes\s+sync-pulse/);
+    expect(stripped).not.toMatch(/@keyframes\s+sync-ripple/);
   });
 
   it("exposes --animate-skeleton-shimmer in the @theme inline block", () => {
@@ -124,6 +134,20 @@ describe("motion keyframes — task 4b.4", () => {
     expect(theme).not.toBeNull();
     expect(theme!).toMatch(
       /--animate-sync-pulse\s*:\s*sync-pulse\s+1\.2s\s+ease-in-out\s+infinite/,
+    );
+  });
+
+  it("exposes --animate-sync-ripple in the @theme inline block (round-3)", () => {
+    const theme = extractThemeBlock(css);
+    expect(theme).not.toBeNull();
+    expect(theme!).toMatch(/--animate-sync-ripple\s*:\s*sync-ripple\s+/);
+  });
+
+  it("sync-ripple uses the 1.8s ease-out infinite timing", () => {
+    const theme = extractThemeBlock(css);
+    expect(theme).not.toBeNull();
+    expect(theme!).toMatch(
+      /--animate-sync-ripple\s*:\s*sync-ripple\s+1\.8s\s+ease-out\s+infinite/,
     );
   });
 });

@@ -1,8 +1,9 @@
 // Standing guardrail: the "motion whitelist" (design.md Decision 10) says the
-// entire dashboard gets exactly two CSS-only animations (`animate-sync-pulse`
-// for the syncing status dot, `animate-skeleton-shimmer` for loading
-// placeholders), plus shadcn's own overlay/dropdown/tooltip transitions which
-// ride on Radix `data-[state=*]` variants. Everything else — `animate-bounce`,
+// entire dashboard gets exactly three CSS-only animations
+// (`animate-sync-pulse` + `animate-sync-ripple` on the syncing status dot
+// radar-ping, `animate-skeleton-shimmer` for loading placeholders), plus
+// shadcn's own overlay/dropdown/tooltip transitions which ride on Radix
+// `data-[state=*]` variants. Everything else — `animate-bounce`,
 // `animate-spin`, `transition-all`, bespoke `@keyframes`, `animation:` or
 // `transition:` declarations in CSS — is banned in feature code.
 //
@@ -60,12 +61,17 @@ const EXEMPT_DIRS = [path.join(RENDERER_SRC, "components", "ui")];
 const ALLOWED_ANIMATE_CLASSES = new Set([
   "animate-skeleton-shimmer",
   "animate-sync-pulse",
+  // Round-3: sync status dot gained a radar-ping expanding ring behind
+  // the main dot. Tightly bounded to SyncingDot in card.tsx — see
+  // design.md Decision 10 motion table.
+  "animate-sync-ripple",
 ]);
 
 // Allowed CSS `animation-name` / full `animation` shorthand references.
 const ALLOWED_ANIMATION_NAMES = new Set([
   "skeleton-shimmer",
   "sync-pulse",
+  "sync-ripple",
 ]);
 
 // Allowed CSS `transition-property` values.

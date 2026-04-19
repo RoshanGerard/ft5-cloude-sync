@@ -138,14 +138,18 @@
      verified at the component level in tasks 5.1 / 5.4. */
   --text-base: 0.875rem;
 
-  /* Motion (design.md Decision 10 — CSS-only motion whitelist): only two
-     animation utilities exist in feature code. `animate-sync-pulse` drives
-     the status dot while a datasource is syncing; `animate-skeleton-shimmer`
-     drives the loading-placeholder sweep. The @keyframes themselves are
-     gated behind `prefers-reduced-motion: no-preference` below so OS-level
-     reduce-motion users see the static state without any JS intervention. */
+  /* Motion (design.md Decision 10 — CSS-only motion whitelist): three
+     animation utilities in feature code. `animate-sync-pulse` drives the
+     gentle opacity breathing on the syncing status dot;
+     `animate-sync-ripple` drives the expanding-ring radar-ping behind it
+     (round-3 user request for a "decent" syncing cue);
+     `animate-skeleton-shimmer` drives the loading-placeholder sweep. The
+     @keyframes themselves are gated behind `prefers-reduced-motion:
+     no-preference` below so OS-level reduce-motion users see the static
+     state without any JS intervention. */
   --animate-skeleton-shimmer: skeleton-shimmer 1.5s linear infinite;
   --animate-sync-pulse: sync-pulse 1.2s ease-in-out infinite;
+  --animate-sync-ripple: sync-ripple 1.8s ease-out infinite;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -204,6 +208,23 @@
     }
     50% {
       opacity: 0.5;
+    }
+  }
+
+  /* Radar-ping expansion: a ring starts at its drawn size (scale 1) with
+     opacity 0.9, expands outward, fades to transparent. Restarts every
+     cycle. Used on the outer <circle> of the SyncingDot composition.
+     Requires the consuming element to set transform-origin + transform-box
+     so the scale pivots around the ring's centre — see card.tsx
+     SyncingDot. */
+  @keyframes sync-ripple {
+    0% {
+      transform: scale(1);
+      opacity: 0.9;
+    }
+    100% {
+      transform: scale(2.4);
+      opacity: 0;
     }
   }
 }

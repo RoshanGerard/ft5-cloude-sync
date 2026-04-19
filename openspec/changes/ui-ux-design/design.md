@@ -184,7 +184,8 @@ Each concrete provider is one entry in a frozen `providers` registry in `package
 | DropdownMenu content | fade + 4px Y slide | 120ms | ease-out |
 | Tooltip content | fade | 100ms | ease-out |
 | Card border (hover) | `border-border` → `border-border/80` | 80ms | ease-out |
-| Status badge dot — `syncing` | opacity pulse 0.5 ↔ 1.0 | 1.2s infinite | ease-in-out |
+| Status badge dot — `syncing` (inner solid dot) | opacity pulse 0.5 ↔ 1.0 | 1.2s infinite | ease-in-out |
+| Status badge dot — `syncing` (outer ring, review-round-3) | radar ripple: scale 1 → 2.4, opacity 0.9 → 0 | 1.8s infinite | ease-out |
 | Skeleton | horizontal shimmer | 1.5s infinite | linear |
 | Toast (open/close) | fade + 4px Y slide | 150ms / 100ms | ease-out / ease-in |
 

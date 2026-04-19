@@ -204,25 +204,53 @@ function statusBadgeVariant(
   }
 }
 
-// Syncing dot rendered as an SVG <circle>. We can't use a fully-rounded
-// Tailwind utility on a <span> because the radii-ceiling guardrail caps
-// feature code at rounded-md. SVG gives us the circle geometry without
-// touching the Tailwind radius scale. The motion-safe: variant of
-// animate-sync-pulse means the pulse kicks in only when the OS preference is
-// not "reduce".
+// Syncing dot — radar-ping composition: a static solid dot with an outer
+// ring that expands outward + fades to zero, restarting every cycle.
+// Round-3 user feedback: the opacity-only pulse wasn't "decent" enough;
+// this adds a visible expanding-ring cue that reads as "actively working"
+// without being aggressive (no rotation, no scale on the dot itself).
+//
+// SVG geometry over a Tailwind radius utility — the radii-ceiling
+// guardrail caps feature code at rounded-md, so the circle has to come
+// from an SVG primitive rather than a Tailwind radius class.
+//
+// Motion:
+//   - the inner solid dot keeps `motion-safe:animate-sync-pulse` (gentle
+//     opacity breathing);
+//   - the outer ring uses `motion-safe:animate-sync-ripple` (expanding
+//     scale + fade-out), needing `transform-origin: center` +
+//     `transform-box: fill-box` so the scale transform pivots around
+//     the ring's centre inside the SVG coordinate system.
+// Both animations are gated by `motion-safe:` so `prefers-reduced-motion:
+// reduce` users see a static, non-animating dot (no ring motion).
 function SyncingDot() {
   return (
     <svg
       data-testid="datasource-syncing-dot"
-      viewBox="0 0 8 8"
+      viewBox="0 0 10 10"
       role="presentation"
       aria-hidden
-      className={cn(
-        "size-2 shrink-0 fill-current",
-        "motion-safe:animate-sync-pulse",
-      )}
+      className={cn("size-2.5 shrink-0 fill-current")}
     >
-      <circle cx="4" cy="4" r="3" />
+      {/* Expanding ring — radar-ping. Pivot around centre via fill-box. */}
+      <circle
+        cx="5"
+        cy="5"
+        r="2.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1"
+        className={cn("motion-safe:animate-sync-ripple")}
+        style={{ transformOrigin: "center", transformBox: "fill-box" }}
+      />
+      {/* Solid dot with the existing gentle pulse breathing. */}
+      <circle
+        cx="5"
+        cy="5"
+        r="2"
+        className={cn("motion-safe:animate-sync-pulse")}
+        style={{ transformOrigin: "center", transformBox: "fill-box" }}
+      />
     </svg>
   );
 }
