@@ -31,25 +31,34 @@
 }
 
 .dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.208 0.042 265.755);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.208 0.042 265.755);
-  --popover-foreground: oklch(0.984 0.003 247.858);
+  /* Decision 13 (review-round-1): warm near-black neutrals. Lightness stays
+     in the 0.10–0.20 range; hue ~50 (warm/brown) with low chroma (~0.010)
+     reads as "considered dark" rather than the previous slate-blue. --primary
+     / --primary-foreground / --destructive / --destructive-foreground are
+     intentionally left at their pre-refinement values — Decision 13 says the
+     accent tokens stay unchanged so CTAs and destructive surfaces read
+     identically across themes. --border stays at the transparent-white
+     idiom (same formula as before) because a warm-tinted border would read
+     as a coloured hairline, not a neutral separator. */
+  --background: oklch(0.110 0.010 50);
+  --foreground: oklch(0.950 0.006 50);
+  --card: oklch(0.145 0.010 50);
+  --card-foreground: oklch(0.950 0.006 50);
+  --popover: oklch(0.150 0.010 50);
+  --popover-foreground: oklch(0.950 0.006 50);
   --primary: oklch(0.929 0.013 255.508);
   --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.279 0.041 260.031);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.279 0.041 260.031);
-  --accent-foreground: oklch(0.984 0.003 247.858);
+  --secondary: oklch(0.220 0.010 50);
+  --secondary-foreground: oklch(0.950 0.006 50);
+  --muted: oklch(0.200 0.010 50);
+  --muted-foreground: oklch(0.680 0.010 50);
+  --accent: oklch(0.220 0.010 50);
+  --accent-foreground: oklch(0.950 0.006 50);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: oklch(0.984 0.003 247.858);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.551 0.027 264.364);
+  --ring: oklch(0.560 0.010 50);
   --radius: 0.5rem;
 }
 

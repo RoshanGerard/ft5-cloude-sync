@@ -234,6 +234,100 @@ The illustration is fetched inline (no HTTP, no external request) and respects t
 - *Heavy illustration (photorealistic, full-colour).* Rejected: fights the dense-quiet intent and feels marketing-page-ish, not product-chrome-ish.
 - *Just a large `lucide-react` icon.* Rejected: the empty state is the one place to invest a small amount of bespoke visual effort; a 48px icon feels dismissive.
 
+### Decision 13: Warm near-black dark theme (asymmetric palette, review-round-1)
+
+**Chosen:** Keep the light theme on shadcn's `slate` base (cool neutrals, as per Decision 8). For the dark theme, override the neutral tokens with warm near-black values — `oklch` lightness in the `0.10`–`0.16` range, hue around `50` (warm/brown) with low chroma (`~0.010`). `--primary` accent stays unchanged across both themes so CTAs read identically. Only the `.dark` block in `globals.css` is rewritten; `:root` (light) is untouched.
+
+Concrete token adjustments in the `.dark` block (other dark tokens follow the same warm-hue shift):
+
+| Token | Original (slate-blue) | New (warm near-black) |
+|-------|-----------------------|----------------------|
+| `--background` | `oklch(0.129 0.042 264.695)` | `oklch(0.110 0.010 50)` |
+| `--foreground` | `oklch(0.984 0.003 247.858)` | `oklch(0.950 0.006 50)` |
+| `--card` | `oklch(0.208 0.042 265.755)` | `oklch(0.145 0.010 50)` |
+| `--popover` | `oklch(0.208 0.042 265.755)` | `oklch(0.150 0.010 50)` |
+| `--muted` | `oklch(0.279 0.041 260.031)` | `oklch(0.200 0.010 50)` |
+| `--border` | `oklch(1 0 0 / 10%)` | `oklch(1 0 0 / 10%)` (unchanged) |
+
+**Rationale:**
+- User review of the live app (review-round-1) flagged the dark theme as reading "very dark blue" — a tone mismatch with the "timeless / considered" feel the Linear/Vercel flavour targets.
+- Warm near-black neutrals are a well-known alternative reading in the dense-quiet family (compare Linear's default dark vs. Arc's warm dark vs. Notion's dark). It stays compatible with restraint; the hue shift is subtle enough that functional status colours (green/amber/red) remain readable.
+- Keeping light on slate preserves existing visual coherence for contributors already familiar with the current light theme and avoids a second palette migration.
+- `--primary` accent stays unchanged — primary CTAs must read identically across themes so users don't re-learn the accent color per mode.
+
+**Alternatives considered:**
+- *Symmetric palette (both themes warmed).* Rejected: user specified only the dark theme feels wrong; light on slate-cool is unchanged requirement. Symmetric would be unnecessary scope creep.
+- *Switch shadcn base from `slate` to `stone` entirely.* Rejected: `stone` is warm but not near-black enough in its canonical dark values; the user asked for "very dark brown almost near black" which is warmer + darker than shadcn's stone defaults.
+
+### Decision 14: App chrome — persistent header + footer around page content
+
+**Chosen:** Wrap the renderer in a three-layer shell: `<AppHeader />` + `<main>` (page content) + `<AppFooter />`.
+
+- **Header:** 48px tall, `border-b border-border`, full width. Left side: logo SVG + `FT5 Unified Cloud Sync` wordmark. Right side: `<ThemeSwitcher />` (moved from dashboard toolbar). The header is mounted once in `app/layout.tsx` and persists across any future routes.
+- **Footer:** single line, `border-t border-border`, full width. Center-aligned: `© <currentYear> Forti5 Tech. All rights reserved.` `text-xs text-muted-foreground`. Year is `new Date().getFullYear()` so copyright notices don't rot.
+- **Dashboard toolbar simplification:** with ThemeSwitcher lifted to the header, the dashboard's inner toolbar becomes just `Datasources` heading + `[+ Add datasource]` primary CTA. Cleaner separation between app-level chrome and page-level actions.
+
+The window's existing `minWidth: 1024` (from Decision 8 risks) still holds; header + footer add ~88px of chrome but the card grid still has >80% of the vertical space.
+
+**Rationale:**
+- User review explicitly requested both header (with logo + product name) and footer (with copyright). The request is branding-first — the app should feel owned, not generic.
+- Moving the ThemeSwitcher to the header separates "app settings" (theme) from "page actions" (add datasource). This is a cleaner mental model and matches Linear/Vercel conventions.
+- `FT5 Unified Cloud Sync` is the **product name** used in the UI. The OS-level window title (`ft5-cloude-sync`) and installer name (`FT5 Cloude Sync`) are NOT changed in this decision — if the user wants those updated too, that's a separate change.
+
+**Alternatives considered:**
+- *Keep ThemeSwitcher in the dashboard toolbar, add header for branding only.* Rejected: redundant chrome density; two toolbars competing for the user's eye.
+- *Put theme + add-datasource both in the header.* Rejected: app-wide controls and page-specific actions don't belong at the same level. Add Datasource is page-scoped.
+
+### Decision 15: Primary-action glyphs — icon + label for every primary CTA
+
+**Chosen:** Every primary call-to-action button renders a `lucide-react` icon before its label, at 16px, with `mr-1.5` gap. Applies to: "Add datasource" (`plus`), quick-action menu items (Sync now → `refresh-cw`, Pause → `pause`, Resume → `play`, Upload from local → `upload`, Settings → `settings`, Remove → `trash-2`). Icons go through the `Icon` adapter (Decision 4 for the theme switcher extended for these names).
+
+The `IconName` type union expands to include: `"plus" | "refresh-cw" | "pause" | "play" | "upload" | "settings" | "trash-2"` on top of the existing provider/theme names.
+
+**Rationale:**
+- User review found text-only primary CTAs "needed a convincing glyph." Icon + label increases scannability and matches the Linear/Vercel convention of iconic primary buttons.
+- Doing this for every primary surface (toolbar CTA + all quick-action menu items) keeps the convention consistent; mixed iconic/non-iconic CTAs would feel inconsistent.
+- Icons are semantic (`plus` for add, `trash-2` for remove) — they're redundant-with-label, not replacing-label. A11y unchanged (labels still read by screen readers; icons `aria-hidden`).
+
+**Alternatives considered:**
+- *Icon-only buttons (no label).* Rejected: hurts discoverability. Labels stay.
+- *Icon-on-hover reveals.* Rejected: adds motion to a surface we're keeping quiet. Icons ship statically.
+
+### Decision 16: Ambient geometric watermark on the dashboard canvas
+
+**Chosen:** A single SVG tile pattern applied as `background-image` on the `<main>` surface of the dashboard (NOT on the header, NOT on the footer, NOT on cards). The pattern is a faint geometric lattice — a rotated grid of small dots or a diamond weave, ~24px tile size — rendered at `opacity: 0.08–0.10` (subtle-visible per user review-round-1, Q2=B).
+
+Implementation: SVG pattern defined inline as a data URL in `globals.css`, referenced via a custom CSS variable (`--watermark-image`) so it can be theme-aware (different stroke colour per theme via `currentColor` resolution, or separate light/dark SVG URLs if `currentColor` doesn't cascade through `background-image`).
+
+The watermark is static. It does NOT animate, scroll-parallax, or respond to pointer — that would violate Decision 10's motion budget.
+
+**Rationale:**
+- User review asked for "some sort of texture or watermark spread across the background … something like geometric symmetry" and specified "subtle but visible (≈8–12% opacity, branded but quiet)."
+- At the chosen opacity, the watermark is *felt, not seen*: users notice the surface has presence without the pattern drawing attention. This matches Linear's faint-grid-in-empty-states convention and Raycast's subtle-noise canvas.
+- Confining the watermark to the dashboard's main surface keeps the app header/footer and cards clean — the pattern is a canvas accent, not everywhere decoration.
+
+**Alternatives considered:**
+- *Visible-but-branded logo watermark (opacity 0.15+).* Rejected: crosses from "felt" into "decoration," fights Decision 8's quiet tone.
+- *Skip the watermark.* Rejected: user explicitly requested it, and it's a cheap way to make the dashboard feel considered instead of default-Tailwind.
+- *Animate the watermark (subtle drift).* Rejected: violates Decision 10's motion budget whitelist.
+
+## Visual direction
+
+_Approved 2026-04-19 (review-round-1). This section is the source of truth consulted during implementation. Any deviation requires going back to brainstorming, not forward — per CLAUDE.md "UI/UX work" section._
+
+- **Aesthetic:** Linear/Vercel dense-quiet, refined with a warm near-black dark theme and a subtle ambient watermark. Dense by default (high info yield), quiet by discipline (no ambient motion, glass only on overlays).
+- **Typography:** Geist Sans (UI) + Geist Mono (code/monospace). Body `text-sm` (14px), section headings `text-base`/`text-lg`. `tabular-nums` on every numeric dashboard field.
+- **Palette — light theme:** shadcn "new-york" + "slate" base. Cool neutrals, slate blacks. Single `--primary` accent for CTAs and sync-active indicators.
+- **Palette — dark theme:** **asymmetric** from light — warm near-black neutrals (oklch lightness 0.10–0.16, hue ~50 warm, low chroma). `--primary` unchanged from light. See Decision 13 for exact token values.
+- **Spacing:** `p-4` cards, `gap-3` dashboard grid, 48px chrome bars (header + toolbar). Radii ceiling `rounded-md` (6px) except Dialog content (`rounded-lg`, 8px).
+- **Motion budget:** CSS-only, exhaustive whitelist (Decision 10): dialog/menu/tooltip open-close, sync-pulse, skeleton-shimmer, hover borders. `prefers-reduced-motion` respected globally.
+- **Depth:** base surfaces flat. Hairline borders for separation. Glass (`backdrop-blur-md`/`backdrop-blur-sm`) only on Dialog / DropdownMenu / Tooltip overlays.
+- **App chrome:** persistent header with logo + `FT5 Unified Cloud Sync` wordmark + ThemeSwitcher. Persistent footer with `© <year> Forti5 Tech. All rights reserved.` Page content sits between.
+- **Iconography:** `lucide-react` via the `Icon` adapter. Every primary CTA is icon+label. 16px icons in card bodies and CTAs; 18px in chrome.
+- **Ambient layer:** a single geometric SVG tile pattern at ~10% opacity across the dashboard canvas (not chrome, not cards). Theme-aware. Static.
+- **Status colour language:** green (connected), amber (syncing), zinc (paused), red (error). Only used in status pills + error surfaces, never as large-area fills.
+- **Accessibility:** WCAG 2.2 non-text contrast on focus rings and interactive states. Keyboard-first: every action reachable without a pointer. Icon+label (not icon-only) on all primary CTAs.
+
 ## Risks / Trade-offs
 
 - **Tailwind's build output scales with class usage.** For an Electron app the bundle-size pressure is low, but we should keep an eye on the renderer's exported CSS size (target: <80 KB gzipped) as primitives grow. If it balloons, we move to Tailwind's JIT purge mode (default in v4 anyway) or per-component CSS.
