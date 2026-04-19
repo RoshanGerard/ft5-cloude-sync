@@ -27,9 +27,9 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 3 — View modes and icon mapping
 
-- [ ] 3.1 Write failing test for `features/file-explorer/icons.ts` — covers every `MimeFamily` value plus `directory` `EntryKind`, returns the documented lucide icon names.
-- [ ] 3.2 Implement `features/file-explorer/icons.ts` consumed through the existing `Icon` adapter. Add any missing names to the `IconName` union and wire them to the lucide imports.
-- [ ] 3.3 Write a failing guardrail test asserting no file under `features/file-explorer/` contains an expression like `name.split('.').pop()` or similar extension-parsing for icon selection.
+- [x] 3.1 Write failing test for `features/file-explorer/icons.ts` — covers every `MimeFamily` value plus `directory` `EntryKind`, returns the documented lucide icon names.
+- [x] 3.2 Implement `features/file-explorer/icons.ts` consumed through the existing `Icon` adapter. Add any missing names to the `IconName` union and wire them to the lucide imports.
+- [x] 3.3 Write a failing guardrail test asserting no file under `features/file-explorer/` contains an expression like `name.split('.').pop()` or similar extension-parsing for icon selection.
 - [ ] 3.4 Write failing test for `features/file-explorer/view-modes/details.tsx` — renders columns (icon, name, type, size, modified), sorts on column header click, renders `tabular-nums` for size and modified, handles empty directories.
 - [ ] 3.5 Implement `view-modes/details.tsx`. This is the default mode, so it also gets the happy-path tests for selection, keyboard nav, and sort wiring; subsequent modes reuse the shared selection/keyboard hooks.
 - [ ] 3.6 Write failing test for `view-modes/list.tsx` — single-column compact flow, icon + name only.

@@ -23,6 +23,15 @@ import {
   CloudIcon,
   DatabaseIcon,
   DropletsIcon,
+  FileArchiveIcon,
+  FileAudioIcon,
+  FileCodeIcon,
+  FileIcon,
+  FileImageIcon,
+  FileTextIcon,
+  FileVideoIcon,
+  FolderIcon,
+  FolderOpenIcon,
   FolderSyncIcon,
   HardDriveIcon,
   HomeIcon,
@@ -73,6 +82,22 @@ export type IconName =
   | "chevron-right"
   | "arrow-up"
   | "home"
+  // ui-file-explorer (Phase 3, design.md Decision 8): file/folder family
+  // glyphs. `iconForEntry` in features/file-explorer/icons.ts is the single
+  // place that maps (kind, mimeFamily) → one of these names; feature code
+  // never names a lucide icon directly.
+  //
+  // Lucide 1.8.0 exports all nine under the expected *Icon suffix — no
+  // rename substitutions were required.
+  | "folder"
+  | "folder-open"
+  | "file"
+  | "file-image"
+  | "file-video"
+  | "file-audio"
+  | "file-text"
+  | "file-archive"
+  | "file-code"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -95,6 +120,15 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "chevron-right": ChevronRightIcon,
   "arrow-up": ArrowUpIcon,
   home: HomeIcon,
+  folder: FolderIcon,
+  "folder-open": FolderOpenIcon,
+  file: FileIcon,
+  "file-image": FileImageIcon,
+  "file-video": FileVideoIcon,
+  "file-audio": FileAudioIcon,
+  "file-text": FileTextIcon,
+  "file-archive": FileArchiveIcon,
+  "file-code": FileCodeIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a
