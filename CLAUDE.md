@@ -12,6 +12,16 @@
 3. During `/opsx:apply`, the rules in the "Coding discipline" section below are MANDATORY.
 4. Before `/opsx:archive`: verify every task in `tasks.md` is checked off, the full test suite (not just new tests) passes, and the feature has been exercised against a running system. Archive in the worktree branch *before* merging. Never merge an unarchived change.
 
+## UI/UX work (when the change involves visible interface)
+
+- During `/opsx:propose` or `brainstorming`, if the proposal includes visible UI changes, OFFER the Visual Companion once before presenting text-only alternatives. Offer per the `brainstorming` skill's protocol — as its own message, not combined with other questions.
+- For each subsequent brainstorming question, decide per-question: visual question → browser mockup, conceptual question → terminal. Do not force every question through the browser.
+- Before moving from `brainstorming` to `writing-plans`, the user must have APPROVED a specific visual direction (layout, type, color, component style) via the companion or in text. Vague approvals like "yeah that's fine" are not sufficient — ask again.
+- For actual frontend code generation, rely on the `frontend-design` skill. If it did not auto-trigger, invoke it explicitly. Avoid generic defaults: no Inter/Roboto/Arial for display type, no purple-gradient-on-white by default, no cookie-cutter grid-of-cards layouts unless that is an explicit decision.
+- Record the approved visual direction in `design.md` under a `## Visual direction` section: aesthetic tone, type choices, color palette, spacing system, motion approach. This is what the implementation phase consults — not the chat history.
+- During `/opsx:apply`, any deviation from the approved visual direction in `design.md` requires going back to brainstorming, not forward.
+- Accessibility is non-negotiable: semantic HTML, keyboard navigation, ARIA only when semantics aren't enough, color contrast at WCAG AA minimum. Flag any deviation in `design.md` before implementation.
+
 ## Coding discipline (enforced during /opsx:apply and all direct coding)
 
 - YOU MUST use Superpowers' `test-driven-development` skill. Write a failing test first, watch it fail, then write the minimum code to make it pass. Code written before a failing test exists must be deleted and rewritten.
