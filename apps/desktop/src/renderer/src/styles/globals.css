@@ -28,6 +28,13 @@
   --input: oklch(0.929 0.013 255.508);
   --ring: oklch(0.704 0.04 256.788);
   --radius: 0.5rem;
+
+  /* Decision 14 (review-round-1): Forti5 brand primary. Theme-invariant —
+     the same vibrant crimson reads on both light and dark chrome. Used by
+     the <Forti5Logo> chevrons; consumed as `fill="var(--brand-primary)"`
+     inside the SVG (feature code cannot emit an oklch() literal itself
+     per the literals-ban guardrail). */
+  --brand-primary: oklch(0.585 0.220 27);
 }
 
 .dark {
@@ -60,6 +67,13 @@
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.560 0.010 50);
   --radius: 0.5rem;
+
+  /* Theme-invariant brand primary — same value as :root (Decision 14). The
+     crimson reads well on both the slate-light and warm-near-black dark
+     backgrounds, so no theme-specific override is needed. Declared in both
+     blocks only so a future refinement can diverge the two without a
+     cascade footgun. */
+  --brand-primary: oklch(0.585 0.220 27);
 }
 
 @theme inline {

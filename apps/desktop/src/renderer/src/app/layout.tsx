@@ -4,6 +4,8 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 
 import "../styles/globals.css";
+import { AppFooter } from "../components/app-footer";
+import { AppHeader } from "../components/app-header";
 import { THEME_BOOTSTRAP_SCRIPT } from "../features/theme/theme-script";
 
 export const metadata: Metadata = {
@@ -34,7 +36,20 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             there is no FOUC on cold start. See features/theme/theme-script.ts. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
       </head>
-      <body>{children}</body>
+      {/* Three-layer shell (Decision 14): persistent AppHeader + AppFooter
+          around the routed <main>. `min-h-dvh flex flex-col` on <body> makes
+          the <main> slot fill the remaining viewport between chrome bars;
+          `flex-1 min-h-0` on <main> lets inner scroll surfaces size against
+          the remaining space rather than overflowing the body.
+
+          Note: the dashboard used to render its own <main>; the dashboard
+          refactor in this decision swaps that root for a <div> so we don't
+          end up with nested <main> elements (invalid HTML + a11y regression). */}
+      <body className="min-h-dvh flex flex-col">
+        <AppHeader />
+        <main className="flex-1 min-h-0">{children}</main>
+        <AppFooter />
+      </body>
     </html>
   );
 }

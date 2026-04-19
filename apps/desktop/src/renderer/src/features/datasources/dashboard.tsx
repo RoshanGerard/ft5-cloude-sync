@@ -12,13 +12,15 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card } from "@/components/ui/card";
 
-import { ThemeSwitcher } from "@/features/theme/theme-switcher";
-
 import { AddDatasourceDialog } from "./add-dialog";
 import { DatasourceCard } from "./card";
 import { EmptyDatasourcesIllustration } from "./illustrations/empty-datasources";
 import { useDatasourceActions, useDatasources } from "./store";
 
+// Decision 14 (review-round-1): the ThemeSwitcher was lifted out of this
+// toolbar and into <AppHeader /> so app-level settings (theme) live in the
+// global chrome while page-level actions (add datasource) stay on the page.
+// The toolbar is now a pure page-actions surface.
 export function DatasourcesToolbar({
   onAddDatasourceClick,
   triggerRef,
@@ -29,17 +31,14 @@ export function DatasourcesToolbar({
   return (
     <div className="flex items-center justify-between gap-3 border-b border-border p-4">
       <h1 className="text-base font-semibold">Datasources</h1>
-      <div className="flex items-center gap-2">
-        <Button
-          ref={triggerRef}
-          size="sm"
-          onClick={onAddDatasourceClick}
-          data-testid="add-datasource-trigger"
-        >
-          Add datasource
-        </Button>
-        <ThemeSwitcher />
-      </div>
+      <Button
+        ref={triggerRef}
+        size="sm"
+        onClick={onAddDatasourceClick}
+        data-testid="add-datasource-trigger"
+      >
+        Add datasource
+      </Button>
     </div>
   );
 }
@@ -188,7 +187,15 @@ export function DatasourcesDashboard() {
       : toolbarTriggerRef.current;
 
   return (
-    <main className="flex min-h-dvh flex-col">
+    // Decision 14 (review-round-1): the outer <main> is now mounted in
+    // RootLayout. Switching this root from <main> to <div> avoids nesting
+    // two <main> landmarks (invalid HTML + a11y regression). `flex h-full
+    // flex-col` keeps the previous behaviour of the dashboard filling the
+    // height of its slot.
+    <div
+      data-testid="datasources-dashboard-root"
+      className="flex h-full flex-col"
+    >
       <DatasourcesToolbar
         onAddDatasourceClick={onAddDatasourceClick}
         triggerRef={toolbarTriggerRef}
@@ -199,6 +206,6 @@ export function DatasourcesDashboard() {
         onOpenChange={setAddDialogOpen}
         returnFocusTo={returnFocusTo}
       />
-    </main>
+    </div>
   );
 }
