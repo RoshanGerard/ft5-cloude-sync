@@ -37,12 +37,16 @@ import { seedEntry } from "../apps/desktop/src/renderer/src/features/file-explor
  */
 
 // Observed locally on dev host: DetailsView @ 300 entries renders in
-// 150–180 ms in jsdom. A 500 ms default ceiling gives CI ~3x headroom —
-// enough to absorb cold-cache runs and slower shared runners without
-// losing the ability to catch an accidental O(N) per-row hook (which
-// would typically balloon the render into the seconds range). Raise via
-// FT5_RENDER_BUDGET_MS if the CI baseline genuinely shifts.
-const DEFAULT_BUDGET_MS = 500;
+// 150–200 ms in jsdom on the dev host (varies with system load). A
+// 350 ms default ceiling catches a realistic 2x per-row regression
+// (e.g. a naive per-row hook that doubles cost) while leaving ~75%
+// headroom for CI cold-cache runs. Previously 500 ms — reviewer
+// flagged that as too loose to catch 2x regressions. Tightened here.
+// design.md Decision 10 quotes "50 ms" which is the *real-browser
+// dev-host* budget, not jsdom; this 350 ms is the jsdom analogue.
+// CI environments with consistently-fast runners can tighten to 250
+// via FT5_RENDER_BUDGET_MS=250; slower shared runners can loosen.
+const DEFAULT_BUDGET_MS = 350;
 const FIXTURE_SIZE = 300;
 
 function readBudgetMs(): number {
