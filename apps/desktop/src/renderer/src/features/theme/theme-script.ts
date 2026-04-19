@@ -17,4 +17,10 @@
  *    the effective behaviour and the 4.4 theme test keeps the class
  *    name (`.dark`) canonical.
  */
-export const THEME_BOOTSTRAP_SCRIPT = `(function(){try{var k="ft5.theme";var v=null;try{v=window.localStorage.getItem(k)}catch(_){v=null}var d=document.documentElement;if(v==="dark"){d.classList.add("dark")}else if(v==="light"){d.classList.remove("dark")}else{var m=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)");if(m&&m.matches){d.classList.add("dark")}else{d.classList.remove("dark")}}}catch(_){}})();`
+// Review-round-3, Task 6b: extended to handle the "serene-blue" preference.
+// Every branch now explicitly resets BOTH the `.dark` class and the
+// `data-theme` attribute — otherwise a stored "serene-blue" followed by an
+// OS dark preference (after the user switches to System) would leave a
+// stale attribute. The state machine mirrors `applyEffectiveTheme()` in
+// theme-store.ts. ES5-safe: `var`, no arrow fns, no optional chaining.
+export const THEME_BOOTSTRAP_SCRIPT = `(function(){try{var k="ft5.theme";var v=null;try{v=window.localStorage.getItem(k)}catch(_){v=null}var d=document.documentElement;var eff;if(v==="dark"||v==="light"||v==="serene-blue"){eff=v}else{var m=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)");eff=(m&&m.matches)?"dark":"light"}if(eff==="dark"){d.classList.add("dark");d.removeAttribute("data-theme")}else if(eff==="serene-blue"){d.classList.remove("dark");d.setAttribute("data-theme","serene-blue")}else{d.classList.remove("dark");d.removeAttribute("data-theme")}}catch(_){}})();`

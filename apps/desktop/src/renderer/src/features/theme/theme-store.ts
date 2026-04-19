@@ -16,7 +16,11 @@ import { useSyncExternalStore } from "react"
  * browser-global state like localStorage + matchMedia.
  */
 
-export type ThemePreference = "light" | "dark" | "system"
+// Review-round-3, Task 6: "serene-blue" added as a third explicit theme.
+// System still resolves only to light|dark (never serene-blue); selecting
+// Serene Blue is an explicit override. CSS selector is the orthogonal
+// `data-theme="serene-blue"` attribute on <html>, not the `.dark` class.
+export type ThemePreference = "light" | "dark" | "serene-blue" | "system"
 
 export const THEME_STORAGE_KEY = "ft5.theme"
 
@@ -36,16 +40,16 @@ export function getStoredPreference(): ThemePreference {
   if (!isBrowser()) return "system"
   try {
     const raw = window.localStorage.getItem(THEME_STORAGE_KEY)
-    if (raw === "light" || raw === "dark") return raw
+    if (raw === "light" || raw === "dark" || raw === "serene-blue") return raw
     return "system"
   } catch {
     return "system"
   }
 }
 
-export function getEffectiveTheme(): "light" | "dark" {
+export function getEffectiveTheme(): "light" | "dark" | "serene-blue" {
   const pref = getStoredPreference()
-  if (pref === "light" || pref === "dark") return pref
+  if (pref === "light" || pref === "dark" || pref === "serene-blue") return pref
   if (!isBrowser()) return "light"
   try {
     return window.matchMedia(DARK_QUERY).matches ? "dark" : "light"
@@ -58,8 +62,22 @@ export function applyEffectiveTheme(): void {
   if (!isBrowser()) return
   const effective = getEffectiveTheme()
   const root = document.documentElement
-  if (effective === "dark") root.classList.add("dark")
-  else root.classList.remove("dark")
+  // Review-round-3, Task 6: always manage BOTH the `.dark` class and the
+  // `data-theme` attribute on every call. Selecting Serene Blue after Dark
+  // must strip `.dark`; selecting Dark after Serene Blue must strip
+  // `data-theme`. Branching only on the "add" side would leave stale
+  // state from the previous theme.
+  if (effective === "dark") {
+    root.classList.add("dark")
+    root.removeAttribute("data-theme")
+  } else if (effective === "serene-blue") {
+    root.classList.remove("dark")
+    root.setAttribute("data-theme", "serene-blue")
+  } else {
+    // "light"
+    root.classList.remove("dark")
+    root.removeAttribute("data-theme")
+  }
 }
 
 export function setPreference(pref: ThemePreference): void {

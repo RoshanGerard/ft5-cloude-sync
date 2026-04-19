@@ -113,7 +113,7 @@ Each concrete provider is one entry in a frozen `providers` registry in `package
 - *Redux Toolkit + RTK Query.* Rejected: overkill for the mutation surface this UI has.
 - *TanStack Query.* Rejected: its server-state model is for HTTP resources with caching/invalidation; here "the server" is the main process over IPC, which we already control end-to-end. The async layer is thin enough to handle with `useEffect` + local state.
 
-### Decision 6: Theme switcher ships with the dashboard (light / dark / system), backed by shadcn's `.dark` class toggle
+### Decision 6: Theme switcher ships with the dashboard (light / dark / system; Serene Blue added in review-round-3 — see Decision 18), backed by shadcn's `.dark` class toggle
 
 **Chosen:** A theme-switcher control in the dashboard toolbar (icon-button with a dropdown menu: Light / Dark / System). Selection writes to `localStorage['ft5.theme']`; on load, a small inlined script resolves the effective theme (explicit preference overrides `prefers-color-scheme`) and sets or clears `.dark` on `<html>` before first paint to avoid a flash of wrong theme (FOUC). The inline script is the only renderer-side script that runs ahead of the React tree; it has no external dependencies.
 
@@ -234,7 +234,7 @@ The illustration is fetched inline (no HTTP, no external request) and respects t
 - *Heavy illustration (photorealistic, full-colour).* Rejected: fights the dense-quiet intent and feels marketing-page-ish, not product-chrome-ish.
 - *Just a large `lucide-react` icon.* Rejected: the empty state is the one place to invest a small amount of bespoke visual effort; a 48px icon feels dismissive.
 
-### Decision 13: Warm near-black dark theme (asymmetric palette, review-round-1)
+### Decision 13: Warm near-black dark theme (asymmetric palette, review-round-1) — **REVERSED in review-round-3, see Decision 17**
 
 **Chosen:** Keep the light theme on shadcn's `slate` base (cool neutrals, as per Decision 8). For the dark theme, override the neutral tokens with warm near-black values — `oklch` lightness in the `0.10`–`0.16` range, hue around `50` (warm/brown) with low chroma (`~0.010`). `--primary` accent stays unchanged across both themes so CTAs read identically. Only the `.dark` block in `globals.css` is rewritten; `:root` (light) is untouched.
 
@@ -311,14 +311,80 @@ The watermark is static. It does NOT animate, scroll-parallax, or respond to poi
 - *Skip the watermark.* Rejected: user explicitly requested it, and it's a cheap way to make the dashboard feel considered instead of default-Tailwind.
 - *Animate the watermark (subtle drift).* Rejected: violates Decision 10's motion budget whitelist.
 
+### Decision 17: Dark theme reverted from warm to cool near-black with boosted card elevation (review-round-3)
+
+**Chosen:** Reverse Decision 13's warm-hue-50 experiment. The `.dark` block in `globals.css` returns to a cool hue (~265, cool slate) with low chroma (~0.025). Lightness gap between `--background` (0.110) and `--card` (0.175) widens to ~0.065 so cards read with visible elevation over the canvas.
+
+Concrete values (superseding Decision 13's warm palette):
+
+| Token | review-round-1 (warm) | review-round-3 (cool) |
+|-------|-----------------------|-----------------------|
+| `--background` | `oklch(0.110 0.010 50)` | `oklch(0.110 0.025 265)` |
+| `--foreground` | `oklch(0.950 0.006 50)` | `oklch(0.950 0.010 260)` |
+| `--card` | `oklch(0.145 0.010 50)` | `oklch(0.175 0.025 265)` |
+| `--popover` | `oklch(0.150 0.010 50)` | `oklch(0.180 0.025 265)` |
+| `--secondary` | `oklch(0.220 0.010 50)` | `oklch(0.240 0.025 265)` |
+| `--muted` | `oklch(0.200 0.010 50)` | `oklch(0.220 0.025 265)` |
+| `--accent` | `oklch(0.220 0.010 50)` | `oklch(0.240 0.025 265)` |
+| `--muted-foreground` | `oklch(0.680 0.010 50)` | `oklch(0.700 0.010 260)` |
+| `--ring` | `oklch(0.560 0.010 50)` | `oklch(0.560 0.025 265)` |
+
+`--primary`, `--primary-foreground`, `--destructive`, `--destructive-foreground`, `--border` are unchanged (accent + separator tokens stay identical across themes, per Decision 13's original constraint that survived).
+
+**Rationale:**
+- User live-review after Decision 13 shipped: the warm tone "should be cool" — the hue-50 experiment read as brown rather than "considered dark." Reverting to the cool-hue family lands the dark theme where the user actually wants it.
+- The round-1 card lightness of 0.145 gave only a 0.035 gap over the 0.110 background — cards "not very highlighting" per review-round-3. Raising `--card` to 0.175 (~0.065 gap) introduces a perceptible elevation step without overshooting into a two-surface palette.
+- This is strictly a dark-theme revision. `:root` (light) was never touched in round-1 or round-3 and stays on shadcn's cool-slate defaults.
+
+**Alternatives considered:**
+- *Keep the warm palette and deepen the card gap only.* Rejected: user complaint was specifically about hue, not only elevation. A hue-only revert would still feel warm.
+- *Pick a third hue (e.g. `stone`, `zinc`).* Rejected: `stone` reintroduces warmth the user explicitly walked back; `zinc` is nearly identical to shadcn's cool-slate defaults. The cool-slate hue ~265 is shadcn's own default dark palette family, minus a few percentage points of lightness for the "near-black" feel the user still wants.
+
+### Decision 18: Third theme — "Serene Blue" as an explicit light-mode alternative (review-round-3)
+
+**Chosen:** Add a third named theme ("Serene Blue") alongside Light and Dark. It's a light-mode alternative — a soft sky-blue base with navy text and pale blue accents — aimed at users who prefer a cool, calm canvas to the neutral-white light theme. The theme is keyed off a `data-theme="serene-blue"` attribute on `<html>`, orthogonal to the `.dark` class (the two never coexist). System-follow still resolves to Light or Dark via `prefers-color-scheme`; Serene Blue is always an explicit user choice, never inferred.
+
+Palette:
+
+```
+--background: oklch(0.975 0.015 230)   /* very pale blue (near-white, blue tint) */
+--foreground: oklch(0.280 0.050 230)   /* deep navy text */
+--card: oklch(1 0 0)                   /* pure white — card elevation on pale bg */
+--primary: oklch(0.208 0.042 264.695)  /* shadcn default light primary */
+--secondary / --muted / --accent: oklch(0.920–0.935 0.020–0.025 230)
+--border / --input: oklch(0.880 0.025 230)
+--ring: oklch(0.600 0.100 230)
+```
+
+`--brand-primary` (crimson) is theme-invariant and cascades from `:root` — not redeclared in the `[data-theme="serene-blue"]` block.
+
+**Wiring:**
+- **Storage:** `localStorage["ft5.theme"]` takes `"light" | "dark" | "serene-blue"` (any other value ⇒ System, which is represented by the absence of the key).
+- **Theme store:** `applyEffectiveTheme()` manages both the `.dark` class and the `data-theme` attribute on every call. Serene Blue adds the attribute and strips the class; Dark does the reverse; Light and System-resolved-to-light strip both.
+- **Pre-paint script:** `theme-script.ts` mirrors the same state machine. Every branch explicitly resets both the class and the attribute so a stale value from a previous session can't bleed into the new render.
+- **Sonner toaster:** Sonner's `theme` prop union is `"light" | "dark" | "system"`. Our wrapper (`components/ui/sonner.tsx`) translates `"serene-blue"` → `"light"` when forwarding. Toast chrome colours still inherit the correct palette through the CSS custom properties overridden by the `[data-theme="serene-blue"]` selector, so Sonner never needs to know the custom theme name.
+- **Theme switcher menu order:** Light / Dark / Serene Blue / System (4 items). Serene Blue gets the `droplets` lucide glyph (water / serenity).
+
+**Rationale:**
+- User request in review-round-3: "Let's include another Theme Serene Blue." The brief is explicit — a third named theme with a calm, water-themed visual identity.
+- `data-theme` (attribute) vs `.dark` (class) keeps the two orthogonal. A single attribute for any future named themes (e.g. a high-contrast accessibility theme) scales better than multiplying classes and fighting the cascade.
+- Soft blue + navy stays within shadcn's "slate palette" family so components don't need per-theme overrides — every shadcn primitive just reads `var(--primary)`, `var(--card)`, etc., and the `[data-theme="serene-blue"]` selector supplies fresh values.
+- Keeping `--brand-primary` (crimson) theme-invariant preserves the Forti5 brand signature across all three themes — the logo's centre chevron renders the same colour everywhere.
+
+**Alternatives considered:**
+- *Ship Serene Blue as a dark-mode variant (deep blue instead of pale blue).* Rejected: the user used "serene," which semantically points at the calm/pale end of blue rather than the moody/deep end. Cool dark is already covered by Decision 17.
+- *Make Serene Blue a pair (light + dark variants) rather than a single theme.* Rejected: scope creep. If users ask for a dark Serene Blue later that's a follow-up decision; shipping one variant is the minimum that satisfies the review-round-3 brief.
+- *Store the theme as `.theme-serene-blue` class on `<html>` to match the `.dark` idiom.* Rejected: `.dark` and Tailwind's custom-variant (`@custom-variant dark`) are coupled; introducing a second class at the same level risks specificity collisions. A separate attribute is cleanly orthogonal and the `:root` tokens still cascade unless the attribute selector overrides them.
+
 ## Visual direction
 
 _Approved 2026-04-19 (review-round-1). This section is the source of truth consulted during implementation. Any deviation requires going back to brainstorming, not forward — per CLAUDE.md "UI/UX work" section._
 
-- **Aesthetic:** Linear/Vercel dense-quiet, refined with a warm near-black dark theme and a subtle ambient watermark. Dense by default (high info yield), quiet by discipline (no ambient motion, glass only on overlays).
+- **Aesthetic:** Linear/Vercel dense-quiet, refined with a cool near-black dark theme (review-round-3 reversal), an optional Serene Blue light-alternative, and a subtle ambient hex-network background. Dense by default (high info yield), quiet by discipline (no ambient motion, glass only on overlays).
 - **Typography:** Geist Sans (UI) + Geist Mono (code/monospace). Body `text-sm` (14px), section headings `text-base`/`text-lg`. `tabular-nums` on every numeric dashboard field.
 - **Palette — light theme:** shadcn "new-york" + "slate" base. Cool neutrals, slate blacks. Single `--primary` accent for CTAs and sync-active indicators.
-- **Palette — dark theme:** **asymmetric** from light — warm near-black neutrals (oklch lightness 0.10–0.16, hue ~50 warm, low chroma). `--primary` unchanged from light. See Decision 13 for exact token values.
+- **Palette — dark theme:** cool near-black neutrals (oklch lightness 0.110 bg / 0.175 card, hue ~265 cool slate, low chroma). `--primary` unchanged from light. See Decision 17 for exact token values (supersedes the round-1 warm palette in Decision 13).
+- **Palette — Serene Blue (optional, light-mode alternative):** pale sky-blue canvas (oklch `0.975 0.015 230`), pure-white cards, deep navy text (`0.280 0.050 230`). Explicit user choice — never resolved from System. See Decision 18.
 - **Spacing:** `p-4` cards, `gap-3` dashboard grid, 48px chrome bars (header + toolbar). Radii ceiling `rounded-md` (6px) except Dialog content (`rounded-lg`, 8px).
 - **Motion budget:** CSS-only, exhaustive whitelist (Decision 10): dialog/menu/tooltip open-close, sync-pulse, skeleton-shimmer, hover borders. `prefers-reduced-motion` respected globally.
 - **Depth:** base surfaces flat. Hairline borders for separation. Glass (`backdrop-blur-md`/`backdrop-blur-sm`) only on Dialog / DropdownMenu / Tooltip overlays.

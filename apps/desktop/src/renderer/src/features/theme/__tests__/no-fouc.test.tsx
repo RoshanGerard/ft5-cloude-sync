@@ -36,39 +36,70 @@ describe("THEME_BOOTSTRAP_SCRIPT (no-FOUC pre-paint)", () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.classList.remove("dark");
+    document.documentElement.removeAttribute("data-theme");
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.clear();
     document.documentElement.classList.remove("dark");
+    document.documentElement.removeAttribute("data-theme");
   });
 
-  it("applies `.dark` when preference is 'dark'", () => {
+  it("applies `.dark` (and no data-theme) when preference is 'dark'", () => {
+    // Simulate stale serene-blue attribute from a prior session — the
+    // bootstrap script must strip it (review-round-3, Task 6b: every branch
+    // resets both the class and the attribute).
+    document.documentElement.setAttribute("data-theme", "serene-blue");
     localStorage.setItem(THEME_STORAGE_KEY, "dark");
     stubMatchMedia(false);
     runBootstrap();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
   });
 
-  it("does NOT apply `.dark` when preference is 'light'", () => {
+  it("does NOT apply `.dark` (and no data-theme) when preference is 'light'", () => {
     document.documentElement.classList.add("dark"); // simulate stale state
+    document.documentElement.setAttribute("data-theme", "serene-blue");
     localStorage.setItem(THEME_STORAGE_KEY, "light");
     stubMatchMedia(true); // even if OS prefers dark, explicit light wins
     runBootstrap();
     expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
   });
 
   it("falls back to matchMedia when no preference is stored (dark OS)", () => {
     stubMatchMedia(true);
     runBootstrap();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
   });
 
   it("falls back to matchMedia when no preference is stored (light OS)", () => {
     document.documentElement.classList.add("dark"); // simulate stale state
     stubMatchMedia(false);
     runBootstrap();
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+  });
+
+  it("applies data-theme='serene-blue' (and removes `.dark`) when preference is 'serene-blue'", () => {
+    // Review-round-3, Task 6b: Serene Blue is an explicit light-mode
+    // alternative — the pre-paint script must set the attribute and
+    // strip any stale `.dark` class before React mounts.
+    document.documentElement.classList.add("dark"); // simulate stale state
+    localStorage.setItem(THEME_STORAGE_KEY, "serene-blue");
+    stubMatchMedia(true); // even if OS prefers dark, explicit serene-blue wins
+    runBootstrap();
+    expect(document.documentElement.getAttribute("data-theme")).toBe("serene-blue");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  it("serene-blue preference wins over OS light preference too (explicit override)", () => {
+    localStorage.setItem(THEME_STORAGE_KEY, "serene-blue");
+    stubMatchMedia(false);
+    runBootstrap();
+    expect(document.documentElement.getAttribute("data-theme")).toBe("serene-blue");
     expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
 });
