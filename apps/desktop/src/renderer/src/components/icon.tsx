@@ -18,8 +18,10 @@
 
 import {
   ArrowUpIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   CloudIcon,
   DatabaseIcon,
   DropletsIcon,
@@ -80,6 +82,8 @@ export type IconName =
   // the datasource root.
   | "chevron-left"
   | "chevron-right"
+  | "chevron-up"
+  | "chevron-down"
   | "arrow-up"
   | "home"
   // ui-file-explorer (Phase 3, design.md Decision 8): file/folder family
@@ -118,6 +122,8 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   droplets: DropletsIcon,
   "chevron-left": ChevronLeftIcon,
   "chevron-right": ChevronRightIcon,
+  "chevron-up": ChevronUpIcon,
+  "chevron-down": ChevronDownIcon,
   "arrow-up": ArrowUpIcon,
   home: HomeIcon,
   folder: FolderIcon,
