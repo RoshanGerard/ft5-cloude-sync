@@ -71,6 +71,15 @@
      verified at the component level in tasks 5.1 / 5.4. */
   --text-base: 0.875rem;
 
+  /* Motion (design.md Decision 10 — CSS-only motion whitelist): only two
+     animation utilities exist in feature code. `animate-sync-pulse` drives
+     the status dot while a datasource is syncing; `animate-skeleton-shimmer`
+     drives the loading-placeholder sweep. The @keyframes themselves are
+     gated behind `prefers-reduced-motion: no-preference` below so OS-level
+     reduce-motion users see the static state without any JS intervention. */
+  --animate-skeleton-shimmer: skeleton-shimmer 1.5s linear infinite;
+  --animate-sync-pulse: sync-pulse 1.2s ease-in-out infinite;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -103,5 +112,31 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+  }
+}
+
+/* Motion keyframes (design.md Decision 10). Gated behind
+   `prefers-reduced-motion: no-preference` so OS-level reduce-motion users
+   never see the animation declarations applied. shadcn primitives use the
+   `motion-safe:` Tailwind prefix for the same reason — see dialog.tsx,
+   dropdown-menu.tsx. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes skeleton-shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  @keyframes sync-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
   }
 }
