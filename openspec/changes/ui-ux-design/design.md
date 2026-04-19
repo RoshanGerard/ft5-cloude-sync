@@ -189,7 +189,11 @@ Each concrete provider is one entry in a frozen `providers` registry in `package
 | Skeleton | horizontal shimmer | 1.5s infinite | linear |
 | Toast (open/close) | fade + 4px Y slide | 150ms / 100ms | ease-out / ease-in |
 
-All motion wraps inside `@media (prefers-reduced-motion: no-preference)` so that users with the OS reduced-motion preference see instant transitions (opacity switches at 0ms) with no shimmer, no pulse, no slide. The prefers-reduced-motion path is tested.
+Historically, all motion wrapped inside `@media (prefers-reduced-motion: no-preference)` so OS-level reduce-motion users saw instant transitions with no shimmer, no pulse, no slide. **Motion Safe phase amends this:** custom product animations (`animate-sync-pulse`, `animate-sync-ripple`, `animate-skeleton-shimmer`) now default to **always on**, and a user-facing **Motion Safe toggle** (Settings dialog) restores OS-respectful behaviour on demand. The three `@keyframes` live at top level in `globals.css`; when the user enables Motion Safe, `data-motion="safe"` is written on `<html>` and a CSS override (under `@media (prefers-reduced-motion: reduce)`) disables the three custom animations with `animation: none !important`.
+
+Rationale for the deviation from the pure a11y-first stance: user testing revealed that dev machines silently run with `prefers-reduced-motion: reduce` enabled (OS setting, often forgotten) — the syncing animation was invisible to developers without them realising why. Making motion opt-out rather than opt-into-OS fixes the silent-suppression trap while still giving users an explicit control to restore OS respect.
+
+**shadcn primitive motion is unaffected by the Motion Safe toggle.** Dialog fade/zoom, DropdownMenu slide, Tooltip fade all use Tailwind's `motion-safe:` variant gating — independent of `data-motion`. OS-level reduce-motion suppresses them as before. This keeps the two gating mechanisms orthogonal.
 
 No other surfaces animate. The cards themselves do not fade-in on mount, do not reorder with animation, do not have hover-lift/scale effects. This is the "Linear/Vercel minimal motion" restraint: motion signals *state change*, never ambience.
 
@@ -264,7 +268,7 @@ Concrete token adjustments in the `.dark` block (other dark tokens follow the sa
 
 **Chosen:** Wrap the renderer in a three-layer shell: `<AppHeader />` + `<main>` (page content) + `<AppFooter />`.
 
-- **Header:** 48px tall, `border-b border-border`, full width. Left side: logo SVG + `FT5 Unified Cloud Sync` wordmark. Right side: `<ThemeSwitcher />` (moved from dashboard toolbar). The header is mounted once in `app/layout.tsx` and persists across any future routes.
+- **Header:** 48px tall, `border-b border-border`, full width. Left side: logo SVG + `FT5 Unified Cloud Sync` wordmark. Right side (in DOM order, left-to-right): Settings icon button (opens SettingsDialog), then `<ThemeSwitcher />`. The header is mounted once in `app/layout.tsx` and persists across any future routes. Motion-Safe-toggle phase: the Settings button was added alongside the existing ThemeSwitcher. Both affordances share the ghost/icon variant — app-level preferences group visually.
 - **Footer:** single line, `border-t border-border`, full width. Center-aligned: `© <currentYear> Forti5 Tech. All rights reserved.` `text-xs text-muted-foreground`. Year is `new Date().getFullYear()` so copyright notices don't rot.
 - **Dashboard toolbar simplification:** with ThemeSwitcher lifted to the header, the dashboard's inner toolbar becomes just `Datasources` heading + `[+ Add datasource]` primary CTA. Cleaner separation between app-level chrome and page-level actions.
 
@@ -377,6 +381,24 @@ Palette:
 - *Make Serene Blue a pair (light + dark variants) rather than a single theme.* Rejected: scope creep. If users ask for a dark Serene Blue later that's a follow-up decision; shipping one variant is the minimum that satisfies the review-round-3 brief.
 - *Store the theme as `.theme-serene-blue` class on `<html>` to match the `.dark` idiom.* Rejected: `.dark` and Tailwind's custom-variant (`@custom-variant dark`) are coupled; introducing a second class at the same level risks specificity collisions. A separate attribute is cleanly orthogonal and the `:root` tokens still cascade unless the attribute selector overrides them.
 
+## App-level preferences
+
+The app exposes exactly two user-tunable preferences today. Both are surfaced in app chrome (header) — theme directly via ThemeSwitcher, motion via the Settings dialog. Both persist in `localStorage` (no main-process state yet) and are applied pre-paint via inline `<script>` bootstraps so there's no FOUC on cold start.
+
+| Preference | Values | Default | Storage key | DOM surface | Exposure |
+|------------|--------|---------|-------------|-------------|----------|
+| Theme | `light` \| `dark` \| `serene-blue` \| `system` | `system` | `ft5.theme` (absent ⇒ system) | `.dark` class + `data-theme` attr on `<html>` | Header ThemeSwitcher (direct dropdown) |
+| Motion | `always-on` \| `safe` | `always-on` | `ft5.motion` (absent ⇒ always-on) | `data-motion="safe"` attr on `<html>` | Header Settings button → Settings dialog |
+
+**Rationale for exposing both:**
+
+- **Theme** is a visual identity choice users make deliberately and often revisit (light during the day, dark at night, Serene Blue as a calm-canvas alternative). Direct access from the header matches Linear/Vercel/Raycast convention — theme is a top-level concern, not buried.
+- **Motion** is a reliability choice. Default `always-on` fixes the silent-suppression trap where dev machines running OS reduce-motion miss the syncing animation entirely. The Motion Safe toggle restores OS-respectful behaviour for users who want it — buried one level deep (Settings dialog) because it's set-once-and-forget, not revisited often.
+- **Two separate bootstrap scripts** (theme-script.ts, motion-script.ts) rather than one combined script so a try/catch failure in one preference doesn't swallow the other. Each is ES5-safe and runs synchronously in `<head>`.
+- **Two orthogonal DOM channels** (`.dark` + `data-theme` for theme; `data-motion` for motion) so the cascades never collide. A future third preference (e.g. high-contrast, density) would get its own attribute rather than multiplying classes.
+
+Future preferences (density, high-contrast, command palette keybindings, etc.) plug into the same Settings dialog as additional sections.
+
 ## Visual direction
 
 _Approved 2026-04-19 (review-round-1). This section is the source of truth consulted during implementation. Any deviation requires going back to brainstorming, not forward — per CLAUDE.md "UI/UX work" section._
@@ -387,9 +409,9 @@ _Approved 2026-04-19 (review-round-1). This section is the source of truth consu
 - **Palette — dark theme:** cool near-black neutrals (oklch lightness 0.110 bg / 0.175 card, hue ~265 cool slate, low chroma). `--primary` unchanged from light. See Decision 17 for exact token values (supersedes the round-1 warm palette in Decision 13).
 - **Palette — Serene Blue (optional, light-mode alternative):** pale sky-blue canvas (oklch `0.975 0.015 230`), pure-white cards, deep navy text (`0.280 0.050 230`). Explicit user choice — never resolved from System. See Decision 18.
 - **Spacing:** `p-4` cards, `gap-3` dashboard grid, 48px chrome bars (header + toolbar). Radii ceiling `rounded-md` (6px) except Dialog content (`rounded-lg`, 8px).
-- **Motion budget:** CSS-only, exhaustive whitelist (Decision 10): dialog/menu/tooltip open-close, sync-pulse, skeleton-shimmer, hover borders. `prefers-reduced-motion` respected globally.
+- **Motion budget:** CSS-only, exhaustive whitelist (Decision 10): dialog/menu/tooltip open-close, sync-pulse, skeleton-shimmer, hover borders. Custom product animations default to always-on; the user-facing Motion Safe toggle (Settings dialog) restores OS `prefers-reduced-motion` respect on demand. shadcn primitive motion independently honours OS reduce-motion via Tailwind's `motion-safe:` variant.
 - **Depth:** base surfaces flat. Hairline borders for separation. Glass (`backdrop-blur-md`/`backdrop-blur-sm`) only on Dialog / DropdownMenu / Tooltip overlays.
-- **App chrome:** persistent header with logo + `FT5 Unified Cloud Sync` wordmark + ThemeSwitcher. Persistent footer with `© <year> Forti5 Tech. All rights reserved.` Page content sits between.
+- **App chrome:** persistent header with logo + `FT5 Unified Cloud Sync` wordmark + Settings button (opens Settings dialog) + ThemeSwitcher. Persistent footer with `© <year> Forti5 Tech. All rights reserved.` Page content sits between.
 - **Iconography:** `lucide-react` via the `Icon` adapter. Every primary CTA is icon+label. 16px icons in card bodies and CTAs; 18px in chrome.
 - **Ambient layer:** a single geometric SVG tile pattern at ~10% opacity across the dashboard canvas (not chrome, not cards). Theme-aware. Static.
 - **Status colour language:** green (connected), amber (syncing), zinc (paused), red (error). Only used in status pills + error surfaces, never as large-area fills.
