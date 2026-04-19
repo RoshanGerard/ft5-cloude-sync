@@ -35,10 +35,10 @@
 
 ## 5. ProviderRegistry + ClientFactory
 
-- [ ] 5.1 RED: write `packages/fs-datasource-engine/src/factory.test.ts` covering: (a) unknown provider id throws `Unsupported`, (b) known provider id returns a `DatasourceClient<T>` with a `bus` wired to the supplied `EngineContext`, (c) the factory re-uses cached clients for the same `(providerId, datasourceId)` within an `EngineContext` session (or explicitly creates fresh — decide per test rubric).
-- [ ] 5.2 GREEN: implement `ProviderRegistry` as a `Record<ProviderId, (creds, ctx) => BaseDatasourceClient<any>>` seeded in the engine's index file. Implement `ClientFactory.create` on top.
-- [ ] 5.3 Register placeholder factory stubs for all three providers (tests pass against `FakeDatasourceClient` instances until Phases 6–8 replace them).
-- [ ] 5.4 Request code review for Phase 5.
+- [x] 5.1 RED: write `packages/fs-datasource-engine/src/factory.test.ts` covering: (a) unknown provider id throws `Unsupported`, (b) known provider id returns a `DatasourceClient<T>` with a `bus` wired to the supplied `EngineContext`, (c) the factory re-uses cached clients for the same `(providerId, datasourceId)` within an `EngineContext` session (or explicitly creates fresh — decide per test rubric).
+- [x] 5.2 GREEN: implement `ProviderRegistry` as a `Record<ProviderId, (creds, ctx) => BaseDatasourceClient<any>>` seeded in the engine's index file. Implement `ClientFactory.create` on top.
+- [x] 5.3 Register placeholder factory stubs for all three providers (tests pass against `FakeDatasourceClient` instances until Phases 6–8 replace them).
+- [x] 5.4 Request code review for Phase 5.
 
 ## 6. S3Client strategy
 

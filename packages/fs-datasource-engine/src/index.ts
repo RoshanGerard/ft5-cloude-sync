@@ -45,3 +45,19 @@ export type {
 // (SqliteCredentialStore + safeStorage) lives in `apps/desktop` because it
 // depends on Electron; the engine package stays framework-agnostic.
 export type { CredentialStore } from "./credential-store.js";
+
+// Phase 5: ProviderRegistry + ClientFactory. The factory is stateless — each
+// `create` call returns a fresh DatasourceClient — and validates registry
+// integrity eagerly at construction. `createDefaultProviderRegistry` wires
+// the three placeholder strategy stubs; Phases 6–8 replace them one-by-one
+// with real provider strategies.
+export {
+  createClientFactory,
+  createDefaultProviderRegistry,
+} from "./factory.js";
+export type {
+  ClientFactory,
+  EngineContext,
+  ProviderFactoryFn,
+  ProviderRegistry,
+} from "./factory.js";
