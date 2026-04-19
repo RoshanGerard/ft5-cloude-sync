@@ -8,17 +8,22 @@ The `app-shell` capability covers the Electron desktop application's shell: the 
 
 ### Requirement: Desktop app launches with a single main window
 
-The desktop app SHALL, when launched on macOS, Windows, or Linux, open exactly one `BrowserWindow` that loads the renderer via a custom `app://` protocol handler registered in the main process. The app SHALL NOT expose a local HTTP dev server in production builds.
+The desktop app SHALL, when launched on macOS, Windows, or Linux, open exactly one `BrowserWindow` that loads the renderer via a custom `app://` protocol handler registered in the main process. The app SHALL NOT expose a local HTTP dev server in production builds. The window's initial route SHALL be `app://./`, which the renderer maps to the datasources dashboard; the ping-wiring probe is relocated to `app://./diagnostics` and is no longer the home view.
 
 #### Scenario: Production launch on a supported platform
 
 - **WHEN** a packaged build is started on macOS, Windows, or Linux
-- **THEN** Electron registers the `app://` protocol, creates exactly one `BrowserWindow`, loads the renderer's `index.html` via `app://`, and the window becomes visible within 5 seconds
+- **THEN** Electron registers the `app://` protocol, creates exactly one `BrowserWindow`, loads the renderer's `index.html` via `app://`, the window becomes visible within 5 seconds, and the visible view on first paint is the datasources dashboard (loading, empty, or populated state per the dashboard requirement), NOT a timestamp or diagnostics output
 
 #### Scenario: Second instance prevented
 
 - **WHEN** a second instance of the packaged app is launched while the first is running
 - **THEN** the main process calls `app.requestSingleInstanceLock()`, the second instance exits, and the original window is focused
+
+#### Scenario: Diagnostics route remains reachable for wiring verification
+
+- **WHEN** the user navigates to `app://./diagnostics` (deep link) or triggers the developer shortcut `Ctrl/Cmd + Shift + D`
+- **THEN** the renderer displays the ping probe's result, the existing `ping` IPC wiring is exercised unchanged, and the Playwright end-to-end test at `apps/desktop/e2e/ping.spec.ts` navigates to `/diagnostics` to assert the ping round-trip
 
 ### Requirement: Main window enforces hardened Electron defaults
 
