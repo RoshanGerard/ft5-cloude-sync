@@ -54,6 +54,16 @@
 }
 
 @theme inline {
+  /* Typography (design.md Decision 9): Geist Sans + Geist Mono via next/font,
+     exposed on <html> as --font-geist-sans / --font-geist-mono by the Geist
+     Next.js adapter. The @theme block bridges those to Tailwind's font-sans /
+     font-mono utilities with ui-sans-serif / ui-monospace fallbacks for the
+     very first paint (before the bundled woff2 finishes decoding). */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
+    Consolas, "Liberation Mono", monospace;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
