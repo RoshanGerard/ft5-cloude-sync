@@ -222,7 +222,7 @@ describe("ipc-contracts datasources request/response pairs", () => {
 });
 
 describe("ipc-contracts datasources channel names", () => {
-  it("DATASOURCES_CHANNELS exposes exactly the six expected channels", () => {
+  it("DATASOURCES_CHANNELS exposes exactly the seven expected channels", () => {
     expect(DATASOURCES_CHANNELS.list).toBe("datasources:list");
     expect(DATASOURCES_CHANNELS.add).toBe("datasources:add");
     expect(DATASOURCES_CHANNELS.remove).toBe("datasources:remove");
@@ -230,6 +230,18 @@ describe("ipc-contracts datasources channel names", () => {
     expect(DATASOURCES_CHANNELS.upload).toBe("datasources:upload");
     expect(DATASOURCES_CHANNELS.uploadProgress).toBe(
       "datasources:upload:progress",
+    );
+    expect(DATASOURCES_CHANNELS.event).toBe("datasources:event");
+    expect(Object.keys(DATASOURCES_CHANNELS).sort()).toEqual(
+      [
+        "action",
+        "add",
+        "event",
+        "list",
+        "remove",
+        "upload",
+        "uploadProgress",
+      ].sort(),
     );
   });
 });

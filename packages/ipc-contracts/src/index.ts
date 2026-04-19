@@ -27,3 +27,24 @@ export type {
   ProviderId,
 } from "./datasources.js";
 export { DATASOURCES_CHANNELS, providers } from "./datasources.js";
+
+export type {
+  AuthIntent,
+  AuthResult,
+  CredentialsFormIntent,
+  DatasourceErrorInit,
+  DatasourceErrorTag,
+  DatasourceEvent,
+  DatasourceType,
+  FileEntry,
+  FileMetadata,
+  MimeFamily,
+  OAuthIntent,
+  PayloadMap,
+  ProviderMetadata,
+  ProviderMetadataMap,
+  Quota,
+  StoredCredentials,
+  Target,
+} from "./fs-datasource-engine.js";
+export { DatasourceError } from "./fs-datasource-engine.js";

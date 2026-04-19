@@ -41,6 +41,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@ft5/fs-datasource-engine':
+        specifier: workspace:*
+        version: link:../../packages/fs-datasource-engine
       '@ft5/ipc-contracts':
         specifier: workspace:*
         version: link:../../packages/ipc-contracts
@@ -130,6 +133,12 @@ importers:
       tailwindcss:
         specifier: ^4.2.2
         version: 4.2.2
+
+  packages/fs-datasource-engine:
+    dependencies:
+      '@ft5/ipc-contracts':
+        specifier: workspace:*
+        version: link:../ipc-contracts
 
   packages/ipc-contracts: {}
 

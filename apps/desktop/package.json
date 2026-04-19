@@ -19,6 +19,7 @@
     "e2e:ui": "playwright test --config=playwright.config.ts --ui"
   },
   "dependencies": {
+    "@ft5/fs-datasource-engine": "workspace:*",
     "@ft5/ipc-contracts": "workspace:*",
     "better-sqlite3": "12.9.0",
     "drizzle-orm": "0.45.2",

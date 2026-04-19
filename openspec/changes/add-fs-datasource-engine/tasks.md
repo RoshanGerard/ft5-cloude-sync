@@ -1,12 +1,12 @@
 ## 1. Package scaffold + contract types
 
-- [ ] 1.1 Create workspace package `packages/fs-datasource-engine` with `package.json` (name `@ft5/fs-datasource-engine`), `tsconfig.json` extending the repo base, and `src/index.ts` with empty re-export stubs. Add it to `pnpm-workspace.yaml`.
-- [ ] 1.2 Add the engine package as a runtime dependency of `apps/desktop` and a type-only dependency on `@ft5/ipc-contracts`. Verify `pnpm -w install` succeeds and workspace resolution works.
-- [ ] 1.3 RED: add a `test-d.ts` in `packages/ipc-contracts/src/__tests__/datasources-engine.test-d.ts` asserting the existence and shape of the new types (`Target`, `FileEntry<T>`, `FileMetadata<T>`, `PayloadMap`, `DatasourceEvent<T, K>`, `AuthIntent`, `AuthResult`, `Quota`, `StoredCredentials`, `DatasourceErrorTag`).
-- [ ] 1.4 GREEN: author the types in `packages/ipc-contracts/src/fs-datasource-engine.ts` (or split across focused files) and re-export from the package index. Run `pnpm -C packages/ipc-contracts typecheck` and confirm the test-d suite passes.
-- [ ] 1.5 RED: add a runtime test for `DatasourceError` covering construction, property presence, `instanceof Error`, and `instanceof DatasourceError`.
-- [ ] 1.6 GREEN: implement `DatasourceError<T>` class in `packages/ipc-contracts/src/fs-datasource-engine.ts`. Verify the runtime test passes.
-- [ ] 1.7 Add a `DATASOURCES_CHANNELS.event` entry (string `"datasources:event"`) to the existing `DATASOURCES_CHANNELS` export; update the type-d test for `datasources.ts` to include it.
+- [x] 1.1 Create workspace package `packages/fs-datasource-engine` with `package.json` (name `@ft5/fs-datasource-engine`), `tsconfig.json` extending the repo base, and `src/index.ts` with empty re-export stubs. Add it to `pnpm-workspace.yaml`.
+- [x] 1.2 Add the engine package as a runtime dependency of `apps/desktop` and a type-only dependency on `@ft5/ipc-contracts`. Verify `pnpm -w install` succeeds and workspace resolution works.
+- [x] 1.3 RED: add a `test-d.ts` in `packages/ipc-contracts/src/__tests__/datasources-engine.test-d.ts` asserting the existence and shape of the new types (`Target`, `FileEntry<T>`, `FileMetadata<T>`, `PayloadMap`, `DatasourceEvent<T, K>`, `AuthIntent`, `AuthResult`, `Quota`, `StoredCredentials`, `DatasourceErrorTag`).
+- [x] 1.4 GREEN: author the types in `packages/ipc-contracts/src/fs-datasource-engine.ts` (or split across focused files) and re-export from the package index. Run `pnpm -C packages/ipc-contracts typecheck` and confirm the test-d suite passes.
+- [x] 1.5 RED: add a runtime test for `DatasourceError` covering construction, property presence, `instanceof Error`, and `instanceof DatasourceError`.
+- [x] 1.6 GREEN: implement `DatasourceError<T>` class in `packages/ipc-contracts/src/fs-datasource-engine.ts`. Verify the runtime test passes.
+- [x] 1.7 Add a `DATASOURCES_CHANNELS.event` entry (string `"datasources:event"`) to the existing `DATASOURCES_CHANNELS` export; update the type-d test for `datasources.ts` to include it.
 
 ## 2. Event bus with throttle
 
