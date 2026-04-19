@@ -34,14 +34,14 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 - [x] 3.5 Implement `view-modes/details.tsx`. This is the default mode, so it also gets the happy-path tests for selection, keyboard nav, and sort wiring; subsequent modes reuse the shared selection/keyboard hooks.
 - [x] 3.6 Write failing test for `view-modes/list.tsx` — single-column compact flow, icon + name only.
 - [x] 3.7 Implement `view-modes/list.tsx`.
-- [ ] 3.8 Write failing test for `view-modes/small-icons.tsx` — 16 px icon + name, wrapping flex flow.
-- [ ] 3.9 Implement `view-modes/small-icons.tsx`.
-- [ ] 3.10 Write failing test for `view-modes/tiles.tsx` — 64 px icon + name + 2-line metadata (type, size).
-- [ ] 3.11 Implement `view-modes/tiles.tsx`.
-- [ ] 3.12 Write failing test for `view-modes/medium-icons.tsx` — 64 px icon above name, wrapping grid.
-- [ ] 3.13 Implement `view-modes/medium-icons.tsx`.
-- [ ] 3.14 Write failing test for `view-modes/large-icons.tsx` — 96 px icon above name, wrapping grid.
-- [ ] 3.15 Implement `view-modes/large-icons.tsx`.
+- [x] 3.8 Write failing test for `view-modes/small-icons.tsx` — 16 px icon + name, wrapping flex flow.
+- [x] 3.9 Implement `view-modes/small-icons.tsx`.
+- [x] 3.10 Write failing test for `view-modes/tiles.tsx` — 64 px icon + name + 2-line metadata (type, size).
+- [x] 3.11 Implement `view-modes/tiles.tsx`.
+- [x] 3.12 Write failing test for `view-modes/medium-icons.tsx` — 64 px icon above name, wrapping grid.
+- [x] 3.13 Implement `view-modes/medium-icons.tsx`.
+- [x] 3.14 Write failing test for `view-modes/large-icons.tsx` — 96 px icon above name, wrapping grid.
+- [x] 3.15 Implement `view-modes/large-icons.tsx`.
 - [ ] 3.16 Write failing test for the View menu in `features/file-explorer/toolbar.tsx` — six radio items, current mode checked, selection switches the active renderer.
 - [ ] 3.17 Implement the View menu entry of the toolbar.
 - [ ] 3.18 Write failing test: selection and focus survive a mode switch (selection count identical before/after).
