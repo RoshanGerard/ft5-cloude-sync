@@ -34,7 +34,20 @@ export function DatasourcesToolbar({
 }) {
   return (
     <div className="flex items-center justify-between gap-3 border-b border-border p-4">
-      <h1 className="text-base font-semibold">Datasources</h1>
+      {/* Review-round-3, Task 4: "Datasources" title modernized. Leading
+          `folder-sync` glyph + `text-lg tracking-tight` gives the heading a
+          more deliberate page-title feel and complements the domain (a
+          synced folder surface). The glyph is decorative — `aria-hidden`
+          keeps it out of the accessible name; screen readers still read
+          just "Datasources". */}
+      <div className="flex items-center gap-2">
+        <Icon
+          name="folder-sync"
+          className="text-muted-foreground size-5"
+          aria-hidden
+        />
+        <h1 className="text-lg font-semibold tracking-tight">Datasources</h1>
+      </div>
       <Button
         ref={triggerRef}
         size="sm"

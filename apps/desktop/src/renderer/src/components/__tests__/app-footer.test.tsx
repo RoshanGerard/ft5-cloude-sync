@@ -30,6 +30,19 @@ describe("AppFooter — copyright chrome (Decision 14)", () => {
     expect(footer!.className).toMatch(/\bborder-t\b/);
   });
 
+  it("left-aligns the copyright text with horizontal padding (review-round-3, Task 5)", () => {
+    const { container } = render(<AppFooter />);
+    const footer = container.querySelector("footer");
+    expect(footer).not.toBeNull();
+    // Round-3 review flipped center-align → left-align so the copyright
+    // sits against the app's left gutter, matching the header's leading
+    // content. `justify-start` on the flex row gives us that, and `px-4`
+    // retains the gutter padding.
+    expect(footer!.className).toMatch(/\bjustify-start\b/);
+    expect(footer!.className).not.toMatch(/\bjustify-center\b/);
+    expect(footer!.className).toMatch(/\bpx-4\b/);
+  });
+
   it("reads 'All rights reserved.'", () => {
     render(<AppFooter />);
     expect(

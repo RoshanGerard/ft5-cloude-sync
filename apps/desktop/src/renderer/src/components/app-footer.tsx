@@ -16,9 +16,14 @@ export type AppFooterProps = HTMLAttributes<HTMLElement>;
 export function AppFooter({ className, ...rest }: AppFooterProps) {
   const year = new Date().getFullYear();
   return (
+    // Review-round-3, Task 5: footer copyright left-aligned (was
+    // center-aligned). `justify-start` replaces `justify-center` so the
+    // text sits against the app's left gutter, matching the header's
+    // leading content. `px-4` (retained) provides the gutter padding so
+    // the text doesn't hug the window edge.
     <footer
       className={cn(
-        "flex h-9 shrink-0 items-center justify-center border-t border-border px-4",
+        "flex h-9 shrink-0 items-center justify-start border-t border-border px-4",
         className,
       )}
       {...rest}

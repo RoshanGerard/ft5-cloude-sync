@@ -19,6 +19,8 @@
 import {
   CloudIcon,
   DatabaseIcon,
+  DropletsIcon,
+  FolderSyncIcon,
   HardDriveIcon,
   LaptopIcon,
   MonitorIcon,
@@ -53,6 +55,12 @@ export type IconName =
   | "upload"
   | "settings"
   | "trash-2"
+  // Review-round-3:
+  //   `folder-sync` — leading glyph on the dashboard "Datasources" title
+  //     (Task 4: modernize heading with a complementary glyph).
+  //   `droplets`    — Serene Blue theme-switcher option indicator (Task 6c).
+  | "folder-sync"
+  | "droplets"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -69,6 +77,8 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   upload: UploadIcon,
   settings: SettingsIcon,
   "trash-2": Trash2Icon,
+  "folder-sync": FolderSyncIcon,
+  droplets: DropletsIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a
