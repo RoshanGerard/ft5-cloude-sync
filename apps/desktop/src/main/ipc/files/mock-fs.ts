@@ -649,10 +649,13 @@ function internalSearch(req: FilesSearchRequest): InternalSearchResult {
 
 export function search(req: FilesSearchRequest): FilesSearchResponse {
   const result = internalSearch(req);
-  // The contract has no provider-metadata slot on FilesSearchResponse, so the
-  // deferred-state flag rides on `truncated: true` with an empty entries array
-  // (Drive / OneDrive return that shape; the UI reads the two together as the
-  // deferred state in the spec at line 182).
+  if (result.providerSearchDeferred) {
+    return {
+      entries: result.entries,
+      truncated: result.truncated,
+      providerSearchDeferred: true,
+    };
+  }
   return { entries: result.entries, truncated: result.truncated };
 }
 

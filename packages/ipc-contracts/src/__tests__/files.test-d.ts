@@ -123,7 +123,7 @@ describe("ipc-contracts files request/response pairs", () => {
     expectTypeOf<FilesStatResponse>().toEqualTypeOf<{ entry: FileEntry }>();
   });
 
-  it("search: { datasourceId, query, path } request, { entries, truncated } response", () => {
+  it("search: { datasourceId, query, path } request, { entries, truncated, providerSearchDeferred? } response", () => {
     const req: FilesSearchRequest = {
       datasourceId: "ds-1",
       query: "budget",
@@ -133,6 +133,13 @@ describe("ipc-contracts files request/response pairs", () => {
     expect(req.query).toBe("budget");
     expect(res.truncated).toBe(false);
 
+    const deferred: FilesSearchResponse = {
+      entries: [],
+      truncated: true,
+      providerSearchDeferred: true,
+    };
+    expect(deferred.providerSearchDeferred).toBe(true);
+
     expectTypeOf<FilesSearchRequest>().toEqualTypeOf<{
       datasourceId: string;
       query: string;
@@ -141,6 +148,7 @@ describe("ipc-contracts files request/response pairs", () => {
     expectTypeOf<FilesSearchResponse>().toEqualTypeOf<{
       entries: FileEntry[];
       truncated: boolean;
+      providerSearchDeferred?: boolean;
     }>();
   });
 

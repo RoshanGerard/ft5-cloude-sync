@@ -49,6 +49,11 @@ export interface FilesSearchRequest {
 export interface FilesSearchResponse {
   entries: FileEntry[];
   truncated: boolean;
+  // True when the provider's native search API is not yet wired (Drive /
+  // OneDrive in v1). Distinguishes "scan truncated" (truncated=true, this
+  // field absent/false) from "provider search deferred" (truncated=true,
+  // this field=true + entries=[]). Phase 7 UI surfaces the two differently.
+  providerSearchDeferred?: boolean;
 }
 
 export interface FilesRenameRequest {

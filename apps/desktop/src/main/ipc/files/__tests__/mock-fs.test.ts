@@ -255,7 +255,7 @@ describe("mock-fs: search", () => {
     }
   });
 
-  it("Drive: returns empty entries with truncated=true (deferred state)", () => {
+  it("Drive: returns empty entries with truncated=true + providerSearchDeferred=true", () => {
     resetMockFs();
     const result = search({
       datasourceId: "ds-gdrive-personal",
@@ -264,9 +264,10 @@ describe("mock-fs: search", () => {
     });
     expect(result.entries).toEqual([]);
     expect(result.truncated).toBe(true);
+    expect(result.providerSearchDeferred).toBe(true);
   });
 
-  it("OneDrive: returns empty entries with truncated=true (deferred state)", () => {
+  it("OneDrive: returns empty entries with truncated=true + providerSearchDeferred=true", () => {
     resetMockFs();
     const result = search({
       datasourceId: "ds-onedrive-work",
@@ -275,6 +276,17 @@ describe("mock-fs: search", () => {
     });
     expect(result.entries).toEqual([]);
     expect(result.truncated).toBe(true);
+    expect(result.providerSearchDeferred).toBe(true);
+  });
+
+  it("S3: a non-deferred scan omits providerSearchDeferred", () => {
+    resetMockFs();
+    const result = search({
+      datasourceId: "ds-s3-archive",
+      query: "mp4",
+      path: "/",
+    });
+    expect(result.providerSearchDeferred).toBeUndefined();
   });
 });
 
