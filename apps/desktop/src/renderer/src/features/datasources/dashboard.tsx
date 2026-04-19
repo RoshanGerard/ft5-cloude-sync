@@ -3,8 +3,10 @@
 //
 // DatasourcesDashboard (tasks 5.1, 5.2, 5.5) — composes the state-machine
 // rendering for the home view: loading / empty / populated / error. The
-// toolbar (Add Datasource button + ThemeSwitcher) lives in its own component
+// page toolbar (Add Datasource button + heading) lives in its own component
 // so it can be tested independently and re-used if we ever split the page.
+// The ThemeSwitcher is NOT here — Decision 14 (review-round-1) moved it up
+// into <AppHeader /> since it's an app-level setting, not a page action.
 
 import { useCallback, useRef, useState, type MouseEvent, type Ref } from "react";
 

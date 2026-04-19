@@ -71,6 +71,17 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "trash-2": Trash2Icon,
 }
 
+// Every name registered in the adapter. Consumers that need to validate a
+// runtime string against the IconName union (e.g. a provider descriptor's
+// icon field) should import this rather than duplicating a static array —
+// that decoupling avoids the "adapter grew a name but downstream allowlist
+// didn't" drift flagged in code review I-2 (review-round-1).
+export const ICON_NAMES = Object.keys(REGISTRY) as readonly IconName[]
+
+export function isIconName(value: string): value is IconName {
+  return (ICON_NAMES as readonly string[]).includes(value)
+}
+
 export type IconProps = {
   name: IconName
 } & Omit<LucideProps, "ref">

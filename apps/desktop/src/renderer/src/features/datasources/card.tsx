@@ -45,7 +45,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Icon, type IconName } from "@/components/icon";
+import { Icon, isIconName, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
 import { useDatasourceActions } from "./store";
@@ -148,27 +148,17 @@ function getDescriptor(providerId: string): ProviderDescriptor | undefined {
   return registry[providerId];
 }
 
-// The provider registry stores its icon as an opaque string; we map to the
-// local IconName union here so consumers don't have to care about the union
-// boundary. Any unknown string resolves to `undefined`, and the card simply
-// skips rendering the icon — the registry is expected to stay in sync with
-// the adapter.
+// The provider registry stores its icon as an opaque string; we narrow to
+// the IconName union via the adapter's `isIconName` type guard. This keeps
+// the check in sync with the adapter's REGISTRY — code-review I-2
+// (review-round-1) flagged the previous hardcoded allowlist as drift-prone
+// once the adapter grew new names for Decision 15's primary-CTA glyphs.
+// Unknown strings resolve to `null` and the card skips rendering the icon.
 function iconNameFromDescriptor(
   descriptor: ProviderDescriptor | undefined,
 ): IconName | null {
   if (!descriptor) return null;
-  const known: IconName[] = [
-    "sun",
-    "moon",
-    "monitor",
-    "laptop",
-    "cloud",
-    "database",
-    "hard-drive",
-  ];
-  return known.includes(descriptor.icon as IconName)
-    ? (descriptor.icon as IconName)
-    : null;
+  return isIconName(descriptor.icon) ? descriptor.icon : null;
 }
 
 function StatusBadge({

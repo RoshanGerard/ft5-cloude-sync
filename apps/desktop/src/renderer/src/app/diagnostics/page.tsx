@@ -26,5 +26,9 @@ export default function DiagnosticsPage() {
     };
   }, []);
 
-  return <main>{ts == null ? "Pinging…" : String(ts)}</main>;
+  // Rendered inside `app/layout.tsx`'s outer `<main>` landmark (see Decision
+  // 14 for the chrome structure). Using a plain `<div>` here avoids a nested
+  // `<main>` landmark and the associated a11y regression — the layout's
+  // `<main>` is the document's only main landmark.
+  return <div>{ts == null ? "Pinging…" : String(ts)}</div>;
 }
