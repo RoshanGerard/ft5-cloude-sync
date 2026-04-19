@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type {
+  ComponentPropsWithoutRef,
+  MouseEvent as ReactMouseEvent,
+  Ref,
+} from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
@@ -32,7 +36,8 @@ import { iconForEntry } from "../icons.js";
 
 export type IconAboveNameCellSize = "size-16" | "size-24";
 
-export interface IconAboveNameCellProps {
+export interface IconAboveNameCellProps
+  extends ComponentPropsWithoutRef<"div"> {
   entry: FileEntry;
   iconSize: IconAboveNameCellSize;
   selected: boolean;
@@ -43,6 +48,7 @@ export interface IconAboveNameCellProps {
    */
   focused?: boolean;
   onClick: (event: ReactMouseEvent) => void;
+  ref?: Ref<HTMLDivElement>;
 }
 
 export function IconAboveNameCell({
@@ -52,6 +58,8 @@ export function IconAboveNameCell({
   pending,
   focused = false,
   onClick,
+  ref: externalRef,
+  ...rest
 }: IconAboveNameCellProps) {
   const iconName = iconForEntry(entry);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -60,9 +68,17 @@ export function IconAboveNameCell({
       ref.current.focus();
     }
   }, [focused]);
+  const setRef = (node: HTMLDivElement | null): void => {
+    ref.current = node;
+    if (typeof externalRef === "function") externalRef(node);
+    else if (externalRef !== null && externalRef !== undefined) {
+      (externalRef as { current: HTMLDivElement | null }).current = node;
+    }
+  };
   return (
     <div
-      ref={ref}
+      {...rest}
+      ref={setRef}
       role="gridcell"
       data-testid="explorer-cell"
       data-entry-id={entry.id}

@@ -49,6 +49,9 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 4 — Selection, keyboard, and context menu
 
+> Composite-wiring note (not a numbered entry). Subagent P landed a follow-up commit on top of 4.1–4.8 that wires the previously-standalone chrome into the `FileExplorer` wrapper, adds `features/file-explorer/use-explorer-data.ts` to drive `window.api.files.list` on mount / currentPath change, and wraps each view-mode cell in `FileContextMenu`. No new task rows — the scope is the "make Phase 4 visible end-to-end" glue the prior subagents intentionally deferred. Covered by `features/file-explorer/__tests__/file-explorer-composite.test.tsx` (5 integration tests).
+
+
 - [x] 4.1 Write failing test for the selection reducer — click, shift-click, ctrl-click, select-all, clear. *(Impl note: substantive coverage already shipped via `store.test.ts` (Phase 2, commit d92ae2b) + per-view-mode click tests (Phase 3). The new `keyboard-nav.test.tsx` includes the "click routes through `useSelection` and sets focus" case as the residual integration assertion.)*
 - [x] 4.2 Implement the shared selection + keyboard-nav hooks consumed by every view mode. *(Impl note: `useSelection` already landed in Phase 3 (click translation only); `useKeyboardNav` in `features/file-explorer/use-keyboard-nav.ts` composes alongside it.)*
 - [x] 4.3 Write failing test for keyboard bindings — arrow keys move focus, Enter activates, Delete initiates delete (opens confirm dialog), F2 starts rename, Ctrl/Cmd+A selects all. *(Impl note: landed as `features/file-explorer/__tests__/keyboard-nav.test.tsx` (15 tests) composing DetailsView with the hook. Delete + F2 assert their callback stubs fire — Phase 6 wires the confirm dialog / inline rename UI.)*

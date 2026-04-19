@@ -2,6 +2,9 @@
 
 import { useSyncExternalStore } from "react";
 
+import type { FileEntry } from "@ft5/ipc-contracts";
+
+import { FileContextMenu } from "../context-menu.js";
 import type { ExplorerStore } from "../store.js";
 import { useSelection } from "../use-selection.js";
 import { IconAboveNameCell } from "./icon-above-name-cell.js";
@@ -17,12 +20,24 @@ export interface LargeIconsViewProps {
   store: ExplorerStore;
   focusedId?: string | null;
   setFocusedId?: (id: string | null) => void;
+  onOpen?: (entry: FileEntry) => void;
+  onDownload?: (entry: FileEntry) => void;
+  onRename?: (entry: FileEntry) => void;
+  onDelete?: (entry: FileEntry) => void;
+  onCopyPath?: (entry: FileEntry) => void;
+  onProperties?: (entry: FileEntry) => void;
 }
 
 export function LargeIconsView({
   store,
   focusedId,
   setFocusedId,
+  onOpen,
+  onDownload,
+  onRename,
+  onDelete,
+  onCopyPath,
+  onProperties,
 }: LargeIconsViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
@@ -54,18 +69,28 @@ export function LargeIconsView({
         const pending = state.pendingOps[entry.id] !== undefined;
         const isFocused = focusedId === entry.id;
         return (
-          <IconAboveNameCell
+          <FileContextMenu
             key={entry.id}
             entry={entry}
-            iconSize="size-24"
-            selected={isSelected}
-            pending={pending}
-            focused={isFocused}
-            onClick={(e) => {
-              onEntryClick(entry.id, e);
-              setFocusedId?.(entry.id);
-            }}
-          />
+            onOpen={onOpen}
+            onDownload={onDownload}
+            onRename={onRename}
+            onDelete={onDelete}
+            onCopyPath={onCopyPath}
+            onProperties={onProperties}
+          >
+            <IconAboveNameCell
+              entry={entry}
+              iconSize="size-24"
+              selected={isSelected}
+              pending={pending}
+              focused={isFocused}
+              onClick={(e) => {
+                onEntryClick(entry.id, e);
+                setFocusedId?.(entry.id);
+              }}
+            />
+          </FileContextMenu>
         );
       })}
     </div>

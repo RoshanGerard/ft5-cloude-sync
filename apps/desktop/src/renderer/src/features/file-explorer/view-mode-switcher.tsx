@@ -3,6 +3,8 @@
 import { useSyncExternalStore } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
+import type { FileEntry } from "@ft5/ipc-contracts";
+
 import type { ExplorerStore, ViewMode } from "./store.js";
 import { DetailsView } from "./view-modes/details.js";
 import { LargeIconsView } from "./view-modes/large-icons.js";
@@ -52,7 +54,24 @@ export interface ViewModeKeyboardNav {
   onKeyDown: (event: ReactKeyboardEvent) => void;
 }
 
-export interface ViewModeSwitcherProps {
+/**
+ * Per-entry action handlers forwarded to whichever view mode is
+ * currently active, which in turn forwards them to the per-cell
+ * `FileContextMenu` trigger. Only the composite `FileExplorer` supplies
+ * real callbacks; `mode-switch-integration.test.tsx` and every
+ * view-mode-only test mounts without them — the menu still renders,
+ * Radix just calls no-op `undefined` handlers.
+ */
+export interface ViewModeActionHandlers {
+  onOpen?: (entry: FileEntry) => void;
+  onDownload?: (entry: FileEntry) => void;
+  onRename?: (entry: FileEntry) => void;
+  onDelete?: (entry: FileEntry) => void;
+  onCopyPath?: (entry: FileEntry) => void;
+  onProperties?: (entry: FileEntry) => void;
+}
+
+export interface ViewModeSwitcherProps extends ViewModeActionHandlers {
   store: ExplorerStore;
   keyboardNav?: ViewModeKeyboardNav;
 }
@@ -60,6 +79,12 @@ export interface ViewModeSwitcherProps {
 export function ViewModeSwitcher({
   store,
   keyboardNav,
+  onOpen,
+  onDownload,
+  onRename,
+  onDelete,
+  onCopyPath,
+  onProperties,
 }: ViewModeSwitcherProps) {
   const state = useSyncExternalStore(
     store.subscribe,
@@ -67,7 +92,16 @@ export function ViewModeSwitcher({
     store.getSnapshot,
   );
 
-  const view = renderForMode(state.viewMode, store, keyboardNav);
+  const actions: ViewModeActionHandlers = {
+    onOpen,
+    onDownload,
+    onRename,
+    onDelete,
+    onCopyPath,
+    onProperties,
+  };
+
+  const view = renderForMode(state.viewMode, store, keyboardNav, actions);
 
   if (keyboardNav === undefined) return view;
 
@@ -95,6 +129,7 @@ function renderForMode(
   mode: ViewMode,
   store: ExplorerStore,
   kbd: ViewModeKeyboardNav | undefined,
+  actions: ViewModeActionHandlers,
 ) {
   const focusedId = kbd?.focusedId ?? null;
   const setFocusedId = kbd?.setFocusedId;
@@ -105,6 +140,7 @@ function renderForMode(
           store={store}
           focusedId={focusedId}
           setFocusedId={setFocusedId}
+          {...actions}
         />
       );
     case "details":
@@ -113,6 +149,7 @@ function renderForMode(
           store={store}
           focusedId={focusedId}
           setFocusedId={setFocusedId}
+          {...actions}
         />
       );
     case "small":
@@ -121,6 +158,7 @@ function renderForMode(
           store={store}
           focusedId={focusedId}
           setFocusedId={setFocusedId}
+          {...actions}
         />
       );
     case "tiles":
@@ -129,6 +167,7 @@ function renderForMode(
           store={store}
           focusedId={focusedId}
           setFocusedId={setFocusedId}
+          {...actions}
         />
       );
     case "medium":
@@ -137,6 +176,7 @@ function renderForMode(
           store={store}
           focusedId={focusedId}
           setFocusedId={setFocusedId}
+          {...actions}
         />
       );
     case "large":
@@ -145,6 +185,7 @@ function renderForMode(
           store={store}
           focusedId={focusedId}
           setFocusedId={setFocusedId}
+          {...actions}
         />
       );
     default: {

@@ -1,13 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type {
+  ComponentPropsWithoutRef,
+  MouseEvent as ReactMouseEvent,
+  Ref,
+} from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
+import { FileContextMenu } from "../context-menu.js";
 import { iconForEntry } from "../icons.js";
 import type { ExplorerStore } from "../store.js";
 import { useSelection } from "../use-selection.js";
@@ -34,12 +39,24 @@ export interface SmallIconsViewProps {
   store: ExplorerStore;
   focusedId?: string | null;
   setFocusedId?: (id: string | null) => void;
+  onOpen?: (entry: FileEntry) => void;
+  onDownload?: (entry: FileEntry) => void;
+  onRename?: (entry: FileEntry) => void;
+  onDelete?: (entry: FileEntry) => void;
+  onCopyPath?: (entry: FileEntry) => void;
+  onProperties?: (entry: FileEntry) => void;
 }
 
 export function SmallIconsView({
   store,
   focusedId,
   setFocusedId,
+  onOpen,
+  onDownload,
+  onRename,
+  onDelete,
+  onCopyPath,
+  onProperties,
 }: SmallIconsViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
@@ -71,29 +88,40 @@ export function SmallIconsView({
         const pendingOp = state.pendingOps[entry.id];
         const isFocused = focusedId === entry.id;
         return (
-          <Cell
+          <FileContextMenu
             key={entry.id}
             entry={entry}
-            selected={isSelected}
-            pending={pendingOp !== undefined}
-            focused={isFocused}
-            onClick={(e) => {
-              onEntryClick(entry.id, e);
-              setFocusedId?.(entry.id);
-            }}
-          />
+            onOpen={onOpen}
+            onDownload={onDownload}
+            onRename={onRename}
+            onDelete={onDelete}
+            onCopyPath={onCopyPath}
+            onProperties={onProperties}
+          >
+            <Cell
+              entry={entry}
+              selected={isSelected}
+              pending={pendingOp !== undefined}
+              focused={isFocused}
+              onClick={(e) => {
+                onEntryClick(entry.id, e);
+                setFocusedId?.(entry.id);
+              }}
+            />
+          </FileContextMenu>
         );
       })}
     </div>
   );
 }
 
-interface CellProps {
+interface CellProps extends ComponentPropsWithoutRef<"div"> {
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
   focused: boolean;
   onClick: (event: ReactMouseEvent) => void;
+  ref?: Ref<HTMLDivElement>;
 }
 
 function Cell({
@@ -102,6 +130,8 @@ function Cell({
   pending,
   focused,
   onClick,
+  ref: externalRef,
+  ...rest
 }: CellProps) {
   const iconName = iconForEntry(entry);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -110,9 +140,17 @@ function Cell({
       ref.current.focus();
     }
   }, [focused]);
+  const setRef = (node: HTMLDivElement | null): void => {
+    ref.current = node;
+    if (typeof externalRef === "function") externalRef(node);
+    else if (externalRef !== null && externalRef !== undefined) {
+      (externalRef as { current: HTMLDivElement | null }).current = node;
+    }
+  };
   return (
     <div
-      ref={ref}
+      {...rest}
+      ref={setRef}
       role="listitem"
       data-testid="explorer-cell"
       data-entry-id={entry.id}

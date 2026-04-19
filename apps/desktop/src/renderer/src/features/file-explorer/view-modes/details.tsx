@@ -1,13 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type {
+  ComponentPropsWithoutRef,
+  MouseEvent as ReactMouseEvent,
+  Ref,
+} from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { Icon, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
+import { FileContextMenu } from "../context-menu.js";
 import { iconForEntry } from "../icons.js";
 import type { ExplorerStore, SortBy, SortDir } from "../store.js";
 import { useSelection } from "../use-selection.js";
@@ -47,6 +52,19 @@ export interface DetailsViewProps {
    */
   focusedId?: string | null;
   setFocusedId?: (id: string | null) => void;
+  /**
+   * Optional context-menu handlers forwarded to `FileContextMenu` on
+   * each data row. Only the composite explorer supplies real
+   * callbacks; view-mode tests mount without them and the wrapped
+   * trigger stays silent for the menu items (Radix's disabled/no-op
+   * handlers render fine).
+   */
+  onOpen?: (entry: FileEntry) => void;
+  onDownload?: (entry: FileEntry) => void;
+  onRename?: (entry: FileEntry) => void;
+  onDelete?: (entry: FileEntry) => void;
+  onCopyPath?: (entry: FileEntry) => void;
+  onProperties?: (entry: FileEntry) => void;
 }
 
 interface ColumnDef {
@@ -68,6 +86,12 @@ export function DetailsView({
   store,
   focusedId,
   setFocusedId,
+  onOpen,
+  onDownload,
+  onRename,
+  onDelete,
+  onCopyPath,
+  onProperties,
 }: DetailsViewProps) {
   const state = useSyncExternalStore(
     store.subscribe,
@@ -101,17 +125,27 @@ export function DetailsView({
             const pendingOp = state.pendingOps[entry.id];
             const isFocused = focusedId === entry.id;
             return (
-              <DataRow
+              <FileContextMenu
                 key={entry.id}
                 entry={entry}
-                selected={isSelected}
-                pending={pendingOp !== undefined}
-                focused={isFocused}
-                onClick={(e) => {
-                  onEntryClick(entry.id, e);
-                  setFocusedId?.(entry.id);
-                }}
-              />
+                onOpen={onOpen}
+                onDownload={onDownload}
+                onRename={onRename}
+                onDelete={onDelete}
+                onCopyPath={onCopyPath}
+                onProperties={onProperties}
+              >
+                <DataRow
+                  entry={entry}
+                  selected={isSelected}
+                  pending={pendingOp !== undefined}
+                  focused={isFocused}
+                  onClick={(e) => {
+                    onEntryClick(entry.id, e);
+                    setFocusedId?.(entry.id);
+                  }}
+                />
+              </FileContextMenu>
             );
           })}
         </div>
@@ -174,12 +208,15 @@ function HeaderRow({ sortBy, sortDir, onSort }: HeaderRowProps) {
   );
 }
 
-interface DataRowProps {
+interface DataRowProps extends ComponentPropsWithoutRef<"div"> {
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
   focused: boolean;
   onClick: (event: ReactMouseEvent) => void;
+  // React 19's ref-as-prop. Radix's ContextMenuTrigger (asChild) passes
+  // a ref we need to merge with our internal roving-focus ref.
+  ref?: Ref<HTMLDivElement>;
 }
 
 function DataRow({
@@ -188,6 +225,8 @@ function DataRow({
   pending,
   focused,
   onClick,
+  ref: externalRef,
+  ...rest
 }: DataRowProps) {
   const iconName = iconForEntry(entry);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -202,9 +241,20 @@ function DataRow({
       ref.current.focus();
     }
   }, [focused]);
+  // Merged ref: our internal ref is used by the focus-on-focused effect;
+  // the external ref (if provided by Radix's ContextMenuTrigger via
+  // asChild) is assigned via a ref callback so both stay in sync.
+  const setRef = (node: HTMLDivElement | null): void => {
+    ref.current = node;
+    if (typeof externalRef === "function") externalRef(node);
+    else if (externalRef !== null && externalRef !== undefined) {
+      (externalRef as { current: HTMLDivElement | null }).current = node;
+    }
+  };
   return (
     <div
-      ref={ref}
+      {...rest}
+      ref={setRef}
       role="row"
       data-testid="explorer-row"
       data-entry-id={entry.id}
