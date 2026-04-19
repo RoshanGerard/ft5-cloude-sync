@@ -1,11 +1,17 @@
 import { dialog, ipcMain, type BrowserWindow } from "electron";
 
-import { DATASOURCES_CHANNELS } from "@ft5/ipc-contracts";
+import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
   DatasourcesActionRequest,
   DatasourcesAddRequest,
   DatasourcesRemoveRequest,
   DatasourcesUploadRequest,
+  FilesDownloadRequest,
+  FilesListRequest,
+  FilesRemoveRequest,
+  FilesRenameRequest,
+  FilesSearchRequest,
+  FilesStatRequest,
 } from "@ft5/ipc-contracts";
 
 import { handleDatasourcesAction } from "./datasources/action.js";
@@ -13,6 +19,12 @@ import { handleDatasourcesAdd } from "./datasources/add.js";
 import { handleDatasourcesList } from "./datasources/list.js";
 import { handleDatasourcesRemove } from "./datasources/remove.js";
 import { handleDatasourcesUpload } from "./datasources/upload.js";
+import { handleFilesDownload } from "./files/download.js";
+import { handleFilesList } from "./files/list.js";
+import { handleFilesRemove } from "./files/remove.js";
+import { handleFilesRename } from "./files/rename.js";
+import { handleFilesSearch } from "./files/search.js";
+import { handleFilesStat } from "./files/stat.js";
 import { handlePing } from "./ping.js";
 
 // Central IPC handler registration. Called once from `main/index.ts` after
@@ -62,5 +74,29 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
         },
         nextTransactionId: () => `tx-${Date.now()}-${String(++uploadCounter)}`,
       }),
+  );
+
+  // Files IPC surface — handlers delegate to the in-memory mock file system.
+  ipcMain.handle(FILES_CHANNELS.list, (_event, req: FilesListRequest) =>
+    handleFilesList(req),
+  );
+  ipcMain.handle(FILES_CHANNELS.stat, (_event, req: FilesStatRequest) =>
+    handleFilesStat(req),
+  );
+  ipcMain.handle(
+    FILES_CHANNELS.search,
+    (_event, req: FilesSearchRequest) => handleFilesSearch(req),
+  );
+  ipcMain.handle(
+    FILES_CHANNELS.rename,
+    (_event, req: FilesRenameRequest) => handleFilesRename(req),
+  );
+  ipcMain.handle(
+    FILES_CHANNELS.remove,
+    (_event, req: FilesRemoveRequest) => handleFilesRemove(req),
+  );
+  ipcMain.handle(
+    FILES_CHANNELS.download,
+    (_event, req: FilesDownloadRequest) => handleFilesDownload(req),
   );
 }
