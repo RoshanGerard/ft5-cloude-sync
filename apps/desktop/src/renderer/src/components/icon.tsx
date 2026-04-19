@@ -17,11 +17,15 @@
  */
 
 import {
+  ArrowUpIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   CloudIcon,
   DatabaseIcon,
   DropletsIcon,
   FolderSyncIcon,
   HardDriveIcon,
+  HomeIcon,
   LaptopIcon,
   MonitorIcon,
   MoonIcon,
@@ -61,6 +65,14 @@ export type IconName =
   //   `droplets`    — Serene Blue theme-switcher option indicator (Task 6c).
   | "folder-sync"
   | "droplets"
+  // ui-file-explorer: breadcrumb separator (chevron-right), back/forward/up
+  // navigation buttons on the explorer chrome. `home` is used as the root
+  // segment's leading glyph to match the design-note that the root reads as
+  // the datasource root.
+  | "chevron-left"
+  | "chevron-right"
+  | "arrow-up"
+  | "home"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -79,6 +91,10 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "trash-2": Trash2Icon,
   "folder-sync": FolderSyncIcon,
   droplets: DropletsIcon,
+  "chevron-left": ChevronLeftIcon,
+  "chevron-right": ChevronRightIcon,
+  "arrow-up": ArrowUpIcon,
+  home: HomeIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a
