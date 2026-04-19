@@ -4,8 +4,8 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 1 — Contracts and mocked IPC foundation
 
-- [ ] 1.1 Write failing `packages/ipc-contracts/src/__tests__/files.test-d.ts` asserting the shape of `FileEntry`, `FilesListRequest/Response`, `FilesStatRequest/Response`, `FilesSearchRequest/Response`, `FilesRenameRequest/Response`, `FilesRemoveRequest/Response`, `FilesDownloadRequest/Response` per design.md Decision 2.
-- [ ] 1.2 Implement `packages/ipc-contracts/src/files.ts` with the types in Decision 2. Export from the package's index.
+- [x] 1.1 Write failing `packages/ipc-contracts/src/__tests__/files.test-d.ts` asserting the shape of `FileEntry`, `FilesListRequest/Response`, `FilesStatRequest/Response`, `FilesSearchRequest/Response`, `FilesRenameRequest/Response`, `FilesRemoveRequest/Response`, `FilesDownloadRequest/Response` per design.md Decision 2.
+- [x] 1.2 Implement `packages/ipc-contracts/src/files.ts` with the types in Decision 2. Export from the package's index.
 - [ ] 1.3 Extend the four-layer IPC guardrail test (`scripts/ipc-datasources-four-layer.test.ts` — rename to `ipc-four-layer.test.ts` if it doesn't already cover multiple surfaces) to also assert every `files.*` method has all four layers present.
 - [ ] 1.4 Write failing tests for the in-memory mock file system in `apps/desktop/src/main/ipc/files/__tests__/mock-fs.test.ts` — seeding per datasource id, directory listing, stat, rename (files only), remove (partial failure supported), download.
 - [ ] 1.5 Implement `apps/desktop/src/main/ipc/files/mock-fs.ts` with plausible fixture trees per datasource (Google Drive: document-heavy; OneDrive: mixed; S3: image / video / archive mix). Enforce the 300-entry per-directory ceiling inline and export a helper for the ceiling guardrail test.
