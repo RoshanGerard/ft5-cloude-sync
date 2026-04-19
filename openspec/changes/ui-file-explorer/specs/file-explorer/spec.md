@@ -4,21 +4,21 @@
 
 ### Requirement: Explorer route is reached from the datasource card and scopes to a single datasource
 
-The renderer SHALL expose a file-explorer route at the path pattern `/datasources/[datasourceId]/explore`. The route SHALL be reachable from the datasource card's quick-actions menu via a new "Explore" item. Each visit SHALL scope to exactly one datasource identified by the `datasourceId` path segment, and SHALL maintain its own independent navigation history (back / forward / up) distinct from any other explorer session.
+The renderer SHALL expose a file-explorer route at the path `/datasources/explore` with the datasource id passed as the `id` query parameter. The route SHALL be reachable from the datasource card's quick-actions menu via a new "Explore" item. Each visit SHALL scope to exactly one datasource identified by the `id` query parameter, and SHALL maintain its own independent navigation history (back / forward / up) distinct from any other explorer session.
 
 #### Scenario: Explore quick-action navigates to the explorer for that datasource
 
 - **WHEN** the user opens a datasource card's quick-actions menu and activates the "Explore" item
-- **THEN** the renderer navigates to `/datasources/<id>/explore` where `<id>` is that card's datasource id; the dashboard is replaced by the explorer view; the back affordance returns the user to the dashboard
+- **THEN** the renderer navigates to `/datasources/explore?id=<datasourceId>` where `<datasourceId>` is that card's datasource id; the dashboard is replaced by the explorer view; the back affordance returns the user to the dashboard
 
 #### Scenario: Each explorer visit has its own history stack
 
 - **WHEN** the user navigates into subdirectories within an explorer, then opens a second datasource's explorer
 - **THEN** the second explorer starts at its own root with an empty history stack; navigating back in the second explorer does NOT traverse the first explorer's history
 
-#### Scenario: Explorer refuses to render without a valid datasourceId
+#### Scenario: Explorer refuses to render without a valid id query parameter
 
-- **WHEN** the explorer route receives a `datasourceId` that does not resolve to a known datasource (absent from the datasources list)
+- **WHEN** the explorer route receives an `id` query parameter that is absent or does not resolve to a known datasource (missing from the datasources list)
 - **THEN** the explorer renders an error state with the message "Datasource not found" and a button to return to the dashboard; no file-list IPC call is issued
 
 ### Requirement: Explorer chrome — breadcrumb, back / forward / up, toolbar, status row

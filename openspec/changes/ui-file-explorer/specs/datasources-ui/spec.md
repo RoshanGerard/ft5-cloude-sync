@@ -26,7 +26,7 @@ Connection status SHALL be one of exactly `connected`, `syncing`, `paused`, `err
 #### Scenario: Explore quick-action navigates to the file explorer for this datasource
 
 - **WHEN** the user activates the "Explore" item on the quick-actions menu of the card whose datasource id is `<id>`
-- **THEN** the renderer navigates to `/datasources/<id>/explore`; the dashboard is replaced by the file-explorer view; no IPC call on the datasources surface is issued as part of this navigation (the explorer fetches its own data via the files IPC surface after it mounts)
+- **THEN** the renderer navigates to `/datasources/explore?id=<id>`; the dashboard is replaced by the file-explorer view; no IPC call on the datasources surface is issued as part of this navigation (the explorer fetches its own data via the files IPC surface after it mounts)
 
 #### Scenario: Error status exposes the error reason
 

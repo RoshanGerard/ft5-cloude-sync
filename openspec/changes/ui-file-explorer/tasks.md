@@ -18,7 +18,7 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 - [x] 2.1 Write failing test for `features/file-explorer/store.ts` covering initial state, `navigate`, `back`, `forward`, `up`, `select` (single / range / toggle), `setViewMode`, `sort`, persisted preferences load / save, `pendingOps` insertion / clear, `lastError` surfacing.
 - [x] 2.2 Implement `features/file-explorer/store.ts` using `useSyncExternalStore`, matching the pattern of `features/theme/theme-store.ts`. Cross-session preferences (view mode, details-pane open, sort order) via `localStorage` under a per-datasource key.
-- [ ] 2.3 Write failing test for `app/datasources/[datasourceId]/explore/page.tsx` — renders the explorer when `datasourceId` resolves; renders a "Datasource not found" error when it doesn't; mounts the store with the correct initial datasource id.
+- [ ] 2.3 Write failing test for `app/datasources/explore/page.tsx` — reads the `id` query parameter; renders the explorer when `id` resolves to a known datasource; renders a "Datasource not found" error when `id` is absent or unknown; mounts the store with the correct datasource id via `useExplorerStore(id)`.
 - [ ] 2.4 Implement the route page and wire it into Next.js routing.
 - [ ] 2.5 Write failing test for `features/file-explorer/breadcrumb.tsx` — renders segments for a given path, activates per-segment navigation on click and Enter, exposes `<nav aria-label="Folder path">`.
 - [ ] 2.6 Implement the breadcrumb component.
@@ -98,7 +98,7 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 ## Phase 8 — Card integration
 
 - [ ] 8.1 Write failing test extending `features/datasources/card.test.tsx` — the quick-actions menu contains "Explore" as the first item.
-- [ ] 8.2 Add the "Explore" item to the card's quick-actions menu in `features/datasources/card.tsx`; wire it to `router.push("/datasources/<id>/explore")`.
+- [ ] 8.2 Add the "Explore" item to the card's quick-actions menu in `features/datasources/card.tsx`; wire it to `router.push(\`/datasources/explore?id=${id}\`)`.
 - [ ] 8.3 Update any snapshot or menu-order tests across the feature to include the new item without drift.
 
 ## Phase 9 — Accessibility, guardrails, and docs

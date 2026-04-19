@@ -32,19 +32,20 @@ This change is paired with a new `window.api.files.*` IPC surface whose v1 handl
 
 ## Decisions
 
-### Decision 1: Route = `/datasources/[datasourceId]/explore`, one explorer per datasource, independent history
+### Decision 1: Route = `/datasources/explore?id=<datasourceId>`, one explorer per datasource, independent history
 
-**Chosen:** The explorer lives at a Next.js file route under `apps/desktop/src/renderer/src/app/datasources/[datasourceId]/explore/page.tsx`. Each datasource gets its own explorer view with its own history stack (back / forward). Navigating from the card to the explorer is a standard router push. Back navigation from the browser / window level returns the user to the dashboard.
+**Chosen:** The explorer lives at a static Next.js page route under `apps/desktop/src/renderer/src/app/datasources/explore/page.tsx`. The datasource id is passed as a query parameter (`?id=<datasourceId>`) and read client-side. Each datasource gets its own explorer view with its own history stack (back / forward), keyed by the id. Navigating from the card to the explorer is a standard router push (`router.push(\`/datasources/explore?id=${datasourceId}\`)`). Back navigation from the browser / window level returns the user to the dashboard.
 
 **Rationale:**
-- Static export via Next.js is the existing renderer pattern; a file route matches how the rest of the app is structured.
-- Per-datasource history means switching datasources doesn't poison back/forward state. The alternative (one shared explorer window) forces weird cross-provider breadcrumbs and a "what counts as back" conversation.
-- A real route means the URL reflects the user's location — useful for diagnostics and for future deep-linking from `sonner` toasts ("file deleted — open location").
+- Static export (`output: "export"` in `next.config.mjs`) is a hard constraint of the Electron packaging model — the app ships a pre-rendered bundle with no Node runtime. A dynamic file route like `[datasourceId]` would need `generateStaticParams` enumerating every possible id at build time, which breaks the moment a user adds a new datasource at runtime via the add-flow (runtime ids like `ds-new-1`, `ds-new-2`, …). A query-param route sidesteps that entirely: one page, any id.
+- Per-datasource history means switching datasources doesn't poison back/forward state. The store's factory is keyed by `datasourceId` (an argument to `createExplorerStore(id)` and the persistence key); the page reads the id from `?id=` and passes it into the factory.
+- A real URL still reflects the user's location — useful for diagnostics and for future deep-linking from `sonner` toasts ("file deleted — open location"). The URL shape `app://local/datasources/explore?id=ds-gdrive-personal` is legible and shareable.
 
 **Alternatives considered:**
-- *Slide-over / side panel over the dashboard.* Rejected: nice for peek but the real surface area (six view modes, breadcrumb, details pane, status row) needs space. Slide-over forces crowding or scrolling; a full page gives it room.
-- *Inline card expansion.* Rejected: puts the explorer in the dashboard grid cell, which fights every layout mode and gives the browser panel a screen-height fight with the rest of the cards.
-- *One shared explorer with a datasource switcher in the chrome.* Rejected: creates the "what does back do when I switched sources" problem. Simpler to have each source be its own surface.
+- *Dynamic file route `[datasourceId]` with `generateStaticParams`.* Rejected: works for the four seeded mock ids but silently breaks for runtime-added datasources in `output: "export"` mode. A trap that looks fine in the mock-only v1 and fails the first time real datasources exist.
+- *Slide-over / side panel over the dashboard.* Rejected: nice for peek but the real surface area (six view modes, breadcrumb, details pane, status row) needs space.
+- *Inline card expansion.* Rejected: fights every dashboard layout mode.
+- *One shared explorer with a datasource switcher in the chrome.* Rejected: creates the "what does back do when I switched sources" problem. The query-param approach keeps each datasource's explorer conceptually its own surface without needing a dynamic file route.
 
 ### Decision 2: `Entry` type + `window.api.files.*` IPC surface is the narrow waist
 
