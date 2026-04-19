@@ -36,27 +36,12 @@
      per the literals-ban guardrail). */
   --brand-primary: oklch(0.585 0.220 27);
 
-  /* Decision 16 (review-round-1): geometric watermark — a 48px tile of a
-     pentagonal outline + 5 radiating thin lines, echoing the brand mark's
-     5-fold symmetry. Rendered at stroke-opacity 0.09 so the pattern is
-     "felt, not seen" at the 8–12% subtle-visible band the user specified.
-     The stroke is baked into the SVG as #0a0a0a because `background-image`
-     can't inherit `currentColor` from the element context; the .dark block
-     re-declares the variable with a light stroke (#fafafa) for warm-near-
-     black readability. Tile size 48px → `background-size: 48px 48px` in
-     the consumer (or left to the SVG's own width/height attrs, which the
-     browser uses as the CSS tile size by default). */
-  --watermark-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48' fill='none' stroke='%230a0a0a' stroke-opacity='0.09' stroke-width='1' stroke-linecap='round'><polygon points='24,10 37.3,19.6 32.2,35.2 15.8,35.2 10.7,19.6'/><line x1='24' y1='24' x2='24' y2='4'/><line x1='24' y1='24' x2='43' y2='10.2'/><line x1='24' y1='24' x2='35.8' y2='44.5'/><line x1='24' y1='24' x2='12.2' y2='44.5'/><line x1='24' y1='24' x2='5' y2='10.2'/></svg>");
-}
-
-/* Dashboard canvas (Decision 16): the watermark lives ONLY here — not on
-   the app header/footer, not on cards. Keeping the pattern confined to the
-   main surface matches the "canvas accent, not decoration everywhere"
-   rationale. The background is tiled at the SVG's natural 48px tile size
-   on top of the surface background colour. */
-.dashboard-canvas {
-  background-image: var(--watermark-image);
-  background-repeat: repeat;
+  /* Review-round-2, Task 2: the Decision 16 tiled pentagonal watermark
+     and its `--watermark-image` token were removed. The dashboard now
+     renders a hand-authored <DashboardBackground /> inline SVG
+     (features/datasources/dashboard-background.tsx) instead — a single
+     asymmetric hexagon-network composition that adapts to theme via
+     currentColor without needing a CSS-level data-URL. */
 }
 
 .dark {
@@ -97,11 +82,11 @@
      cascade footgun. */
   --brand-primary: oklch(0.585 0.220 27);
 
-  /* Decision 16 (review-round-1): warm-near-black dark theme needs a light
-     stroke to keep the pentagonal tile legible at the same 0.09 opacity
-     the light theme uses. Same geometry as :root — only the stroke colour
-     flips from near-black (#0a0a0a) to near-white (#fafafa). */
-  --watermark-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48' fill='none' stroke='%23fafafa' stroke-opacity='0.09' stroke-width='1' stroke-linecap='round'><polygon points='24,10 37.3,19.6 32.2,35.2 15.8,35.2 10.7,19.6'/><line x1='24' y1='24' x2='24' y2='4'/><line x1='24' y1='24' x2='43' y2='10.2'/><line x1='24' y1='24' x2='35.8' y2='44.5'/><line x1='24' y1='24' x2='12.2' y2='44.5'/><line x1='24' y1='24' x2='5' y2='10.2'/></svg>");
+  /* Review-round-2, Task 2: the dark-theme override for the removed
+     `--watermark-image` is gone alongside the :root declaration. The
+     hex-network <DashboardBackground /> uses `currentColor`, which
+     resolves to the theme `--foreground` (warm-near-white in .dark),
+     so no per-theme duplicate is needed. */
 }
 
 @theme inline {

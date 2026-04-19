@@ -17,6 +17,7 @@ import { Icon } from "@/components/icon";
 
 import { AddDatasourceDialog } from "./add-dialog";
 import { DatasourceCard } from "./card";
+import { DashboardBackground } from "./dashboard-background";
 import { EmptyDatasourcesIllustration } from "./illustrations/empty-datasources";
 import { useDatasourceActions, useDatasources } from "./store";
 
@@ -201,20 +202,29 @@ export function DatasourcesDashboard() {
     // two <main> landmarks (invalid HTML + a11y regression). `flex h-full
     // flex-col` keeps the previous behaviour of the dashboard filling the
     // height of its slot.
+    //
+    // Review-round-2, Task 2: the tiled CSS watermark is gone. The root
+    // is now `relative` so <DashboardBackground /> (absolute inset-0,
+    // aria-hidden) can layer behind the content, and the content lives
+    // inside a `relative z-10` wrapper so nothing falls behind the
+    // decorative SVG.
     <div
       data-testid="datasources-dashboard-root"
-      className="dashboard-canvas flex h-full flex-col"
+      className="relative flex h-full flex-col"
     >
-      <DatasourcesToolbar
-        onAddDatasourceClick={onAddDatasourceClick}
-        triggerRef={toolbarTriggerRef}
-      />
-      <DashboardStates onAddDatasourceClick={onAddDatasourceClick} />
-      <AddDatasourceDialog
-        open={addDialogOpen}
-        onOpenChange={setAddDialogOpen}
-        returnFocusTo={returnFocusTo}
-      />
+      <DashboardBackground />
+      <div className="relative z-10 flex h-full flex-col">
+        <DatasourcesToolbar
+          onAddDatasourceClick={onAddDatasourceClick}
+          triggerRef={toolbarTriggerRef}
+        />
+        <DashboardStates onAddDatasourceClick={onAddDatasourceClick} />
+        <AddDatasourceDialog
+          open={addDialogOpen}
+          onOpenChange={setAddDialogOpen}
+          returnFocusTo={returnFocusTo}
+        />
+      </div>
     </div>
   );
 }
