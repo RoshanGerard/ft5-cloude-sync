@@ -10,10 +10,10 @@
 
 ## 2. Event bus with throttle
 
-- [ ] 2.1 RED: write `packages/fs-datasource-engine/src/event-bus.test.ts` covering: (a) non-streaming events deliver immediately, (b) streaming events coalesce at 1-second boundaries, (c) streaming events emit on ≥10% progress delta, (d) terminal events bypass the throttle synchronously, (e) throttle keys are per-`(datasourceId, transactionId)`.
-- [ ] 2.2 GREEN: implement `EventBus` in `packages/fs-datasource-engine/src/event-bus.ts`. Use `setTimeout` / `queueMicrotask` for scheduling; inject a clock via constructor for tests.
-- [ ] 2.3 Refactor: extract the coalescing filter into a `StreamingCoalescer` helper if it clarifies the bus. Verify all tests still pass.
-- [ ] 2.4 Request code review for Phase 2 via `superpowers:requesting-code-review` before proceeding.
+- [x] 2.1 RED: write `packages/fs-datasource-engine/src/event-bus.test.ts` covering: (a) non-streaming events deliver immediately, (b) streaming events coalesce at 1-second boundaries, (c) streaming events emit on ≥10% progress delta, (d) terminal events bypass the throttle synchronously, (e) throttle keys are per-`(datasourceId, transactionId)`.
+- [x] 2.2 GREEN: implement `EventBus` in `packages/fs-datasource-engine/src/event-bus.ts`. Use `setTimeout` / `queueMicrotask` for scheduling; inject a clock via constructor for tests.
+- [x] 2.3 Refactor: extract the coalescing filter into a `StreamingCoalescer` helper if it clarifies the bus. Verify all tests still pass.
+- [x] 2.4 Request code review for Phase 2 via `superpowers:requesting-code-review` before proceeding.
 
 ## 3. BaseDatasourceClient template
 

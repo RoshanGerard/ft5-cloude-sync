@@ -22,3 +22,12 @@ export type {
   Target,
 } from "@ft5/ipc-contracts";
 export { DatasourceError } from "@ft5/ipc-contracts";
+
+// Phase 2: event bus runtime. Framework-agnostic — pure Node, no Electron.
+export { createEventBus } from "./event-bus.js";
+export type {
+  Clock,
+  ClockTimer,
+  EventBus,
+  EventBusOptions,
+} from "./event-bus.js";

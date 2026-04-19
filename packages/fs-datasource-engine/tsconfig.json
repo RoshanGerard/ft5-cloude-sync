@@ -10,6 +10,6 @@
     "lib": ["ES2023"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules", "src/**/__tests__/**"],
+  "exclude": ["dist", "node_modules", "src/**/__tests__/**", "src/**/*.test.ts"],
   "references": [{ "path": "../ipc-contracts" }]
 }
