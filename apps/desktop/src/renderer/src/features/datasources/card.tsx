@@ -16,9 +16,11 @@
 //   - Card root padding `p-4`, override the shadcn default `py-6`.
 //   - Numeric text (item count, usage values, last-sync digits) uses
 //     Tailwind's `tabular-nums` utility for stable digit width.
-//   - Syncing status dot gets `motion-safe:animate-sync-pulse` — the
-//     motion-safe: variant ensures reduced-motion users see a static dot,
-//     complementing the reduced-motion @media wrapping in globals.css.
+//   - Syncing status dot gets bare `animate-sync-pulse` / `animate-sync-ripple`
+//     utilities — custom product animations default to always-on. Users who
+//     want OS reduce-motion honoured enable Motion Safe in Settings, which
+//     writes `data-motion="safe"` on <html> and a CSS override in globals.css
+//     disables these animations when the OS also signals reduce-motion.
 //   - No `backdrop-blur` — glass is reserved for overlays (Dialog,
 //     DropdownMenu, Tooltip).
 //   - No rounded-lg/xl/2xl/3xl or fully-rounded utility — the radii-ceiling
@@ -214,15 +216,18 @@ function statusBadgeVariant(
 // guardrail caps feature code at rounded-md, so the circle has to come
 // from an SVG primitive rather than a Tailwind radius class.
 //
-// Motion:
-//   - the inner solid dot keeps `motion-safe:animate-sync-pulse` (gentle
+// Motion (Motion-Safe-toggle phase):
+//   - the inner solid dot carries bare `animate-sync-pulse` (gentle
 //     opacity breathing);
-//   - the outer ring uses `motion-safe:animate-sync-ripple` (expanding
+//   - the outer ring carries bare `animate-sync-ripple` (expanding
 //     scale + fade-out), needing `transform-origin: center` +
 //     `transform-box: fill-box` so the scale transform pivots around
 //     the ring's centre inside the SVG coordinate system.
-// Both animations are gated by `motion-safe:` so `prefers-reduced-motion:
-// reduce` users see a static, non-animating dot (no ring motion).
+// The `motion-safe:` prefix was stripped so custom animations run regardless
+// of OS `prefers-reduced-motion`. Users who want OS-respectful behaviour
+// enable Motion Safe via the Settings dialog — that sets `data-motion="safe"`
+// on <html> and the override rule in globals.css disables these animations
+// when the OS also signals reduce-motion. See features/settings/motion-store.ts.
 function SyncingDot() {
   // viewBox is intentionally 3x the visible dot size so the ring has room
   // to expand to scale(2.4) without hitting the SVG clip boundary. At
@@ -250,7 +255,7 @@ function SyncingDot() {
         fill="none"
         stroke="currentColor"
         strokeWidth="1.5"
-        className={cn("motion-safe:animate-sync-ripple")}
+        className={cn("animate-sync-ripple")}
         style={{ transformOrigin: "center", transformBox: "fill-box" }}
       />
       {/* Solid dot with the existing gentle pulse breathing. */}
@@ -258,7 +263,7 @@ function SyncingDot() {
         cx="12"
         cy="12"
         r="4"
-        className={cn("motion-safe:animate-sync-pulse")}
+        className={cn("animate-sync-pulse")}
         style={{ transformOrigin: "center", transformBox: "fill-box" }}
       />
     </svg>

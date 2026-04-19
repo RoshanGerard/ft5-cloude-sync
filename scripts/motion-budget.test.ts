@@ -68,10 +68,16 @@ const ALLOWED_ANIMATE_CLASSES = new Set([
 ]);
 
 // Allowed CSS `animation-name` / full `animation` shorthand references.
+// `none` is allowed as a kill-switch value: the Motion Safe opt-in override
+// in globals.css uses `animation: none !important;` to disable the three
+// whitelisted animations when the user has toggled Motion Safe AND the OS
+// signals reduce-motion. It's not declaring a new animation, it's turning
+// whitelisted ones off — aligned with the whitelist's intent.
 const ALLOWED_ANIMATION_NAMES = new Set([
   "skeleton-shimmer",
   "sync-pulse",
   "sync-ripple",
+  "none",
 ]);
 
 // Allowed CSS `transition-property` values.

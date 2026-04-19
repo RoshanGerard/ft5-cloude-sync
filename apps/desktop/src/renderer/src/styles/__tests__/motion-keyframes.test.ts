@@ -60,53 +60,87 @@ function extractThemeBlock(source: string): string | null {
   return null;
 }
 
-describe("motion keyframes — task 4b.4", () => {
-  it("declares the reduced-motion media block", () => {
-    const block = extractMediaBlock(
-      css,
-      /@media\s*\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)/,
-    );
-    expect(block).not.toBeNull();
-  });
+describe("motion keyframes — task 4b.4 (flipped for Motion Safe opt-in)", () => {
+  // Motion-Safe-toggle phase (see features/settings/motion-store.ts): custom
+  // animations now default to ALWAYS ON. The three @keyframes therefore move
+  // OUT of the `prefers-reduced-motion: no-preference` media gate so they're
+  // declared at top level. Gating happens on the utility level — if the user
+  // has opted into Motion Safe (Settings dialog → Motion Safe toggle ON),
+  // `data-motion="safe"` appears on <html> and a separate media block with a
+  // `html[data-motion="safe"] .animate-*` selector overrides `animation: none`
+  // when the OS also signals reduce-motion. Non-Motion-Safe users see animations
+  // regardless of OS preference. shadcn primitive motion (Dialog / DropdownMenu /
+  // Tooltip) is independently gated via Tailwind's `motion-safe:` variants and
+  // is unaffected by this toggle.
 
-  it("skeleton-shimmer @keyframes is nested inside the reduced-motion media block", () => {
-    const block = extractMediaBlock(
-      css,
-      /@media\s*\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)/,
-    );
-    expect(block).not.toBeNull();
-    expect(block!).toMatch(/@keyframes\s+skeleton-shimmer\s*\{/);
-  });
-
-  it("sync-pulse @keyframes is nested inside the reduced-motion media block", () => {
-    const block = extractMediaBlock(
-      css,
-      /@media\s*\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)/,
-    );
-    expect(block).not.toBeNull();
-    expect(block!).toMatch(/@keyframes\s+sync-pulse\s*\{/);
-  });
-
-  it("sync-ripple @keyframes is nested inside the reduced-motion media block (round-3)", () => {
-    const block = extractMediaBlock(
-      css,
-      /@media\s*\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)/,
-    );
-    expect(block).not.toBeNull();
-    expect(block!).toMatch(/@keyframes\s+sync-ripple\s*\{/);
-  });
-
-  it("all motion keyframes are NOT declared at the top level (must stay gated)", () => {
-    // Strip media blocks from the source, then assert no bare @keyframes
-    // remains. If the author accidentally moved any rule outside the
-    // media gate, this catches it.
+  it("skeleton-shimmer @keyframes is declared at top level (not inside a media block)", () => {
+    // Strip every media block; what remains should still contain the keyframe.
     const stripped = css.replace(
       /@media\s*\([^)]*\)\s*\{[\s\S]*?\n\}/g,
       "",
     );
-    expect(stripped).not.toMatch(/@keyframes\s+skeleton-shimmer/);
-    expect(stripped).not.toMatch(/@keyframes\s+sync-pulse/);
-    expect(stripped).not.toMatch(/@keyframes\s+sync-ripple/);
+    expect(stripped).toMatch(/@keyframes\s+skeleton-shimmer\s*\{/);
+  });
+
+  it("sync-pulse @keyframes is declared at top level (not inside a media block)", () => {
+    const stripped = css.replace(
+      /@media\s*\([^)]*\)\s*\{[\s\S]*?\n\}/g,
+      "",
+    );
+    expect(stripped).toMatch(/@keyframes\s+sync-pulse\s*\{/);
+  });
+
+  it("sync-ripple @keyframes is declared at top level (not inside a media block)", () => {
+    const stripped = css.replace(
+      /@media\s*\([^)]*\)\s*\{[\s\S]*?\n\}/g,
+      "",
+    );
+    expect(stripped).toMatch(/@keyframes\s+sync-ripple\s*\{/);
+  });
+
+  it("declares the Motion Safe opt-in override media block (prefers-reduced-motion: reduce)", () => {
+    // The opt-in override: custom animations are disabled ONLY when BOTH the
+    // `data-motion="safe"` attribute is set on <html> AND the OS signals
+    // reduce-motion. Users who haven't toggled Motion Safe continue to see
+    // animations regardless of OS preference.
+    const block = extractMediaBlock(
+      css,
+      /@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)/,
+    );
+    expect(block).not.toBeNull();
+  });
+
+  it("Motion Safe override disables animate-sync-pulse when data-motion='safe' + OS reduce-motion", () => {
+    const block = extractMediaBlock(
+      css,
+      /@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)/,
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(
+      /html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-pulse[^{]*\{[^}]*animation\s*:\s*none/,
+    );
+  });
+
+  it("Motion Safe override disables animate-sync-ripple when data-motion='safe' + OS reduce-motion", () => {
+    const block = extractMediaBlock(
+      css,
+      /@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)/,
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(
+      /html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-ripple[^{]*\{[^}]*animation\s*:\s*none/,
+    );
+  });
+
+  it("Motion Safe override disables animate-skeleton-shimmer when data-motion='safe' + OS reduce-motion", () => {
+    const block = extractMediaBlock(
+      css,
+      /@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)/,
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(
+      /html\[data-motion\s*=\s*"safe"\][^{]*\.animate-skeleton-shimmer[^{]*\{[^}]*animation\s*:\s*none/,
+    );
   });
 
   it("exposes --animate-skeleton-shimmer in the @theme inline block", () => {

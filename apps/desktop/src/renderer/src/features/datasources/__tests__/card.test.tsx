@@ -247,18 +247,27 @@ describe("DatasourceCard — visual refinement", () => {
     const summary = buildSummary({ status: "syncing" });
     renderWithProvider(<DatasourceCard summary={summary} />);
     const dot = screen.getByTestId("datasource-syncing-dot");
-    // Round-3: SyncingDot is now a two-circle SVG — the inner solid circle
-    // keeps `motion-safe:animate-sync-pulse` (gentle opacity breathing),
-    // and an outer ring uses `motion-safe:animate-sync-ripple` (expanding
-    // radar ping). Read `class` attribute strings from each child circle;
+    // Motion-Safe-toggle phase: the `motion-safe:` prefix was stripped
+    // because custom product animations now default to ALWAYS ON regardless
+    // of OS `prefers-reduced-motion`. Gating is user-controlled via the
+    // Settings dialog's Motion Safe toggle — see
+    // features/settings/motion-store.ts + the override in globals.css.
+    // Read `class` attribute strings from each child circle;
     // SVGElement.className is an SVGAnimatedString, not a plain string.
     const circles = Array.from(dot.querySelectorAll<SVGCircleElement>("circle"));
     expect(circles.length).toBe(2);
     const classes = circles.map((c) => c.getAttribute("class") ?? "");
-    const hasPulse = classes.some((c) => /\bmotion-safe:animate-sync-pulse\b/.test(c));
-    const hasRipple = classes.some((c) => /\bmotion-safe:animate-sync-ripple\b/.test(c));
+    const hasPulse = classes.some((c) => /\banimate-sync-pulse\b/.test(c));
+    const hasRipple = classes.some((c) => /\banimate-sync-ripple\b/.test(c));
     expect(hasPulse).toBe(true);
     expect(hasRipple).toBe(true);
+    // Structural guard: the bare utilities replace the previously
+    // motion-safe:-gated forms. Presence of `motion-safe:animate-sync-*` on
+    // any circle would indicate the prefix was not fully removed.
+    const hasStalePrefixed = classes.some((c) =>
+      /\bmotion-safe:animate-sync-(pulse|ripple)\b/.test(c),
+    );
+    expect(hasStalePrefixed).toBe(false);
   });
 
   it("card root does NOT carry any backdrop-blur-* class (glass is overlays-only)", () => {
@@ -314,51 +323,57 @@ describe("DatasourceCard — provider registry integration", () => {
   });
 });
 
-describe("DatasourceCard — feature-level reduced-motion gating", () => {
-  it("syncing dot is motion-safe-gated so prefers-reduced-motion kills the pulse", () => {
-    // Stub matchMedia so any consumer that checks it sees reduce === true.
-    const originalMatchMedia = window.matchMedia;
-    (window as unknown as { matchMedia: typeof window.matchMedia }).matchMedia =
-      vi.fn().mockImplementation((query: string) => ({
-        matches: /prefers-reduced-motion:\s*reduce/.test(query),
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      }));
+describe("DatasourceCard — Motion Safe opt-in gating (mechanism changed)", () => {
+  // Previously, the SyncingDot circles used `motion-safe:animate-sync-*` so
+  // OS `prefers-reduced-motion: reduce` unconditionally suppressed custom
+  // animations. User feedback (dev machines silently run with reduce-motion
+  // enabled → animations invisible) reversed this: custom animations now
+  // default to ALWAYS ON regardless of OS preference. Gating happens via a
+  // user-facing Settings toggle (Motion Safe), which writes
+  // `data-motion="safe"` on <html>. A CSS override in globals.css combines
+  // that attribute with `@media (prefers-reduced-motion: reduce)` to disable
+  // the three custom animations. This test asserts the new mechanism:
+  //   1. Bare `animate-sync-*` utilities live on the SyncingDot circles (no
+  //      `motion-safe:` prefix).
+  //   2. The globals.css override rule for `html[data-motion="safe"]` is
+  //      present — the CSS-side gate the UI toggle targets.
 
+  it("syncing dot circles carry bare animate-sync-* utilities (no motion-safe: prefix)", () => {
     const summary = buildSummary({ status: "syncing" });
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     const dot = screen.getByTestId("datasource-syncing-dot");
-    // Structural assertion: both motion utilities on the SyncingDot
-    // composition (pulse on the inner dot, ripple on the outer ring)
-    // must be motion-safe-gated so `prefers-reduced-motion: reduce`
-    // users see no animation. jsdom does not actually evaluate the
-    // Tailwind stylesheet, so we verify the class-list shape on each
-    // child circle rather than `computed animation-duration` (empty
-    // regardless of gating under jsdom).
     const circles = Array.from(dot.querySelectorAll<SVGCircleElement>("circle"));
-    for (const c of circles) {
-      const cls = c.getAttribute("class") ?? "";
-      // Each child circle may carry one motion utility (or none, if it's
-      // the static mid-layer). Whichever it carries, the bare form is
-      // forbidden — it must be gated.
-      expect(cls).not.toMatch(/(^|\s)animate-sync-pulse(\s|$)/);
-      expect(cls).not.toMatch(/(^|\s)animate-sync-ripple(\s|$)/);
-    }
-    // And at least one circle DOES carry the gated pulse + one carries
-    // the gated ripple — confirming the canonical authoring shape.
     const classes = circles.map((c) => c.getAttribute("class") ?? "");
-    expect(classes.some((c) => /\bmotion-safe:animate-sync-pulse\b/.test(c))).toBe(true);
-    expect(classes.some((c) => /\bmotion-safe:animate-sync-ripple\b/.test(c))).toBe(true);
 
-    // Restore.
-    (window as unknown as { matchMedia: typeof window.matchMedia }).matchMedia =
-      originalMatchMedia;
+    // Bare forms present (canonical authoring shape post-Motion-Safe-toggle).
+    expect(classes.some((c) => /\banimate-sync-pulse\b/.test(c))).toBe(true);
+    expect(classes.some((c) => /\banimate-sync-ripple\b/.test(c))).toBe(true);
+
+    // No lingering `motion-safe:` prefix on the sync utilities.
+    for (const cls of classes) {
+      expect(cls).not.toMatch(/\bmotion-safe:animate-sync-pulse\b/);
+      expect(cls).not.toMatch(/\bmotion-safe:animate-sync-ripple\b/);
+    }
+
     void within;
+  });
+
+  it("globals.css declares the html[data-motion='safe'] override targeting the three animations", async () => {
+    // Structural assertion against the stylesheet source — jsdom does not
+    // evaluate Tailwind, so we read the CSS and verify the rule exists.
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const cssPath = path.resolve(here, "..", "..", "..", "styles", "globals.css");
+    const css = readFileSync(cssPath, "utf8");
+
+    // One media block under `prefers-reduced-motion: reduce` that targets
+    // `html[data-motion="safe"] .animate-*` for all three animations.
+    expect(css).toMatch(/@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)/);
+    expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-pulse/);
+    expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-ripple/);
+    expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-skeleton-shimmer/);
   });
 });

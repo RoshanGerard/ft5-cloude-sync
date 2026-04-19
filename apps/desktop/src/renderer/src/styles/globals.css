@@ -186,45 +186,64 @@
   }
 }
 
-/* Motion keyframes (design.md Decision 10). Gated behind
-   `prefers-reduced-motion: no-preference` so OS-level reduce-motion users
-   never see the animation declarations applied. shadcn primitives use the
-   `motion-safe:` Tailwind prefix for the same reason — see dialog.tsx,
-   dropdown-menu.tsx. */
-@media (prefers-reduced-motion: no-preference) {
-  @keyframes skeleton-shimmer {
-    0% {
-      background-position: -200% 0;
-    }
-    100% {
-      background-position: 200% 0;
-    }
+/* Motion keyframes (design.md Decision 10 + Motion Safe toggle phase).
+   Custom product animations now default to ALWAYS ON — the keyframes live
+   at top level so they're declared regardless of OS preference. User
+   gating happens two ways:
+     1. Per-utility via Tailwind's `motion-safe:` variant (used by shadcn
+        primitives — Dialog / DropdownMenu / Tooltip — and unaffected by
+        the Motion Safe toggle).
+     2. Via the user-facing Motion Safe toggle (Settings dialog) — when on,
+        `data-motion="safe"` is set on <html> and the override rule below
+        disables our custom `animate-*` utilities while the OS also signals
+        reduce-motion. Default is OFF (attribute absent); custom animations
+        run regardless of OS preference. See features/settings/motion-store.ts. */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
   }
-
-  @keyframes sync-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
+  100% {
+    background-position: 200% 0;
   }
+}
 
-  /* Radar-ping expansion: a ring starts at its drawn size (scale 1) with
-     opacity 0.9, expands outward, fades to transparent. Restarts every
-     cycle. Used on the outer <circle> of the SyncingDot composition.
-     Requires the consuming element to set transform-origin + transform-box
-     so the scale pivots around the ring's centre — see card.tsx
-     SyncingDot. */
-  @keyframes sync-ripple {
-    0% {
-      transform: scale(1);
-      opacity: 0.9;
-    }
-    100% {
-      transform: scale(2.4);
-      opacity: 0;
-    }
+@keyframes sync-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Radar-ping expansion: a ring starts at its drawn size (scale 1) with
+   opacity 0.9, expands outward, fades to transparent. Restarts every
+   cycle. Used on the outer <circle> of the SyncingDot composition.
+   Requires the consuming element to set transform-origin + transform-box
+   so the scale pivots around the ring's centre — see card.tsx
+   SyncingDot. */
+@keyframes sync-ripple {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+/* Motion Safe opt-in: when `data-motion="safe"` is on <html> AND the OS
+   signals reduce-motion, disable our three custom product animations.
+   Leaves shadcn primitive motion (Radix fade/zoom/slide via `motion-safe:`
+   variant) independently gated at the utility level so the two systems
+   don't leak into each other. `!important` beats Tailwind's utility
+   specificity. */
+@media (prefers-reduced-motion: reduce) {
+  html[data-motion="safe"] .animate-sync-pulse,
+  html[data-motion="safe"] .animate-sync-ripple,
+  html[data-motion="safe"] .animate-skeleton-shimmer {
+    animation: none !important;
   }
 }
