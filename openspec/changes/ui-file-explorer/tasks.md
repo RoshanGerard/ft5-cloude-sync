@@ -18,12 +18,12 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 - [x] 2.1 Write failing test for `features/file-explorer/store.ts` covering initial state, `navigate`, `back`, `forward`, `up`, `select` (single / range / toggle), `setViewMode`, `sort`, persisted preferences load / save, `pendingOps` insertion / clear, `lastError` surfacing.
 - [x] 2.2 Implement `features/file-explorer/store.ts` using `useSyncExternalStore`, matching the pattern of `features/theme/theme-store.ts`. Cross-session preferences (view mode, details-pane open, sort order) via `localStorage` under a per-datasource key.
-- [ ] 2.3 Write failing test for `app/datasources/explore/page.tsx` — reads the `id` query parameter; renders the explorer when `id` resolves to a known datasource; renders a "Datasource not found" error when `id` is absent or unknown; mounts the store with the correct datasource id via `useExplorerStore(id)`.
-- [ ] 2.4 Implement the route page and wire it into Next.js routing.
-- [ ] 2.5 Write failing test for `features/file-explorer/breadcrumb.tsx` — renders segments for a given path, activates per-segment navigation on click and Enter, exposes `<nav aria-label="Folder path">`.
-- [ ] 2.6 Implement the breadcrumb component.
-- [ ] 2.7 Write failing test for back/forward/up buttons — correct enabled state at history bounds, keyboard activation, proper aria-labels.
-- [ ] 2.8 Implement the back / forward / up controls as part of the explorer chrome.
+- [x] 2.3 Write failing test for `app/datasources/explore/page.tsx` — reads the `id` query parameter; renders the explorer when `id` resolves to a known datasource; renders a "Datasource not found" error when `id` is absent or unknown; mounts the store with the correct datasource id via `useExplorerStore(id)`.
+- [x] 2.4 Implement the route page and wire it into Next.js routing.
+- [x] 2.5 Write failing test for `features/file-explorer/breadcrumb.tsx` — renders segments for a given path, activates per-segment navigation on click and Enter, exposes `<nav aria-label="Folder path">`.
+- [x] 2.6 Implement the breadcrumb component.
+- [x] 2.7 Write failing test for back/forward/up buttons — correct enabled state at history bounds, keyboard activation, proper aria-labels.
+- [x] 2.8 Implement the back / forward / up controls as part of the explorer chrome.
 
 ## Phase 3 — View modes and icon mapping
 
