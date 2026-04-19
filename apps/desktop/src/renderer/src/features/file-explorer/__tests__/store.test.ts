@@ -387,6 +387,42 @@ describe("selection — select / selectAll / clearSelection", () => {
     expect([...snap(store).selection]).toEqual(["c"]);
   });
 
+  it("'range' keeps the anchor stable across repeated shift-clicks (Windows Explorer semantics)", () => {
+    // User clicks "a" (plain) → anchor=a.
+    // Shift-clicks "c" → range a..c, anchor still a.
+    // Still holding shift, clicks "e" → range a..e (NOT c..e).
+    // Regression: earlier implementation updated lastSelectedId on every
+    // range-mode call, walking the anchor along each endpoint and giving
+    // the wrong range on the second shift-click.
+    const store = storeWithEntries();
+    store.select("a", "replace");
+    store.select("c", "range");
+    expect([...snap(store).selection]).toEqual(["a", "b", "c"]);
+
+    store.select("e", "range");
+    expect([...snap(store).selection]).toEqual(["a", "b", "c", "d", "e"]);
+
+    // A subsequent shrink back to "b" still uses the anchor at "a".
+    store.select("b", "range");
+    expect([...snap(store).selection]).toEqual(["a", "b"]);
+  });
+
+  it("'range' anchor DOES move on plain click between shift-clicks", () => {
+    // The sticky-anchor rule is about REPEATED shift-clicks. A plain
+    // click in between MUST reset the anchor so the user can start a
+    // fresh range.
+    const store = storeWithEntries();
+    store.select("a", "replace");
+    store.select("e", "range"); // a..e, anchor=a
+    expect([...snap(store).selection]).toEqual(["a", "b", "c", "d", "e"]);
+
+    store.select("c", "replace"); // plain click → anchor=c, selection={c}
+    expect([...snap(store).selection]).toEqual(["c"]);
+
+    store.select("e", "range"); // c..e, not a..e
+    expect([...snap(store).selection]).toEqual(["c", "d", "e"]);
+  });
+
   it("'clear-add' clears prior selection and adds the id", () => {
     const store = storeWithEntries();
     store.select("a", "toggle");

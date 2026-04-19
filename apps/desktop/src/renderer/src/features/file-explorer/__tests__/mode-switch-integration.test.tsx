@@ -175,7 +175,11 @@ describe("Mode-switch integration — selection survives toolbar-driven mode cha
     expect(store.getSnapshot().selection.size).toBe(3);
     const initiallySelected = new Set(store.getSnapshot().selection);
     expect(initiallySelected).toEqual(new Set(["e2", "e3", "e4"]));
-    expect(store.getSnapshot().lastSelectedId).toBe("e4");
+    // Anchor stays at e2 (the last plain click), not at e4. Windows
+    // Explorer semantics: shift-click extends the range but does not
+    // move the anchor, so a subsequent shift-click keeps e2 as the
+    // reference. Covered by the store-level regression tests.
+    expect(store.getSnapshot().lastSelectedId).toBe("e2");
 
     // Switch to Medium Icons via the toolbar.
     openViewMenu();
@@ -185,8 +189,8 @@ describe("Mode-switch integration — selection survives toolbar-driven mode cha
     // Selection count is unchanged.
     expect(store.getSnapshot().selection.size).toBe(3);
     expect(new Set(store.getSnapshot().selection)).toEqual(initiallySelected);
-    // Focus-location (the anchor the spec names "last-focused") persists.
-    expect(store.getSnapshot().lastSelectedId).toBe("e4");
+    // Anchor also persists unchanged through the mode switch.
+    expect(store.getSnapshot().lastSelectedId).toBe("e2");
 
     // Medium Icons renders the three entries too.
     expect(screen.getByText(/bravo\.pdf/)).toBeInTheDocument();
@@ -200,7 +204,8 @@ describe("Mode-switch integration — selection survives toolbar-driven mode cha
     expect(store.getSnapshot().viewMode).toBe("list");
     expect(store.getSnapshot().selection.size).toBe(3);
     expect(new Set(store.getSnapshot().selection)).toEqual(initiallySelected);
-    expect(store.getSnapshot().lastSelectedId).toBe("e4");
+    // Anchor is still e2, unchanged through two mode switches.
+    expect(store.getSnapshot().lastSelectedId).toBe("e2");
     expect(screen.getByText(/bravo\.pdf/)).toBeInTheDocument();
     expect(screen.getByText(/delta\.txt/)).toBeInTheDocument();
   });

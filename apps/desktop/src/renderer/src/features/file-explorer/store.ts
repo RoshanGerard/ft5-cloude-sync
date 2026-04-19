@@ -334,8 +334,19 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     }
 
     // mode === "range"
+    //
+    // The anchor is the last non-range selection (Windows Explorer
+    // semantics): click N sets anchor=N; shift-click M extends from
+    // N..M without moving the anchor, so a subsequent shift-click K
+    // extends from the *same* N to K. Without this, repeated shift-
+    // clicks would walk the anchor along the trail of previous
+    // endpoints, producing the wrong range.
     const anchor = state.lastSelectedId;
     if (anchor === null) {
+      // No anchor yet — treat this as the initial selection. Setting
+      // lastSelectedId here seeds the anchor so subsequent shift-clicks
+      // have a fixed reference. This is the only range-mode path that
+      // mutates the anchor.
       const next = new Set<string>([id]);
       set({ ...state, selection: next, lastSelectedId: id }, false);
       return;
@@ -344,7 +355,8 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     const anchorIdx = ids.indexOf(anchor);
     const targetIdx = ids.indexOf(id);
     if (anchorIdx === -1 || targetIdx === -1) {
-      // Anchor or target not in current entries — fall back to replace.
+      // Anchor or target not in current entries — fall back to replace,
+      // which DOES move the anchor (mimics a plain click).
       const next = new Set<string>([id]);
       set({ ...state, selection: next, lastSelectedId: id }, false);
       return;
@@ -356,7 +368,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       const entryId = ids[i];
       if (typeof entryId === "string") next.add(entryId);
     }
-    set({ ...state, selection: next, lastSelectedId: id }, false);
+    // Critical: preserve lastSelectedId so the anchor stays put for
+    // further shift-clicks. Only replace/toggle/clear-add update it.
+    set({ ...state, selection: next }, false);
   }
 
   function selectAll(): void {
