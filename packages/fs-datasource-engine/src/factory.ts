@@ -2,7 +2,7 @@
 //
 // The factory is a thin, stateless constructor-over-a-registry:
 //
-//   registry: Record<ProviderId, ProviderFactoryFn>
+//   registry: { [P in ProviderId]: ProviderFactoryFn<P> }
 //   factory  = createClientFactory(registry)
 //   client   = factory.create(providerId, datasourceId, credentials, ctx)
 //
@@ -18,20 +18,20 @@
 //   * does NOT verify credentials — that is the caller's concern.
 //   * DOES validate registry integrity eagerly at construction: every
 //     registered key must have a matching descriptor in
-//     `@ft5/ipc-contracts`'s `providers` export, else
-//     `createClientFactory` throws `DatasourceError tag="unsupported"`.
+//     `@ft5/ipc-contracts`'s `providers` export, AND every known descriptor
+//     must have a corresponding registry entry — else `createClientFactory`
+//     throws `DatasourceError tag="unsupported"`.
 //
 // Unknown `providerId` at `create` time throws `DatasourceError tag="unsupported"`.
 //
 // Design note — return-type generic:
-//   Public `ClientFactory.create` returns `DatasourceClient<ProviderId>` (the
-//   union). Callers that know the concrete provider at the call site can
-//   narrow via the inferred `providerId` type parameter, but the default
-//   signature carries the widest safe type. Registry factory functions
-//   return `DatasourceClient<ProviderId>`; each concrete strategy pins its
-//   `T` internally (`S3Client extends BaseDatasourceClient<"amazon-s3">`)
-//   and widens on return — the factory's public boundary is deliberately
-//   non-narrowing to keep the registry homogeneous.
+//   Public `ClientFactory.create<P>` is generic in the provider id and returns
+//   `DatasourceClient<P>`, so callers that know the concrete provider at the
+//   call site get a narrow return type without casts. Registry entries are a
+//   mapped type (`{ [P in ProviderId]: ProviderFactoryFn<P> }`): each entry
+//   at key `P` returns `DatasourceClient<P>`. This keeps concrete strategy
+//   factories (Phases 6-8) from needing unsafe widening casts when Phase 6
+//   tightens `ProviderMetadata<T>` in `@ft5/ipc-contracts`.
 
 import type { ProviderId, StoredCredentials } from "@ft5/ipc-contracts";
 import { DatasourceError, providers } from "@ft5/ipc-contracts";
@@ -42,10 +42,21 @@ import type {
 } from "./base-client.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
+// Wires the stubs from ./strategies/*; replaced per-entry in Phases 6-8.
+import { createS3ClientStub } from "./strategies/s3-client.stub.js";
+import { createOneDriveClientStub } from "./strategies/onedrive-client.stub.js";
+import { createGoogleDriveClientStub } from "./strategies/googledrive-client.stub.js";
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
+
+/**
+ * Sentinel `datasourceId` used for errors raised during factory construction,
+ * before any real datasource is in play. Exported so downstream log filters
+ * and telemetry can detect bootstrap-time registry misconfiguration.
+ */
+export const FACTORY_CONSTRUCTION_DS_ID = "<factory-construction>";
 
 /**
  * Per-process context shared across every client the factory produces.
@@ -60,18 +71,25 @@ export interface EngineContext {
 
 /**
  * Registry entry signature. Each registered factory knows how to construct
- * a concrete strategy (extending `BaseDatasourceClient<T>`) given the
+ * a concrete strategy (extending `BaseDatasourceClient<P>`) given the
  * datasourceId, credentials, and the full `BaseClientContext` (which the
  * main factory assembles from the `EngineContext` + resolved descriptor).
+ *
+ * Generic in `P extends ProviderId` so the registry mapped-type can pin each
+ * entry's return type to its concrete provider — preventing unsafe widening
+ * at call sites.
  */
-export type ProviderFactoryFn = (
+export type ProviderFactoryFn<P extends ProviderId = ProviderId> = (
   datasourceId: string,
   credentials: StoredCredentials,
   ctx: BaseClientContext,
-) => DatasourceClient<ProviderId>;
+) => DatasourceClient<P>;
 
-/** Map of ProviderId → factory fn. Must cover every `ProviderId`. */
-export type ProviderRegistry = Record<ProviderId, ProviderFactoryFn>;
+/**
+ * Map of ProviderId → factory fn, pinned per-key: the entry at key `P` must
+ * return a `DatasourceClient<P>`. Must cover every `ProviderId`.
+ */
+export type ProviderRegistry = { [P in ProviderId]: ProviderFactoryFn<P> };
 
 export interface ClientFactory {
   /**
@@ -81,15 +99,18 @@ export interface ClientFactory {
    * Callers that want to reuse clients across multiple IPC invocations
    * should cache at their own level.
    *
+   * Generic in `P` so callers that pass a literal `providerId` get a
+   * correspondingly narrow `DatasourceClient<P>` back with no casts.
+   *
    * @throws DatasourceError `tag="unsupported"` if `providerId` is not in
    *   the registry.
    */
-  create(
-    providerId: ProviderId,
+  create<P extends ProviderId>(
+    providerId: P,
     datasourceId: string,
     credentials: StoredCredentials,
     ctx: EngineContext,
-  ): DatasourceClient<ProviderId>;
+  ): DatasourceClient<P>;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,18 +120,21 @@ export interface ClientFactory {
 /**
  * Create a `ClientFactory` backed by the supplied registry.
  *
- * Eagerly validates that every registered providerId has a matching
- * descriptor in `@ft5/ipc-contracts`'s `providers` export — a misconfigured
- * registry fails at bootstrap, not at first-call time.
+ * Eagerly validates the registry in both directions:
+ *   1. every registered providerId has a matching descriptor in
+ *      `@ft5/ipc-contracts`'s `providers` export;
+ *   2. every known descriptor has a corresponding registry entry —
+ *      a caller who passes an empty (or partial) registry fails fast at
+ *      construction with a clear message rather than at first-call time.
  */
 export function createClientFactory(registry: ProviderRegistry): ClientFactory {
-  // Integrity check: every registered key must resolve to a descriptor.
+  // Integrity check 1: every registered key must resolve to a descriptor.
   for (const key of Object.keys(registry) as ProviderId[]) {
     if (!(key in providers)) {
       throw new DatasourceError({
         tag: "unsupported",
         datasourceType: key,
-        datasourceId: "<factory-construction>",
+        datasourceId: FACTORY_CONSTRUCTION_DS_ID,
         retryable: false,
         raw: "registry-descriptor-missing",
         message: `Provider registry contains '${key}' but no descriptor is registered in @ft5/ipc-contracts.providers`,
@@ -118,8 +142,29 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
     }
   }
 
+  // Integrity check 2: every known descriptor must have a registry entry.
+  // Catches empty or partial registries at bootstrap instead of at
+  // first-`create` time.
+  for (const expectedId of Object.keys(providers) as ProviderId[]) {
+    if (!(expectedId in registry)) {
+      throw new DatasourceError({
+        tag: "unsupported",
+        datasourceType: expectedId,
+        datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+        retryable: false,
+        raw: "registry-provider-missing",
+        message: `Registry is missing provider '${expectedId}' — every known descriptor must have a registered factory`,
+      });
+    }
+  }
+
   return {
-    create(providerId, datasourceId, credentials, ctx) {
+    create<P extends ProviderId>(
+      providerId: P,
+      datasourceId: string,
+      credentials: StoredCredentials,
+      ctx: EngineContext,
+    ): DatasourceClient<P> {
       const entry = registry[providerId];
       if (entry === undefined) {
         throw new DatasourceError({
@@ -139,33 +184,30 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
         credentialStore: ctx.credentialStore,
         providerDescriptor: descriptor,
       };
+      // `registry[providerId]` is typed as `ProviderFactoryFn<P>` via the
+      // mapped type, so the call returns `DatasourceClient<P>` directly.
       return entry(datasourceId, credentials, baseCtx);
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// Default registry — wires the three placeholder strategy stubs.
-// Phases 6–8 replace each stub with a real strategy class.
+// Default registry
 // ---------------------------------------------------------------------------
 
-// Imported here (and re-exported from index.ts) to keep the registry
-// construction centralised. Stubs live under `./strategies/`.
-import { createS3ClientStub } from "./strategies/s3-client.stub.js";
-import { createOneDriveClientStub } from "./strategies/onedrive-client.stub.js";
-import { createGoogleDriveClientStub } from "./strategies/googledrive-client.stub.js";
-
 /**
- * Default registry used by production bootstrap (Phase 9+). Every
- * `ProviderId` points at a placeholder stub until Phases 6–8 wire the real
- * strategies in one-by-one. The stubs throw `not-yet-implemented:<method>`
- * from every `doX` call — callers should not exercise behaviour against a
- * stub.
+ * Returns the default production registry, mapping each `ProviderId` to its
+ * concrete strategy factory. Consumers typically pass the result to
+ * `createClientFactory` at main-process bootstrap.
+ *
+ * Individual strategies are introduced incrementally across Phases 6–8;
+ * each entry carries a `TODO(phase-N)` comment documenting when its stub
+ * is replaced by a real implementation.
  */
 export function createDefaultProviderRegistry(): ProviderRegistry {
   return {
-    "amazon-s3": createS3ClientStub,
-    "google-drive": createGoogleDriveClientStub,
-    onedrive: createOneDriveClientStub,
+    "amazon-s3": createS3ClientStub, // TODO(phase-6): replace with createS3Client
+    "google-drive": createGoogleDriveClientStub, // TODO(phase-8): replace with createGoogleDriveClient
+    onedrive: createOneDriveClientStub, // TODO(phase-7): replace with createOneDriveClient
   };
 }

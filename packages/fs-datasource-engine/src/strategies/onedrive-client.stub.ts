@@ -122,7 +122,7 @@ class OneDriveClientStub extends BaseDatasourceClient<OneDriveType> {
   }
 }
 
-export const createOneDriveClientStub: ProviderFactoryFn = (
+export const createOneDriveClientStub: ProviderFactoryFn<"onedrive"> = (
   datasourceId,
   credentials,
   ctx,

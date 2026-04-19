@@ -8,11 +8,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { ProviderDescriptor, ProviderId } from "@ft5/ipc-contracts";
+import type { ProviderId } from "@ft5/ipc-contracts";
 import { providers } from "@ft5/ipc-contracts";
 import { DatasourceError } from "@ft5/ipc-contracts";
 
-import { createEventBus, type EventBus } from "./event-bus.js";
+import { createEventBus } from "./event-bus.js";
 import type { CredentialStore } from "./credential-store.js";
 import type {
   BaseClientContext,
@@ -78,6 +78,15 @@ function makeFakeClient<T extends ProviderId>(
   } as unknown as DatasourceClient<T>;
 }
 
+/**
+ * Build a typed spy factory fn narrowed to a specific `ProviderId`. Using the
+ * narrow type keeps the spy assignable to the mapped-type `ProviderRegistry`
+ * entry (which is `ProviderFactoryFn<P>` per key).
+ */
+function makeSpyFactoryFn<P extends ProviderId>(): ProviderFactoryFn<P> {
+  return vi.fn<ProviderFactoryFn<P>>();
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -85,13 +94,13 @@ function makeFakeClient<T extends ProviderId>(
 describe("createClientFactory", () => {
   it("throws DatasourceError Unsupported when providerId is not in the registry", () => {
     const ctx = makeEngineContext();
-    const spy = vi.fn<ProviderFactoryFn>();
+    const spy = makeSpyFactoryFn<"amazon-s3">();
     const registry: ProviderRegistry = {
       "amazon-s3": spy,
       // Other two slots present so the constructor integrity check passes —
       // we still deliberately attack with an id that is not in the registry.
-      "google-drive": vi.fn<ProviderFactoryFn>(),
-      onedrive: vi.fn<ProviderFactoryFn>(),
+      "google-drive": makeSpyFactoryFn<"google-drive">(),
+      onedrive: makeSpyFactoryFn<"onedrive">(),
     };
     const factory = createClientFactory(registry);
 
@@ -130,13 +139,13 @@ describe("createClientFactory", () => {
   it("returns a DatasourceClient<T> for a known provider id", () => {
     const ctx = makeEngineContext();
     const fake = makeFakeClient("amazon-s3", "ds-1");
-    const spy: ProviderFactoryFn = vi
-      .fn<ProviderFactoryFn>()
+    const spy: ProviderFactoryFn<"amazon-s3"> = vi
+      .fn<ProviderFactoryFn<"amazon-s3">>()
       .mockReturnValue(fake);
     const registry: ProviderRegistry = {
       "amazon-s3": spy,
-      "google-drive": vi.fn<ProviderFactoryFn>(),
-      onedrive: vi.fn<ProviderFactoryFn>(),
+      "google-drive": makeSpyFactoryFn<"google-drive">(),
+      onedrive: makeSpyFactoryFn<"onedrive">(),
     };
     const factory = createClientFactory(registry);
 
@@ -171,16 +180,16 @@ describe("createClientFactory", () => {
       credentials: unknown;
       ctx: BaseClientContext;
     } | null = null;
-    const spy: ProviderFactoryFn = vi
-      .fn<ProviderFactoryFn>()
+    const spy: ProviderFactoryFn<"amazon-s3"> = vi
+      .fn<ProviderFactoryFn<"amazon-s3">>()
       .mockImplementation((datasourceId, credentials, baseCtx) => {
         captured = { datasourceId, credentials, ctx: baseCtx };
         return makeFakeClient("amazon-s3", datasourceId);
       });
     const registry: ProviderRegistry = {
       "amazon-s3": spy,
-      "google-drive": vi.fn<ProviderFactoryFn>(),
-      onedrive: vi.fn<ProviderFactoryFn>(),
+      "google-drive": makeSpyFactoryFn<"google-drive">(),
+      onedrive: makeSpyFactoryFn<"onedrive">(),
     };
     const factory = createClientFactory(registry);
 
@@ -191,25 +200,23 @@ describe("createClientFactory", () => {
     expect(c.datasourceId).toBe("ds-42");
     expect(c.credentials).toBe(mockCreds);
     // Referentially equal bus + store propagate into the BaseClientContext.
-    expect(c.ctx.bus).toBe(ctx.bus satisfies EventBus);
+    expect(c.ctx.bus).toBe(ctx.bus);
     expect(c.ctx.credentialStore).toBe(ctx.credentialStore);
     // Descriptor is resolved from the shared @ft5/ipc-contracts export.
-    expect(c.ctx.providerDescriptor).toBe(
-      providers["amazon-s3"] satisfies ProviderDescriptor,
-    );
+    expect(c.ctx.providerDescriptor).toBe(providers["amazon-s3"]);
   });
 
   it("is stateless — each create() call returns a fresh instance", () => {
     const ctx = makeEngineContext();
-    const spy: ProviderFactoryFn = vi
-      .fn<ProviderFactoryFn>()
+    const spy: ProviderFactoryFn<"amazon-s3"> = vi
+      .fn<ProviderFactoryFn<"amazon-s3">>()
       .mockImplementation((datasourceId) =>
         makeFakeClient("amazon-s3", datasourceId),
       );
     const registry: ProviderRegistry = {
       "amazon-s3": spy,
-      "google-drive": vi.fn<ProviderFactoryFn>(),
-      onedrive: vi.fn<ProviderFactoryFn>(),
+      "google-drive": makeSpyFactoryFn<"google-drive">(),
+      onedrive: makeSpyFactoryFn<"onedrive">(),
     };
     const factory = createClientFactory(registry);
 
@@ -222,9 +229,9 @@ describe("createClientFactory", () => {
 
   it("validates registry integrity at construction — every registered id has a descriptor", () => {
     const badRegistry = {
-      "amazon-s3": vi.fn<ProviderFactoryFn>(),
-      "google-drive": vi.fn<ProviderFactoryFn>(),
-      onedrive: vi.fn<ProviderFactoryFn>(),
+      "amazon-s3": makeSpyFactoryFn<"amazon-s3">(),
+      "google-drive": makeSpyFactoryFn<"google-drive">(),
+      onedrive: makeSpyFactoryFn<"onedrive">(),
       // Intentionally corrupt: an id that is not in the providers descriptor
       // table. Cast bypasses the ProviderId union so we can exercise the
       // defensive path.
@@ -240,6 +247,25 @@ describe("createClientFactory", () => {
       const e = err as DatasourceError;
       expect(e.tag).toBe("unsupported");
       expect(e.raw).toBe("registry-descriptor-missing");
+    }
+  });
+
+  it("throws if the registry is missing a known provider", () => {
+    // An incomplete registry (here: only `amazon-s3`) should fail at
+    // construction with a clear `registry-provider-missing` marker.
+    const incomplete = {
+      "amazon-s3": makeSpyFactoryFn<"amazon-s3">(),
+    } as unknown as ProviderRegistry;
+
+    expect(() => createClientFactory(incomplete)).toThrow(DatasourceError);
+
+    try {
+      createClientFactory(incomplete);
+    } catch (err) {
+      expect(err).toBeInstanceOf(DatasourceError);
+      const e = err as DatasourceError;
+      expect(e.tag).toBe("unsupported");
+      expect(e.raw).toBe("registry-provider-missing");
     }
   });
 });

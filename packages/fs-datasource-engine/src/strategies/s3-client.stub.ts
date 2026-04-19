@@ -125,7 +125,7 @@ class S3ClientStub extends BaseDatasourceClient<S3Type> {
   }
 }
 
-export const createS3ClientStub: ProviderFactoryFn = (
+export const createS3ClientStub: ProviderFactoryFn<"amazon-s3"> = (
   datasourceId,
   credentials,
   ctx,

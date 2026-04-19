@@ -122,7 +122,7 @@ class GoogleDriveClientStub extends BaseDatasourceClient<GDriveType> {
   }
 }
 
-export const createGoogleDriveClientStub: ProviderFactoryFn = (
+export const createGoogleDriveClientStub: ProviderFactoryFn<"google-drive"> = (
   datasourceId,
   credentials,
   ctx,
