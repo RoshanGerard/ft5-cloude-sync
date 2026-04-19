@@ -2,9 +2,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import PingPage from "../page";
+import DiagnosticsPage from "../page";
 
-describe("renderer root page", () => {
+describe("renderer diagnostics page (ping probe)", () => {
   beforeEach(() => {
     // Stub `window.api` so the page's `useEffect` can resolve without the
     // real contextBridge-exposed preload. The page only needs `.ping()`.
@@ -14,7 +14,7 @@ describe("renderer root page", () => {
   });
 
   it("renders the timestamp returned by window.api.ping()", async () => {
-    render(<PingPage />);
+    render(<DiagnosticsPage />);
     const tsEl = await screen.findByText(/1712345678901/);
     expect(tsEl).toBeInTheDocument();
   });

@@ -1,21 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+//
+// Home route — the datasources dashboard. Replaces the original ping probe
+// (now at `/diagnostics`, see `./diagnostics/page.tsx`) per the MODIFIED
+// "Desktop app launches with a single main window" requirement in the
+// ui-ux-design OpenSpec change.
+//
+// This file is intentionally thin: the composition lives in
+// `features/datasources/dashboard.tsx` so the state-machine states can be
+// tested in isolation without pulling in the Next.js page module.
 
-export default function PingPage() {
-  const [ts, setTs] = useState<number | null>(null);
+import { DatasourcesProvider } from "@/features/datasources/store";
+import { DatasourcesDashboard } from "@/features/datasources/dashboard";
 
-  useEffect(() => {
-    let cancelled = false;
-    void window.api.ping().then((response) => {
-      if (!cancelled) {
-        setTs(response.ts);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return <main>{ts == null ? "Pinging…" : String(ts)}</main>;
+export default function HomePage() {
+  return (
+    <DatasourcesProvider>
+      <DatasourcesDashboard />
+    </DatasourcesProvider>
+  );
 }
