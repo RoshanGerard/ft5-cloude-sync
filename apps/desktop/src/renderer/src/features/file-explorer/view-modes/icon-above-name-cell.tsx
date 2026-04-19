@@ -12,7 +12,7 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
-import { iconForEntry } from "../icons.js";
+import { iconForEntry } from "../icons";
 
 /**
  * IconAboveNameCell — shared presentational cell shape for the two

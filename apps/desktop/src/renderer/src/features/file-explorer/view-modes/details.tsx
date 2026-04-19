@@ -12,11 +12,11 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 import { Icon, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
-import { FileContextMenu } from "../context-menu.js";
-import { iconForEntry } from "../icons.js";
-import type { ExplorerStore, SortBy, SortDir } from "../store.js";
-import { useSelection } from "../use-selection.js";
-import { formatDate, formatSize, formatType } from "./details-format.js";
+import { FileContextMenu } from "../context-menu";
+import { iconForEntry } from "../icons";
+import type { ExplorerStore, SortBy, SortDir } from "../store";
+import { useSelection } from "../use-selection";
+import { formatDate, formatSize, formatType } from "./details-format";
 
 /**
  * DetailsView — default file-explorer view mode (design.md Decision 3).

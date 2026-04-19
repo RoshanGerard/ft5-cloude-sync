@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useSyncExternalStore } from "react";
 
-import type { ExplorerStore } from "./store.js";
+import type { ExplorerStore } from "./store";
 
 /**
  * `useExplorerData` — the composite-only data-loading hook for the

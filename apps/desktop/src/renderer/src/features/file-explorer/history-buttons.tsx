@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 
 import { Icon, type IconName } from "@/components/icon";
 
-import type { ExplorerStore } from "./store.js";
+import type { ExplorerStore } from "./store";
 
 /**
  * HistoryButtons — Back / Forward / Up-one-level controls for the explorer

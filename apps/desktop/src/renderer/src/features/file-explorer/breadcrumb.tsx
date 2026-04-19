@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 
 import { Icon } from "@/components/icon";
 
-import type { ExplorerStore } from "./store.js";
+import type { ExplorerStore } from "./store";
 
 /**
  * Breadcrumb — keyboard-navigable path trail for the file explorer.

@@ -5,7 +5,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
-import type { ExplorerStore } from "./store.js";
+import type { ExplorerStore } from "./store";
 
 /**
  * `useKeyboardNav` — the second store-prop hook (alongside `useSelection`)

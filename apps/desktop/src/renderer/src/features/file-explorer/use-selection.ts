@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
-import type { ExplorerStore } from "./store.js";
+import type { ExplorerStore } from "./store";
 
 /**
  * `useSelection` — shared hook consumed by every view mode (Details now;

@@ -5,13 +5,13 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
-import type { ExplorerStore, ViewMode } from "./store.js";
-import { DetailsView } from "./view-modes/details.js";
-import { LargeIconsView } from "./view-modes/large-icons.js";
-import { ListView } from "./view-modes/list.js";
-import { MediumIconsView } from "./view-modes/medium-icons.js";
-import { SmallIconsView } from "./view-modes/small-icons.js";
-import { TilesView } from "./view-modes/tiles.js";
+import type { ExplorerStore, ViewMode } from "./store";
+import { DetailsView } from "./view-modes/details";
+import { LargeIconsView } from "./view-modes/large-icons";
+import { ListView } from "./view-modes/list";
+import { MediumIconsView } from "./view-modes/medium-icons";
+import { SmallIconsView } from "./view-modes/small-icons";
+import { TilesView } from "./view-modes/tiles";
 
 /**
  * ViewModeSwitcher — renders the active view-mode component by reading

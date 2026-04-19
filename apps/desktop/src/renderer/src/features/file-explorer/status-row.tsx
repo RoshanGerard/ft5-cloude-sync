@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { useSyncExternalStore } from "react";
 
-import type { ExplorerState, ExplorerStore } from "./store.js";
+import type { ExplorerState, ExplorerStore } from "./store";
 
 /**
  * StatusRow — bottom-pinned aria-live status strip for the explorer chrome.

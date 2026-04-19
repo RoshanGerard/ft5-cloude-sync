@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-import type { ExplorerStore, ViewMode } from "./store.js";
+import type { ExplorerStore, ViewMode } from "./store";
 
 /**
  * Toolbar — the explorer chrome's action bar.

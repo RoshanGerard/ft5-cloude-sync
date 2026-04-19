@@ -4,10 +4,10 @@ import { useSyncExternalStore } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
-import { FileContextMenu } from "../context-menu.js";
-import type { ExplorerStore } from "../store.js";
-import { useSelection } from "../use-selection.js";
-import { IconAboveNameCell } from "./icon-above-name-cell.js";
+import { FileContextMenu } from "../context-menu";
+import type { ExplorerStore } from "../store";
+import { useSelection } from "../use-selection";
+import { IconAboveNameCell } from "./icon-above-name-cell";
 
 /**
  * LargeIconsView — per design.md Decision 3: 96 px icon above name,

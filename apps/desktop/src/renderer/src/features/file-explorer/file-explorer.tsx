@@ -30,14 +30,14 @@ import { useSyncExternalStore } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
-import { Breadcrumb } from "./breadcrumb.js";
-import { HistoryButtons } from "./history-buttons.js";
-import { getOrCreateExplorerStore } from "./store.js";
-import { StatusRow } from "./status-row.js";
-import { Toolbar } from "./toolbar.js";
-import { useExplorerData } from "./use-explorer-data.js";
-import { useKeyboardNav } from "./use-keyboard-nav.js";
-import { ViewModeSwitcher } from "./view-mode-switcher.js";
+import { Breadcrumb } from "./breadcrumb";
+import { HistoryButtons } from "./history-buttons";
+import { getOrCreateExplorerStore } from "./store";
+import { StatusRow } from "./status-row";
+import { Toolbar } from "./toolbar";
+import { useExplorerData } from "./use-explorer-data";
+import { useKeyboardNav } from "./use-keyboard-nav";
+import { ViewModeSwitcher } from "./view-mode-switcher";
 
 export interface FileExplorerProps {
   datasourceId: string;

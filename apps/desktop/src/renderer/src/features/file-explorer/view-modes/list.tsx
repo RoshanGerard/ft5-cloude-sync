@@ -12,10 +12,10 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
-import { FileContextMenu } from "../context-menu.js";
-import { iconForEntry } from "../icons.js";
-import type { ExplorerStore } from "../store.js";
-import { useSelection } from "../use-selection.js";
+import { FileContextMenu } from "../context-menu";
+import { iconForEntry } from "../icons";
+import type { ExplorerStore } from "../store";
+import { useSelection } from "../use-selection";
 
 /**
  * ListView — compact single-column view mode (design.md Decision 3).

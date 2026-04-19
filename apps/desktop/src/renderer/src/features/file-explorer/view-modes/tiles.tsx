@@ -12,11 +12,11 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
-import { FileContextMenu } from "../context-menu.js";
-import { iconForEntry } from "../icons.js";
-import type { ExplorerStore } from "../store.js";
-import { useSelection } from "../use-selection.js";
-import { formatSize, formatType } from "./details-format.js";
+import { FileContextMenu } from "../context-menu";
+import { iconForEntry } from "../icons";
+import type { ExplorerStore } from "../store";
+import { useSelection } from "../use-selection";
+import { formatSize, formatType } from "./details-format";
 
 /**
  * TilesView — wrapping grid of cards (design.md Decision 3). Each tile

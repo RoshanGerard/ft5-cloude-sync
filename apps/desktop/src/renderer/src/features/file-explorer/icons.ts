@@ -1,6 +1,6 @@
 import type { FileEntry, MimeFamily } from "@ft5/ipc-contracts";
 
-import type { IconName } from "../../components/icon.js";
+import type { IconName } from "../../components/icon";
 
 // Per design.md Decision 8. Central mapping; no extension parsing in the
 // renderer — mimeFamily is normalized in the handler (see Decision 2).
