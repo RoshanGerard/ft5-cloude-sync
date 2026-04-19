@@ -5,9 +5,11 @@
   "main": "dist/main/index.js",
   "scripts": {
     "postinstall": "electron-rebuild",
+    "prebuild": "pnpm --filter @ft5/ipc-contracts build",
     "build": "electron-vite build",
     "build:renderer": "pnpm --filter @ft5/renderer build",
     "build:desktop": "electron-vite build",
+    "prebuild:all": "pnpm --filter @ft5/ipc-contracts build",
     "build:all": "pnpm build:renderer && pnpm build:desktop",
     "dev": "electron-vite dev",
     "package:mac": "pnpm build:all && electron-builder --mac",

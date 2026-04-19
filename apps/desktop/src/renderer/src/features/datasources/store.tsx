@@ -26,6 +26,7 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   type ReactNode,
 } from "react";
 import type {
@@ -125,15 +126,29 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
     phase: "loading",
   } as DatasourcesState);
 
+  // Mount sentinel: gates every post-await dispatch so we do not call
+  // `setState` on an unmounted provider (React 19 strict-mode double-mount
+  // can otherwise race two in-flight `list()` calls). Mutation callers still
+  // receive the resolved response — only local reconciliation is skipped.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const refresh = useCallback(async (): Promise<void> => {
     dispatch({ type: "load/start" });
     try {
       const response = await window.api.datasources.list();
+      if (!mountedRef.current) return;
       dispatch({
         type: "load/success",
         datasources: response.datasources,
       });
     } catch (err) {
+      if (!mountedRef.current) return;
       const message =
         err instanceof Error ? err.message : "Failed to load datasources.";
       dispatch({ type: "load/failure", error: message });
@@ -143,10 +158,12 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
   const add = useCallback(
     async (req: DatasourcesAddRequest): Promise<DatasourcesAddResponse> => {
       const response = await window.api.datasources.add(req);
-      dispatch({
-        type: "datasource/added",
-        datasource: response.datasource,
-      });
+      if (mountedRef.current) {
+        dispatch({
+          type: "datasource/added",
+          datasource: response.datasource,
+        });
+      }
       return response;
     },
     [],
@@ -157,10 +174,12 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
       req: DatasourcesRemoveRequest,
     ): Promise<DatasourcesRemoveResponse> => {
       const response = await window.api.datasources.remove(req);
-      dispatch({
-        type: "datasource/removed",
-        datasourceId: req.datasourceId,
-      });
+      if (mountedRef.current) {
+        dispatch({
+          type: "datasource/removed",
+          datasourceId: req.datasourceId,
+        });
+      }
       return response;
     },
     [],
@@ -171,10 +190,12 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
       req: DatasourcesActionRequest,
     ): Promise<DatasourcesActionResponse> => {
       const response = await window.api.datasources.action(req);
-      dispatch({
-        type: "datasource/updated",
-        datasource: response.datasource,
-      });
+      if (mountedRef.current) {
+        dispatch({
+          type: "datasource/updated",
+          datasource: response.datasource,
+        });
+      }
       return response;
     },
     [],

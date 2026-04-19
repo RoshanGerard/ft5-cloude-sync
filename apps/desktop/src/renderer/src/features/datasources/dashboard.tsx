@@ -6,7 +6,7 @@
 // toolbar (Add Datasource button + ThemeSwitcher) lives in its own component
 // so it can be tested independently and re-used if we ever split the page.
 
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,20 +18,18 @@ import { DatasourceCard } from "./card";
 import { EmptyDatasourcesIllustration } from "./illustrations/empty-datasources";
 import { useDatasourceActions, useDatasources } from "./store";
 
-export function DatasourcesToolbar() {
-  // Phase 6 will wire the add-datasource dialog. For now, we expose a local
-  // boolean toggle so the button is functional (and therefore testable)
-  // without a real dialog in place yet.
-  const [, setOpen] = useState(false);
-  const onClick = useCallback(() => setOpen((v) => !v), []);
-
+export function DatasourcesToolbar({
+  onAddDatasourceClick,
+}: {
+  onAddDatasourceClick: () => void;
+}) {
   return (
     <div className="flex items-center justify-between gap-3 border-b border-border p-4">
       <h1 className="text-base font-semibold">Datasources</h1>
       <div className="flex items-center gap-2">
         <Button
           size="sm"
-          onClick={onClick}
+          onClick={onAddDatasourceClick}
           data-testid="add-datasource-trigger"
         >
           Add datasource
@@ -42,7 +40,11 @@ export function DatasourcesToolbar() {
   );
 }
 
-export function DashboardStates() {
+export function DashboardStates({
+  onAddDatasourceClick,
+}: {
+  onAddDatasourceClick: () => void;
+}) {
   const state = useDatasources();
   const actions = useDatasourceActions();
 
@@ -50,7 +52,7 @@ export function DashboardStates() {
     return <DashboardLoading />;
   }
   if (state.phase === "empty") {
-    return <DashboardEmpty />;
+    return <DashboardEmpty onAddDatasourceClick={onAddDatasourceClick} />;
   }
   if (state.phase === "error") {
     return (
@@ -85,8 +87,11 @@ function DashboardLoading() {
   );
 }
 
-function DashboardEmpty() {
-  const [, setOpen] = useState(false);
+function DashboardEmpty({
+  onAddDatasourceClick,
+}: {
+  onAddDatasourceClick: () => void;
+}) {
   return (
     <div
       data-testid="datasources-empty"
@@ -101,7 +106,7 @@ function DashboardEmpty() {
       </div>
       <Button
         size="sm"
-        onClick={() => setOpen(true)}
+        onClick={onAddDatasourceClick}
         data-testid="empty-add-datasource-trigger"
       >
         Add datasource
@@ -150,10 +155,17 @@ function DashboardPopulated({
 }
 
 export function DatasourcesDashboard() {
+  // TODO(phase-6): wire AddDatasourceDialog opener; Phase 6 will lift real
+  // dialog-open state to this component and pass a setter down instead of the
+  // stub no-op below.
+  const onAddDatasourceClick = useCallback(() => {
+    // no-op until Phase 6
+  }, []);
+
   return (
     <main className="flex min-h-dvh flex-col">
-      <DatasourcesToolbar />
-      <DashboardStates />
+      <DatasourcesToolbar onAddDatasourceClick={onAddDatasourceClick} />
+      <DashboardStates onAddDatasourceClick={onAddDatasourceClick} />
     </main>
   );
 }

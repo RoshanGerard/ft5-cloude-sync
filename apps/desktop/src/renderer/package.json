@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "prebuild": "pnpm --filter @ft5/ipc-contracts build",
     "build": "next build",
     "dev": "next dev",
     "start": "next start"
