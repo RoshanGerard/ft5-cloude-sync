@@ -16,8 +16,8 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 2 — Explorer route, store, and history
 
-- [ ] 2.1 Write failing test for `features/file-explorer/store.ts` covering initial state, `navigate`, `back`, `forward`, `up`, `select` (single / range / toggle), `setViewMode`, `sort`, persisted preferences load / save, `pendingOps` insertion / clear, `lastError` surfacing.
-- [ ] 2.2 Implement `features/file-explorer/store.ts` using `useSyncExternalStore`, matching the pattern of `features/theme/theme-store.ts`. Cross-session preferences (view mode, details-pane open, sort order) via `localStorage` under a per-datasource key.
+- [x] 2.1 Write failing test for `features/file-explorer/store.ts` covering initial state, `navigate`, `back`, `forward`, `up`, `select` (single / range / toggle), `setViewMode`, `sort`, persisted preferences load / save, `pendingOps` insertion / clear, `lastError` surfacing.
+- [x] 2.2 Implement `features/file-explorer/store.ts` using `useSyncExternalStore`, matching the pattern of `features/theme/theme-store.ts`. Cross-session preferences (view mode, details-pane open, sort order) via `localStorage` under a per-datasource key.
 - [ ] 2.3 Write failing test for `app/datasources/[datasourceId]/explore/page.tsx` — renders the explorer when `datasourceId` resolves; renders a "Datasource not found" error when it doesn't; mounts the store with the correct initial datasource id.
 - [ ] 2.4 Implement the route page and wire it into Next.js routing.
 - [ ] 2.5 Write failing test for `features/file-explorer/breadcrumb.tsx` — renders segments for a given path, activates per-segment navigation on click and Enter, exposes `<nav aria-label="Folder path">`.
