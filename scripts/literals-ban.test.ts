@@ -5,8 +5,15 @@
 // Scope: `.tsx` files under
 //   - apps/desktop/src/renderer/src/features/**
 //   - apps/desktop/src/renderer/src/components/**
+//     (INCLUDING `components/ui/**` — Phase 9.1 lifted the shadcn-primitive
+//     exemption. We customized those primitives during Phase 4B (glass
+//     overlays, motion-safe gating) and round-3 (progress-bar bg-muted) so
+//     they are effectively part of our owned surface. The scan's definition
+//     of a "raw font-size" literal is a CSS-in-string `font-size:` declaration,
+//     NOT a Tailwind `text-*` class or a spacing utility like `px-4` — so
+//     lifting the exemption is safe for shadcn primitives that only use
+//     class names.)
 // Exempt:
-//   - apps/desktop/src/renderer/src/components/ui/**  (shadcn vendor code)
 //   - any `__tests__/` directory
 //
 // Forbidden patterns:
@@ -42,7 +49,12 @@ const SCAN_ROOTS = [
   path.join(RENDERER_SRC, "components"),
 ];
 
-const EXEMPT_DIRS = [path.join(RENDERER_SRC, "components", "ui")];
+// Phase 9.1: the former `components/ui/**` exemption was lifted. The scan
+// now reaches shadcn-vendored primitives too. They are currently clean, and
+// keeping them clean is the point — the primitives were customized for glass
+// overlays, motion-safe gating, and the progress-bar bg-muted tweak; hard-
+// coded colour literals would bypass the theme tokens those tweaks rely on.
+const EXEMPT_DIRS: string[] = [];
 
 type Violation = {
   file: string;
