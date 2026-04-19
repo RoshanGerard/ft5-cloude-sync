@@ -2,16 +2,24 @@
 
 /**
  * Icon adapter — the ONE place in renderer feature code that imports from
- * `lucide-react`. Phase 4C expands the `IconName` union to cover every icon
- * used in the app and adds an ESLint rule banning `lucide-react` imports
- * outside this file (and `components/ui/**` where shadcn-generated code
- * legitimately uses it).
+ * `lucide-react`. The scripts/lucide-react-forbidden-import.test.ts guardrail
+ * enforces that every other feature-code `.tsx` must go through this module.
  *
- * For Phase 4B we only need the three theme-switcher icons plus a `laptop`
- * alias — keep the surface area minimal and let Phase 4C extend it.
+ * Phase 5.4 extends the IconName union to cover the provider-icon strings
+ * carried by the frozen `providers` registry in @ft5/ipc-contracts:
+ *   - google-drive → "cloud"
+ *   - onedrive     → "cloud"
+ *   - amazon-s3    → "database"
+ * Plus a `hard-drive` alias that's commonly useful for future
+ * local-filesystem-backed datasources.
+ *
+ * The theme-switcher retains its sun/moon/monitor/laptop set.
  */
 
 import {
+  CloudIcon,
+  DatabaseIcon,
+  HardDriveIcon,
   LaptopIcon,
   MonitorIcon,
   MoonIcon,
@@ -20,13 +28,23 @@ import {
 } from "lucide-react"
 import type { ComponentType } from "react"
 
-export type IconName = "sun" | "moon" | "monitor" | "laptop"
+export type IconName =
+  | "sun"
+  | "moon"
+  | "monitor"
+  | "laptop"
+  | "cloud"
+  | "database"
+  | "hard-drive"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
   moon: MoonIcon,
   monitor: MonitorIcon,
   laptop: LaptopIcon,
+  cloud: CloudIcon,
+  database: DatabaseIcon,
+  "hard-drive": HardDriveIcon,
 }
 
 export type IconProps = {
