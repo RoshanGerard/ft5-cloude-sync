@@ -11,7 +11,7 @@ Deferring this pins the app at "can register a datasource, cannot do anything wi
 ## What Changes
 
 - **New capability `file-explorer`** (see `specs/file-explorer/spec.md`) defining:
-  - A new route `/datasources/:datasourceId/explore` reached from the datasource card's quick-actions menu via a new "Explore" item.
+  - A new static route `/datasources/explore` (with the datasource id passed as the `id` query parameter, e.g. `/datasources/explore?id=<datasourceId>`) reached from the datasource card's quick-actions menu via a new "Explore" item. See `design.md` Decision 1 for the query-param-vs-dynamic-segment rationale (it's a `next.config.mjs` `output: "export"` constraint).
   - The explorer UI: back/forward/up navigation with a per-explorer history stack; a clickable breadcrumb trail below the window title bar; a main pane with six switchable view modes (List, Details, Small Icons, Tiles, Medium Icons, Large Icons); a toggleable right-side Details pane that mirrors the selected entry's metadata; a toolbar with Delete (selection, confirmation-gated), Sort, Search, View-mode picker, and Details-pane toggle; a status row with item count and selection count.
   - Entry icon mapping: directory → folder icon; known mime families (image / video / audio / document / archive / code / text) → matching lucide file-family icon; unknown → generic file icon. No per-extension iconography in v1.
   - Per-entry right-click context menu: Open, Download, Rename (files only), Delete, Copy path, Properties. Properties opens a separate modal (distinct from the Details pane) showing full metadata.

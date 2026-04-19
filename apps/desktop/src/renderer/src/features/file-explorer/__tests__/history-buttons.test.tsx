@@ -145,6 +145,35 @@ describe("HistoryButtons", () => {
     }
   });
 
+  // Spec scenario "Back, Forward, and Up operate on the explorer's history
+  // stack" requires Enter/Space keyboard activation. jsdom doesn't bridge
+  // Enter-keydown→click for native buttons (the browser does); we rely on
+  // the native-button assertion above for that guarantee. This test
+  // additionally proves that none of the three buttons carries a custom
+  // onKeyDown handler that would mutate store state directly — which
+  // would double-fire in real browsers and break the stack semantics.
+  it("does not intercept keyDown with custom handlers (relies on native button semantics)", () => {
+    const store = makeStore();
+    act(() => {
+      store.navigate("/projects");
+    });
+    render(<HistoryButtons store={store} />);
+
+    const snapshotBefore = store.getSnapshot();
+    for (const btn of [getBackButton(), getForwardButton(), getUpButton()]) {
+      btn.focus();
+      fireEvent.keyDown(btn, { key: "Enter" });
+      fireEvent.keyDown(btn, { key: " " });
+    }
+
+    // Pure keyDown should not have mutated history state; mutation only
+    // happens via click (native browser Enter/Space → click is the path).
+    const snapshotAfter = store.getSnapshot();
+    expect(snapshotAfter.currentPath).toBe(snapshotBefore.currentPath);
+    expect(snapshotAfter.history.index).toBe(snapshotBefore.history.index);
+    expect(snapshotAfter.history.stack).toEqual(snapshotBefore.history.stack);
+  });
+
   it("disabled buttons do not fire click handlers", () => {
     const store = makeStore();
     render(<HistoryButtons store={store} />);

@@ -29,6 +29,13 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 export type ViewMode = "list" | "details" | "small" | "tiles" | "medium" | "large";
 export type SortBy = "name" | "type" | "size" | "modified";
 export type SortDir = "asc" | "desc";
+// "replace" and "clear-add" currently collapse to the same branch (both
+// produce a fresh single-element selection). Kept as distinct modes to
+// name the user-intent difference surfaced by the action's caller: a
+// click in a view-mode cell is `"replace"`, while a drag-drop target
+// or a programmatic navigation landing on a pre-highlighted entry would
+// dispatch `"clear-add"`. If no concrete divergence emerges by Phase 6,
+// collapse the two into `"replace"` and remove this mode.
 export type SelectionMode = "replace" | "range" | "toggle" | "clear-add";
 export type OpKind = "rename" | "remove";
 

@@ -481,9 +481,16 @@ describe("search actions", () => {
     store.setSearchResults(hits, true, true);
     const s = snap(store);
     expect(s.search.results).toEqual(hits);
-    // The store reserves the flag on search; expose it on the search shape.
-    // We permit either a flat results array or an enriched shape — assert the
-    // entries round-trip at minimum.
+    expect(s.search.truncated).toBe(true);
+    expect(s.search.providerSearchDeferred).toBe(true);
+  });
+
+  it("setSearchResults without providerSearchDeferred leaves the flag absent/false", () => {
+    const store = makeStore("ds-1");
+    store.setSearchResults(seed(["x"]), false);
+    const s = snap(store);
+    expect(s.search.truncated).toBe(false);
+    expect(s.search.providerSearchDeferred).toBeFalsy();
   });
 
   it("clearSearch resets active/query/results; not persisted", () => {

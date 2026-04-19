@@ -118,6 +118,43 @@ describe("Breadcrumb", () => {
     expect(projects).toHaveAttribute("type", "button");
   });
 
+  // Spec scenario "Breadcrumb renders the full path with segment-level
+  // navigation" explicitly requires "clicking or pressing Enter" on a
+  // segment to navigate. We can't simulate real Enter→click via
+  // fireEvent.keyDown in jsdom (the browser does this implicitly for
+  // native <button> elements; jsdom does not bridge the two). So this
+  // guardrail test combines two assertions that together prove the
+  // required behaviour:
+  //   1. The segment IS a native <button type="button"> (checked in the
+  //      test above) — guarantees real browsers will activate it on
+  //      Enter and Space per HTML spec.
+  //   2. The segment does NOT carry a custom `onKeyDown` handler that
+  //      would mutate store state (which would cause double-fire in a
+  //      real browser). We verify by firing keyDown and asserting
+  //      navigate was NOT called — if someone later adds
+  //      `onKeyDown={() => store.navigate(path)}`, this test goes red.
+  it("does not intercept keyDown with a custom navigate handler (relies on native button semantics)", () => {
+    const store = makeStore();
+    act(() => {
+      store.navigate("/projects/docs/2026");
+    });
+    render(<Breadcrumb store={store} />);
+
+    const projects = screen.getByRole("button", { name: /^projects$/i });
+    projects.focus();
+
+    // jsdom does not convert Enter-keydown to click on native buttons.
+    // If navigate() fires from keyDown alone, it means the component
+    // added a custom handler — which would double-fire in real browsers.
+    const before = store.getSnapshot().currentPath;
+    fireEvent.keyDown(projects, { key: "Enter" });
+    expect(store.getSnapshot().currentPath).toBe(before);
+
+    // Sanity: real activation via the button's native click still works.
+    fireEvent.click(projects);
+    expect(store.getSnapshot().currentPath).toBe("/projects");
+  });
+
   it("re-renders when the store's currentPath changes after mount", () => {
     const store = makeStore();
     render(<Breadcrumb store={store} />);
