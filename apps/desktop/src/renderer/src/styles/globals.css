@@ -64,6 +64,13 @@
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
     Consolas, "Liberation Mono", monospace;
 
+  /* Density (design.md Decision 8 — Linear/Vercel dense-quiet): baseline text
+     drops to 14px. Downstream `text-base`, `text-sm`, `text-xs` utilities all
+     derive from the default Tailwind scale once this root size shifts. Card
+     `p-4` and dashboard `gap-3` are handled by the default spacing scale and
+     verified at the component level in tasks 5.1 / 5.4. */
+  --text-base: 0.875rem;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
