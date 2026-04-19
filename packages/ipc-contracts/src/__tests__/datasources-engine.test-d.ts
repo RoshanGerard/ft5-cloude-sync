@@ -73,7 +73,11 @@ describe("ipc-contracts fs-datasource-engine types — file entries", () => {
       size: 1024,
       modifiedAt: Date.now(),
       mimeFamily: "document",
-      providerMetadata: {},
+      providerMetadata: {
+        bucket: "bucket",
+        key: "folder/file.txt",
+        etag: '"abc"',
+      },
     };
     expect(s3Entry.path).toContain("file.txt");
     expect(s3Entry.handle.length).toBeGreaterThan(0);
@@ -115,12 +119,21 @@ describe("ipc-contracts fs-datasource-engine types — file entries", () => {
     expectTypeOf<Drive>().toMatchTypeOf<Record<string, unknown>>();
     expectTypeOf<OneDrive>().toMatchTypeOf<Record<string, unknown>>();
 
-    // Pin the named export's Phase 1 shape. Phase 6 tightens this entry
-    // with SDK-native fields; until then, the base shape must remain
-    // structurally stable so downstream phases can import the type name
-    // without churn.
+    // Phase 6: the `amazon-s3` entry is tightened to the concrete SDK-native
+    // field set. OneDrive and Google Drive stay `Record<string, unknown>`
+    // until Phases 7 and 8.
+    expectTypeOf<ProviderMetadataMap["amazon-s3"]>().toEqualTypeOf<{
+      bucket: string;
+      key: string;
+      etag?: string;
+      storageClass?: string;
+      versionId?: string;
+    }>();
     expectTypeOf<
-      ProviderMetadataMap["amazon-s3"]
+      ProviderMetadataMap["google-drive"]
+    >().toEqualTypeOf<Record<string, unknown>>();
+    expectTypeOf<
+      ProviderMetadataMap["onedrive"]
     >().toEqualTypeOf<Record<string, unknown>>();
   });
 });

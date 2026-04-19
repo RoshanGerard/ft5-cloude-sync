@@ -284,12 +284,34 @@ describe("createDefaultProviderRegistry", () => {
     const ctx = makeEngineContext();
     const factory = createClientFactory(createDefaultProviderRegistry());
 
+    // Phase 6 made the `amazon-s3` entry a real strategy that validates
+    // credentials at construction — supply a minimally-valid meta shape for
+    // S3; the OAuth stubs still ignore credentials.
+    const credsFor: Record<ProviderId, typeof mockCreds> = {
+      "amazon-s3": {
+        providerId: "amazon-s3",
+        authResult: {
+          accessToken: "",
+          meta: {
+            accessKeyId: "AKIA-DUMMY",
+            secretAccessKey: "SK-DUMMY",
+            region: "us-east-1",
+            bucket: "dummy-bucket",
+          },
+        },
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "google-drive": mockCreds,
+      onedrive: mockCreds,
+    };
+
     const ids: ProviderId[] = ["amazon-s3", "google-drive", "onedrive"];
     for (const id of ids) {
-      const client = factory.create(id, `ds-${id}`, mockCreds, ctx);
+      const client = factory.create(id, `ds-${id}`, credsFor[id], ctx);
       expect(client.type).toBe(id);
       expect(client.datasourceId).toBe(`ds-${id}`);
-      // Public surface still present — the stubs extend BaseDatasourceClient.
+      // Public surface still present.
       expect(typeof client.status).toBe("function");
       expect(typeof client.uploadFile).toBe("function");
       expect(typeof client.deleteDirectory).toBe("function");

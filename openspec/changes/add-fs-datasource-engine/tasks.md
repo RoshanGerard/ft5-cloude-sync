@@ -42,13 +42,13 @@
 
 ## 6. S3Client strategy
 
-- [ ] 6.1 Add `@aws-sdk/client-s3` and `@aws-sdk/lib-storage` as dependencies of `packages/fs-datasource-engine`. Justify in `design.md` (already done under Decision 1 / Impact).
-- [ ] 6.2 RED: write `packages/fs-datasource-engine/src/strategies/s3-client.test.ts` against `@aws-sdk/client-mock` covering: list (prefix query), upload (multipart), delete, getMetadata (HeadObject), search (prefix + client-side filter), authenticate (credentials-form intent), `refreshToken` (no-op for AWS static creds), `normalizeError` for each error tag, and `getQuota` throws `Unsupported`.
-- [ ] 6.3 GREEN: implement `S3Client extends BaseDatasourceClient<"amazon-s3">` with the abstract method set. Use `Upload` from `@aws-sdk/lib-storage` for streaming. Path targets map to `Key`; handles are the same as paths for S3 (but still populated explicitly so callers can interchange).
-- [ ] 6.4 RED: add a contract-suite test that runs the shared `strategy-contract.test.ts` scenarios (list → returns entries, upload → emits correct events, delete-directory → throws Unsupported, etc.) against `S3Client`.
-- [ ] 6.5 GREEN: make the contract suite pass for `S3Client`.
-- [ ] 6.6 Wire `S3Client` into `ProviderRegistry`, replacing its placeholder stub. Factory test from 5.1 now returns a real `S3Client` for `"amazon-s3"`.
-- [ ] 6.7 Request code review for Phase 6.
+- [x] 6.1 Add `@aws-sdk/client-s3` and `@aws-sdk/lib-storage` as dependencies of `packages/fs-datasource-engine`. Justify in `design.md` (already done under Decision 1 / Impact).
+- [x] 6.2 RED: write `packages/fs-datasource-engine/src/strategies/s3-client.test.ts` against `@aws-sdk/client-mock` covering: list (prefix query), upload (multipart), delete, getMetadata (HeadObject), search (prefix + client-side filter), authenticate (credentials-form intent), `refreshToken` (no-op for AWS static creds), `normalizeError` for each error tag, and `getQuota` throws `Unsupported`.
+- [x] 6.3 GREEN: implement `S3Client extends BaseDatasourceClient<"amazon-s3">` with the abstract method set. Use `Upload` from `@aws-sdk/lib-storage` for streaming. Path targets map to `Key`; handles are the same as paths for S3 (but still populated explicitly so callers can interchange).
+- [x] 6.4 RED: add a contract-suite test that runs the shared `strategy-contract.test.ts` scenarios (list → returns entries, upload → emits correct events, delete-directory → throws Unsupported, etc.) against `S3Client`.
+- [x] 6.5 GREEN: make the contract suite pass for `S3Client`.
+- [x] 6.6 Wire `S3Client` into `ProviderRegistry`, replacing its placeholder stub. Factory test from 5.1 now returns a real `S3Client` for `"amazon-s3"`.
+- [x] 6.7 Request code review for Phase 6.
 
 ## 7. OneDriveClient strategy
 

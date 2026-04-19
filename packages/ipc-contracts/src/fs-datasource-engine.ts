@@ -50,14 +50,29 @@ export type MimeFamily =
   | "other";
 
 /**
- * Provider-specific metadata attached to each `FileEntry`. Phase 1 ships
- * minimal empty-shape stubs; Phases 6–8 refine each entry with SDK-native
- * fields (S3 ETag, Drive file id, OneDrive driveItem id, etc.). The shape is
- * intentionally a `Record<string, unknown>` at the base so Phase 1 can compile
- * and later phases can tighten without breaking the public surface.
+ * Provider-specific metadata attached to each `FileEntry`. Phase 1 shipped
+ * empty-shape stubs; Phase 6 tightens the `amazon-s3` entry with SDK-native
+ * fields returned by `@aws-sdk/client-s3`. `google-drive` and `onedrive`
+ * remain `Record<string, unknown>` until Phases 7 and 8 refine them with
+ * their SDK-specific fields (driveItem id, file id, etc.).
+ *
+ * The shape is intentionally extension-friendly: Phases 7/8 tighten their
+ * entries without churning the engine-facing `ProviderMetadata<T>` alias.
  */
 export interface ProviderMetadataMap {
-  "amazon-s3": Record<string, unknown>;
+  /** S3-native per-entry metadata (tightened in Phase 6). `bucket` + `key`
+   * are always populated so audit log / telemetry can reconstruct the full
+   * S3 object identity without re-parsing the `path`. `etag`, `storageClass`,
+   * and `versionId` are populated when the source SDK response carries them
+   * (e.g., `HeadObject` / `PutObject` responses; list responses populate
+   * `etag` but not `storageClass`). */
+  "amazon-s3": {
+    bucket: string;
+    key: string;
+    etag?: string;
+    storageClass?: string;
+    versionId?: string;
+  };
   "google-drive": Record<string, unknown>;
   onedrive: Record<string, unknown>;
 }

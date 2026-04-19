@@ -76,9 +76,11 @@ class GoogleDriveClientStub extends BaseDatasourceClient<GDriveType> {
   protected override async doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
+    onProgress?: (loaded: number, total: number) => void,
   ): Promise<FileEntry<GDriveType>> {
     void parent;
     void file;
+    void onProgress;
     throw this.notYetImplemented("doUploadFile");
   }
 

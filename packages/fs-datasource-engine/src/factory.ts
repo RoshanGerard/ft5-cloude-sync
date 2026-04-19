@@ -42,8 +42,9 @@ import type {
 } from "./base-client.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
-// Wires the stubs from ./strategies/*; replaced per-entry in Phases 6-8.
-import { createS3ClientStub } from "./strategies/s3-client.stub.js";
+// Provider strategies. Phase 6 delivered the real S3 strategy; OneDrive and
+// Google Drive are still placeholder stubs awaiting Phases 7 and 8.
+import { createS3Client } from "./strategies/s3-client.js";
 import { createOneDriveClientStub } from "./strategies/onedrive-client.stub.js";
 import { createGoogleDriveClientStub } from "./strategies/googledrive-client.stub.js";
 
@@ -206,7 +207,7 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
  */
 export function createDefaultProviderRegistry(): ProviderRegistry {
   return {
-    "amazon-s3": createS3ClientStub, // TODO(phase-6): replace with createS3Client
+    "amazon-s3": createS3Client,
     "google-drive": createGoogleDriveClientStub, // TODO(phase-8): replace with createGoogleDriveClient
     onedrive: createOneDriveClientStub, // TODO(phase-7): replace with createOneDriveClient
   };

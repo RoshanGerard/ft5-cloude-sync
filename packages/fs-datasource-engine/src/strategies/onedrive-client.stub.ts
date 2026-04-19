@@ -76,9 +76,11 @@ class OneDriveClientStub extends BaseDatasourceClient<OneDriveType> {
   protected override async doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
+    onProgress?: (loaded: number, total: number) => void,
   ): Promise<FileEntry<OneDriveType>> {
     void parent;
     void file;
+    void onProgress;
     throw this.notYetImplemented("doUploadFile");
   }
 

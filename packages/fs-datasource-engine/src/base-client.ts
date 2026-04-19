@@ -157,9 +157,21 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     name: string,
     content: { path: string },
   ): Promise<FileEntry<T>>;
+  /**
+   * Primitive for `uploadFile()`. Base invokes this with an `onProgress`
+   * callback; strategies that support streaming progress (e.g., S3 via
+   * `@aws-sdk/lib-storage` `Upload.on("httpUploadProgress", ...)`) should
+   * call `onProgress(loaded, total)` repeatedly during the upload. The base
+   * converts those calls into `streaming: true` `uploading` events on the
+   * bus sharing the original `transactionId` so the bus coalescer can
+   * throttle them per Decision 5. Strategies without per-chunk progress
+   * signals MAY omit the callback entirely — the base's pre-op `uploading`
+   * event plus the terminal `file-created` event still fire.
+   */
   protected abstract doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
+    onProgress?: (loaded: number, total: number) => void,
   ): Promise<FileEntry<T>>;
   protected abstract doDeleteFileImpl(target: Target): Promise<void>;
   protected abstract doGetQuotaImpl(): Promise<Quota>;
@@ -302,9 +314,25 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       progress: 0,
       path: file.path,
     });
+    // Progress callback handed to the strategy. Strategies that support
+    // streaming progress (e.g., S3 via `@aws-sdk/lib-storage` `Upload`)
+    // invoke this with (loaded, total) on each chunk tick; the base
+    // translates it into a `streaming: true` `uploading` event carrying the
+    // same `transactionId` so the bus coalescer at Decision 5 groups ticks
+    // per-upload. `total === 0` (SDK emits progress before content-length
+    // is known) is handled defensively — progress stays at 0 for that tick.
+    const onProgress = (loaded: number, total: number): void => {
+      const progress =
+        total > 0 ? Math.max(0, Math.min(100, (loaded / total) * 100)) : 0;
+      this.emit("uploading", true, {
+        transactionId,
+        progress,
+        path: file.path,
+      });
+    };
     try {
       const entry = await this.withRefresh(() =>
-        this.doUploadFileImpl(parent, file),
+        this.doUploadFileImpl(parent, file, onProgress),
       );
       this.emit("file-created", false, {
         transactionId,

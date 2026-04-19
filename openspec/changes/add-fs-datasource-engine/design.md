@@ -151,6 +151,16 @@ When any operation throws an error that `normalizeError` tags `auth-expired`, `B
 - **Trade-off: Encryption is at the OS keyring — full-disk forensics can still extract plaintext credentials if the attacker has the user's session.** → Accepted: consistent with desktop-app expectations; stronger protections (user-unlock passphrase, Hardware TPM) are separate product choices.
 - **Risk: `ui-file-explorer` is in proposal but not applied — its IPC contract shapes might drift before this change lands.** → Mitigation: engine does not hard-depend on `ui-file-explorer`'s types; the IPC rewiring (Phase 9) is additive. If `ui-file-explorer` revises its contract, this change's Phase 9 adapts; earlier phases are unaffected.
 
+## Impact / Dependencies
+
+**Phase 6 adds three package dependencies to `packages/fs-datasource-engine`:**
+
+- **`@aws-sdk/client-s3` (runtime)** — canonical AWS SDK v3 client for S3. Required for every `doXImpl` primitive in the S3 strategy (`ListObjectsV2`, `HeadObject`, `HeadBucket`, `PutObject`, `DeleteObject`). Choosing the official SDK is non-negotiable: any alternative (hand-rolled REST, third-party S3 clients) would reimplement request signing, retry middleware, and regional endpoint resolution, all of which the SDK does correctly by default.
+- **`@aws-sdk/lib-storage` (runtime)** — the high-level `Upload` helper that coordinates multipart and single-part uploads with a unified `httpUploadProgress` event. Used by `doUploadFileImpl` to stream local files to S3 while emitting per-chunk progress ticks through the base class's `onProgress` callback. Reimplementing multipart coordination (CreateMultipartUpload → UploadPart → CompleteMultipartUpload with part-size tuning, concurrency, and error recovery) would duplicate a non-trivial piece of AWS infrastructure and is not justifiable.
+- **`aws-sdk-client-mock` (dev)** — intercepts AWS SDK command dispatch at the middleware boundary so tests exercise the real SDK code paths (command serialization, middleware chain, pagination, error shapes) without real network calls or real credentials. The alternative — spinning up a localstack container or mocking at the HTTP layer — is heavier and pulls in a runtime that the engine package does not need. `aws-sdk-client-mock` is the community-standard test harness for AWS SDK v3 strategies.
+
+**Phases 7 and 8** will add their own provider SDKs (`@microsoft/microsoft-graph-client` and `googleapis`) under the same rule: each runtime SDK dep carries a one-paragraph justification here before it lands.
+
 ## Migration Plan
 
 This change is additive for the renderer (new event subscription surface, same call shapes) and replacement for the main-process handlers (fixture → engine-backed). Deployment happens within one app release.

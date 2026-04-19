@@ -50,6 +50,7 @@ interface FakeConfig {
   doUploadFile?: (
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
+    onProgress?: (loaded: number, total: number) => void,
   ) => Promise<FileEntry<FakeType>>;
   doDeleteFile?: (target: Target) => Promise<void>;
   doGetQuota?: () => Promise<Quota>;
@@ -65,7 +66,13 @@ function makeEntry(path = "/demo.txt"): FileEntry<FakeType> {
     kind: "file",
     modifiedAt: 0,
     mimeFamily: "document",
-    providerMetadata: {},
+    // Phase 6 tightened `ProviderMetadata<"amazon-s3">` to the S3-native
+    // field set — the fake must populate a valid shape so this file's
+    // type-level tests don't regress when the contract is tightened.
+    providerMetadata: {
+      bucket: "fake-bucket",
+      key: path.replace(/^\//, ""),
+    },
   };
 }
 
@@ -95,6 +102,7 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
     (
       parent: Target,
       file: { path: string; name?: string; mimeType?: string },
+      onProgress?: (loaded: number, total: number) => void,
     ) => Promise<FileEntry<FakeType>>
   >();
   readonly doDeleteFile = vi.fn<(target: Target) => Promise<void>>();
@@ -187,8 +195,9 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   protected doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
+    onProgress?: (loaded: number, total: number) => void,
   ): Promise<FileEntry<FakeType>> {
-    return this.doUploadFile(parent, file);
+    return this.doUploadFile(parent, file, onProgress);
   }
   protected doDeleteFileImpl(target: Target): Promise<void> {
     return this.doDeleteFile(target);
@@ -336,6 +345,83 @@ describe("BaseDatasourceClient — success path emission", () => {
     const names = events.map((e) => e.event);
     expect(names).toContain("deleted");
     expect(names).not.toContain("delete-failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uploadFile passes an onProgress callback to doUploadFileImpl that re-emits
+// `uploading` with streaming: true for mid-upload progress ticks. The ticks
+// share the initial `uploading` event's transactionId so the bus coalesces
+// them per-transaction. (Added for Phase 6 — S3Client's Upload helper fires
+// httpUploadProgress events which the strategy pipes through this callback.)
+// ---------------------------------------------------------------------------
+
+describe("BaseDatasourceClient — uploadFile onProgress streaming ticks", () => {
+  it("doUploadFileImpl receives onProgress; invoking it emits streaming uploading ticks sharing the initial transactionId", async () => {
+    let captured: ((loaded: number, total: number) => void) | undefined;
+
+    const { client, events } = makeHarness({
+      doUploadFile: async (_parent, _file, onProgress) => {
+        captured = onProgress;
+        // Simulate mid-upload progress ticks.
+        onProgress?.(500, 1000);
+        onProgress?.(1000, 1000);
+        return makeEntry("/demo.txt");
+      },
+    });
+
+    await client.uploadFile(
+      { kind: "path", path: "/parent" },
+      { path: "C:/tmp/demo.txt", name: "demo.txt" },
+    );
+
+    // The base must have handed a real callback down.
+    expect(typeof captured).toBe("function");
+
+    // Collect every `uploading` event.
+    const uploadings = events.filter((e) => e.event === "uploading");
+    // Initial (progress:0) + at least one mid-upload tick must be visible.
+    // The bus throttles on 1s/10%, but the first streaming emission for a new
+    // key delivers immediately AND a progress jump of 0→50 crosses the 10%
+    // delta threshold, so the tick at loaded=500/total=1000 must emit.
+    expect(uploadings.length).toBeGreaterThanOrEqual(2);
+
+    // All uploading events must be streaming-flagged.
+    for (const u of uploadings) {
+      expect(u.streaming).toBe(true);
+    }
+
+    // The mid-upload tick must carry a numeric `progress` representing the
+    // loaded/total ratio as percentage points, and must reuse the initial
+    // emission's transactionId so the bus coalesces the stream.
+    const initial = uploadings[0]!;
+    const initialPayload = initial.payload as { transactionId?: string };
+    const tick = uploadings[1]!;
+    const tickPayload = tick.payload as {
+      transactionId?: string;
+      progress?: number;
+    };
+    expect(tickPayload.transactionId).toBe(initialPayload.transactionId);
+    expect(tickPayload.progress).toBe(50);
+  });
+
+  it("onProgress handles total=0 defensively (no NaN, no crash)", async () => {
+    const { client } = makeHarness({
+      doUploadFile: async (_parent, _file, onProgress) => {
+        // Edge: an SDK emits progress before the total is known.
+        onProgress?.(0, 0);
+        return makeEntry("/demo.txt");
+      },
+    });
+
+    // Must not reject — the base's onProgress wrapper must guard against
+    // division-by-zero when computing percentage.
+    await expect(
+      client.uploadFile(
+        { kind: "path", path: "/parent" },
+        { path: "C:/tmp/demo.txt" },
+      ),
+    ).resolves.toBeDefined();
   });
 });
 
