@@ -32,8 +32,8 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 - [x] 3.3 Write a failing guardrail test asserting no file under `features/file-explorer/` contains an expression like `name.split('.').pop()` or similar extension-parsing for icon selection.
 - [x] 3.4 Write failing test for `features/file-explorer/view-modes/details.tsx` — renders columns (icon, name, type, size, modified), sorts on column header click, renders `tabular-nums` for size and modified, handles empty directories.
 - [x] 3.5 Implement `view-modes/details.tsx`. This is the default mode, so it also gets the happy-path tests for selection, keyboard nav, and sort wiring; subsequent modes reuse the shared selection/keyboard hooks.
-- [ ] 3.6 Write failing test for `view-modes/list.tsx` — single-column compact flow, icon + name only.
-- [ ] 3.7 Implement `view-modes/list.tsx`.
+- [x] 3.6 Write failing test for `view-modes/list.tsx` — single-column compact flow, icon + name only.
+- [x] 3.7 Implement `view-modes/list.tsx`.
 - [ ] 3.8 Write failing test for `view-modes/small-icons.tsx` — 16 px icon + name, wrapping flex flow.
 - [ ] 3.9 Implement `view-modes/small-icons.tsx`.
 - [ ] 3.10 Write failing test for `view-modes/tiles.tsx` — 64 px icon + name + 2-line metadata (type, size).
