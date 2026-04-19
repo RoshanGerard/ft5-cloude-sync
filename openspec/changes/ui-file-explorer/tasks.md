@@ -1,0 +1,117 @@
+# Tasks
+
+Implementation plan for `ui-file-explorer`. Every task is expected to follow the project's coding discipline (TDD, one task per subagent, two-stage review between tasks, four-layer IPC guardrail). Tasks are grouped into phases; phases are run in order; within a phase, sibling tasks are independent unless a dependency arrow (`→`) is noted.
+
+## Phase 1 — Contracts and mocked IPC foundation
+
+- [ ] 1.1 Write failing `packages/ipc-contracts/src/__tests__/files.test-d.ts` asserting the shape of `FileEntry`, `FilesListRequest/Response`, `FilesStatRequest/Response`, `FilesSearchRequest/Response`, `FilesRenameRequest/Response`, `FilesRemoveRequest/Response`, `FilesDownloadRequest/Response` per design.md Decision 2.
+- [ ] 1.2 Implement `packages/ipc-contracts/src/files.ts` with the types in Decision 2. Export from the package's index.
+- [ ] 1.3 Extend the four-layer IPC guardrail test (`scripts/ipc-datasources-four-layer.test.ts` — rename to `ipc-four-layer.test.ts` if it doesn't already cover multiple surfaces) to also assert every `files.*` method has all four layers present.
+- [ ] 1.4 Write failing tests for the in-memory mock file system in `apps/desktop/src/main/ipc/files/__tests__/mock-fs.test.ts` — seeding per datasource id, directory listing, stat, rename (files only), remove (partial failure supported), download.
+- [ ] 1.5 Implement `apps/desktop/src/main/ipc/files/mock-fs.ts` with plausible fixture trees per datasource (Google Drive: document-heavy; OneDrive: mixed; S3: image / video / archive mix). Enforce the 300-entry per-directory ceiling inline and export a helper for the ceiling guardrail test.
+- [ ] 1.6 Write failing guardrail test `scripts/mock-fs-ceiling.test.ts` asserting no seeded directory exceeds 300 entries.
+- [ ] 1.7 Implement `apps/desktop/src/main/ipc/files/handlers.ts` (one `ipcMain.handle` per method) delegating to `mock-fs.ts`. Register via the existing `registerIpcHandlers` entry point.
+- [ ] 1.8 Extend `apps/desktop/src/preload/index.ts` to expose `window.api.files.{list,stat,search,rename,remove,download}`. Update `preload-bundle.test.ts` to ensure the `@ft5/ipc-contracts` external still resolves correctly.
+- [ ] 1.9 Write failing test `apps/desktop/src/renderer/src/features/file-explorer/__tests__/ipc-round-trip.test.ts` calling each `window.api.files.*` method against a mocked preload bridge, asserting structured-clone-safe round-trip.
+
+## Phase 2 — Explorer route, store, and history
+
+- [ ] 2.1 Write failing test for `features/file-explorer/store.ts` covering initial state, `navigate`, `back`, `forward`, `up`, `select` (single / range / toggle), `setViewMode`, `sort`, persisted preferences load / save, `pendingOps` insertion / clear, `lastError` surfacing.
+- [ ] 2.2 Implement `features/file-explorer/store.ts` using `useSyncExternalStore`, matching the pattern of `features/theme/theme-store.ts`. Cross-session preferences (view mode, details-pane open, sort order) via `localStorage` under a per-datasource key.
+- [ ] 2.3 Write failing test for `app/datasources/[datasourceId]/explore/page.tsx` — renders the explorer when `datasourceId` resolves; renders a "Datasource not found" error when it doesn't; mounts the store with the correct initial datasource id.
+- [ ] 2.4 Implement the route page and wire it into Next.js routing.
+- [ ] 2.5 Write failing test for `features/file-explorer/breadcrumb.tsx` — renders segments for a given path, activates per-segment navigation on click and Enter, exposes `<nav aria-label="Folder path">`.
+- [ ] 2.6 Implement the breadcrumb component.
+- [ ] 2.7 Write failing test for back/forward/up buttons — correct enabled state at history bounds, keyboard activation, proper aria-labels.
+- [ ] 2.8 Implement the back / forward / up controls as part of the explorer chrome.
+
+## Phase 3 — View modes and icon mapping
+
+- [ ] 3.1 Write failing test for `features/file-explorer/icons.ts` — covers every `MimeFamily` value plus `directory` `EntryKind`, returns the documented lucide icon names.
+- [ ] 3.2 Implement `features/file-explorer/icons.ts` consumed through the existing `Icon` adapter. Add any missing names to the `IconName` union and wire them to the lucide imports.
+- [ ] 3.3 Write a failing guardrail test asserting no file under `features/file-explorer/` contains an expression like `name.split('.').pop()` or similar extension-parsing for icon selection.
+- [ ] 3.4 Write failing test for `features/file-explorer/view-modes/details.tsx` — renders columns (icon, name, type, size, modified), sorts on column header click, renders `tabular-nums` for size and modified, handles empty directories.
+- [ ] 3.5 Implement `view-modes/details.tsx`. This is the default mode, so it also gets the happy-path tests for selection, keyboard nav, and sort wiring; subsequent modes reuse the shared selection/keyboard hooks.
+- [ ] 3.6 Write failing test for `view-modes/list.tsx` — single-column compact flow, icon + name only.
+- [ ] 3.7 Implement `view-modes/list.tsx`.
+- [ ] 3.8 Write failing test for `view-modes/small-icons.tsx` — 16 px icon + name, wrapping flex flow.
+- [ ] 3.9 Implement `view-modes/small-icons.tsx`.
+- [ ] 3.10 Write failing test for `view-modes/tiles.tsx` — 64 px icon + name + 2-line metadata (type, size).
+- [ ] 3.11 Implement `view-modes/tiles.tsx`.
+- [ ] 3.12 Write failing test for `view-modes/medium-icons.tsx` — 64 px icon above name, wrapping grid.
+- [ ] 3.13 Implement `view-modes/medium-icons.tsx`.
+- [ ] 3.14 Write failing test for `view-modes/large-icons.tsx` — 96 px icon above name, wrapping grid.
+- [ ] 3.15 Implement `view-modes/large-icons.tsx`.
+- [ ] 3.16 Write failing test for the View menu in `features/file-explorer/toolbar.tsx` — six radio items, current mode checked, selection switches the active renderer.
+- [ ] 3.17 Implement the View menu entry of the toolbar.
+- [ ] 3.18 Write failing test: selection and focus survive a mode switch (selection count identical before/after).
+- [ ] 3.19 Verify Phase 3 against the guardrail test for directory-size render budget (50 ms ceiling for 300-entry Details mode in jsdom).
+
+## Phase 4 — Selection, keyboard, and context menu
+
+- [ ] 4.1 Write failing test for the selection reducer — click, shift-click, ctrl-click, select-all, clear.
+- [ ] 4.2 Implement the shared selection + keyboard-nav hooks consumed by every view mode.
+- [ ] 4.3 Write failing test for keyboard bindings — arrow keys move focus, Enter activates, Delete initiates delete (opens confirm dialog), F2 starts rename, Ctrl/Cmd+A selects all.
+- [ ] 4.4 Wire the bindings into each view mode; keep the binding layer in one shared hook so the six modes share semantics.
+- [ ] 4.5 Write failing test for `features/file-explorer/context-menu.tsx` — six items in order, directory disables Rename, Escape closes and restores focus.
+- [ ] 4.6 Implement the context menu, trigger on right-click and on Shift+F10 / Menu key.
+- [ ] 4.7 Write failing test for the `aria-live` status row — announces selection changes without announcing unrelated re-renders.
+- [ ] 4.8 Implement the status row.
+
+## Phase 5 — Details pane and Properties modal
+
+- [ ] 5.1 Write failing test for `features/file-explorer/metadata/field-catalog.ts` — exports a field list and the two curated subsets (pane / modal).
+- [ ] 5.2 Implement the field catalog and the render primitives for each field (label, value, copy-to-clipboard affordance on modal).
+- [ ] 5.3 Write failing test for `features/file-explorer/details-pane.tsx` — toggles, reflects selection, shows multi-select summary, persists open state per-datasource across mounts (assert via `localStorage` side-effect).
+- [ ] 5.4 Implement the Details pane.
+- [ ] 5.5 Write failing test for `features/file-explorer/properties-modal.tsx` — opens on context-menu Properties, shows full metadata dossier, focus-trapped, Escape closes.
+- [ ] 5.6 Implement the Properties modal via the existing shadcn `Dialog` primitive.
+
+## Phase 6 — Rename, delete, download operations
+
+- [ ] 6.1 Write failing test for the `rename` action in the store — inserts into `pendingOps`, awaits IPC, on success replaces the entry, on failure reverts and sets `lastError`; test covers file rename and rejects directory rename with a "not supported in v1" error.
+- [ ] 6.2 Implement the rename action. Wire F2 + context-menu Rename into it.
+- [ ] 6.3 Write failing test for the inline rename UI — F2 flips the name to an editable input with the name selected; Enter commits; Escape aborts without dispatching IPC.
+- [ ] 6.4 Implement the inline rename UI inside each view mode's cell.
+- [ ] 6.5 Write failing test for `features/file-explorer/confirm-delete-dialog.tsx` — shows "Delete N items?" for N ≥ 1, destructive-styled Delete button, Escape cancels.
+- [ ] 6.6 Implement the confirm-delete dialog.
+- [ ] 6.7 Write failing test for the `remove` action — single-entry and multi-entry cases, partial failure handling (some removed, some failed), proper status-row update, toast announcement including failure count when relevant.
+- [ ] 6.8 Implement the remove action.
+- [ ] 6.9 Write failing test for the `download` action — dispatches `window.api.files.download`, surfaces the saved path in a toast on success, surfaces the error on failure; stub the main-process handler to return a fixture-level path.
+- [ ] 6.10 Implement the download action. Context-menu Download and toolbar Download (if we decide to expose it) delegate to it; v1 exposes via context menu only.
+- [ ] 6.11 Write failing test asserting rendered pending-op entries use `opacity-60` + `animate-sync-pulse` glyph and are listed in the motion-budget whitelist test for this feature.
+- [ ] 6.12 Update `scripts/motion-budget.test.ts` to whitelist the explorer's pending-op pulse surface and the details-pane slide; assert no other motion is introduced by this feature.
+
+## Phase 7 — Search
+
+- [ ] 7.1 Write failing test for the search UI — toolbar search toggle opens an input, typing + Enter dispatches `window.api.files.search`, results replace the main pane while a "Clear search" affordance is visible.
+- [ ] 7.2 Implement the search input.
+- [ ] 7.3 Write failing test for search result rendering — each result shows the entry plus its parent path as a secondary line; clicking a result navigates to the parent folder with the entry focused.
+- [ ] 7.4 Implement search result rendering.
+- [ ] 7.5 Write failing test for the S3 handler's client-side scan — searches match against key names, paginated scan respects a ceiling, response's `truncated` is `true` when the ceiling is hit.
+- [ ] 7.6 Implement the S3 handler's client-side scan against the mock fixture.
+- [ ] 7.7 Write failing test for the Drive / OneDrive handlers' deferred state — returns `{ entries: [], truncated: true, providerSearchDeferred: true }` (carry the flag via `providerMetadata` on the (empty) response envelope) and the UI surfaces the deferred message.
+- [ ] 7.8 Implement the deferred handlers and the UI state.
+- [ ] 7.9 Write failing test asserting search state is cleared on navigation and on explicit clear, and that the previously-focused entry is restored.
+- [ ] 7.10 Implement clearing behaviour.
+
+## Phase 8 — Card integration
+
+- [ ] 8.1 Write failing test extending `features/datasources/card.test.tsx` — the quick-actions menu contains "Explore" as the first item.
+- [ ] 8.2 Add the "Explore" item to the card's quick-actions menu in `features/datasources/card.tsx`; wire it to `router.push("/datasources/<id>/explore")`.
+- [ ] 8.3 Update any snapshot or menu-order tests across the feature to include the new item without drift.
+
+## Phase 9 — Accessibility, guardrails, and docs
+
+- [ ] 9.1 Run the existing `scripts/literals-ban.test.ts` and `scripts/radii-ceiling.test.ts` against the new `features/file-explorer/` directory; fix any violations in the feature source.
+- [ ] 9.2 Add a file-explorer-specific accessibility test: tab through the toolbar, breadcrumb, main pane, details pane — every interactive element gets a visible focus ring; announced labels match the visible labels.
+- [ ] 9.3 Add a keyboard-only workflow e2e: navigate the explorer, select multiple files, delete with confirmation, rename a file, toggle the Details pane, switch view modes — all without a pointer device.
+- [ ] 9.4 Write `docs/design/file-explorer.md` — layout diagrams per view mode, the operation-lifecycle state diagram, the selection state machine, keyboard bindings table, accessibility notes, the search-scope decision and deferred-provider surface.
+
+## Phase 10 — Final verification
+
+- [ ] 10.1 Run `pnpm -w test` and verify every suite is green; no skipped tests in the explorer feature.
+- [ ] 10.2 Run `pnpm -w typecheck` and `pnpm -w lint`; fix any errors.
+- [ ] 10.3 Run the Playwright e2e from Phase 9.3 end-to-end; record a screenshot of Details mode populated with mock data for `docs/design/file-explorer.md`.
+- [ ] 10.4 Manual dev-mode walkthrough: open each provider's mock datasource, navigate deeply, search, delete a file, rename a file, download a file; verify pending-op states, failure reverts, toast messages. Record any deviations for a review-round follow-up.
+- [ ] 10.5 Review all tasks marked complete; confirm none have been skipped. Update the `out of scope` section of `proposal.md` if any deferrals emerged during implementation.
