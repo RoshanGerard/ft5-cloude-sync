@@ -7,6 +7,7 @@ import "../styles/globals.css";
 import { AppFooter } from "../components/app-footer";
 import { AppHeader } from "../components/app-header";
 import { THEME_BOOTSTRAP_SCRIPT } from "../features/theme/theme-script";
+import { MOTION_BOOTSTRAP_SCRIPT } from "../features/settings/motion-script";
 
 export const metadata: Metadata = {
   title: "ft5-cloude-sync",
@@ -35,6 +36,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             mounts so the `.dark` class is already set on first paint and
             there is no FOUC on cold start. See features/theme/theme-script.ts. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
+        {/* Pre-paint motion bootstrap — applies `data-motion="safe"` on
+            <html> before React mounts when the user has opted into Motion
+            Safe. Absent attribute = "always-on" default (custom animations
+            run regardless of OS reduce-motion). Kept as a separate script
+            tag from the theme branch so a failure in one doesn't swallow
+            the other. See features/settings/motion-script.ts. */}
+        <script dangerouslySetInnerHTML={{ __html: MOTION_BOOTSTRAP_SCRIPT }} />
       </head>
       {/* Three-layer shell (Decision 14): persistent AppHeader + AppFooter
           around the routed <main>. `min-h-dvh flex flex-col` on <body> makes
