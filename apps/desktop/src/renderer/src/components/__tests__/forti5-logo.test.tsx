@@ -6,10 +6,10 @@
 // lock the real-geometry contract:
 //
 //   - 6 <polygon> elements total (1 central pentagon + 5 outer petals).
-//   - The central pentagon is the smallest by area, and its fill resolves
-//     to var(--background) so it reads as a theme-reactive "hole".
-//   - The 5 outer petals fill with var(--brand-primary) for consistent
-//     brand-crimson across both themes.
+//   - ALL 6 polygons fill with var(--brand-primary) for consistent
+//     brand-crimson across every theme (review-round-3 change — the
+//     central pentagon joined the crimson fill group per user preference
+//     after live review).
 //   - The SVG exposes role="img" and the product aria-label.
 //   - No hex colour literals anywhere in the source (literals-ban).
 
@@ -53,12 +53,12 @@ describe("Forti5Logo — real brand geometry (review-round-2)", () => {
     expect(polygons.length).toBe(6);
   });
 
-  it("5 polygons fill with var(--brand-primary) (the outer petals)", () => {
+  it("all 6 polygons fill with var(--brand-primary) — unified crimson (review-round-3)", () => {
     const { container } = render(<Forti5Logo />);
     const polygons = Array.from(
       container.querySelectorAll<SVGPolygonElement>("svg polygon"),
     );
-    const brandPetals = polygons.filter((p) => {
+    const crimson = polygons.filter((p) => {
       // The fill may sit directly on the polygon or be inherited from a
       // parent <g fill="..."> — check both.
       const direct = p.getAttribute("fill");
@@ -71,15 +71,15 @@ describe("Forti5Logo — real brand geometry (review-round-2)", () => {
       }
       return false;
     });
-    expect(brandPetals.length).toBe(5);
+    expect(crimson.length).toBe(6);
   });
 
-  it("exactly 1 polygon fills with var(--background) (the central pentagon)", () => {
+  it("no polygon fills with var(--background) — the round-2 'hole' was removed in round-3", () => {
     const { container } = render(<Forti5Logo />);
     const polygons = Array.from(
       container.querySelectorAll<SVGPolygonElement>("svg polygon"),
     );
-    const centerFills = polygons.filter((p) => {
+    const bgFills = polygons.filter((p) => {
       const direct = p.getAttribute("fill");
       if (direct && direct.includes("var(--background)")) return true;
       let node: Element | null = p.parentElement;
@@ -90,7 +90,7 @@ describe("Forti5Logo — real brand geometry (review-round-2)", () => {
       }
       return false;
     });
-    expect(centerFills.length).toBe(1);
+    expect(bgFills.length).toBe(0);
   });
 
   it("honours the `size` prop on both width and height", () => {

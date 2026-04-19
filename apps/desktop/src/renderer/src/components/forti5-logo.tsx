@@ -7,13 +7,15 @@
 //
 // Theme-colour strategy (matches the literals-ban guardrail — no hex,
 // rgb, hsl, or oklch functions allowed in feature code):
-//   - the 5 outer petals fill with `var(--brand-primary)` (theme-
+//   - all 6 polygons fill with `var(--brand-primary)` (theme-
 //     invariant crimson, declared in globals.css at both :root and .dark
-//     scope),
-//   - the central pentagon fills with `var(--background)` so it reads
-//     as a theme-reactive "hole in the middle" — near-white on light
-//     theme, warm-near-black on dark theme, mirroring the original
-//     brand-mark's black dot on crimson petals.
+//     scope).
+//
+// Review-round-3 change: the central pentagon was previously filled with
+// `var(--background)` to create a "hole in the middle" mirroring the
+// original vendor PNG's black dot. User reviewed the live app and asked
+// for the centre to be red like the petals — unifying the whole mark to
+// crimson for a stronger, simpler brand read.
 //
 // The viewBox is no longer square (1.044:1), so rendering with
 // `width={size} height={size}` intentionally letterboxes inside the
@@ -69,20 +71,16 @@ export function Forti5Logo({
       data-testid="forti5-logo"
       {...rest}
     >
-      {/* Five outer petals in theme-invariant brand crimson. Grouping under
-          a <g fill> avoids repeating the attribute per polygon. */}
+      {/* All 6 polygons (5 outer petals + central pentagon) in theme-
+          invariant brand crimson. Grouping under a single <g fill> avoids
+          repeating the attribute per polygon. Round-3: the central
+          pentagon joined the petal fill group per user preference. */}
       <g fill="var(--brand-primary)">
         {PETAL_POINTS.map((points, idx) => (
           <polygon key={idx} points={points} />
         ))}
+        <polygon points={CENTER_PENTAGON_POINTS} />
       </g>
-      {/* Central pentagon in the theme background colour — reads as a
-          contrasting "hole" that flips with the theme (near-white on
-          light, warm-near-black on dark). */}
-      <polygon
-        points={CENTER_PENTAGON_POINTS}
-        fill="var(--background)"
-      />
     </svg>
   );
 }
