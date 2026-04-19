@@ -23,7 +23,14 @@ import {
   LaptopIcon,
   MonitorIcon,
   MoonIcon,
+  PauseIcon,
+  PlayIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  SettingsIcon,
   SunIcon,
+  Trash2Icon,
+  UploadIcon,
   type LucideProps,
 } from "lucide-react"
 import type { ComponentType } from "react"
@@ -36,6 +43,16 @@ export type IconName =
   | "cloud"
   | "database"
   | "hard-drive"
+  // Decision 15 (review-round-1): primary-CTA glyphs. Every primary call-to-
+  // action renders icon+label; extending the IconName union is the only
+  // place this is reflected in the adapter API.
+  | "plus"
+  | "refresh-cw"
+  | "pause"
+  | "play"
+  | "upload"
+  | "settings"
+  | "trash-2"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -45,6 +62,13 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   cloud: CloudIcon,
   database: DatabaseIcon,
   "hard-drive": HardDriveIcon,
+  plus: PlusIcon,
+  "refresh-cw": RefreshCwIcon,
+  pause: PauseIcon,
+  play: PlayIcon,
+  upload: UploadIcon,
+  settings: SettingsIcon,
+  "trash-2": Trash2Icon,
 }
 
 export type IconProps = {

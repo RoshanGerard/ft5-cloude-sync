@@ -164,6 +164,27 @@ describe("DatasourceCard — spec scenarios", () => {
     expect(labels[4]).toMatch(/remove/i);
   });
 
+  it("Decision 15: every quick-action menu item has a leading SVG glyph", async () => {
+    const summary = buildSummary({ status: "connected" });
+    renderWithProvider(<DatasourceCard summary={summary} />);
+
+    const trigger = screen.getByRole("button", { name: /quick actions/i });
+    fireEvent.pointerDown(trigger, { button: 0 });
+
+    const items = await screen.findAllByRole("menuitem");
+    // Five data-bearing items: Sync now, Pause/Resume, Upload, Settings,
+    // Remove. Every one must render exactly one leading <svg> (the lucide
+    // glyph) so the menu reads as iconic-CTA-consistent.
+    expect(items.length).toBeGreaterThanOrEqual(5);
+    for (const item of items) {
+      const svgs = item.querySelectorAll("svg");
+      expect(
+        svgs.length,
+        `menu item "${(item.textContent ?? "").trim()}" must render exactly one leading glyph`,
+      ).toBe(1);
+    }
+  });
+
   it("quick-action label is Resume when status is paused", async () => {
     const summary = buildSummary({ status: "paused" });
     renderWithProvider(<DatasourceCard summary={summary} />);

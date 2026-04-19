@@ -252,6 +252,10 @@ function QuickActionsMenu({
   onUpload,
   onRemove,
 }: QuickActionsMenuProps) {
+  // Decision 15 (review-round-1): every menu item gets a leading lucide
+  // glyph. Pause/Resume swaps between `pause` and `play` so the glyph
+  // tracks the label's toggle semantics.
+  const pauseIcon: IconName = pauseLabel === "Resume" ? "play" : "pause";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -267,16 +271,27 @@ function QuickActionsMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={onSyncNow}>Sync now</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onSyncNow}>
+          <Icon name="refresh-cw" className="size-4" aria-hidden />
+          Sync now
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={onPauseOrResume}>
+          <Icon name={pauseIcon} className="size-4" aria-hidden />
           {pauseLabel}
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onUpload}>
+          <Icon name="upload" className="size-4" aria-hidden />
           Upload from local…
         </DropdownMenuItem>
-        <DropdownMenuItem disabled>Settings</DropdownMenuItem>
+        <DropdownMenuItem disabled>
+          <Icon name="settings" className="size-4" aria-hidden />
+          Settings
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onRemove}>Remove</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onRemove}>
+          <Icon name="trash-2" className="size-4" aria-hidden />
+          Remove
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

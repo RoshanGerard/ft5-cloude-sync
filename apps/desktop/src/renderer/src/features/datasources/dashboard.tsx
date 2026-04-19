@@ -11,6 +11,7 @@ import { useCallback, useRef, useState, type MouseEvent, type Ref } from "react"
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card } from "@/components/ui/card";
+import { Icon } from "@/components/icon";
 
 import { AddDatasourceDialog } from "./add-dialog";
 import { DatasourceCard } from "./card";
@@ -37,6 +38,11 @@ export function DatasourcesToolbar({
         onClick={onAddDatasourceClick}
         data-testid="add-datasource-trigger"
       >
+        {/* Decision 15: icon+label on every primary CTA. The shadcn Button
+            default gap-2 handles spacing; the `aria-hidden` keeps the
+            glyph out of the accessible name (the text label is the
+            screen-reader source of truth). */}
+        <Icon name="plus" className="size-4" aria-hidden />
         Add datasource
       </Button>
     </div>
@@ -112,6 +118,7 @@ function DashboardEmpty({
         onClick={onAddDatasourceClick}
         data-testid="empty-add-datasource-trigger"
       >
+        <Icon name="plus" className="size-4" aria-hidden />
         Add datasource
       </Button>
     </div>
