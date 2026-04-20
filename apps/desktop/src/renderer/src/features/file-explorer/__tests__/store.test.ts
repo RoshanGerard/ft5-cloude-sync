@@ -120,7 +120,12 @@ describe("createExplorerStore — initial state", () => {
 
     expect(s.viewMode).toBe("details");
 
-    expect(s.search).toEqual({ query: "", active: false, results: null });
+    expect(s.search).toEqual({
+      query: "",
+      active: false,
+      results: null,
+      preSearchSelection: null,
+    });
 
     expect(s.detailsPaneOpen).toBe(false);
 
@@ -546,7 +551,12 @@ describe("search actions", () => {
     store.setSearchResults(seed(["x"]), false);
     store.clearSearch();
     const s = snap(store);
-    expect(s.search).toEqual({ query: "", active: false, results: null });
+    expect(s.search).toEqual({
+      query: "",
+      active: false,
+      results: null,
+      preSearchSelection: null,
+    });
     expect(readStoredPrefs("ds-1")).toBeNull();
   });
 });

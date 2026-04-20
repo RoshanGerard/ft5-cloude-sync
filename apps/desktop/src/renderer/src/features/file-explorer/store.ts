@@ -58,6 +58,11 @@ export interface ExplorerSearchState {
   results: FileEntry[] | null;
   truncated?: boolean;
   providerSearchDeferred?: boolean;
+  // Snapshot of `state.selection` (as a sorted `string[]`) captured by
+  // `startSearch` while search was inactive, restored by `clearSearch`.
+  // `null` at initial state and after `clearSearch` consumes it.
+  // Session-only; never persisted to localStorage. See task 7.10.
+  preSearchSelection: string[] | null;
 }
 
 export interface ExplorerHistory {
@@ -273,7 +278,12 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     sortBy: prefs.sortBy,
     sortDir: prefs.sortDir,
     viewMode: prefs.viewMode,
-    search: { query: "", active: false, results: null },
+    search: {
+      query: "",
+      active: false,
+      results: null,
+      preSearchSelection: null,
+    },
     detailsPaneOpen: prefs.detailsPaneOpen,
     pendingOps: {},
     lastError: null,
@@ -308,11 +318,32 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     if (path === state.currentPath) return;
     const truncated = state.history.stack.slice(0, state.history.index + 1);
     const nextStack = [...truncated, path];
+    // When search is active, navigation moves the user to a new folder
+    // context. Drop the search state entirely — including the pre-search
+    // snapshot — because the prior selection belonged to the now-stale
+    // folder. Selection is cleared for the same reason (entry ids are
+    // scoped to a folder's listing).
+    const wasSearching = state.search.active;
+    const nextSearch: ExplorerSearchState = wasSearching
+      ? {
+          query: "",
+          active: false,
+          results: null,
+          truncated: false,
+          providerSearchDeferred: false,
+          preSearchSelection: null,
+        }
+      : state.search;
+    const nextSelection = wasSearching ? new Set<string>() : state.selection;
+    const nextLastSelectedId = wasSearching ? null : state.lastSelectedId;
     set(
       {
         ...state,
         currentPath: path,
         history: { stack: nextStack, index: nextStack.length - 1 },
+        search: nextSearch,
+        selection: nextSelection,
+        lastSelectedId: nextLastSelectedId,
       },
       false,
     );
@@ -443,8 +474,21 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
   // --- Search ------------------------------------------------------------
 
   function startSearch(): void {
+    // Idempotent: a second call while active MUST NOT overwrite the
+    // pre-search selection snapshot.
     if (state.search.active) return;
-    set({ ...state, search: { ...state.search, active: true } }, false);
+    const snapshot = Array.from(state.selection).sort();
+    set(
+      {
+        ...state,
+        search: {
+          ...state.search,
+          active: true,
+          preSearchSelection: snapshot,
+        },
+      },
+      false,
+    );
   }
 
   function setSearchQuery(query: string): void {
@@ -471,10 +515,22 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
   }
 
   function clearSearch(): void {
+    // If a pre-search snapshot exists, restore it; otherwise leave the
+    // current selection untouched (defensive — clearSearch may be called
+    // from an already-clean state).
+    const snap = state.search.preSearchSelection;
+    const restoredSelection =
+      snap === null ? state.selection : new Set<string>(snap);
     set(
       {
         ...state,
-        search: { query: "", active: false, results: null },
+        selection: restoredSelection,
+        search: {
+          query: "",
+          active: false,
+          results: null,
+          preSearchSelection: null,
+        },
       },
       false,
     );
