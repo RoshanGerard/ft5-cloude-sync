@@ -29,6 +29,24 @@ import {
 import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 
+// Task 8.2 added `useRouter()` from `next/navigation` to the DatasourceCard
+// (the "Explore" quick-action pushes /datasources/explore?id=<id>). Dashboard
+// tests mount real cards in populated state, so without the App-Router
+// context Next throws "invariant expected app router to be mounted". Mock
+// at hoist-time — same pattern as card.test.tsx and
+// diagnostics-shortcut.test.tsx. We don't assert on pushMock here; these
+// tests focus on dashboard state-machine behaviour, not navigation.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
+
 import { DatasourcesProvider } from "../store";
 import { DatasourcesDashboard } from "../dashboard";
 

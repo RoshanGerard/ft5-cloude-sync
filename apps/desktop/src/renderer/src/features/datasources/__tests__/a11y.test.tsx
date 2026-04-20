@@ -45,6 +45,22 @@ import {
 import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 
+// Task 8.2 added `useRouter()` to DatasourceCard. The dashboard-populated
+// a11y tests mount real cards, so without the App-Router context Next
+// throws "invariant expected app router to be mounted". Same hoisted-mock
+// pattern as card.test.tsx. These a11y tests only assert DOM semantics —
+// they don't care about navigation — so a stub router is sufficient.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
+
 import { DatasourcesProvider } from "../store";
 import { DatasourcesDashboard } from "../dashboard";
 

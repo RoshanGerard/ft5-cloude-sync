@@ -165,7 +165,7 @@ describe("DatasourceCard — spec scenarios", () => {
     expect(text.toLowerCase()).not.toMatch(/used.*quota/);
   });
 
-  it("quick-action menu exposes Sync now, Pause/Resume, Upload, Settings, Remove in order", async () => {
+  it("quick-action menu exposes Explore, Sync now, Pause/Resume, Upload, Settings, Remove in order", async () => {
     const summary = buildSummary({ status: "connected" });
     renderWithProvider(<DatasourceCard summary={summary} />);
 
@@ -175,13 +175,19 @@ describe("DatasourceCard — spec scenarios", () => {
     const items = await screen.findAllByRole("menuitem");
     const labels = items.map((i) => (i.textContent ?? "").trim());
 
-    expect(labels.length).toBeGreaterThanOrEqual(5);
-    expect(labels[0]).toMatch(/sync now/i);
+    // Task 8.2: Explore is now the FIRST item, ahead of sync/pause/upload/
+    // settings/remove. The spec delta in
+    // openspec/changes/ui-file-explorer/specs/datasources-ui/spec.md
+    // (Scenario "Quick-action menu exposes explore, sync-now, ...") pins this
+    // ordering, so the remaining items shift by one position.
+    expect(labels.length).toBeGreaterThanOrEqual(6);
+    expect(labels[0]).toMatch(/explore/i);
+    expect(labels[1]).toMatch(/sync now/i);
     // Connected → action is "Pause".
-    expect(labels[1]).toMatch(/pause/i);
-    expect(labels[2]).toMatch(/upload/i);
-    expect(labels[3]).toMatch(/settings/i);
-    expect(labels[4]).toMatch(/remove/i);
+    expect(labels[2]).toMatch(/pause/i);
+    expect(labels[3]).toMatch(/upload/i);
+    expect(labels[4]).toMatch(/settings/i);
+    expect(labels[5]).toMatch(/remove/i);
   });
 
   it("Decision 15: every quick-action menu item has a leading SVG glyph", async () => {
@@ -192,10 +198,10 @@ describe("DatasourceCard — spec scenarios", () => {
     fireEvent.pointerDown(trigger, { button: 0 });
 
     const items = await screen.findAllByRole("menuitem");
-    // Five data-bearing items: Sync now, Pause/Resume, Upload, Settings,
-    // Remove. Every one must render exactly one leading <svg> (the lucide
-    // glyph) so the menu reads as iconic-CTA-consistent.
-    expect(items.length).toBeGreaterThanOrEqual(5);
+    // Six data-bearing items post-task-8.2: Explore, Sync now, Pause/Resume,
+    // Upload, Settings, Remove. Every one must render exactly one leading
+    // <svg> (the lucide glyph) so the menu reads as iconic-CTA-consistent.
+    expect(items.length).toBeGreaterThanOrEqual(6);
     for (const item of items) {
       const svgs = item.querySelectorAll("svg");
       expect(
@@ -214,7 +220,10 @@ describe("DatasourceCard — spec scenarios", () => {
 
     const items = await screen.findAllByRole("menuitem");
     const labels = items.map((i) => (i.textContent ?? "").trim());
-    expect(labels[1]).toMatch(/resume/i);
+    // Task 8.2: Explore now occupies index 0, Sync-now index 1, Pause/Resume
+    // index 2. The label toggle behaviour is unchanged — we just read from
+    // the new slot.
+    expect(labels[2]).toMatch(/resume/i);
   });
 
   it("error status: reason is in the DOM and in the badge's accessible name", () => {

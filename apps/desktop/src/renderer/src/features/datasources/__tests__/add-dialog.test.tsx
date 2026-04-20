@@ -46,6 +46,22 @@ import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 import { providers } from "@ft5/ipc-contracts";
 
+// Task 8.2 added `useRouter()` to DatasourceCard. The add-dialog happy-path
+// tests render a real card (verifying the new datasource appears in the
+// grid), so we need the App-Router mock here too to avoid Next's "invariant
+// expected app router to be mounted" throw. Same hoisted-mock pattern as
+// card.test.tsx / dashboard.test.tsx.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
+
 import { DatasourcesProvider } from "../store";
 import { DatasourcesDashboard } from "../dashboard";
 
