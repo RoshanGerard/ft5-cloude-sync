@@ -73,7 +73,36 @@ export interface ProviderMetadataMap {
     storageClass?: string;
     versionId?: string;
   };
-  "google-drive": Record<string, unknown>;
+  /**
+   * Google Drive per-entry metadata. Drive addresses files by `fileId`
+   * rather than by path; `fileId` is always populated so callers that
+   * retained an entry from a prior list can re-address it via the
+   * `handle`-form `Target` even after a rename. `mimeType` and `parents`
+   * are populated when the source SDK response carries them
+   * (`files.list` / `files.get` with the default field set includes them).
+   *
+   * Path ambiguity surfacing. Drive permits multiple files with the same
+   * name in the same parent, so a `path`-form `Target` can technically
+   * resolve to more than one `fileId`. When the strategy detects this,
+   * it keeps the oldest (first hit under `orderBy: "createdTime asc"`)
+   * as the resolved entry and populates `ambiguous: true` plus
+   * `ambiguousSiblings` listing the OTHER `fileId`s at the same
+   * (parent, name). This turns what would otherwise be silent data loss
+   * — the non-chosen siblings are unreachable via path addressing — into
+   * handle-addressable recovery data. Consumers that show Drive listings
+   * SHOULD surface an "ambiguous" badge when `ambiguous` is present and
+   * offer a disambiguation flow using `ambiguousSiblings`.
+   *
+   * Only present when the condition holds — `ambiguous` is `true | undefined`
+   * (not `false`), so callers can use presence as the signal.
+   */
+  "google-drive": {
+    fileId: string;
+    mimeType?: string;
+    parents?: string[];
+    ambiguous?: true;
+    ambiguousSiblings?: string[];
+  };
   onedrive: Record<string, unknown>;
 }
 

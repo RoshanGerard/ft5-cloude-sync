@@ -288,8 +288,9 @@ describe("createDefaultProviderRegistry", () => {
     // credentials at construction — supply a minimally-valid meta shape for
     // S3. Phase 7 does the same for `onedrive`: the real `OneDriveClient`
     // expects OAuth config (`clientId`, `tenantId`, `redirectUri`) in
-    // `authResult.meta` at construction time. Only the Google Drive slot is
-    // still a stub that ignores credentials.
+    // `authResult.meta` at construction time. Phase 8 does the same for
+    // `google-drive`: the real `GoogleDriveClient` expects OAuth config
+    // (`clientId`, `clientSecret`, `redirectUri`) in `authResult.meta`.
     const credsFor: Record<ProviderId, typeof mockCreds> = {
       "amazon-s3": {
         providerId: "amazon-s3",
@@ -305,7 +306,20 @@ describe("createDefaultProviderRegistry", () => {
         createdAt: 0,
         updatedAt: 0,
       },
-      "google-drive": mockCreds,
+      "google-drive": {
+        providerId: "google-drive",
+        authResult: {
+          accessToken: "",
+          refreshToken: "",
+          meta: {
+            clientId: "dummy-client-id",
+            clientSecret: "dummy-client-secret",
+            redirectUri: "http://localhost/callback",
+          },
+        },
+        createdAt: 0,
+        updatedAt: 0,
+      },
       onedrive: {
         providerId: "onedrive",
         authResult: {

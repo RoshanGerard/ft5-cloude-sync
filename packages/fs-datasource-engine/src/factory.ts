@@ -42,11 +42,11 @@ import type {
 } from "./base-client.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
-// Provider strategies. Phases 6 and 7 delivered the real S3 and OneDrive
-// strategies; Google Drive is still a placeholder stub awaiting Phase 8.
+// Provider strategies. Phases 6, 7, and 8 delivered the real S3, OneDrive,
+// and Google Drive strategies respectively.
 import { createS3Client } from "./strategies/s3-client.js";
 import { createOneDriveClientForRegistry } from "./strategies/onedrive-client.js";
-import { createGoogleDriveClientStub } from "./strategies/googledrive-client.stub.js";
+import { createGoogleDriveClientForRegistry } from "./strategies/googledrive-client.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -212,7 +212,7 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
 export function createDefaultProviderRegistry(): ProviderRegistry {
   return {
     "amazon-s3": createS3Client,
-    "google-drive": createGoogleDriveClientStub, // TODO(phase-8): replace with createGoogleDriveClient
+    "google-drive": createGoogleDriveClientForRegistry,
     onedrive: createOneDriveClientForRegistry,
   };
 }

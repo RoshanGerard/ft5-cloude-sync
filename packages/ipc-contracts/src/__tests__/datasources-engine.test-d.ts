@@ -89,7 +89,9 @@ describe("ipc-contracts fs-datasource-engine types — file entries", () => {
       kind: "folder",
       modifiedAt: Date.now(),
       mimeFamily: "folder",
-      providerMetadata: {},
+      // Phase 8: the Drive metadata shape now requires `fileId` — `handle`
+      // and `fileId` carry the same value (Drive's canonical item id).
+      providerMetadata: { fileId: "1a2b3c4d5e" },
     };
     expect(driveFolder.kind).toBe("folder");
   });
@@ -116,12 +118,16 @@ describe("ipc-contracts fs-datasource-engine types — file entries", () => {
     type Drive = ProviderMetadata<"google-drive">;
     type OneDrive = ProviderMetadata<"onedrive">;
     expectTypeOf<S3>().toMatchTypeOf<Record<string, unknown>>();
-    expectTypeOf<Drive>().toMatchTypeOf<Record<string, unknown>>();
+    // Drive's tightened shape is not a `Record<string, unknown>` subtype
+    // because the required `fileId: string` field forbids arbitrary keys —
+    // asserting shape equality below covers it.
     expectTypeOf<OneDrive>().toMatchTypeOf<Record<string, unknown>>();
+    void ({} as Drive); // keep the alias referenced
 
-    // Phase 6: the `amazon-s3` entry is tightened to the concrete SDK-native
-    // field set. OneDrive and Google Drive stay `Record<string, unknown>`
-    // until Phases 7 and 8.
+    // Phase 6: `amazon-s3` is tightened to its SDK-native field set.
+    // Phase 8: `google-drive` is tightened to a `fileId`-carrying shape plus
+    // optional ambiguity-surfacing fields (see ProviderMetadataMap docs).
+    // OneDrive stays `Record<string, unknown>` until a later phase refines it.
     expectTypeOf<ProviderMetadataMap["amazon-s3"]>().toEqualTypeOf<{
       bucket: string;
       key: string;
@@ -129,9 +135,13 @@ describe("ipc-contracts fs-datasource-engine types — file entries", () => {
       storageClass?: string;
       versionId?: string;
     }>();
-    expectTypeOf<
-      ProviderMetadataMap["google-drive"]
-    >().toEqualTypeOf<Record<string, unknown>>();
+    expectTypeOf<ProviderMetadataMap["google-drive"]>().toEqualTypeOf<{
+      fileId: string;
+      mimeType?: string;
+      parents?: string[];
+      ambiguous?: true;
+      ambiguousSiblings?: string[];
+    }>();
     expectTypeOf<
       ProviderMetadataMap["onedrive"]
     >().toEqualTypeOf<Record<string, unknown>>();
