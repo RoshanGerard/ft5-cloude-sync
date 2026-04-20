@@ -42,10 +42,10 @@ import type {
 } from "./base-client.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
-// Provider strategies. Phase 6 delivered the real S3 strategy; OneDrive and
-// Google Drive are still placeholder stubs awaiting Phases 7 and 8.
+// Provider strategies. Phases 6 and 7 delivered the real S3 and OneDrive
+// strategies; Google Drive is still a placeholder stub awaiting Phase 8.
 import { createS3Client } from "./strategies/s3-client.js";
-import { createOneDriveClientStub } from "./strategies/onedrive-client.stub.js";
+import { createOneDriveClientForRegistry } from "./strategies/onedrive-client.js";
 import { createGoogleDriveClientStub } from "./strategies/googledrive-client.stub.js";
 
 // ---------------------------------------------------------------------------
@@ -209,6 +209,6 @@ export function createDefaultProviderRegistry(): ProviderRegistry {
   return {
     "amazon-s3": createS3Client,
     "google-drive": createGoogleDriveClientStub, // TODO(phase-8): replace with createGoogleDriveClient
-    onedrive: createOneDriveClientStub, // TODO(phase-7): replace with createOneDriveClient
+    onedrive: createOneDriveClientForRegistry,
   };
 }

@@ -53,10 +53,10 @@
 ## 7. OneDriveClient strategy
 
 - [x] 7.1 Add `@microsoft/microsoft-graph-client` as a dependency of the engine package.
-- [ ] 7.2 RED: write `packages/fs-datasource-engine/src/strategies/onedrive-client.test.ts` against a Graph-client mock covering: list (by path and by drive-item-id handle), upload (resumable-session for >4MB, simple PUT for smaller), delete, getMetadata, search (Graph search endpoint), authenticate (OAuth intent), `refreshToken`, `normalizeError` for Graph error codes, and `getQuota` against `/me/drive` quota.
-- [ ] 7.3 GREEN: implement `OneDriveClient extends BaseDatasourceClient<"onedrive">`. Maintain an internal LRU path↔driveItemId cache invalidated on `deleted` / `file-created` emissions.
-- [ ] 7.4 Run the shared contract suite against `OneDriveClient`. Make it pass.
-- [ ] 7.5 Wire into `ProviderRegistry`; Factory test now returns a real client for `"onedrive"`.
+- [x] 7.2 RED: write `packages/fs-datasource-engine/src/strategies/onedrive-client.test.ts` against a Graph-client mock covering: list (by path and by drive-item-id handle), upload (resumable-session for >4MB, simple PUT for smaller), delete, getMetadata, search (Graph search endpoint), authenticate (OAuth intent), `refreshToken`, `normalizeError` for Graph error codes, and `getQuota` against `/me/drive` quota.
+- [x] 7.3 GREEN: implement `OneDriveClient extends BaseDatasourceClient<"onedrive">`. Maintain an internal LRU path↔driveItemId cache invalidated on `deleted` / `file-created` emissions.
+- [x] 7.4 Run the shared contract suite against `OneDriveClient`. Make it pass.
+- [x] 7.5 Wire into `ProviderRegistry`; Factory test now returns a real client for `"onedrive"`.
 - [ ] 7.6 Request code review for Phase 7.
 
 ## 8. GoogleDriveClient strategy
