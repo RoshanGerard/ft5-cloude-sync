@@ -57,7 +57,7 @@
 - [x] 7.3 GREEN: implement `OneDriveClient extends BaseDatasourceClient<"onedrive">`. Maintain an internal LRU path↔driveItemId cache invalidated on `deleted` / `file-created` emissions.
 - [x] 7.4 Run the shared contract suite against `OneDriveClient`. Make it pass.
 - [x] 7.5 Wire into `ProviderRegistry`; Factory test now returns a real client for `"onedrive"`.
-- [ ] 7.6 Request code review for Phase 7.
+- [x] 7.6 Request code review for Phase 7.
 
 ## 8. GoogleDriveClient strategy
 
