@@ -629,10 +629,12 @@ function internalSearch(req: FilesSearchRequest): InternalSearchResult {
   }
 
   const needle = req.query.toLowerCase();
+  const scope = normalizeSearchScope(req.path);
   const matches: FileEntry[] = [];
   for (const entries of tree.byParent.values()) {
     for (const entry of entries) {
       if (entry.kind !== "file") continue;
+      if (scope !== "/" && !entry.path.startsWith(scope)) continue;
       if (needle === "" || entry.name.toLowerCase().includes(needle)) {
         matches.push(entry);
       }
@@ -689,6 +691,17 @@ export function enumerateSeededDirectorySizes(): Array<{
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+/**
+ * Normalize a search scope path so `startsWith` is a clean subtree-prefix
+ * check. The root scope (`"/"` or empty) collapses to `"/"`, which callers
+ * treat as a "no filter" sentinel. Any other scope is returned with a trailing
+ * slash so `/assets/2025` does not also match `/assets/20250-other-folder`.
+ */
+function normalizeSearchScope(scope: string): string {
+  if (scope === "" || scope === "/") return "/";
+  return scope.endsWith("/") ? scope : `${scope}/`;
+}
 
 function findEntry(tree: DatasourceTree, path: string): FileEntry | null {
   for (const entries of tree.byParent.values()) {
