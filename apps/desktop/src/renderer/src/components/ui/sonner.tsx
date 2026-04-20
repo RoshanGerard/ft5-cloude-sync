@@ -29,6 +29,15 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       theme={theme}
+      // Keep toasts always expanded (`expand`) and cap visible stack size
+      // (`visibleToasts`) — the defaults collapse the stack and pop the
+      // hovered toast out, which reads as misalignment when the user
+      // triggers rapid-fire actions (delete, download, rename). A
+      // persistent close button lets the user dismiss lingering toasts
+      // without waiting for the auto-timeout.
+      expand
+      visibleToasts={5}
+      closeButton
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,

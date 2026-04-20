@@ -46,10 +46,15 @@ Connection status SHALL be one of exactly `connected`, `syncing`, `paused`, `err
 - **WHEN** a `DatasourceCard` is rendered for a datasource whose provider descriptor has `capabilities.quota === false`
 - **THEN** no usage bar, no used/quota text, and no quota-related ARIA label is rendered
 
-#### Scenario: Quick-action menu exposes pause, sync-now, upload, settings, remove
+#### Scenario: Quick-action menu exposes explore, sync-now, pause, upload, settings, remove
 
 - **WHEN** the user opens the card's quick-actions control (click, Enter, or Space on the trigger)
-- **THEN** a menu opens with these items in this order: "Sync now", "Pause" / "Resume" (label depends on current status), "Upload from local…", "Settings", "Remove". Each item is keyboard-reachable, has an accessible name, and closing the menu restores focus to the trigger
+- **THEN** a menu opens with these items in this order: "Explore", "Sync now", "Pause" / "Resume" (label depends on current status), "Upload from local…", "Settings", "Remove". Each item is keyboard-reachable, has an accessible name, and closing the menu restores focus to the trigger
+
+#### Scenario: Explore quick-action navigates to the file explorer for this datasource
+
+- **WHEN** the user activates the "Explore" item on the quick-actions menu of the card whose datasource id is `<id>`
+- **THEN** the renderer navigates to `/datasources/explore?id=<id>`; the dashboard is replaced by the file-explorer view; no IPC call on the datasources surface is issued as part of this navigation (the explorer fetches its own data via the files IPC surface after it mounts)
 
 #### Scenario: Error status exposes the error reason
 

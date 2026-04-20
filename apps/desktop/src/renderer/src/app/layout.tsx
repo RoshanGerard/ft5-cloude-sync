@@ -6,6 +6,7 @@ import { GeistMono } from "geist/font/mono";
 import "../styles/globals.css";
 import { AppFooter } from "../components/app-footer";
 import { AppHeader } from "../components/app-header";
+import { Toaster } from "../components/ui/sonner";
 import { THEME_BOOTSTRAP_SCRIPT } from "../features/theme/theme-script";
 import { MOTION_BOOTSTRAP_SCRIPT } from "../features/settings/motion-script";
 import { DiagnosticsShortcut } from "../features/diagnostics/diagnostics-shortcut";
@@ -54,7 +55,16 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Note: the dashboard used to render its own <main>; the dashboard
           refactor in this decision swaps that root for a <div> so we don't
           end up with nested <main> elements (invalid HTML + a11y regression). */}
-      <body className="min-h-dvh flex flex-col">
+      {/* `h-dvh` (not `min-h-dvh`) pins body to exactly one viewport so
+          the page itself never scrolls. Any inner surface that can
+          overflow — file-explorer's main pane, the diagnostics log, the
+          dashboard grid once we add many cards — owns its own
+          overflow-auto and scrolls internally. This keeps the AppHeader
+          / AppFooter chrome visually pinned at the top / bottom of the
+          app across every route. `overflow-hidden` is belt-and-braces:
+          if a future descendant forgets its own overflow strategy, we
+          clip instead of bleeding onto the html element. */}
+      <body className="h-dvh flex flex-col overflow-hidden">
         {/* Developer keyboard shortcut — Ctrl/Cmd+Shift+D jumps to the
             /diagnostics route from anywhere. Side-effect-only component;
             returns null. Mounted at layout level so the binding is live on
@@ -62,8 +72,21 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             features/diagnostics/diagnostics-shortcut.tsx. */}
         <DiagnosticsShortcut />
         <AppHeader />
-        <main className="flex-1 min-h-0">{children}</main>
+        {/* `flex flex-col` on <main> turns it into a flex container so
+            routes that render a full-height shell (file-explorer's chrome +
+            main-pane + status-row stack, using `h-full` or `flex-1` on the
+            root div) resolve percentage / flex heights correctly against
+            main's computed flex size. Routes that render ordinary content
+            remain unaffected — their block-level children sit at the top
+            of the flex-col without stretching. */}
+        <main className="flex-1 min-h-0 flex flex-col">{children}</main>
         <AppFooter />
+        {/* Sonner toaster — mounted at layout level so every route gets
+            toast delivery (rename failure, delete success, download path,
+            deferred-search clipboard copies, etc.). The wrapper in
+            `components/ui/sonner.tsx` reads the theme store so toasts
+            match the app's Light / Dark / Serene Blue palette. */}
+        <Toaster />
       </body>
     </html>
   );

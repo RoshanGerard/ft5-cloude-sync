@@ -29,6 +29,7 @@
 //     <span>.
 
 import { useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { providers } from "@ft5/ipc-contracts";
 import type {
   DatasourceStatus,
@@ -59,10 +60,15 @@ export interface DatasourceCardProps {
 export function DatasourceCard({ summary }: DatasourceCardProps) {
   const descriptor = getDescriptor(summary.providerId);
   const actions = useDatasourceActions();
+  const router = useRouter();
 
   const quotaEnabled = descriptor?.capabilities.quota === true;
   const providerIconName = iconNameFromDescriptor(descriptor);
   const providerDisplayName = descriptor?.displayName ?? summary.providerId;
+
+  const onExplore = useCallback(() => {
+    router.push(`/datasources/explore?id=${summary.id}`);
+  }, [router, summary.id]);
 
   const onSyncNow = useCallback(() => {
     void actions.action({ datasourceId: summary.id, action: "sync-now" });
@@ -117,6 +123,7 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
         />
         <QuickActionsMenu
           pauseLabel={pauseLabel}
+          onExplore={onExplore}
           onSyncNow={onSyncNow}
           onPauseOrResume={onPauseOrResume}
           onUpload={onUpload}
@@ -272,6 +279,7 @@ function SyncingDot() {
 
 interface QuickActionsMenuProps {
   pauseLabel: string;
+  onExplore: () => void;
   onSyncNow: () => void;
   onPauseOrResume: () => void;
   onUpload: () => void;
@@ -280,6 +288,7 @@ interface QuickActionsMenuProps {
 
 function QuickActionsMenu({
   pauseLabel,
+  onExplore,
   onSyncNow,
   onPauseOrResume,
   onUpload,
@@ -304,6 +313,14 @@ function QuickActionsMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        {/* ui-file-explorer (task 8.2): Explore is the primary navigation
+            entry to the file-explorer view for this datasource. It sits at
+            index 0 per the spec delta — users reach for the browse action
+            most often, so it leads the menu. */}
+        <DropdownMenuItem onSelect={onExplore}>
+          <Icon name="folder-open" className="size-4" aria-hidden />
+          Explore
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={onSyncNow}>
           <Icon name="refresh-cw" className="size-4" aria-hidden />
           Sync now

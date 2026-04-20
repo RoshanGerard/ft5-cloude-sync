@@ -25,11 +25,31 @@ export default defineConfig({
       // the renderer `src/` directory; main / preload / packages / services
       // never use this alias so the extra entry is inert for them.
       "@": fileURLToPath(new URL("./apps/desktop/src/renderer/src", import.meta.url)),
+      // `react` / `react-dom` / `react/jsx-runtime` are only declared in the
+      // renderer package's dependencies (they shouldn't bleed into main or
+      // preload). The file-explorer render-budget guardrail at
+      // `scripts/render-budget.test.tsx` actually renders a React tree in
+      // jsdom, so it needs access to the same copies of React the renderer
+      // uses. Point the aliases at the renderer's resolved symlinks — this
+      // makes the render-budget test self-contained without promoting React
+      // to a root devDependency.
+      react: fileURLToPath(
+        new URL(
+          "./apps/desktop/src/renderer/node_modules/react",
+          import.meta.url,
+        ),
+      ),
+      "react-dom": fileURLToPath(
+        new URL(
+          "./apps/desktop/src/renderer/node_modules/react-dom",
+          import.meta.url,
+        ),
+      ),
     },
   },
   test: {
     include: [
-      "scripts/**/*.test.ts",
+      "scripts/**/*.test.{ts,tsx}",
       "packages/**/src/**/*.test.ts",
       "packages/**/src/**/*.test-d.ts",
       "apps/**/src/**/*.test.{ts,tsx}",

@@ -27,3 +27,23 @@ export type {
   ProviderId,
 } from "./datasources.js";
 export { DATASOURCES_CHANNELS, providers } from "./datasources.js";
+
+export type {
+  EntryKind,
+  FileEntry,
+  FilesDownloadRequest,
+  FilesDownloadResponse,
+  FilesListRequest,
+  FilesListResponse,
+  FilesRemoveFailure,
+  FilesRemoveRequest,
+  FilesRemoveResponse,
+  FilesRenameRequest,
+  FilesRenameResponse,
+  FilesSearchRequest,
+  FilesSearchResponse,
+  FilesStatRequest,
+  FilesStatResponse,
+  MimeFamily,
+} from "./files.js";
+export { FILES_CHANNELS } from "./files.js";

@@ -42,12 +42,20 @@ pnpm --filter @ft5/desktop run postinstall
 
 ### Local development build
 
-For iterative work, use electron-vite's dev server — it rebuilds the main and
-preload processes on save and hot-reloads the renderer:
+For iterative work, use electron-vite's dev server. The command builds the
+Next.js renderer once via a `predev` hook, then launches Electron with file
+watchers on the main and preload processes:
 
 ```bash
 pnpm --filter @ft5/desktop run dev
 ```
+
+- **Main / preload changes** reload automatically on save.
+- **Renderer changes** require restarting `dev` (the renderer ships as a
+  static export under `apps/desktop/src/renderer/out/` that `electron-vite dev`
+  does not watch). Live-reload for the renderer is a known-limitation
+  follow-up — it needs the Next dev server running in parallel plus an
+  `ELECTRON_RENDERER_URL` branch in the main process.
 
 For a one-shot production build (without packaging), run:
 

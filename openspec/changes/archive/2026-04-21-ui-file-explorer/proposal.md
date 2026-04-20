@@ -11,7 +11,7 @@ Deferring this pins the app at "can register a datasource, cannot do anything wi
 ## What Changes
 
 - **New capability `file-explorer`** (see `specs/file-explorer/spec.md`) defining:
-  - A new route `/datasources/:datasourceId/explore` reached from the datasource card's quick-actions menu via a new "Explore" item.
+  - A new static route `/datasources/explore` (with the datasource id passed as the `id` query parameter, e.g. `/datasources/explore?id=<datasourceId>`) reached from the datasource card's quick-actions menu via a new "Explore" item. See `design.md` Decision 1 for the query-param-vs-dynamic-segment rationale (it's a `next.config.mjs` `output: "export"` constraint).
   - The explorer UI: back/forward/up navigation with a per-explorer history stack; a clickable breadcrumb trail below the window title bar; a main pane with six switchable view modes (List, Details, Small Icons, Tiles, Medium Icons, Large Icons); a toggleable right-side Details pane that mirrors the selected entry's metadata; a toolbar with Delete (selection, confirmation-gated), Sort, Search, View-mode picker, and Details-pane toggle; a status row with item count and selection count.
   - Entry icon mapping: directory → folder icon; known mime families (image / video / audio / document / archive / code / text) → matching lucide file-family icon; unknown → generic file icon. No per-extension iconography in v1.
   - Per-entry right-click context menu: Open, Download, Rename (files only), Delete, Copy path, Properties. Properties opens a separate modal (distinct from the Details pane) showing full metadata.
@@ -43,7 +43,7 @@ Deferring this pins the app at "can register a datasource, cannot do anything wi
 ## Impact
 
 - **Code**: `apps/desktop/src/renderer/src/features/file-explorer/` new (toolbar, breadcrumb, pane, six view-mode cells, details-pane, properties-modal, confirm-delete, store, icons). Minor edits to `features/datasources/card.tsx` and its menu to add the Explore item. New `apps/desktop/src/main/ipc/files/` directory with mocked handlers. New `packages/ipc-contracts/src/files.ts` with the full contract surface plus a `test-d.ts` assertion.
-- **Routing**: the renderer adds a client-side route `/datasources/[datasourceId]/explore` using Next.js file routing (static export compatible). Clicking Back in the window returns to the dashboard; closing the app returns it to its default home on next launch.
+- **Routing**: the renderer adds a static route at `/datasources/explore` with the datasource id passed as the `id` query parameter. Kept as a query param rather than a `[datasourceId]` dynamic file segment because `output: "export"` would require `generateStaticParams` enumerating every id at build time, which breaks for runtime-added datasources (see `design.md` Decision 1). Clicking Back in the window returns to the dashboard; closing the app returns it to its default home on next launch.
 - **Docs**: `docs/design/file-explorer.md` new. README unchanged.
 - **Dependencies (production)**: no new runtime packages. The view modes use Tailwind grid/flex, the breadcrumb and icons use existing primitives, keyboard handling uses Radix primitives already in the tree. If we discover we need a virtualization library for large directories, it is flagged in `design.md` as an open decision with the options (react-virtuoso vs @tanstack/react-virtual vs defer) — the v1 implementation will use a naive render with a loaded-pages ceiling and escalate only if a real fixture exceeds it.
 - **Dependencies (dev)**: none new.
@@ -60,3 +60,4 @@ Deferring this pins the app at "can register a datasource, cannot do anything wi
   - Drive / OneDrive native search implementations; v1 either gates search behind the S3-style client-side scan or surfaces a "limited in v1" affordance — captured as a decision in `design.md`.
   - File previews (text, PDF, image viewer). Double-click / Enter on a file in v1 shows the Properties modal, not a preview.
   - Virtualization of large directories. v1 ships the naive render with a documented ceiling.
+  - Toolbar Download button. v1 exposes Download via the right-click context menu only; a toolbar affordance is deferred until multi-selection download semantics are designed (per task 6.10 impl note).

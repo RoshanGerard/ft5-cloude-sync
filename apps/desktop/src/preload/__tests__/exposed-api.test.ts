@@ -15,7 +15,7 @@ vi.mock("electron", () => ({
 
 import { contextBridge, ipcRenderer } from "electron";
 
-import { DATASOURCES_CHANNELS } from "@ft5/ipc-contracts";
+import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type { DatasourcesUploadProgressEvent } from "@ft5/ipc-contracts";
 
 type ExposedApi = {
@@ -30,6 +30,17 @@ type ExposedApi = {
       transactionId: string,
       callback: (event: DatasourcesUploadProgressEvent) => void,
     ) => () => void;
+  };
+  files: {
+    list: (req: unknown) => Promise<unknown>;
+    stat: (req: unknown) => Promise<unknown>;
+    search: (req: unknown) => Promise<unknown>;
+    rename: (req: unknown) => Promise<unknown>;
+    remove: (req: unknown) => Promise<unknown>;
+    download: (req: unknown) => Promise<unknown>;
+  };
+  clipboard: {
+    writeText: (text: string) => Promise<void>;
   };
 };
 
@@ -57,9 +68,16 @@ describe("preload exposed api", () => {
     expect(callArgs[0]).toBe("api");
 
     const exposed = callArgs[1] as Record<string, unknown>;
-    expect(Object.keys(exposed).sort()).toEqual(["datasources", "ping"]);
+    expect(Object.keys(exposed).sort()).toEqual([
+      "clipboard",
+      "datasources",
+      "files",
+      "ping",
+    ]);
     expect(typeof exposed.ping).toBe("function");
     expect(typeof exposed.datasources).toBe("object");
+    expect(typeof exposed.files).toBe("object");
+    expect(typeof exposed.clipboard).toBe("object");
   });
 
   it("ping() invokes ipcRenderer.invoke('ping') with no other args and returns its resolved value", async () => {
@@ -220,6 +238,103 @@ describe("preload exposed api", () => {
         DATASOURCES_CHANNELS.uploadProgress,
         listener,
       ]);
+    });
+  });
+
+  describe("files surface", () => {
+    it("exposes list/stat/search/rename/remove/download as functions", async () => {
+      const exposed = await loadExposed();
+
+      expect(typeof exposed.files.list).toBe("function");
+      expect(typeof exposed.files.stat).toBe("function");
+      expect(typeof exposed.files.search).toBe("function");
+      expect(typeof exposed.files.rename).toBe("function");
+      expect(typeof exposed.files.remove).toBe("function");
+      expect(typeof exposed.files.download).toBe("function");
+    });
+
+    it("list(req) delegates to ipcRenderer.invoke('files:list', req)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { entries: [], nextCursor: null };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = { datasourceId: "ds-1", path: "/" };
+      const result = await exposed.files.list(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.list, req]);
+      expect(result).toBe(response);
+    });
+
+    it("stat(req) delegates to ipcRenderer.invoke('files:stat', req)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { entry: { id: "e1" } };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = { datasourceId: "ds-1", path: "/a.txt" };
+      const result = await exposed.files.stat(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.stat, req]);
+      expect(result).toBe(response);
+    });
+
+    it("search(req) delegates to ipcRenderer.invoke('files:search', req)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { entries: [], truncated: false };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = { datasourceId: "ds-1", query: "foo", path: "/" };
+      const result = await exposed.files.search(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.search, req]);
+      expect(result).toBe(response);
+    });
+
+    it("rename(req) delegates to ipcRenderer.invoke('files:rename', req)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { entry: { id: "e1" } };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = { datasourceId: "ds-1", path: "/a.txt", newName: "b.txt" };
+      const result = await exposed.files.rename(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.rename, req]);
+      expect(result).toBe(response);
+    });
+
+    it("remove(req) delegates to ipcRenderer.invoke('files:remove', req)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { removed: [], failed: [] };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = { datasourceId: "ds-1", paths: ["/a.txt", "/b.txt"] };
+      const result = await exposed.files.remove(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.remove, req]);
+      expect(result).toBe(response);
+    });
+
+    it("download(req) delegates to ipcRenderer.invoke('files:download', req)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { savedPath: "/tmp/a.txt" };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = { datasourceId: "ds-1", path: "/a.txt" };
+      const result = await exposed.files.download(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.download, req]);
+      expect(result).toBe(response);
     });
   });
 });

@@ -17,11 +17,28 @@
  */
 
 import {
+  ArrowUpIcon,
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
   CloudIcon,
+  CopyIcon,
+  AlertTriangleIcon,
   DatabaseIcon,
   DropletsIcon,
+  FileArchiveIcon,
+  FileAudioIcon,
+  FileCodeIcon,
+  FileIcon,
+  FileImageIcon,
+  FileTextIcon,
+  FileVideoIcon,
+  FolderIcon,
+  FolderOpenIcon,
   FolderSyncIcon,
   HardDriveIcon,
+  HomeIcon,
   LaptopIcon,
   MonitorIcon,
   MoonIcon,
@@ -29,6 +46,7 @@ import {
   PlayIcon,
   PlusIcon,
   RefreshCwIcon,
+  SearchIcon,
   SettingsIcon,
   SunIcon,
   Trash2Icon,
@@ -61,6 +79,39 @@ export type IconName =
   //   `droplets`    — Serene Blue theme-switcher option indicator (Task 6c).
   | "folder-sync"
   | "droplets"
+  // ui-file-explorer: breadcrumb separator (chevron-right), back/forward/up
+  // navigation buttons on the explorer chrome. `home` is used as the root
+  // segment's leading glyph to match the design-note that the root reads as
+  // the datasource root.
+  | "chevron-left"
+  | "chevron-right"
+  | "chevron-up"
+  | "chevron-down"
+  | "arrow-up"
+  | "home"
+  // ui-file-explorer (Phase 3, design.md Decision 8): file/folder family
+  // glyphs. `iconForEntry` in features/file-explorer/icons.ts is the single
+  // place that maps (kind, mimeFamily) → one of these names; feature code
+  // never names a lucide icon directly.
+  //
+  // Lucide 1.8.0 exports all nine under the expected *Icon suffix — no
+  // rename substitutions were required.
+  | "folder"
+  | "folder-open"
+  | "file"
+  | "file-image"
+  | "file-video"
+  | "file-audio"
+  | "file-text"
+  | "file-archive"
+  | "file-code"
+  // ui-file-explorer Phase 5 — Properties modal's per-field copy-to-clipboard
+  // affordance (FieldRowWithCopy in features/file-explorer/metadata).
+  | "copy"
+  // ui-file-explorer Phase 6.11 — error-pin glyph on rows whose last op failed.
+  | "alert-triangle"
+  // ui-file-explorer Phase 7.2 — toolbar Search trigger glyph.
+  | "search"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -79,6 +130,24 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "trash-2": Trash2Icon,
   "folder-sync": FolderSyncIcon,
   droplets: DropletsIcon,
+  "chevron-left": ChevronLeftIcon,
+  "chevron-right": ChevronRightIcon,
+  "chevron-up": ChevronUpIcon,
+  "chevron-down": ChevronDownIcon,
+  "arrow-up": ArrowUpIcon,
+  home: HomeIcon,
+  folder: FolderIcon,
+  "folder-open": FolderOpenIcon,
+  file: FileIcon,
+  "file-image": FileImageIcon,
+  "file-video": FileVideoIcon,
+  "file-audio": FileAudioIcon,
+  "file-text": FileTextIcon,
+  "file-archive": FileArchiveIcon,
+  "file-code": FileCodeIcon,
+  copy: CopyIcon,
+  "alert-triangle": AlertTriangleIcon,
+  search: SearchIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a

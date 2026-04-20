@@ -19,6 +19,25 @@ import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 import { providers } from "@ft5/ipc-contracts";
 
+// Task 8.1 — the Explore quick-action activates `useRouter().push(...)` on
+// the App Router. card.tsx does not consume `next/navigation` today, so we
+// mock the module at hoist-time (see diagnostics-shortcut.test.tsx for the
+// same pattern) and import the card AFTER the mock registers. Keeping the
+// pushMock at module scope lets every test assert call counts independently
+// after `pushMock.mockReset()` in beforeEach.
+const pushMock = vi.fn();
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: pushMock,
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
+
 import { DatasourceCard } from "../card";
 import { DatasourcesProvider } from "../store";
 
@@ -78,6 +97,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  pushMock.mockReset();
 });
 
 describe("DatasourceCard — spec scenarios", () => {
@@ -145,7 +165,7 @@ describe("DatasourceCard — spec scenarios", () => {
     expect(text.toLowerCase()).not.toMatch(/used.*quota/);
   });
 
-  it("quick-action menu exposes Sync now, Pause/Resume, Upload, Settings, Remove in order", async () => {
+  it("quick-action menu exposes Explore, Sync now, Pause/Resume, Upload, Settings, Remove in order", async () => {
     const summary = buildSummary({ status: "connected" });
     renderWithProvider(<DatasourceCard summary={summary} />);
 
@@ -155,13 +175,19 @@ describe("DatasourceCard — spec scenarios", () => {
     const items = await screen.findAllByRole("menuitem");
     const labels = items.map((i) => (i.textContent ?? "").trim());
 
-    expect(labels.length).toBeGreaterThanOrEqual(5);
-    expect(labels[0]).toMatch(/sync now/i);
+    // Task 8.2: Explore is now the FIRST item, ahead of sync/pause/upload/
+    // settings/remove. The spec delta in
+    // openspec/changes/ui-file-explorer/specs/datasources-ui/spec.md
+    // (Scenario "Quick-action menu exposes explore, sync-now, ...") pins this
+    // ordering, so the remaining items shift by one position.
+    expect(labels.length).toBeGreaterThanOrEqual(6);
+    expect(labels[0]).toMatch(/explore/i);
+    expect(labels[1]).toMatch(/sync now/i);
     // Connected → action is "Pause".
-    expect(labels[1]).toMatch(/pause/i);
-    expect(labels[2]).toMatch(/upload/i);
-    expect(labels[3]).toMatch(/settings/i);
-    expect(labels[4]).toMatch(/remove/i);
+    expect(labels[2]).toMatch(/pause/i);
+    expect(labels[3]).toMatch(/upload/i);
+    expect(labels[4]).toMatch(/settings/i);
+    expect(labels[5]).toMatch(/remove/i);
   });
 
   it("Decision 15: every quick-action menu item has a leading SVG glyph", async () => {
@@ -172,10 +198,10 @@ describe("DatasourceCard — spec scenarios", () => {
     fireEvent.pointerDown(trigger, { button: 0 });
 
     const items = await screen.findAllByRole("menuitem");
-    // Five data-bearing items: Sync now, Pause/Resume, Upload, Settings,
-    // Remove. Every one must render exactly one leading <svg> (the lucide
-    // glyph) so the menu reads as iconic-CTA-consistent.
-    expect(items.length).toBeGreaterThanOrEqual(5);
+    // Six data-bearing items post-task-8.2: Explore, Sync now, Pause/Resume,
+    // Upload, Settings, Remove. Every one must render exactly one leading
+    // <svg> (the lucide glyph) so the menu reads as iconic-CTA-consistent.
+    expect(items.length).toBeGreaterThanOrEqual(6);
     for (const item of items) {
       const svgs = item.querySelectorAll("svg");
       expect(
@@ -194,7 +220,10 @@ describe("DatasourceCard — spec scenarios", () => {
 
     const items = await screen.findAllByRole("menuitem");
     const labels = items.map((i) => (i.textContent ?? "").trim());
-    expect(labels[1]).toMatch(/resume/i);
+    // Task 8.2: Explore now occupies index 0, Sync-now index 1, Pause/Resume
+    // index 2. The label toggle behaviour is unchanged — we just read from
+    // the new slot.
+    expect(labels[2]).toMatch(/resume/i);
   });
 
   it("error status: reason is in the DOM and in the badge's accessible name", () => {
@@ -375,5 +404,62 @@ describe("DatasourceCard — Motion Safe opt-in gating (mechanism changed)", () 
     expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-pulse/);
     expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-ripple/);
     expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-skeleton-shimmer/);
+  });
+});
+
+describe("DatasourceCard — Explore quick-action (task 8.1)", () => {
+  // Spec delta (openspec/changes/ui-file-explorer/specs/datasources-ui/spec.md):
+  //   - The quick-actions menu gains an "Explore" item positioned FIRST.
+  //   - Activating it navigates the renderer to
+  //     `/datasources/explore?id=<datasourceId>` via the App Router.
+  //
+  // We assert: (1) item present, (2) item is at index 0, (3) activating it
+  // calls `useRouter().push('/datasources/explore?id=<id>')` exactly once
+  // with the card's actual datasource id.
+
+  it("quick-actions menu contains an 'Explore' item", async () => {
+    const summary = buildSummary({ id: "ds-explore-1" });
+    renderWithProvider(<DatasourceCard summary={summary} />);
+
+    const trigger = screen.getByRole("button", { name: /quick actions/i });
+    fireEvent.pointerDown(trigger, { button: 0 });
+
+    const items = await screen.findAllByRole("menuitem");
+    const labels = items.map((i) => (i.textContent ?? "").trim());
+    expect(labels.some((l) => /explore/i.test(l))).toBe(true);
+  });
+
+  it("'Explore' is the FIRST item in the quick-actions menu", async () => {
+    const summary = buildSummary({ id: "ds-explore-2", status: "connected" });
+    renderWithProvider(<DatasourceCard summary={summary} />);
+
+    const trigger = screen.getByRole("button", { name: /quick actions/i });
+    fireEvent.pointerDown(trigger, { button: 0 });
+
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.length).toBeGreaterThanOrEqual(6);
+    expect((items[0].textContent ?? "").trim()).toMatch(/explore/i);
+  });
+
+  it("activating 'Explore' calls router.push with /datasources/explore?id=<datasourceId>", async () => {
+    const summary = buildSummary({ id: "ds-explore-3" });
+    renderWithProvider(<DatasourceCard summary={summary} />);
+
+    const trigger = screen.getByRole("button", { name: /quick actions/i });
+    fireEvent.pointerDown(trigger, { button: 0 });
+
+    const items = await screen.findAllByRole("menuitem");
+    const exploreItem = items.find((i) =>
+      /explore/i.test((i.textContent ?? "").trim()),
+    );
+    expect(exploreItem, "Explore menu item must be present").toBeTruthy();
+
+    // Radix DropdownMenuItem reacts to pointerUp→click for selection.
+    fireEvent.click(exploreItem!);
+
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    expect(pushMock).toHaveBeenCalledWith(
+      "/datasources/explore?id=ds-explore-3",
+    );
   });
 });
