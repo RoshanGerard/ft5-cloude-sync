@@ -175,6 +175,7 @@ function ListRow({
       tabIndex={focused ? 0 : -1}
       data-testid="explorer-list-row"
       data-entry-id={entry.id}
+      data-entry-kind={entry.kind}
       aria-selected={selected}
       onClick={onClick}
       className={cn(

@@ -145,11 +145,22 @@ test("keyboard-only explorer workflow: navigate, multi-select, delete, rename, D
     await window.keyboard.press("Enter");
     await expect(dialog).toBeHidden();
 
-    // 4e. Rename a file: ArrowDown to focus a file entry (directories were
-    // deleted above so the next ArrowDown lands on a file in most seed
-    // fixtures), F2 to flip the name cell into an inline input, type a new
-    // name, Enter to commit. The input carries aria-label="Rename entry".
-    await window.keyboard.press("ArrowDown");
+    // 4e. Rename a file: folders come first in most seeds, so ArrowDown
+    // until the focused row is a file (data-entry-kind="file"). F2 on a
+    // directory is a spec-refused no-op — the loop finds the first file
+    // reachable via pure keyboard navigation, matching what a user would
+    // do. 20-step cap protects against an all-directory folder.
+    let focusedKind: string | null = null;
+    for (let step = 0; step < 20; step++) {
+      await window.keyboard.press("ArrowDown");
+      focusedKind = await root
+        .locator("[data-entry-id][tabindex='0']")
+        .first()
+        .getAttribute("data-entry-kind");
+      if (focusedKind === "file") break;
+    }
+    expect(focusedKind, "ArrowDown did not land on a file row within 20 steps").toBe("file");
+
     await window.keyboard.press("F2");
     const renameInput = root.locator("input[aria-label='Rename entry']");
     await expect(renameInput).toBeVisible();

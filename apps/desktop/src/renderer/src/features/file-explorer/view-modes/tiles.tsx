@@ -168,6 +168,7 @@ function Tile({
       role="gridcell"
       data-testid="explorer-tile"
       data-entry-id={entry.id}
+      data-entry-kind={entry.kind}
       tabIndex={focused ? 0 : -1}
       aria-selected={selected}
       onClick={onClick}

@@ -98,6 +98,7 @@ export function IconAboveNameCell({
       role="gridcell"
       data-testid="explorer-cell"
       data-entry-id={entry.id}
+      data-entry-kind={entry.kind}
       aria-selected={selected}
       tabIndex={focused ? 0 : -1}
       onClick={onClick}
