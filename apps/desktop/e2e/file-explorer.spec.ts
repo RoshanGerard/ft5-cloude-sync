@@ -207,20 +207,23 @@ test("keyboard-only explorer workflow: navigate, multi-select, delete, rename, D
     await window.screenshot({ path: SCREENSHOT_PATH });
     expect(fs.existsSync(SCREENSHOT_PATH)).toBe(true);
 
-    // 4g. Switch view modes via the View menu. Typeahead ("m") lands on
-    // "Medium icons" directly without counting ArrowDown presses — Radix
-    // DropdownMenu supports first-letter typeahead, which is more robust
-    // across menu reorderings than a fixed arrow count.
+    // 4g. Switch view modes via the View menu. Target the specific
+    // "Medium icons" radio item by role+name and press Enter on it —
+    // Radix's DropdownMenuRadioGroup typeahead behaviour against the
+    // packaged binary was unreliable (pressing "m" + Enter selected the
+    // wrong item), and this locator-scoped press is keyboard-only and
+    // deterministic across menu reorderings.
     const viewTrigger = root.locator(
       "[data-testid='file-explorer-view-trigger']",
     );
     await viewTrigger.focus();
     await expect(viewTrigger).toBeFocused();
-    await window.keyboard.press("Enter");
+    await viewTrigger.press("Enter");
     const viewMenu = window.locator("[role='menu']");
     await expect(viewMenu).toBeVisible();
-    await window.keyboard.press("m");
-    await window.keyboard.press("Enter");
+    await viewMenu
+      .getByRole("menuitemradio", { name: /medium icons/i })
+      .press("Enter");
     await expect(viewMenu).toBeHidden();
     // The view-mode switcher re-renders with a different sub-tree when the
     // mode flips from Details to Medium Icons. The keyboard-nav container's
