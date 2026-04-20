@@ -60,3 +60,4 @@ Deferring this pins the app at "can register a datasource, cannot do anything wi
   - Drive / OneDrive native search implementations; v1 either gates search behind the S3-style client-side scan or surfaces a "limited in v1" affordance — captured as a decision in `design.md`.
   - File previews (text, PDF, image viewer). Double-click / Enter on a file in v1 shows the Properties modal, not a preview.
   - Virtualization of large directories. v1 ships the naive render with a documented ceiling.
+  - Toolbar Download button. v1 exposes Download via the right-click context menu only; a toolbar affordance is deferred until multi-selection download semantics are designed (per task 6.10 impl note).

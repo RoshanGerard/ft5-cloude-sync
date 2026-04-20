@@ -113,8 +113,8 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 10 — Final verification
 
-- [ ] 10.1 Run `pnpm -w test` and verify every suite is green; no skipped tests in the explorer feature.
-- [ ] 10.2 Run `pnpm -w typecheck` and `pnpm -w lint`; fix any errors.
+- [x] 10.1 Run `pnpm -w test` and verify every suite is green; no skipped tests in the explorer feature. *(Impl note: 86 test files / 769 tests — all green, 0 failures, 0 type errors. Grep for `.skip(`, `it.todo`, `test.todo`, `describe.skip`, `xit(`, `xdescribe(` under `features/file-explorer/` returned zero matches.)*
+- [x] 10.2 Run `pnpm -w typecheck` and `pnpm -w lint`; fix any errors. *(Impl note: `tsc -b` clean; `eslint .` clean. No fixes required.)*
 - [ ] 10.3 Run the Playwright e2e from Phase 9.3 end-to-end; record a screenshot of Details mode populated with mock data for `docs/design/file-explorer.md`.
 - [ ] 10.4 Manual dev-mode walkthrough: open each provider's mock datasource, navigate deeply, search, delete a file, rename a file, download a file; verify pending-op states, failure reverts, toast messages. Record any deviations for a review-round follow-up.
-- [ ] 10.5 Review all tasks marked complete; confirm none have been skipped. Update the `out of scope` section of `proposal.md` if any deferrals emerged during implementation.
+- [x] 10.5 Review all tasks marked complete; confirm none have been skipped. Update the `out of scope` section of `proposal.md` if any deferrals emerged during implementation. *(Impl note: tasks.md audit — 84 total tasks; 82 marked `[x]`; remaining `[ ]` are 10.3 (Playwright e2e needs packaged build) and 10.4 (manual dev-mode walkthrough), both user-executed. Impl-note review surfaced one v1 scope narrowing worth capturing in proposal.md: toolbar Download affordance — v1 ships context-menu Download only (task 6.10 note). Appended to proposal.md "Out of scope". Other impl notes describe internal refactors (1.3 four-layer-test consolidation), jsdom-vs-real-browser coverage gaps already covered by 9.3's Playwright spec, or resolved-downstream deferrals (5.4 slide motion → 6.12; 6.8 key asymmetry → 6.12 helper) — none are product deferrals.)*
