@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import type {
   FileEntry,
+  FilesDownloadResponse,
   FilesRemoveResponse,
   FilesRenameResponse,
 } from "@ft5/ipc-contracts";
@@ -144,6 +145,10 @@ export interface ExplorerStore {
 
   // Remove (delete) — accepts one or more paths; issues a single IPC call.
   remove(paths: string[]): Promise<void>;
+
+  // Download — one-shot IPC for a file entry; does NOT use pendingOps
+  // (the entry stays in the list; the op is user-facing via toast only).
+  download(entryId: string): Promise<void>;
 }
 
 export const DIRECTORY_RENAME_REFUSAL =
@@ -754,6 +759,40 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     }
   }
 
+  // --- Download ---------------------------------------------------------
+
+  async function download(entryId: string): Promise<void> {
+    const entry = state.entries.find((e) => e.id === entryId);
+    if (entry === undefined) return;
+    // Silent no-op on directories: the context menu disables it for folders
+    // and the spec does not define a folder-download flow in v1.
+    if (entry.kind === "directory") return;
+
+    try {
+      const api = (globalThis as unknown as {
+        window?: {
+          api?: {
+            files?: {
+              download?: (req: {
+                datasourceId: string;
+                path: string;
+              }) => Promise<FilesDownloadResponse>;
+            };
+          };
+        };
+      }).window?.api?.files?.download;
+      if (api === undefined) {
+        throw new Error("window.api.files.download is unavailable");
+      }
+      const response = await api({ datasourceId, path: entry.path });
+      toast.success(`Downloaded to ${response.savedPath}`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      set({ ...state, lastError: { entryId, reason } }, false);
+      toast.error(reason);
+    }
+  }
+
   return {
     subscribe,
     getSnapshot,
@@ -783,6 +822,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     cancelEdit,
     rename,
     remove,
+    download,
   };
 }
 

@@ -157,8 +157,10 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
     setConfirmOpen(false);
   };
 
-  // Download is Phase 6.9; kept as a no-op here.
-  const handleNoop = () => {};
+  // Context-menu Download fires the store's one-shot download action.
+  const handleDownload = (entry: FileEntry) => {
+    void store.download(entry.id);
+  };
 
   return (
     <div
@@ -197,7 +199,7 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
               store={store}
               keyboardNav={keyboardNav}
               onOpen={handleOpen}
-              onDownload={handleNoop}
+              onDownload={handleDownload}
               onRename={(entry) => store.startEdit(entry.id)}
               onDelete={handleContextDelete}
               onCopyPath={handleCopyPath}

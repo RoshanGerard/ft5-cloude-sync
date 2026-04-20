@@ -697,6 +697,14 @@ function installFilesRemoveApi(removeImpl: FilesRemoveStub): void {
   };
 }
 
+type FilesDownloadStub = ReturnType<typeof vi.fn>;
+
+function installFilesDownloadApi(downloadImpl: FilesDownloadStub): void {
+  (window as unknown as { api: unknown }).api = {
+    files: { download: downloadImpl },
+  };
+}
+
 function clearFilesApi(): void {
   delete (window as unknown as { api?: unknown }).api;
 }
@@ -986,6 +994,101 @@ describe("remove action", () => {
     await store.remove([]);
 
     expect(removeFn).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(snap(store)).toBe(before);
+  });
+});
+
+// --- Download action -----------------------------------------------------
+
+describe("download action", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+    clearFilesApi();
+  });
+
+  it("happy path: dispatches IPC once with entry path and toasts success with savedPath", async () => {
+    const entry = makeEntry({ id: "e1", name: "file.pdf", path: "/file.pdf" });
+    const downloadFn = vi.fn(() =>
+      Promise.resolve({ savedPath: "/path/to/saved/file.pdf" }),
+    );
+    installFilesDownloadApi(downloadFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    await store.download("e1");
+
+    expect(downloadFn).toHaveBeenCalledTimes(1);
+    expect(downloadFn).toHaveBeenCalledWith(
+      expect.objectContaining({ datasourceId: "ds-1", path: "/file.pdf" }),
+    );
+    expect(toast.success).toHaveBeenCalledWith(
+      "Downloaded to /path/to/saved/file.pdf",
+    );
+    // Download does not use pendingOps; state shape stays clean.
+    const after = snap(store);
+    expect(after.pendingOps).toEqual({});
+    expect(after.lastError).toBeNull();
+  });
+
+  it("failure path: IPC throws — fires toast.error(reason), sets lastError", async () => {
+    const entry = makeEntry({ id: "e1", name: "file.pdf", path: "/file.pdf" });
+    const downloadFn = vi.fn(() => Promise.reject(new Error("network down")));
+    installFilesDownloadApi(downloadFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    await store.download("e1");
+
+    const after = snap(store);
+    expect(after.lastError).toEqual({ entryId: "e1", reason: "network down" });
+    expect(toast.error).toHaveBeenCalledWith("network down");
+    expect(toast.success).not.toHaveBeenCalled();
+    // No pendingOps mutation — download is not an in-list op.
+    expect(after.pendingOps).toEqual({});
+  });
+
+  it("directory entry: silent no-op, no IPC, no toast, no state change", async () => {
+    const dir = makeEntry({
+      id: "d1",
+      kind: "directory",
+      name: "docs",
+      path: "/docs",
+      size: null,
+    });
+    const downloadFn = vi.fn();
+    installFilesDownloadApi(downloadFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([dir]);
+    const before = snap(store);
+
+    await store.download("d1");
+
+    expect(downloadFn).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(snap(store)).toBe(before);
+  });
+
+  it("missing entry id: silent no-op, no IPC, no toast", async () => {
+    const downloadFn = vi.fn();
+    installFilesDownloadApi(downloadFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([]);
+    const before = snap(store);
+
+    await store.download("unknown-id");
+
+    expect(downloadFn).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.error).not.toHaveBeenCalled();
     expect(snap(store)).toBe(before);
