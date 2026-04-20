@@ -26,17 +26,19 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
 
   ipcMain.handle(
     DATASOURCES_CHANNELS.add,
-    (_event, req: DatasourcesAddRequest) => handleDatasourcesAdd(req),
+    async (_event, req: DatasourcesAddRequest) => handleDatasourcesAdd(req),
   );
 
   ipcMain.handle(
     DATASOURCES_CHANNELS.remove,
-    (_event, req: DatasourcesRemoveRequest) => handleDatasourcesRemove(req),
+    async (_event, req: DatasourcesRemoveRequest) =>
+      handleDatasourcesRemove(req),
   );
 
   ipcMain.handle(
     DATASOURCES_CHANNELS.action,
-    (_event, req: DatasourcesActionRequest) => handleDatasourcesAction(req),
+    async (_event, req: DatasourcesActionRequest) =>
+      handleDatasourcesAction(req),
   );
 
   let uploadCounter = 0;

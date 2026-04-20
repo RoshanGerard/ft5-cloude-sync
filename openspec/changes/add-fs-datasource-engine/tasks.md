@@ -84,7 +84,7 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 - [x] 9.6 RED: write `apps/desktop/src/main/datasources/registry.test.ts` covering: (a) `list()` returns all rows mapped to `DatasourceSummary`, (b) `add(summary)` inserts with created_at/updated_at stamps, (c) `remove(id)` deletes the row AND calls `credentialStore.delete(id)`, (d) `setPaused(id, paused)` flips the flag, (e) `setStatus(id, status, errorReason?)` updates status columns without touching `paused`.
 - [x] 9.7 GREEN: implement `apps/desktop/src/main/datasources/registry.ts` exporting `DatasourceRegistry` class wrapping the DB + credential-store. Use prepared statements.
-- [ ] 9.8 Refactor: delete `apps/desktop/src/main/ipc/datasources/store.ts` (in-memory fixture). Update any imports.
+- [x] 9.8 Refactor: delete `apps/desktop/src/main/ipc/datasources/store.ts` (in-memory fixture). Update any imports.
 
 ### 9c. EngineContext singleton + feature flag
 
@@ -92,12 +92,12 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 ### 9d. Datasources IPC handlers → registry + engine
 
-- [ ] 9.10 RED: update handler tests at `apps/desktop/src/main/ipc/datasources/__tests__/*.test.ts` to spy on `ClientFactory.create`, the returned client methods, and `DatasourceRegistry`. Assert: (a) `list` forwards to `registry.list()`, (b) `add` inserts via registry and persists creds, (c) `remove` deletes from registry (which cascades to credential-store), (d) `action: "pause" | "resume"` flips `registry.setPaused`, (e) `action: "sync-now"` — behaviour TBD below, (f) `upload` resolves the provider via the registry and calls `client.uploadFile(parent, file)` with a path-form `Target`.
-- [ ] 9.11 GREEN: rewrite `datasources/*.ts` handler bodies. Keep the legacy fixture code behind `if (!process.env.DATASOURCE_ENGINE_LIVE) return fixtureResponse(...)`; flip the flag for test runs. `action: "sync-now"` maps to `client.status()` (refreshes the DatasourceSummary's `itemCount` / `lastSyncAt` via registry update) for this phase — a proper sync queue is a follow-up change.
+- [x] 9.10 RED: update handler tests at `apps/desktop/src/main/ipc/datasources/__tests__/*.test.ts` to spy on `ClientFactory.create`, the returned client methods, and `DatasourceRegistry`. Assert: (a) `list` forwards to `registry.list()`, (b) `add` inserts via registry and persists creds, (c) `remove` deletes from registry (which cascades to credential-store), (d) `action: "pause" | "resume"` flips `registry.setPaused`, (e) `action: "sync-now"` — behaviour TBD below, (f) `upload` resolves the provider via the registry and calls `client.uploadFile(parent, file)` with a path-form `Target`.
+- [x] 9.11 GREEN: rewrite `datasources/*.ts` handler bodies. Keep the legacy fixture code behind `if (!process.env.DATASOURCE_ENGINE_LIVE) return fixtureResponse(...)`; flip the flag for test runs. `action: "sync-now"` maps to `client.status()` (refreshes the DatasourceSummary's `itemCount` / `lastSyncAt` via registry update) for this phase — a proper sync queue is a follow-up change.
 
 ### 9e. Grep guardrail
 
-- [ ] 9.12 RED: add a Vitest grep test asserting no file under `apps/desktop/src/main/ipc/` imports `googleapis`, `@microsoft/microsoft-graph-client`, or `@aws-sdk/client-s3` directly. Ensure it passes.
+- [x] 9.12 RED: add a Vitest grep test asserting no file under `apps/desktop/src/main/ipc/` imports `googleapis`, `@microsoft/microsoft-graph-client`, or `@aws-sdk/client-s3` directly. Ensure it passes.
 
 ### 9f. Review
 
