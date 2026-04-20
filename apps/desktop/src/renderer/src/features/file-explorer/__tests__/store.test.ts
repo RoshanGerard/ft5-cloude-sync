@@ -683,11 +683,22 @@ describe("subscribe / getSnapshot contract", () => {
 // --- Rename action -------------------------------------------------------
 
 type FilesRenameStub = ReturnType<typeof vi.fn>;
+type FilesRemoveStub = ReturnType<typeof vi.fn>;
 
 function installFilesApi(renameImpl: FilesRenameStub): void {
   (window as unknown as { api: unknown }).api = {
     files: { rename: renameImpl },
   };
+}
+
+function installFilesRemoveApi(removeImpl: FilesRemoveStub): void {
+  (window as unknown as { api: unknown }).api = {
+    files: { remove: removeImpl },
+  };
+}
+
+function clearFilesApi(): void {
+  delete (window as unknown as { api?: unknown }).api;
 }
 
 describe("rename action", () => {
@@ -833,6 +844,151 @@ describe("rename action", () => {
 
     await store.rename("missing", "new.txt");
     expect(renameFn).not.toHaveBeenCalled();
+  });
+});
+
+// --- Remove action -------------------------------------------------------
+
+describe("remove action", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+    clearFilesApi();
+  });
+
+  function seedEntries(paths: string[]): FileEntry[] {
+    return paths.map((p) =>
+      makeEntry({ id: p, name: `${p}.txt`, path: p }),
+    );
+  }
+
+  it("single-entry happy path: one pendingOp, single IPC call, removes entry, toast.success", async () => {
+    const entries = seedEntries(["file-1"]);
+    let resolveRemove: (value: { removed: string[]; failed: [] }) => void = () => {};
+    const removeFn = vi.fn(
+      () =>
+        new Promise<{ removed: string[]; failed: [] }>((res) => {
+          resolveRemove = res;
+        }),
+    );
+    installFilesRemoveApi(removeFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries(entries);
+
+    const promise = store.remove(["file-1"]);
+    // Mid-flight
+    const mid = snap(store);
+    expect(mid.pendingOps["file-1"]).toBeDefined();
+    expect(mid.pendingOps["file-1"]?.kind).toBe("remove");
+    expect(removeFn).toHaveBeenCalledTimes(1);
+    expect(removeFn).toHaveBeenCalledWith(
+      expect.objectContaining({ paths: ["file-1"] }),
+    );
+
+    resolveRemove({ removed: ["file-1"], failed: [] });
+    await promise;
+
+    const after = snap(store);
+    expect(after.pendingOps["file-1"]).toBeUndefined();
+    expect(after.entries.find((e) => e.id === "file-1")).toBeUndefined();
+    expect(after.lastError).toBeNull();
+    expect(toast.success).toHaveBeenCalledWith("Deleted 1 item");
+  });
+
+  it("multi-entry happy path: one IPC call with all paths, removes all, toast 'Deleted 3 items'", async () => {
+    const entries = seedEntries(["a", "b", "c"]);
+    const removeFn = vi.fn(() =>
+      Promise.resolve({ removed: ["a", "b", "c"], failed: [] }),
+    );
+    installFilesRemoveApi(removeFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries(entries);
+
+    // Prime pendingOps synchronously BEFORE the await so the test observes
+    // the "three ops all present" invariant.
+    const promise = store.remove(["a", "b", "c"]);
+    const mid = snap(store);
+    expect(mid.pendingOps["a"]).toBeDefined();
+    expect(mid.pendingOps["b"]).toBeDefined();
+    expect(mid.pendingOps["c"]).toBeDefined();
+
+    await promise;
+
+    expect(removeFn).toHaveBeenCalledTimes(1);
+    expect(removeFn).toHaveBeenCalledWith(
+      expect.objectContaining({ paths: ["a", "b", "c"] }),
+    );
+
+    const after = snap(store);
+    expect(after.pendingOps).toEqual({});
+    expect(after.entries).toEqual([]);
+    expect(after.lastError).toBeNull();
+    expect(toast.success).toHaveBeenCalledWith("Deleted 3 items");
+  });
+
+  it("partial failure: removes succeeded, leaves failed, lastError on failed, mixed toast", async () => {
+    const entries = seedEntries(["a", "b", "c"]);
+    const removeFn = vi.fn(() =>
+      Promise.resolve({
+        removed: ["a", "b"],
+        failed: [{ path: "c", reason: "provider locked the file" }],
+      }),
+    );
+    installFilesRemoveApi(removeFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries(entries);
+
+    await store.remove(["a", "b", "c"]);
+
+    const after = snap(store);
+    expect(after.pendingOps).toEqual({});
+    expect(after.entries.map((e) => e.id).sort()).toEqual(["c"]);
+    expect(after.lastError).toEqual({
+      entryId: "c",
+      reason: "provider locked the file",
+    });
+    expect(toast.success).toHaveBeenCalledWith(
+      "Deleted 2 of 3 items; 1 failed",
+    );
+  });
+
+  it("full failure: IPC throws — all pending ops cleared, entries unchanged, lastError set, toast.error", async () => {
+    const entries = seedEntries(["a", "b"]);
+    const removeFn = vi.fn(() => Promise.reject(new Error("network down")));
+    installFilesRemoveApi(removeFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries(entries);
+
+    await store.remove(["a", "b"]);
+
+    const after = snap(store);
+    expect(after.pendingOps).toEqual({});
+    expect(after.entries).toEqual(entries);
+    expect(after.lastError?.reason).toBe("network down");
+    expect(toast.error).toHaveBeenCalledWith("network down");
+  });
+
+  it("empty paths is a silent no-op: no IPC, no toast, no state change", async () => {
+    const removeFn = vi.fn();
+    installFilesRemoveApi(removeFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries(seedEntries(["a"]));
+    const before = snap(store);
+
+    await store.remove([]);
+
+    expect(removeFn).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(snap(store)).toBe(before);
   });
 });
 

@@ -26,11 +26,12 @@
 //     succeeds regardless of the active mode.
 //
 
-import { useSyncExternalStore } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { Breadcrumb } from "./breadcrumb";
+import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
 import { DetailsPane } from "./details-pane";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
@@ -61,6 +62,26 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
   // on the store changes; stale-response guard lives in the hook.
   useExplorerData(store, datasourceId);
 
+  // Confirm-delete dialog state — target paths captured at click-time.
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const pendingDeleteRef = useRef<string[]>([]);
+
+  const entriesById = new Map(state.entries.map((e) => [e.id, e] as const));
+  const pathsForSelection = (): string[] => {
+    const out: string[] = [];
+    for (const id of state.selection) {
+      const entry = entriesById.get(id);
+      if (entry !== undefined) out.push(entry.path);
+    }
+    return out;
+  };
+
+  const openConfirmDelete = (paths: string[]): void => {
+    if (paths.length === 0) return;
+    pendingDeleteRef.current = paths;
+    setConfirmOpen(true);
+  };
+
   const keyboardNav = useKeyboardNav(store, {
     entries: state.entries,
     onActivate: (entry) => {
@@ -74,7 +95,9 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
     // F2 on a file flips the name cell to an inline input; the store's
     // editingId + EntryNameCell do the rest.
     onRenameRequested: (entry) => store.startEdit(entry.id),
-    onDeleteRequested: () => {},
+    onDeleteRequested: (entries) => {
+      openConfirmDelete(entries.map((e) => e.path));
+    },
     onContextMenuRequested: (entry) => {
       // Programmatic open: find the focused entry's DOM node by
       // `data-entry-id` and dispatch a native contextmenu event. Radix
@@ -108,9 +131,33 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
     // here so the writeText call isn't doubled.
     void entry;
   };
-  // Phase 5 / Phase 6 wire these to Properties modal / rename / delete
-  // / download actions respectively. Kept as no-ops here so the
-  // composite stays green while those phases land.
+  // Context-menu Delete: if the entry is in the current selection,
+  // delete the full selection; otherwise delete just that entry.
+  const handleContextDelete = (entry: FileEntry) => {
+    if (state.selection.has(entry.id)) {
+      openConfirmDelete(pathsForSelection());
+    } else {
+      openConfirmDelete([entry.path]);
+    }
+  };
+
+  const handleToolbarDelete = () => {
+    openConfirmDelete(pathsForSelection());
+  };
+
+  const handleConfirmDelete = () => {
+    const paths = pendingDeleteRef.current;
+    pendingDeleteRef.current = [];
+    setConfirmOpen(false);
+    void store.remove(paths);
+  };
+
+  const handleCancelDelete = () => {
+    pendingDeleteRef.current = [];
+    setConfirmOpen(false);
+  };
+
+  // Download is Phase 6.9; kept as a no-op here.
   const handleNoop = () => {};
 
   return (
@@ -124,7 +171,7 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
         <div className="min-w-0 flex-1">
           <Breadcrumb store={store} />
         </div>
-        <Toolbar store={store} />
+        <Toolbar store={store} onDeleteSelection={handleToolbarDelete} />
       </div>
 
       {/* overflow-auto on the main column so scrolling entries does not scroll the Details pane. */}
@@ -152,7 +199,7 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
               onOpen={handleOpen}
               onDownload={handleNoop}
               onRename={(entry) => store.startEdit(entry.id)}
-              onDelete={handleNoop}
+              onDelete={handleContextDelete}
               onCopyPath={handleCopyPath}
               onProperties={(entry) => store.openProperties(entry)}
             />
@@ -164,6 +211,12 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
       {/* Status row pinned to bottom. */}
       <StatusRow store={store} />
       <PropertiesModal store={store} />
+      <ConfirmDeleteDialog
+        open={confirmOpen}
+        count={pendingDeleteRef.current.length}
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+      />
     </div>
   );
 }

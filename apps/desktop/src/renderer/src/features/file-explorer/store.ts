@@ -3,7 +3,11 @@
 import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
-import type { FileEntry, FilesRenameResponse } from "@ft5/ipc-contracts";
+import type {
+  FileEntry,
+  FilesRemoveResponse,
+  FilesRenameResponse,
+} from "@ft5/ipc-contracts";
 
 /**
  * File-explorer store. One instance per datasource id — each explorer view
@@ -137,6 +141,9 @@ export interface ExplorerStore {
   startEdit(entryId: string): void;
   cancelEdit(): void;
   rename(entryId: string, newName: string): Promise<void>;
+
+  // Remove (delete) — accepts one or more paths; issues a single IPC call.
+  remove(paths: string[]): Promise<void>;
 }
 
 export const DIRECTORY_RENAME_REFUSAL =
@@ -642,6 +649,111 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     }
   }
 
+  // --- Remove (delete) --------------------------------------------------
+
+  async function remove(paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+
+    const total = paths.length;
+    // Seed one pendingOp per path (keyed by path — matches the IPC
+    // contract's `paths` payload and the handler's `failed[].path` field).
+    const now = Date.now();
+    const nextOps: Record<string, PendingOp> = { ...state.pendingOps };
+    for (const p of paths) nextOps[p] = { kind: "remove", startedAt: now };
+    set({ ...state, pendingOps: nextOps, lastError: null }, false);
+
+    try {
+      const api = (globalThis as unknown as {
+        window?: {
+          api?: {
+            files?: {
+              remove?: (req: {
+                datasourceId: string;
+                paths: string[];
+              }) => Promise<FilesRemoveResponse>;
+            };
+          };
+        };
+      }).window?.api?.files?.remove;
+      if (api === undefined) {
+        throw new Error("window.api.files.remove is unavailable");
+      }
+      const response = await api({ datasourceId, paths });
+
+      const removedSet = new Set(response.removed);
+      const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
+      for (const p of paths) delete clearedOps[p];
+
+      const nextEntries = state.entries.filter((e) => !removedSet.has(e.path));
+
+      const failedCount = response.failed.length;
+      const removedCount = response.removed.length;
+
+      if (failedCount === 0) {
+        const noun = removedCount === 1 ? "item" : "items";
+        set(
+          {
+            ...state,
+            entries: nextEntries,
+            pendingOps: clearedOps,
+            lastError: null,
+          },
+          false,
+        );
+        toast.success(`Deleted ${removedCount} ${noun}`);
+        return;
+      }
+
+      // Partial failure — pin lastError on the first failure (matches
+      // rename's per-entry lastError model; the toast summarises the rest).
+      const first = response.failed[0];
+      const pathToEntryId = new Map(
+        state.entries.map((e) => [e.path, e.id] as const),
+      );
+      const lastError: ExplorerLastError | null =
+        first !== undefined
+          ? {
+              entryId: pathToEntryId.get(first.path) ?? first.path,
+              reason: first.reason,
+            }
+          : null;
+
+      set(
+        {
+          ...state,
+          entries: nextEntries,
+          pendingOps: clearedOps,
+          lastError,
+        },
+        false,
+      );
+      toast.success(
+        `Deleted ${removedCount} of ${total} items; ${failedCount} failed`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
+      for (const p of paths) delete clearedOps[p];
+      const pathToEntryId = new Map(
+        state.entries.map((e) => [e.path, e.id] as const),
+      );
+      const firstPath = paths[0];
+      const entryId =
+        firstPath !== undefined
+          ? (pathToEntryId.get(firstPath) ?? firstPath)
+          : firstPath ?? "";
+      set(
+        {
+          ...state,
+          pendingOps: clearedOps,
+          lastError: { entryId, reason },
+        },
+        false,
+      );
+      toast.error(reason);
+    }
+  }
+
   return {
     subscribe,
     getSnapshot,
@@ -670,6 +782,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     startEdit,
     cancelEdit,
     rename,
+    remove,
   };
 }
 

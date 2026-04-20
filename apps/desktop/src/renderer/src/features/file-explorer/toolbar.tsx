@@ -10,6 +10,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Icon } from "@/components/icon";
 
 import type { ExplorerStore, ViewMode } from "./store";
 
@@ -37,6 +38,9 @@ import type { ExplorerStore, ViewMode } from "./store";
 
 export interface ToolbarProps {
   store: ExplorerStore;
+  // Fires when the Delete toolbar button is activated; composite wiring
+  // opens the confirm-delete dialog with `store.selection` as the target.
+  onDeleteSelection?: () => void;
 }
 
 interface ViewOption {
@@ -59,17 +63,45 @@ function isViewMode(value: string): value is ViewMode {
   return (VIEW_MODE_VALUES as readonly string[]).includes(value);
 }
 
-export function Toolbar({ store }: ToolbarProps) {
+export function Toolbar({ store, onDeleteSelection }: ToolbarProps) {
   return (
     <div
       role="toolbar"
       aria-label="Explorer toolbar"
       className="flex items-center gap-1"
     >
+      <DeleteButton store={store} onDelete={onDeleteSelection} />
       <ViewMenu store={store} />
       <DetailsToggle store={store} />
-      {/* Delete / Sort / Search controls are Phase 6/7. */}
+      {/* Sort / Search controls are Phase 7. */}
     </div>
+  );
+}
+
+interface DeleteButtonProps {
+  store: ExplorerStore;
+  onDelete?: () => void;
+}
+
+function DeleteButton({ store, onDelete }: DeleteButtonProps) {
+  const state = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
+  );
+  const disabled = state.selection.size === 0;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label="Delete selection"
+      disabled={disabled}
+      data-testid="file-explorer-delete-trigger"
+      onClick={() => onDelete?.()}
+    >
+      <Icon name="trash-2" aria-hidden="true" />
+    </Button>
   );
 }
 
