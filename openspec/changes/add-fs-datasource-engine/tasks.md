@@ -61,11 +61,11 @@
 
 ## 8. GoogleDriveClient strategy
 
-- [ ] 8.1 Add `googleapis` as a dependency of the engine package.
-- [ ] 8.2 RED: write `packages/fs-datasource-engine/src/strategies/googledrive-client.test.ts` covering: list (files.list by `parents in`), upload (resumable), delete, getMetadata, search (Drive Query), authenticate (OAuth intent), `refreshToken`, `normalizeError` for Drive error shapes, and `getQuota` against `about.get`.
-- [ ] 8.3 GREEN: implement `GoogleDriveClient extends BaseDatasourceClient<"google-drive">`. Path→fileId resolution walks `files.list` with the name filter at each path segment; results are cached in the LRU. Path ambiguity (two files same name) surfaces the first result and emits a `status-changed` warning event documenting the ambiguity — keep the behaviour documented in the spec or escalate as an open question if the test highlights a better resolution.
-- [ ] 8.4 Run the shared contract suite against `GoogleDriveClient`. Make it pass.
-- [ ] 8.5 Wire into `ProviderRegistry`; Factory test now returns a real client for `"google-drive"`.
+- [x] 8.1 Add `googleapis` as a dependency of the engine package.
+- [x] 8.2 RED: write `packages/fs-datasource-engine/src/strategies/googledrive-client.test.ts` covering: list (files.list by `parents in`), upload (resumable), delete, getMetadata, search (Drive Query), authenticate (OAuth intent), `refreshToken`, `normalizeError` for Drive error shapes, and `getQuota` against `about.get`.
+- [x] 8.3 GREEN: implement `GoogleDriveClient extends BaseDatasourceClient<"google-drive">`. Path→fileId resolution walks `files.list` with `orderBy: "createdTime asc"` and a `name='<seg>' and '<parent>' in parents and trashed=false` filter at each path segment; results are cached in the LRU. Path ambiguity (two files same name in the same parent) surfaces via `providerMetadata.ambiguous = true` plus `providerMetadata.ambiguousSiblings` listing the other fileIds — the chosen entry is the oldest by createdTime, and siblings remain reachable via handle-form `Target`. Strategies do not emit events for this; ambiguity is data attached to the entry, not an operation-lifecycle signal.
+- [x] 8.4 Run the shared contract suite against `GoogleDriveClient`. Make it pass.
+- [x] 8.5 Wire into `ProviderRegistry`; Factory test now returns a real client for `"google-drive"`.
 - [ ] 8.6 Request code review for Phase 8.
 
 ## 9. IPC handler rewiring
