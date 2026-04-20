@@ -180,3 +180,181 @@ describe("SearchResults — presentation (7.3)", () => {
     expect(spy).toHaveBeenLastCalledWith(secondResult);
   });
 });
+
+//
+// Phase 7.7 — deferred-state UI (TDD red).
+//
+// Contract (from tasks.md 7.7 + specs/file-explorer/spec.md scenario
+// "Search for Drive or OneDrive shows the deferred-work state"):
+//
+//   WHEN the user enters a search query against a Google Drive or OneDrive
+//   datasource and submits
+//   THEN the UI renders an empty result area with the message
+//   "Native search for Google Drive is not available yet" (or
+//   "for OneDrive"); the search input remains populated; the message
+//   links to the follow-up-work docs
+//
+// Main result area (`SearchResults`) currently renders "No results"
+// regardless of the `providerSearchDeferred` flag — these assertions
+// must fail semantically (missing deferred-surface testid, missing
+// provider-named copy, missing docs link) until 7.8 lands.
+//
+// `providerKind` prop: the cleanest DI vector. The composite will pass
+// the current datasource's provider kind from its registry entry in 7.8.
+// TypeScript will complain about the unknown prop until 7.8 lands the
+// type; `@ts-expect-error` comments mark those lines so the RED state
+// is semantic-only (not a parse failure that crashes the whole file).
+//
+function seedDeferredSearch(
+  store: ExplorerStore,
+  query: string,
+): void {
+  act(() => {
+    store.startSearch();
+    store.setSearchQuery(query);
+    // Third arg `providerSearchDeferred=true` mirrors the handler's
+    // deferred-state envelope (`{ entries: [], truncated: true,
+    // providerSearchDeferred: true }`).
+    store.setSearchResults([], true, true);
+  });
+}
+
+function getDeferredSurface(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[data-testid="file-explorer-search-deferred"]',
+  );
+}
+
+describe("SearchResults — deferred state (7.7)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    __resetExplorerStoreCacheForTests();
+  });
+
+  afterEach(() => {
+    cleanup();
+    window.localStorage.clear();
+    __resetExplorerStoreCacheForTests();
+    vi.restoreAllMocks();
+  });
+
+  it("Google Drive: renders a deferred surface with provider-named copy and a docs link", () => {
+    // Datasource id mirrors mock-fs.ts (seedDrivePersonal → "ds-gdrive-personal").
+    const store = makeStore("ds-gdrive-personal");
+    seedDeferredSearch(store, "budget");
+
+    render(
+      // @ts-expect-error 7.8 will add providerKind to SearchResultsProps
+      <SearchResults store={store} providerKind="google-drive" />,
+    );
+
+    const deferred = getDeferredSurface();
+    expect(deferred).not.toBeNull();
+
+    // Provider-named copy — the full spec message must appear somewhere
+    // inside the deferred surface.
+    expect(
+      within(deferred!).getByText(/Google Drive/i),
+    ).toBeInTheDocument();
+    expect(
+      within(deferred!).getByText(
+        /Native search for Google Drive is not available yet/i,
+      ),
+    ).toBeInTheDocument();
+
+    // Docs link — don't hardcode the URL; assert a meaningful anchor
+    // exists whose text / aria-label mentions docs or deferred work, and
+    // whose href is non-empty.
+    const anchors = within(deferred!).queryAllByRole("link");
+    const docsLink = anchors.find((a) => {
+      const label = `${a.textContent ?? ""} ${a.getAttribute("aria-label") ?? ""}`;
+      return /docs|deferred work/i.test(label);
+    });
+    expect(docsLink).toBeDefined();
+    expect(docsLink!.getAttribute("href")).toBeTruthy();
+  });
+
+  it("OneDrive: renders a deferred surface with provider-named copy and a docs link", () => {
+    // Datasource id mirrors mock-fs.ts (seedOneDriveWork → "ds-onedrive-work").
+    const store = makeStore("ds-onedrive-work");
+    seedDeferredSearch(store, "invoices");
+
+    render(
+      // @ts-expect-error 7.8 will add providerKind to SearchResultsProps
+      <SearchResults store={store} providerKind="onedrive" />,
+    );
+
+    const deferred = getDeferredSurface();
+    expect(deferred).not.toBeNull();
+
+    expect(
+      within(deferred!).getByText(/OneDrive/i),
+    ).toBeInTheDocument();
+    expect(
+      within(deferred!).getByText(
+        /Native search for OneDrive is not available yet/i,
+      ),
+    ).toBeInTheDocument();
+
+    const anchors = within(deferred!).queryAllByRole("link");
+    const docsLink = anchors.find((a) => {
+      const label = `${a.textContent ?? ""} ${a.getAttribute("aria-label") ?? ""}`;
+      return /docs|deferred work/i.test(label);
+    });
+    expect(docsLink).toBeDefined();
+    expect(docsLink!.getAttribute("href")).toBeTruthy();
+  });
+
+  it("is NOT rendered when providerSearchDeferred is false/absent (S3-like case)", () => {
+    const store = makeStore("ds-s3-bucket");
+    const results = [
+      seedEntry({
+        id: "r-plan",
+        kind: "file",
+        name: "plan.md",
+        path: "/reports/plan.md",
+        parentPath: "/reports",
+        mimeFamily: "text",
+        mimeType: "text/markdown",
+      }),
+    ];
+    act(() => {
+      store.startSearch();
+      store.setSearchQuery("plan");
+      // No third arg → providerSearchDeferred defaults to false/undefined.
+      store.setSearchResults(results, false);
+    });
+
+    render(
+      // @ts-expect-error 7.8 will add providerKind to SearchResultsProps
+      <SearchResults store={store} providerKind="s3" />,
+    );
+
+    expect(getDeferredSurface()).toBeNull();
+  });
+
+  it("keeps the Clear-search button present and functional in the deferred state", () => {
+    const store = makeStore("ds-gdrive-personal");
+    seedDeferredSearch(store, "budget");
+
+    render(
+      // @ts-expect-error 7.8 will add providerKind to SearchResultsProps
+      <SearchResults store={store} providerKind="google-drive" />,
+    );
+
+    // Deferred surface is present to start.
+    expect(getDeferredSurface()).not.toBeNull();
+
+    const clearBtn = document.querySelector<HTMLElement>(
+      '[data-testid="file-explorer-search-clear"]',
+    );
+    expect(clearBtn).not.toBeNull();
+
+    fireEvent.click(clearBtn!);
+
+    // store.clearSearch() fired → search is no longer active and the
+    // deferred surface has left the DOM.
+    expect(store.getSnapshot().search.active).toBe(false);
+    expect(getDeferredSurface()).toBeNull();
+  });
+});
