@@ -161,6 +161,10 @@ When any operation throws an error that `normalizeError` tags `auth-expired`, `B
 
 **Phases 7 and 8** will add their own provider SDKs (`@microsoft/microsoft-graph-client` and `googleapis`) under the same rule: each runtime SDK dep carries a one-paragraph justification here before it lands.
 
+**Phase 7 adds one package dependency to `packages/fs-datasource-engine`:**
+
+- **`@microsoft/microsoft-graph-client` (runtime)** — Microsoft's official Graph JavaScript/Node SDK and the canonical way to talk to OneDrive from Node. Used by the OneDrive strategy's `doXImpl` primitives to issue the fluent `client.api(path).get() / .put() / .delete() / .post()` requests that back `listDirectory`, `getMetadata`, `createFile`, `deleteFile`, `search`, and `getQuota`. The client also drives the large-file resumable upload session handshake (`/createUploadSession`) whose `uploadUrl` is then PUT against directly with `globalThis.fetch`. Reimplementing the Graph request layer (auth-header injection, retry middleware, OData error shape parsing, per-endpoint response shapes) against raw `fetch` would duplicate a non-trivial piece of Microsoft's SDK surface and keep us on the hook for every Graph error-shape change. No dev-side mock package exists (unlike `aws-sdk-client-mock` for AWS); the strategy is tested via factory injection — tests supply a fake `Client`-shaped object exposing the `api(path)` fluent chain, and stub `globalThis.fetch` for the resumable-upload and token-refresh paths.
+
 ## Migration Plan
 
 This change is additive for the renderer (new event subscription surface, same call shapes) and replacement for the main-process handlers (fixture → engine-backed). Deployment happens within one app release.
