@@ -96,6 +96,12 @@ export interface ExplorerStore {
   subscribe(listener: () => void): () => void;
   getSnapshot(): ExplorerState;
 
+  // Identity — the datasource this store instance belongs to. Exposed so
+  // toolbar sub-components (e.g. the Phase 7.2 SearchInput) can construct
+  // IPC requests keyed on the same id that seeded `createExplorerStore`
+  // without re-threading the prop through every intermediate component.
+  readonly datasourceId: string;
+
   // Navigation
   navigate(path: string): void;
   back(): void;
@@ -796,6 +802,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
   return {
     subscribe,
     getSnapshot,
+    datasourceId,
     navigate,
     back,
     forward,

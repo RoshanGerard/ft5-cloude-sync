@@ -1,6 +1,8 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
+
+import type { FilesSearchResponse } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -64,17 +66,105 @@ function isViewMode(value: string): value is ViewMode {
 }
 
 export function Toolbar({ store, onDeleteSelection }: ToolbarProps) {
+  const state = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
+  );
   return (
     <div
       role="toolbar"
       aria-label="Explorer toolbar"
       className="flex items-center gap-1"
     >
+      {state.search.active ? (
+        <SearchInput store={store} />
+      ) : (
+        <SearchButton store={store} />
+      )}
       <DeleteButton store={store} onDelete={onDeleteSelection} />
       <ViewMenu store={store} />
       <DetailsToggle store={store} />
-      {/* Sort / Search controls are Phase 7. */}
+      {/* Sort control is a later phase. */}
     </div>
+  );
+}
+
+interface SearchButtonProps {
+  store: ExplorerStore;
+}
+
+function SearchButton({ store }: SearchButtonProps) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label="Search"
+      data-testid="file-explorer-search-trigger"
+      onClick={() => store.startSearch()}
+    >
+      <Icon name="search" aria-hidden="true" />
+    </Button>
+  );
+}
+
+interface SearchInputProps {
+  store: ExplorerStore;
+}
+
+function SearchInput({ store }: SearchInputProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const dispatchSearch = async (query: string): Promise<void> => {
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return;
+    const api = (globalThis as unknown as {
+      window?: {
+        api?: {
+          files?: {
+            search?: (req: {
+              datasourceId: string;
+              query: string;
+              path: string;
+            }) => Promise<FilesSearchResponse>;
+          };
+        };
+      };
+    }).window?.api?.files?.search;
+    if (api === undefined) return;
+    const response = await api({
+      datasourceId: store.datasourceId,
+      query: trimmed,
+      path: "/",
+    });
+    store.setSearchResults(
+      response.entries,
+      response.truncated,
+      response.providerSearchDeferred,
+    );
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      type="search"
+      aria-label="Search"
+      data-testid="file-explorer-search-input"
+      placeholder="Search"
+      className="border-border bg-background h-8 min-w-0 rounded-md border px-2 text-sm"
+      onChange={(e) => store.setSearchQuery(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void dispatchSearch(e.currentTarget.value);
+        }
+      }}
+    />
   );
 }
 

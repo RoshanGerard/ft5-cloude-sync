@@ -35,6 +35,7 @@ import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
 import { DetailsPane } from "./details-pane";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
+import { SearchResults } from "./search-results";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
@@ -194,6 +195,8 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
             >
               Failed to load: {state.error}
             </div>
+          ) : state.search.active ? (
+            <SearchResults store={store} />
           ) : (
             <ViewModeSwitcher
               store={store}

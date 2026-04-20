@@ -46,6 +46,7 @@ import {
   PlayIcon,
   PlusIcon,
   RefreshCwIcon,
+  SearchIcon,
   SettingsIcon,
   SunIcon,
   Trash2Icon,
@@ -109,6 +110,8 @@ export type IconName =
   | "copy"
   // ui-file-explorer Phase 6.11 — error-pin glyph on rows whose last op failed.
   | "alert-triangle"
+  // ui-file-explorer Phase 7.2 — toolbar Search trigger glyph.
+  | "search"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -144,6 +147,7 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "file-code": FileCodeIcon,
   copy: CopyIcon,
   "alert-triangle": AlertTriangleIcon,
+  search: SearchIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a
