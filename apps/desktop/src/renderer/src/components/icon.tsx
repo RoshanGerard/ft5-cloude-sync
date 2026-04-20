@@ -24,6 +24,7 @@ import {
   ChevronUpIcon,
   CloudIcon,
   CopyIcon,
+  AlertTriangleIcon,
   DatabaseIcon,
   DropletsIcon,
   FileArchiveIcon,
@@ -106,6 +107,8 @@ export type IconName =
   // ui-file-explorer Phase 5 — Properties modal's per-field copy-to-clipboard
   // affordance (FieldRowWithCopy in features/file-explorer/metadata).
   | "copy"
+  // ui-file-explorer Phase 6.11 — error-pin glyph on rows whose last op failed.
+  | "alert-triangle"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -140,6 +143,7 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "file-archive": FileArchiveIcon,
   "file-code": FileCodeIcon,
   copy: CopyIcon,
+  "alert-triangle": AlertTriangleIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a

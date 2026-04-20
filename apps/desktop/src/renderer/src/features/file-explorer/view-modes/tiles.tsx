@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 import { FileContextMenu } from "../context-menu";
 import { EntryNameCell } from "../entry-name-cell";
 import { iconForEntry } from "../icons";
+import { entryError, entryPendingOp } from "../pending-op-state";
+import { ErrorPin, PendingOpGlyph } from "../pending-op-visuals";
 import type { ExplorerStore } from "../store";
 import { useSelection } from "../use-selection";
 import { formatSize, formatType } from "./details-format";
@@ -86,7 +88,8 @@ export function TilesView({
     >
       {state.entries.map((entry) => {
         const isSelected = selection.has(entry.id);
-        const pendingOp = state.pendingOps[entry.id];
+        const pendingOp = entryPendingOp(state, entry);
+        const errorReason = entryError(state, entry);
         const isFocused = focusedId === entry.id;
         return (
           <FileContextMenu
@@ -103,7 +106,9 @@ export function TilesView({
               store={store}
               entry={entry}
               selected={isSelected}
-              pending={pendingOp !== undefined}
+              pending={pendingOp !== null}
+              pendingKind={pendingOp?.kind ?? null}
+              errorReason={errorReason}
               focused={isFocused}
               onClick={(e) => {
                 onEntryClick(entry.id, e);
@@ -123,6 +128,8 @@ interface TileProps extends ComponentPropsWithoutRef<"div"> {
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
+  pendingKind: "rename" | "remove" | null;
+  errorReason: string | null;
   focused: boolean;
   onClick: (event: ReactMouseEvent) => void;
   ref?: Ref<HTMLDivElement>;
@@ -133,6 +140,8 @@ function Tile({
   entry,
   selected,
   pending,
+  pendingKind,
+  errorReason,
   focused,
   onClick,
   ref: externalRef,
@@ -177,20 +186,20 @@ function Tile({
         className="text-muted-foreground size-16 shrink-0"
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex items-center gap-1.5">
+        <div
+          className={cn(
+            "flex items-center gap-1.5",
+            pendingKind === "remove" && "line-through",
+          )}
+        >
           <EntryNameCell
             store={store}
             entry={entry}
             className="text-sm font-medium"
             titleAttr={entry.name}
           />
-          {pending ? (
-            <span
-              data-testid="explorer-pending-glyph"
-              aria-label="Operation in progress"
-              className="bg-muted-foreground inline-block size-1.5 shrink-0 animate-sync-pulse"
-            />
-          ) : null}
+          {pending ? <PendingOpGlyph /> : null}
+          {errorReason !== null ? <ErrorPin reason={errorReason} /> : null}
         </div>
         <span
           data-testid="explorer-tile-type"

@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 
 import { EntryNameCell } from "../entry-name-cell";
 import { iconForEntry } from "../icons";
+import { ErrorPin, PendingOpGlyph } from "../pending-op-visuals";
 import type { ExplorerStore } from "../store";
 
 /**
@@ -50,6 +51,10 @@ export interface IconAboveNameCellProps
   iconSize: IconAboveNameCellSize;
   selected: boolean;
   pending: boolean;
+  // Optional props: existing standalone view-mode tests mount without
+  // these; parent view modes supply them for the remove/error flows.
+  pendingKind?: "rename" | "remove" | null;
+  errorReason?: string | null;
   /**
    * Phase 4 roving-focus state. Optional so the presentational cell can
    * still render standalone from its existing view-mode tests.
@@ -65,6 +70,8 @@ export function IconAboveNameCell({
   iconSize,
   selected,
   pending,
+  pendingKind = null,
+  errorReason = null,
   focused = false,
   onClick,
   ref: externalRef,
@@ -99,7 +106,7 @@ export function IconAboveNameCell({
         "hover:bg-accent/50",
         "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset",
         selected && "bg-accent",
-        pending && "opacity-60 animate-sync-pulse",
+        pending && "opacity-60",
         focused && "ring-ring ring-2 ring-inset",
       )}
     >
@@ -108,17 +115,29 @@ export function IconAboveNameCell({
         aria-hidden
         className={cn("text-muted-foreground", iconSize)}
       />
-      {store !== undefined ? (
-        <EntryNameCell
-          store={store}
-          entry={entry}
-          className="max-w-full text-center text-sm"
-        />
-      ) : (
-        <span className="max-w-full truncate text-center text-sm">
-          {entry.name}
-        </span>
-      )}
+      <div className="flex w-full items-center justify-center gap-1.5">
+        {store !== undefined ? (
+          <EntryNameCell
+            store={store}
+            entry={entry}
+            className={cn(
+              "max-w-full text-center text-sm",
+              pendingKind === "remove" && "line-through",
+            )}
+          />
+        ) : (
+          <span
+            className={cn(
+              "max-w-full truncate text-center text-sm",
+              pendingKind === "remove" && "line-through",
+            )}
+          >
+            {entry.name}
+          </span>
+        )}
+        {pending ? <PendingOpGlyph /> : null}
+        {errorReason !== null ? <ErrorPin reason={errorReason} /> : null}
+      </div>
     </div>
   );
 }

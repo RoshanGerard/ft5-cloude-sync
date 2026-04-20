@@ -5,6 +5,7 @@ import { useSyncExternalStore } from "react";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { FileContextMenu } from "../context-menu";
+import { entryError, entryPendingOp } from "../pending-op-state";
 import type { ExplorerStore } from "../store";
 import { useSelection } from "../use-selection";
 import { IconAboveNameCell } from "./icon-above-name-cell";
@@ -66,7 +67,8 @@ export function LargeIconsView({
     >
       {state.entries.map((entry) => {
         const isSelected = selection.has(entry.id);
-        const pending = state.pendingOps[entry.id] !== undefined;
+        const pendingOp = entryPendingOp(state, entry);
+        const errorReason = entryError(state, entry);
         const isFocused = focusedId === entry.id;
         return (
           <FileContextMenu
@@ -84,7 +86,9 @@ export function LargeIconsView({
               entry={entry}
               iconSize="size-24"
               selected={isSelected}
-              pending={pending}
+              pending={pendingOp !== null}
+              pendingKind={pendingOp?.kind ?? null}
+              errorReason={errorReason}
               focused={isFocused}
               onClick={(e) => {
                 onEntryClick(entry.id, e);

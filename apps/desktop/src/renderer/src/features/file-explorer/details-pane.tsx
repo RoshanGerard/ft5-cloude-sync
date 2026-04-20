@@ -16,7 +16,9 @@ import {
 import type { ExplorerStore } from "./store";
 import { formatSize } from "./view-modes/details-format";
 
-// Slide motion deferred until the motion whitelist is updated in task 6.12.
+// Kept mounted in both states so the `data-[state=closed]` exit animation
+// can play. `hidden` + `aria-hidden` remove the closed pane from the
+// accessibility tree (design.md Decision 9 — "collapse animates (slide)").
 
 export interface DetailsPaneProps {
   store: ExplorerStore;
@@ -29,17 +31,23 @@ export function DetailsPane({ store }: DetailsPaneProps) {
     store.getSnapshot,
   );
 
-  if (!state.detailsPaneOpen) return null;
-
+  const open = state.detailsPaneOpen;
   const selectedIds = state.selection;
   const selectedEntries = state.entries.filter((e) => selectedIds.has(e.id));
 
   return (
     <aside
       aria-label="Details"
+      aria-hidden={open ? undefined : true}
+      hidden={!open}
+      data-state={open ? "open" : "closed"}
       className={cn(
-        "bg-card border-border flex w-80 shrink-0 flex-col border-l",
-        "overflow-auto",
+        "bg-card border-border flex w-80 shrink-0 flex-col border-l overflow-auto",
+        // Slide motion gated on motion-safe: per the reduced-motion rules
+        // that shadcn primitives follow; `data-[state=*]:` variants are
+        // whitelisted by the motion-budget guardrail.
+        "motion-safe:data-[state=open]:animate-in motion-safe:data-[state=open]:slide-in-from-right-8",
+        "motion-safe:data-[state=closed]:animate-out motion-safe:data-[state=closed]:slide-out-to-right-8",
       )}
     >
       <header className="border-border border-b px-4 py-3">
