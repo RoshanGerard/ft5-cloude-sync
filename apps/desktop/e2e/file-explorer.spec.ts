@@ -47,6 +47,13 @@ const SCREENSHOT_PATH = path.resolve(
 );
 
 test("keyboard-only explorer workflow: navigate, multi-select, delete, rename, Details pane, view mode", async () => {
+  // The full workflow launches Electron, waits for two page loads, walks a
+  // multi-step keyboard sequence (including a 20-iter ArrowDown-to-file
+  // search), opens the delete dialog, commits the rename, toggles the
+  // Details pane, and switches view modes. Each step is modest on its own
+  // but the cumulative round-trip to the packaged renderer easily exceeds
+  // Playwright's default 30s.
+  test.setTimeout(90_000);
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
   const app = await electron.launch({ executablePath: exePath });
