@@ -76,6 +76,12 @@ export function FileContextMenu(props: FileContextMenuProps): JSX.Element {
   } = props;
 
   const renameDisabled = entry.kind === "directory";
+  // Directory download is a v1 silent no-op in the store (design.md
+  // Decision 7 — downloads operate per-file, folder download would
+  // imply a zip-ish bundle we don't own yet). Disable the item here so
+  // the no-op is honest at the menu level rather than silently
+  // swallowed when selected.
+  const downloadDisabled = entry.kind === "directory";
 
   const handleCopyPath = (): void => {
     const clipboard =
@@ -93,7 +99,10 @@ export function FileContextMenu(props: FileContextMenuProps): JSX.Element {
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent data-testid="file-context-menu">
         <ContextMenuItem onSelect={() => onOpen?.(entry)}>Open</ContextMenuItem>
-        <ContextMenuItem onSelect={() => onDownload?.(entry)}>
+        <ContextMenuItem
+          disabled={downloadDisabled}
+          onSelect={() => onDownload?.(entry)}
+        >
           Download
         </ContextMenuItem>
         <ContextMenuItem

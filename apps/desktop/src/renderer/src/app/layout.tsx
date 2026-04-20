@@ -63,7 +63,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             features/diagnostics/diagnostics-shortcut.tsx. */}
         <DiagnosticsShortcut />
         <AppHeader />
-        <main className="flex-1 min-h-0">{children}</main>
+        {/* `flex flex-col` on <main> turns it into a flex container so
+            routes that render a full-height shell (file-explorer's chrome +
+            main-pane + status-row stack, using `h-full` or `flex-1` on the
+            root div) resolve percentage / flex heights correctly against
+            main's computed flex size. Routes that render ordinary content
+            remain unaffected — their block-level children sit at the top
+            of the flex-col without stretching. */}
+        <main className="flex-1 min-h-0 flex flex-col">{children}</main>
         <AppFooter />
         {/* Sonner toaster — mounted at layout level so every route gets
             toast delivery (rename failure, delete success, download path,

@@ -112,16 +112,24 @@ describe("FileContextMenu", () => {
     }
   });
 
-  it("right-click on a directory disables Rename with aria-disabled while other items stay enabled", async () => {
+  it("right-click on a directory disables Rename + Download while other items stay enabled", async () => {
     render(<Harness entry={directoryEntry()} />);
     await openMenu(getTrigger());
 
+    // Rename is spec-disabled for directories (v1 defers folder rename).
     const rename = screen.getByRole("menuitem", { name: "Rename" });
-    // Radix sets both data-disabled and aria-disabled on disabled items.
     expect(rename).toHaveAttribute("aria-disabled", "true");
 
+    // Download is also disabled for directories — folder-as-zip is not
+    // in scope for v1 and the store's download() silently no-ops for
+    // directories. The menu honestly reflects that at the affordance
+    // level rather than inviting a click that goes nowhere.
+    const download = screen.getByRole("menuitem", { name: "Download" });
+    expect(download).toHaveAttribute("aria-disabled", "true");
+
+    const disabledLabels = new Set(["Rename", "Download"]);
     for (const label of MENU_ITEMS_IN_ORDER) {
-      if (label === "Rename") continue;
+      if (disabledLabels.has(label)) continue;
       const item = screen.getByRole("menuitem", { name: label });
       expect(item).not.toHaveAttribute("aria-disabled", "true");
     }
