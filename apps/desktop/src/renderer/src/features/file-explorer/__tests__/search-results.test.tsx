@@ -35,18 +35,9 @@ import {
   createExplorerStore,
   __resetExplorerStoreCacheForTests,
 } from "../store.js";
-import type { ExplorerState, ExplorerStore } from "../store.js";
+import type { ExplorerStore } from "../store.js";
 import { SearchResults } from "../search-results.js";
 import { seedEntry } from "./test-utils.js";
-
-/**
- * `focusedId` will be added to `ExplorerState` by 7.4. Until then, reading
- * `state.focusedId` is a type error — cast the snapshot through this
- * intersection so the test compiles today AND keeps asserting the real
- * contract once the state widens. At runtime the property is `undefined`
- * today and the assertion fails semantically (not a wiring error).
- */
-type FocusableState = ExplorerState & { focusedId?: string | null };
 
 function makeStore(id = "ds-search-results-test"): ExplorerStore {
   return createExplorerStore(id);
@@ -170,35 +161,22 @@ describe("SearchResults — presentation (7.3)", () => {
     );
   });
 
-  it("clicking a result calls store.navigate(parentPath) exactly once", () => {
+  it("clicking a result calls onResultActivate exactly once with that result's FileEntry", () => {
     const store = makeStore();
-    const [firstResult] = seedSearchResults(store);
-    const navigateSpy = vi
-      .spyOn(store, "navigate")
-      .mockImplementation(() => {});
+    const [firstResult, secondResult] = seedSearchResults(store);
+    const spy = vi.fn();
 
-    render(<SearchResults store={store} />);
+    render(<SearchResults store={store} onResultActivate={spy} />);
 
     const rows = getResultRows();
     fireEvent.click(rows[0]!);
 
-    expect(navigateSpy).toHaveBeenCalledTimes(1);
-    expect(navigateSpy).toHaveBeenCalledWith(firstResult!.parentPath);
-  });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(firstResult);
 
-  it("after clicking a result, the store's focusedId points at that entry", () => {
-    const store = makeStore();
-    const [firstResult] = seedSearchResults(store);
-    // Stub navigate so the real history/path mutation doesn't run — we're
-    // only asserting the focus-side-effect here.
-    vi.spyOn(store, "navigate").mockImplementation(() => {});
+    fireEvent.click(rows[1]!);
 
-    render(<SearchResults store={store} />);
-
-    const rows = getResultRows();
-    fireEvent.click(rows[0]!);
-
-    const snap = store.getSnapshot() as FocusableState;
-    expect(snap.focusedId).toBe(firstResult!.id);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenLastCalledWith(secondResult);
   });
 });

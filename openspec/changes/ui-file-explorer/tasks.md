@@ -87,8 +87,8 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 7 — Search
 
-- [ ] 7.1 Write failing test for the search UI — toolbar search toggle opens an input, typing + Enter dispatches `window.api.files.search`, results replace the main pane while a "Clear search" affordance is visible.
-- [ ] 7.2 Implement the search input.
+- [x] 7.1 Write failing test for the search UI — toolbar search toggle opens an input, typing + Enter dispatches `window.api.files.search`, results replace the main pane while a "Clear search" affordance is visible.
+- [x] 7.2 Implement the search input.
 - [ ] 7.3 Write failing test for search result rendering — each result shows the entry plus its parent path as a secondary line; clicking a result navigates to the parent folder with the entry focused.
 - [ ] 7.4 Implement search result rendering.
 - [ ] 7.5 Write failing test for the S3 handler's client-side scan — searches match against key names, paginated scan respects a ceiling, response's `truncated` is `true` when the ceiling is hit.
