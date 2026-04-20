@@ -29,6 +29,7 @@ import {
   type Mock,
 } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -39,7 +40,10 @@ import "@testing-library/jest-dom/vitest";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { FileExplorer } from "../file-explorer.js";
-import { __resetExplorerStoreCacheForTests } from "../store.js";
+import {
+  __resetExplorerStoreCacheForTests,
+  getOrCreateExplorerStore,
+} from "../store.js";
 import { seedEntry } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -364,6 +368,191 @@ describe("FileExplorer — search UI (Phase 7.1)", () => {
       expect(targetRow!.getAttribute("tabindex")).toBe("0");
     });
     expect(siblingRow!.getAttribute("tabindex")).toBe("-1");
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase 7.9 — Pre-search state restore (selection) + clean-clear on nav.
+  //
+  // Spec (file-explorer/spec.md, "Clearing the search restores the current
+  // folder view"):
+  //   ...selection that was in place before the search is restored;
+  //   focus returns to the search-toggle control or the previously-
+  //   focused entry.
+  //
+  // The load-bearing load-restore semantics the spec cares about is
+  // *selection* — it's the piece the user will notice vanish if we don't
+  // snapshot it. `focusedId` lives in `useKeyboardNav` (see
+  // use-keyboard-nav.ts:38–42) and happens to persist across the
+  // SearchResults ↔ ViewModeSwitcher swap today because the hook is
+  // called unconditionally at `file-explorer.tsx:120`. A dedicated focus-
+  // restore composite test would therefore pass by accident even without
+  // the 7.10 snapshot wiring; the store-level idempotency + navigate-
+  // drops-snapshot tests carry that semantic.
+  //
+  // This test drives the missing behaviour at the composite surface via
+  // the public DOM + store handle: selection made before search must be
+  // restored on explicit Clear even if it was mutated mid-search. Fails
+  // today because `clearSearch()` does not restore the pre-search
+  // selection snapshot. Implementation lands in task 7.10.
+  // ---------------------------------------------------------------------
+
+  it("clearing the search restores the pre-search selection (even if mutated mid-search)", async () => {
+    const a = seedEntry({ id: "a", name: "alpha.png", path: "/alpha.png" });
+    const b = seedEntry({ id: "b", name: "beta.png", path: "/beta.png" });
+    const hit = seedEntry({
+      id: "h1",
+      name: "hit.txt",
+      path: "/folder/hit.txt",
+      parentPath: "/folder",
+    });
+    installApiMock({
+      listResponses: new Map([
+        ["/", { entries: [a, b], nextCursor: null }],
+      ]),
+      searchResponse: { entries: [hit], truncated: false },
+    });
+
+    render(<FileExplorer datasourceId="ds-search-7-9-restore" />);
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(2);
+    });
+
+    // Click row "a" to seed selection={a}. This is the real user path;
+    // we rely on the DataRow click handler already in Phase 4 DOM.
+    const aRow = document.querySelector<HTMLElement>(
+      '[data-testid="explorer-row"][data-entry-id="a"]',
+    );
+    expect(aRow).not.toBeNull();
+    fireEvent.click(aRow!);
+
+    // aria-selected reflects selection; precondition for the restore
+    // assertion further down.
+    await waitFor(() => {
+      const current = document.querySelector<HTMLElement>(
+        '[data-testid="explorer-row"][data-entry-id="a"]',
+      );
+      expect(current?.getAttribute("aria-selected")).toBe("true");
+    });
+
+    // Activate search.
+    fireEvent.click(screen.getByTestId("file-explorer-search-trigger"));
+    const input = await screen.findByRole("searchbox");
+    fireEvent.change(input, { target: { value: "hit" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(screen.getByTestId("file-explorer-search-results")).toBeInTheDocument();
+    });
+
+    // While search is active, simulate a mid-search selection mutation
+    // (the SearchResults UI may call `store.select` on result click; we
+    // drive the same state change via the store handle so the test is
+    // not coupled to Phase 7.4's click handler wiring).
+    const store = getOrCreateExplorerStore("ds-search-7-9-restore");
+    act(() => {
+      store.clearSelection();
+    });
+
+    // Click the Clear-search button.
+    fireEvent.click(screen.getByTestId("file-explorer-search-clear"));
+
+    // SearchResults gone, view mode rows back.
+    await waitFor(() => {
+      expect(screen.queryByTestId("file-explorer-search-results")).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(2);
+    });
+
+    // Restore assertion: selection is back to {a}, regardless of the
+    // mid-search `clearSelection()` call above. Assert via the DOM
+    // (aria-selected) so the test stays decoupled from store internals.
+    await waitFor(() => {
+      const aAfter = document.querySelector<HTMLElement>(
+        '[data-testid="explorer-row"][data-entry-id="a"]',
+      );
+      expect(aAfter?.getAttribute("aria-selected")).toBe("true");
+    });
+    const bAfter = document.querySelector<HTMLElement>(
+      '[data-testid="explorer-row"][data-entry-id="b"]',
+    );
+    expect(bAfter?.getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("navigating (via result click) while search is active clears search cleanly", async () => {
+    // Regression guard (not a TDD red for 7.10). `handleSearchResultActivate`
+    // (file-explorer.tsx:204-212) already calls `store.clearSearch()` as
+    // of 7.4, so this scenario is green today. It exists to lock in the
+    // "no orphaned search UI after navigate" invariant once 7.10's
+    // snapshot/restore lands — a regression that re-activates search on
+    // restore would flip this red. The companion store-level test
+    // "navigate while search is active clears search AND drops the
+    // snapshot" carries the actual TDD red for 7.10.
+    const rootA = seedEntry({ id: "root-a", name: "alpha.png", path: "/alpha.png" });
+    const target = seedEntry({
+      id: "p-readme",
+      name: "readme.md",
+      path: "/projects/docs/readme.md",
+      parentPath: "/projects/docs",
+      mimeFamily: "text",
+      mimeType: "text/markdown",
+    });
+    const sibling = seedEntry({
+      id: "p-design",
+      name: "design.md",
+      path: "/projects/docs/design.md",
+      parentPath: "/projects/docs",
+      mimeFamily: "text",
+      mimeType: "text/markdown",
+    });
+    installApiMock({
+      listResponses: new Map([
+        ["/", { entries: [rootA], nextCursor: null }],
+        [
+          "/projects/docs",
+          { entries: [sibling, target], nextCursor: null },
+        ],
+      ]),
+      searchResponse: { entries: [target], truncated: false },
+    });
+
+    render(<FileExplorer datasourceId="ds-search-7-9-nav" />);
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(1);
+    });
+
+    // Start a search.
+    fireEvent.click(screen.getByTestId("file-explorer-search-trigger"));
+    const input = await screen.findByRole("searchbox");
+    fireEvent.change(input, { target: { value: "read" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(screen.getByTestId("file-explorer-search-results")).toBeInTheDocument();
+    });
+
+    // Clicking the result triggers navigate(). Search must be cleared as
+    // a side effect.
+    const resultRow = document.querySelector<HTMLElement>(
+      '[data-testid="file-explorer-search-result"]',
+    );
+    expect(resultRow).not.toBeNull();
+    fireEvent.click(resultRow!);
+
+    // Search dismissed, ViewModeSwitcher for the NEW folder is mounted.
+    await waitFor(() => {
+      expect(screen.queryByTestId("file-explorer-search-results")).toBeNull();
+    });
+    await waitFor(() => {
+      // Two entries for /projects/docs (sibling + target).
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(2);
+    });
+
+    // Search trigger is present again (toolbar back to idle state) and
+    // the searchbox input is gone — confirming a clean dismissal, not a
+    // lingering-active-without-results state.
+    expect(screen.getByTestId("file-explorer-search-trigger")).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox")).toBeNull();
   });
 
   it("Drive/OneDrive deferred response surfaces the deferred-work UI (Phase 7.8 integration)", async () => {

@@ -551,6 +551,163 @@ describe("search actions", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Phase 7.9 — Pre-search state snapshot + restore
+//
+// Spec (file-explorer/spec.md, "Clearing the search restores the current
+// folder view"):
+//   WHEN the user clears the search input or dismisses the search UI
+//   THEN the main pane reverts to showing the current folder's entries
+//   from before the search was initiated; selection that was in place
+//   before the search is restored; focus returns to the search-toggle
+//   control or the previously-focused entry.
+//
+// Locked Phase 7 Decision D:
+//   startSearch() snapshots { selection, focusedId } into a new store
+//   field `preSearchState`. clearSearch() restores them.
+//
+// Architectural refinement: focusedId lives in the useKeyboardNav hook,
+// NOT the store (see use-keyboard-nav.ts:38–42). So at the STORE level
+// we only snapshot + restore `selection`. Focus restoration is a
+// composite-level concern, covered separately in search-ui.test.tsx.
+//
+// Shape: `state.search.preSearchSelection: string[] | null`
+//   - `null` at initial state and after clearSearch (consumed).
+//   - An array (structured-clone-safe; easier to assert equality on)
+//     captured by the first startSearch call while search is inactive.
+//   - startSearch is idempotent: a second startSearch while search is
+//     already active MUST NOT overwrite the snapshot.
+//   - navigate() while search is active clears search state AND drops
+//     the snapshot without restoring — the user moved on, their
+//     pre-search selection was for a different folder.
+//
+// These tests fail today because the field does not yet exist on the
+// search-state shape and the snapshot/restore behaviour is not wired.
+// Implementation lands in task 7.10.
+// ---------------------------------------------------------------------------
+
+describe("search: pre-search state snapshot + restore (7.9)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("initial store: search.preSearchSelection === null", () => {
+    const store = makeStore("ds-1");
+    // @ts-expect-error — `preSearchSelection` field is added by task 7.10
+    // on `ExplorerSearchState`. Until then the field is absent from the
+    // type; the runtime read must still return `null` by the contract
+    // above.
+    expect(snap(store).search.preSearchSelection).toBeNull();
+  });
+
+  it("startSearch snapshots the current selection into search.preSearchSelection", () => {
+    const store = makeStore("ds-1");
+    store.setEntries(seed(["a", "b", "c"]));
+    store.select("a", "replace");
+    store.select("b", "toggle");
+    // Pre-condition sanity check: selection is {a, b}.
+    expect([...snap(store).selection].sort()).toEqual(["a", "b"]);
+
+    store.startSearch();
+
+    const s = snap(store);
+    expect(s.search.active).toBe(true);
+    // Snapshot is captured as a string[] (structured-clone-safe). Order
+    // is not part of the contract — compare as sorted arrays.
+    // @ts-expect-error — field added by 7.10; see describe header.
+    const snapshot: string[] | null = s.search.preSearchSelection;
+    expect(snapshot).not.toBeNull();
+    expect([...(snapshot ?? [])].sort()).toEqual(["a", "b"]);
+  });
+
+  it("clearSearch restores the snapshotted selection and consumes the snapshot", () => {
+    const store = makeStore("ds-1");
+    store.setEntries(seed(["a", "b", "c"]));
+    store.select("a", "replace");
+    store.select("b", "toggle");
+    store.startSearch();
+
+    // Simulate the user selecting a different entry while search is
+    // active (e.g. clicking a result row). The pre-search snapshot must
+    // survive this — restore is against the *pre-search* state.
+    store.clearSelection();
+    store.select("c", "replace");
+    expect([...snap(store).selection]).toEqual(["c"]);
+
+    store.clearSearch();
+
+    const s = snap(store);
+    // Selection restored to {a, b}.
+    expect([...s.selection].sort()).toEqual(["a", "b"]);
+    // Snapshot consumed.
+    // @ts-expect-error — field added by 7.10.
+    expect(s.search.preSearchSelection).toBeNull();
+    // And the rest of clearSearch's existing contract still holds.
+    expect(s.search.active).toBe(false);
+    expect(s.search.query).toBe("");
+    expect(s.search.results).toBeNull();
+  });
+
+  it("clearSearch with no snapshot (e.g. search never started) leaves selection alone", () => {
+    // Defensive: clearSearch called from an already-clean state must not
+    // blow away the current selection just because the snapshot is null.
+    const store = makeStore("ds-1");
+    store.setEntries(seed(["a", "b"]));
+    store.select("a", "replace");
+
+    store.clearSearch();
+
+    expect([...snap(store).selection]).toEqual(["a"]);
+  });
+
+  it("navigate while search is active clears search AND drops the snapshot without restoring", () => {
+    const store = makeStore("ds-1");
+    store.setEntries(seed(["a", "b"]));
+    store.select("a", "replace");
+    store.startSearch();
+
+    // User clicked a search result → store.navigate fires. The pre-search
+    // selection was for the *old* folder; the new folder should start
+    // fresh, not with the stale ids.
+    store.navigate("/some/other/path");
+
+    const s = snap(store);
+    expect(s.currentPath).toBe("/some/other/path");
+    expect(s.search.active).toBe(false);
+    expect(s.search.results).toBeNull();
+    expect(s.search.query).toBe("");
+    // Snapshot dropped — the user has actively moved on.
+    // @ts-expect-error — field added by 7.10.
+    expect(s.search.preSearchSelection).toBeNull();
+    // Selection must NOT be the restored {a}: the pre-search snapshot
+    // was for the old folder and belongs to nobody now. Here we accept
+    // any post-navigation selection except the stale restore.
+    expect([...s.selection]).not.toEqual(["a"]);
+  });
+
+  it("startSearch is idempotent: a second call while active does not clobber the snapshot", () => {
+    const store = makeStore("ds-1");
+    store.setEntries(seed(["a", "b", "c"]));
+    store.select("a", "replace");
+    store.startSearch();
+
+    // While search is active the user selects a result — selection
+    // becomes {b}. The important invariant: if the search UI calls
+    // startSearch() a second time (e.g. remount, re-entry) it MUST NOT
+    // re-snapshot the current {b} over the original {a}.
+    store.clearSelection();
+    store.select("b", "replace");
+    store.startSearch();
+    store.clearSearch();
+
+    // First snapshot restored, NOT the mid-search {b}.
+    expect([...snap(store).selection]).toEqual(["a"]);
+  });
+});
+
 describe("entries / loading / error setters", () => {
   beforeEach(() => {
     localStorage.clear();
