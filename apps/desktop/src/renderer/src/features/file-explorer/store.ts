@@ -77,6 +77,9 @@ export interface ExplorerState {
   detailsPaneOpen: boolean;
   pendingOps: Record<string, PendingOp>;
   lastError: ExplorerLastError | null;
+  // Properties modal — nullable entry is the single source of truth;
+  // modal open state is derived (`propertiesEntry !== null`).
+  propertiesEntry: FileEntry | null;
 }
 
 export interface ExplorerStore {
@@ -120,6 +123,10 @@ export interface ExplorerStore {
   startPendingOp(entryId: string, kind: OpKind): void;
   clearPendingOp(entryId: string): void;
   setLastError(entryId: string | null, reason: string | null): void;
+
+  // Properties modal
+  openProperties(entry: FileEntry): void;
+  closeProperties(): void;
 }
 
 export const EXPLORER_STORAGE_KEY_PREFIX = "ft5.file-explorer.";
@@ -238,6 +245,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     detailsPaneOpen: prefs.detailsPaneOpen,
     pendingOps: {},
     lastError: null,
+    propertiesEntry: null,
   };
 
   function emit(): void {
@@ -484,6 +492,17 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     set({ ...state, lastError: { entryId, reason } }, false);
   }
 
+  // --- Properties modal --------------------------------------------------
+
+  function openProperties(entry: FileEntry): void {
+    set({ ...state, propertiesEntry: entry }, false);
+  }
+
+  function closeProperties(): void {
+    if (state.propertiesEntry === null) return;
+    set({ ...state, propertiesEntry: null }, false);
+  }
+
   return {
     subscribe,
     getSnapshot,
@@ -507,6 +526,8 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     startPendingOp,
     clearPendingOp,
     setLastError,
+    openProperties,
+    closeProperties,
   };
 }
 

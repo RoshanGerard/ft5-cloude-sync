@@ -33,6 +33,7 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 import { Breadcrumb } from "./breadcrumb";
 import { DetailsPane } from "./details-pane";
 import { HistoryButtons } from "./history-buttons";
+import { PropertiesModal } from "./properties-modal";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
@@ -153,7 +154,7 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
               onRename={handleNoop}
               onDelete={handleNoop}
               onCopyPath={handleCopyPath}
-              onProperties={handleNoop}
+              onProperties={(entry) => store.openProperties(entry)}
             />
           )}
         </div>
@@ -162,6 +163,7 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
 
       {/* Status row pinned to bottom. */}
       <StatusRow store={store} />
+      <PropertiesModal store={store} />
     </div>
   );
 }
