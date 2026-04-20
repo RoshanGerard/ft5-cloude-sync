@@ -66,7 +66,7 @@
 - [x] 8.3 GREEN: implement `GoogleDriveClient extends BaseDatasourceClient<"google-drive">`. Path→fileId resolution walks `files.list` with `orderBy: "createdTime asc"` and a `name='<seg>' and '<parent>' in parents and trashed=false` filter at each path segment; results are cached in the LRU. Path ambiguity (two files same name in the same parent) surfaces via `providerMetadata.ambiguous = true` plus `providerMetadata.ambiguousSiblings` listing the other fileIds — the chosen entry is the oldest by createdTime, and siblings remain reachable via handle-form `Target`. Strategies do not emit events for this; ambiguity is data attached to the entry, not an operation-lifecycle signal.
 - [x] 8.4 Run the shared contract suite against `GoogleDriveClient`. Make it pass.
 - [x] 8.5 Wire into `ProviderRegistry`; Factory test now returns a real client for `"google-drive"`.
-- [ ] 8.6 Request code review for Phase 8.
+- [x] 8.6 Request code review for Phase 8.
 
 ## 9. IPC handler rewiring
 
