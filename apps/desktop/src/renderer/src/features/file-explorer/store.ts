@@ -650,7 +650,20 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       return;
     }
     if (newName === entry.name) {
-      set(clearEditing(state), false);
+      // Same-name rename is a no-op in IPC terms, but it's a user
+      // gesture — if a previous refusal (empty name, directory rename,
+      // IPC failure) left `lastError` pinned to this entry, the user's
+      // "rename to the original" move is an implicit "I'm done, drop
+      // the warning pin." Clear the pin scoped to this entry; leave
+      // errors on other entries untouched.
+      const nextLastError =
+        state.lastError !== null && state.lastError.entryId === entryId
+          ? null
+          : state.lastError;
+      set(
+        clearEditing({ ...state, lastError: nextLastError }),
+        false,
+      );
       return;
     }
 
