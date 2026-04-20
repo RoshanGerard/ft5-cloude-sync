@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { FilesSearchResponse } from "@ft5/ipc-contracts";
 
-import { resetMockFs, S3_SCAN_CEILING } from "../mock-fs";
+import { resetMockFs, SEARCH_RESULT_CEILING } from "../mock-fs";
 import { handleFilesSearch } from "../search";
 
 // The S3 fixture in mock-fs.ts (`ds-s3-archive`) seeds:
@@ -15,8 +15,9 @@ import { handleFilesSearch } from "../search";
 // - 24 files under "/assets/2025"
 // - 28 files under "/assets/2026"
 // - 2 files under "/_locked"
-// Total ~96 files — naturally exceeds any sane S3_SCAN_CEILING, so tests that
-// exercise truncation don't need a large-seed helper.
+// Total ~96 files — naturally exceeds the SEARCH_RESULT_CEILING (shared with
+// other providers; semantics are generic), so tests that exercise truncation
+// don't need a large-seed helper.
 const S3_DATASOURCE_ID = "ds-s3-archive";
 
 describe("handleFilesSearch: S3 client-side scan", () => {
@@ -113,13 +114,7 @@ describe("handleFilesSearch: S3 client-side scan", () => {
   });
 
   describe("scan ceiling", () => {
-    it("exports S3_SCAN_CEILING as a finite number >= 10", () => {
-      expect(typeof S3_SCAN_CEILING).toBe("number");
-      expect(Number.isFinite(S3_SCAN_CEILING)).toBe(true);
-      expect(S3_SCAN_CEILING).toBeGreaterThanOrEqual(10);
-    });
-
-    it("reports truncated=true and caps entries at S3_SCAN_CEILING when the scan hits the ceiling", () => {
+    it("reports truncated=true and caps entries at SEARCH_RESULT_CEILING when the scan hits the ceiling", () => {
       // "." matches every seeded S3 file (they all have extensions). The
       // fixture is ~96 files, well above any sane ceiling.
       const response = handleFilesSearch({
@@ -128,7 +123,7 @@ describe("handleFilesSearch: S3 client-side scan", () => {
         path: "/",
       });
 
-      expect(response.entries.length).toBe(S3_SCAN_CEILING);
+      expect(response.entries.length).toBe(SEARCH_RESULT_CEILING);
       expect(response.truncated).toBe(true);
       for (const entry of response.entries) {
         expect(entry.kind).toBe("file");
