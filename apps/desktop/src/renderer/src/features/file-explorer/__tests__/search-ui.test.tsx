@@ -365,4 +365,56 @@ describe("FileExplorer — search UI (Phase 7.1)", () => {
     });
     expect(siblingRow!.getAttribute("tabindex")).toBe("-1");
   });
+
+  it("Drive/OneDrive deferred response surfaces the deferred-work UI (Phase 7.8 integration)", async () => {
+    // The handler returns `{ entries: [], truncated: true,
+    // providerSearchDeferred: true }` for Drive/OneDrive datasources;
+    // the composite must forward `providerKind="google-drive"` into
+    // `<SearchResults>` so the deferred surface renders with the
+    // provider-named copy. This is the end-to-end seam between the IPC
+    // envelope, the store's `providerSearchDeferred` flag, and the UI's
+    // deferred branch.
+    installApiMock({
+      listResponses: new Map([
+        [
+          "/",
+          {
+            entries: [seedEntry({ id: "root-a", name: "alpha.png", path: "/alpha.png" })],
+            nextCursor: null,
+          },
+        ],
+      ]),
+      searchResponse: {
+        entries: [],
+        truncated: true,
+        providerSearchDeferred: true,
+      },
+    });
+
+    render(
+      <FileExplorer datasourceId="ds-search-6" providerKind="google-drive" />,
+    );
+
+    // Wait for the initial load so the composite is stable.
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(1);
+    });
+
+    fireEvent.click(screen.getByTestId("file-explorer-search-trigger"));
+    const input = await screen.findByRole("searchbox");
+    fireEvent.change(input, { target: { value: "budget" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // Deferred surface mounts with the provider-named copy + the Clear
+    // button remains reachable.
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("file-explorer-search-deferred"),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/Native search for Google Drive is not available yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("file-explorer-search-clear")).toBeInTheDocument();
+  });
 });

@@ -37,8 +37,39 @@ import { cn } from "@/lib/utils";
 import { iconForEntry } from "./icons";
 import type { ExplorerStore } from "./store";
 
+/**
+ * Abstract provider-kind discriminator used for presentation-layer
+ * decisions (copy, deferred-state surfacing). Decoupled from the IPC
+ * `ProviderId` so the UI can collapse `"amazon-s3"` into `"s3"` for
+ * display purposes and future providers can be added without touching
+ * the contract package.
+ */
+export type ProviderKind = "google-drive" | "onedrive" | "s3";
+
+const PROVIDER_HUMAN_NAME: Record<ProviderKind, string> = {
+  "google-drive": "Google Drive",
+  onedrive: "OneDrive",
+  s3: "Amazon S3",
+};
+
+/**
+ * Stable anchor for the deferred-work section of the file-explorer design
+ * doc. The doc itself is produced in Phase 9.4 — this relative href works
+ * in the Electron static-export runtime (the docs ship alongside the
+ * renderer bundle) and degrades to a broken-link-with-visible-text in
+ * jsdom, which is fine for the unit tests.
+ */
+const DEFERRED_DOCS_HREF = "./docs/design/file-explorer.md#deferred-work";
+
 export interface SearchResultsProps {
   store: ExplorerStore;
+  /**
+   * Presentation-layer provider discriminator for the current datasource.
+   * Drives the deferred-state copy + the "no results" vs deferred-surface
+   * branch. The composite derives this from the datasource registry and
+   * always passes a concrete value.
+   */
+  providerKind: ProviderKind;
   /**
    * Fires when the user activates a result (click or Enter/Space). The
    * composite consumes this to clear the search and navigate to the
@@ -48,13 +79,19 @@ export interface SearchResultsProps {
   onResultActivate?: (entry: FileEntry) => void;
 }
 
-export function SearchResults({ store, onResultActivate }: SearchResultsProps) {
+export function SearchResults({
+  store,
+  providerKind,
+  onResultActivate,
+}: SearchResultsProps) {
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
     store.getSnapshot,
   );
   const results = state.search.results ?? [];
+  const deferred = state.search.providerSearchDeferred === true;
+  const providerName = PROVIDER_HUMAN_NAME[providerKind];
 
   return (
     <div
@@ -64,9 +101,11 @@ export function SearchResults({ store, onResultActivate }: SearchResultsProps) {
     >
       <div className="border-border flex items-center justify-between border-b px-3 py-2">
         <div className="text-muted-foreground text-sm">
-          {results.length === 0
-            ? "No results"
-            : `${results.length} result${results.length === 1 ? "" : "s"}`}
+          {deferred
+            ? `Search unavailable for ${providerName}`
+            : results.length === 0
+              ? "No results"
+              : `${results.length} result${results.length === 1 ? "" : "s"}`}
         </div>
         <Button
           type="button"
@@ -79,15 +118,40 @@ export function SearchResults({ store, onResultActivate }: SearchResultsProps) {
           Clear search
         </Button>
       </div>
-      <ul className="min-h-0 flex-1 overflow-auto">
-        {results.map((entry) => (
-          <SearchResultRow
-            key={entry.id}
-            entry={entry}
-            onActivate={onResultActivate}
-          />
-        ))}
-      </ul>
+      {deferred ? (
+        <div
+          data-testid="file-explorer-search-deferred"
+          role="status"
+          className="flex min-h-0 flex-1 flex-col gap-2 px-4 py-6 text-sm"
+        >
+          <p className="text-foreground font-medium">
+            {`Native search for ${providerName} is not available yet`}
+          </p>
+          <p className="text-muted-foreground">
+            We&apos;re planning this as part of the provider-search follow-up.
+            In the meantime, browse folders directly or try a different
+            datasource.
+          </p>
+          <p>
+            <a
+              href={DEFERRED_DOCS_HREF}
+              className="text-foreground underline"
+            >
+              See deferred-work docs
+            </a>
+          </p>
+        </div>
+      ) : (
+        <ul className="min-h-0 flex-1 overflow-auto">
+          {results.map((entry) => (
+            <SearchResultRow
+              key={entry.id}
+              entry={entry}
+              onActivate={onResultActivate}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

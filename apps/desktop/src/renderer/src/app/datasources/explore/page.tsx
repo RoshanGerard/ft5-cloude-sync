@@ -30,10 +30,32 @@ import type { DatasourceSummary } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
 import { FileExplorer } from "@/features/file-explorer/file-explorer";
+import type { ProviderKind } from "@/features/file-explorer/search-results";
+
+/**
+ * Collapse the contract's `providerId` (`"google-drive" | "onedrive" |
+ * "amazon-s3"`) into the presentation-layer `ProviderKind`. Only the
+ * known ids are mapped; unknown providers (e.g. a future addition that
+ * ships before this mapping is updated) fall back to `"s3"` — the one
+ * provider whose search isn't deferred, so a stale mapping never traps
+ * the user behind a spurious deferred surface.
+ */
+function providerKindFromId(providerId: string): ProviderKind {
+  switch (providerId) {
+    case "google-drive":
+      return "google-drive";
+    case "onedrive":
+      return "onedrive";
+    case "amazon-s3":
+      return "s3";
+    default:
+      return "s3";
+  }
+}
 
 type ResolutionState =
   | { phase: "resolving" }
-  | { phase: "found"; datasourceId: string }
+  | { phase: "found"; datasourceId: string; providerKind: ProviderKind }
   | { phase: "not-found" };
 
 function DatasourceNotFound() {
@@ -77,7 +99,11 @@ function ExplorePageContent() {
         const match = response.datasources.find((d) => d.id === idParam);
         setState(
           match
-            ? { phase: "found", datasourceId: idParam }
+            ? {
+                phase: "found",
+                datasourceId: idParam,
+                providerKind: providerKindFromId(match.providerId),
+              }
             : { phase: "not-found" },
         );
       })
@@ -103,7 +129,12 @@ function ExplorePageContent() {
     // can replace this with a skeleton if the measured time feels long.
     return <div data-testid="file-explorer-resolving" aria-hidden="true" />;
   }
-  return <FileExplorer datasourceId={state.datasourceId} />;
+  return (
+    <FileExplorer
+      datasourceId={state.datasourceId}
+      providerKind={state.providerKind}
+    />
+  );
 }
 
 export default function ExplorePage() {

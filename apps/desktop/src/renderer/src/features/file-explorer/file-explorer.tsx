@@ -35,7 +35,7 @@ import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
 import { DetailsPane } from "./details-pane";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
-import { SearchResults } from "./search-results";
+import { SearchResults, type ProviderKind } from "./search-results";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
@@ -45,9 +45,23 @@ import { ViewModeSwitcher } from "./view-mode-switcher";
 
 export interface FileExplorerProps {
   datasourceId: string;
+  /**
+   * Presentation-layer provider kind for the datasource being explored.
+   * Passed down to `<SearchResults>` so the deferred-state surface knows
+   * the human-readable provider name. Optional because pre-search phases
+   * of the renderer (view modes, breadcrumb, details pane) don't need it;
+   * the route layer derives it from the matched `DatasourceSummary` and
+   * passes it in. When absent we fall back to `"s3"` — S3 handlers never
+   * defer, so the deferred branch stays dormant and unit/composite tests
+   * that predate this prop keep working unchanged.
+   */
+  providerKind?: ProviderKind;
 }
 
-export function FileExplorer({ datasourceId }: FileExplorerProps) {
+export function FileExplorer({
+  datasourceId,
+  providerKind = "s3",
+}: FileExplorerProps) {
   // Grab the per-datasource store directly — the module-level cache
   // ensures this is the same instance for every mount with the same id.
   // We subscribe to its state once here; child chrome components accept
@@ -271,6 +285,7 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
           ) : state.search.active ? (
             <SearchResults
               store={store}
+              providerKind={providerKind}
               onResultActivate={handleSearchResultActivate}
             />
           ) : (
