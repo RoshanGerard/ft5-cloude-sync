@@ -52,6 +52,28 @@
 //     and `errors[0].reason`. The strategy branches on status + reason and
 //     maps to the 8-tag taxonomy per design.md. Network / Node system
 //     errors (`ECONNRESET`, `ETIMEDOUT`, `ENOTFOUND`) map to `network-error`.
+//
+//   - Synthesized paths on search / handle-form listings. Drive responses
+//     do NOT carry the engine-facing path — only `name`, `parents`, `id`.
+//     For `search` and for `listDirectory` targeted by handle, the strategy
+//     has no known parent-path context, so it synthesizes `path: "/<name>"`
+//     on each returned `FileEntry`. This synthesized path is NOT guaranteed
+//     to round-trip: `getMetadata({kind: "path", path: "/<name>"})` will
+//     resolve from the root and may return a DIFFERENT file (or
+//     `not-found`). Callers re-addressing such entries MUST use the
+//     `handle` form of `Target` — `{kind: "handle", handle: entry.handle}`
+//     — which targets the specific `fileId`. The `path` on synthesized
+//     entries is informational (good for display; unreliable for
+//     re-resolution). Recovering the real path requires walking parents
+//     backwards, a provider round-trip cost we defer until a caller needs it.
+//
+//   - Mutation on ambiguous path. Because path-to-fileId can be multi-valued
+//     on Drive, `deleteFile` (and any future mutating op that targets a
+//     specific file by path) REJECTS with `tag: "conflict"` when the path
+//     resolution carries `ambiguousSiblings`. The raw payload lists all
+//     candidate fileIds; the caller must re-address via handle to pick
+//     one. Handle-form targets bypass this check — they explicitly name
+//     one fileId.
 
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
@@ -307,8 +329,15 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   private readonly fetchImpl: typeof fetch;
   private readonly lruCap: number;
 
-  /** Path → fileId cache (LRU via insertion-order Map). */
-  private readonly pathHandleCache = new Map<string, string>();
+  /** Path → {fileId, ambiguousSiblings?} cache (LRU via insertion-order
+   * Map). The value carries `ambiguousSiblings` when the cached path was
+   * known ambiguous at the TERMINAL segment, so cache hits re-surface the
+   * same ambiguity metadata the initial walk produced — consumers rendering
+   * an entry on a cache hit still see the ambiguity badge. */
+  private readonly pathHandleCache = new Map<
+    string,
+    { fileId: string; ambiguousSiblings?: string[] }
+  >();
 
   /** Unsubscribe handle for the bus subscription driving cache invalidation. */
   private readonly unsubscribe: () => void;
@@ -361,9 +390,18 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   // Cache helpers
   // -------------------------------------------------------------------------
 
-  private cachePathHandle(path: string, handle: string): void {
+  private cachePathHandle(
+    path: string,
+    handle: string,
+    ambiguousSiblings?: string[],
+  ): void {
     this.pathHandleCache.delete(path);
-    this.pathHandleCache.set(path, handle);
+    this.pathHandleCache.set(path, {
+      fileId: handle,
+      ...(ambiguousSiblings && ambiguousSiblings.length > 0
+        ? { ambiguousSiblings }
+        : {}),
+    });
     while (this.pathHandleCache.size > this.lruCap) {
       const oldest = this.pathHandleCache.keys().next().value;
       if (oldest === undefined) break;
@@ -376,8 +414,10 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   }
 
   private evictHandle(handle: string): void {
+    // Compare on the cached value's fileId — cache values now carry an
+    // optional ambiguousSiblings alongside the fileId.
     for (const [k, v] of this.pathHandleCache) {
-      if (v === handle) {
+      if (v.fileId === handle) {
         this.pathHandleCache.delete(k);
         break;
       }
@@ -407,22 +447,28 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
    * Walk a path segment-by-segment, consulting the cache at each step.
    * Returns the fileId of the terminal segment, plus any sibling fileIds
    * at the terminal (parent, name) if the path was ambiguous. A cache hit
-   * on the full path short-circuits the walk (no ambiguity surfacing —
-   * ambiguity is preserved by the cached entry's provider metadata via the
-   * initial resolution).
+   * on the full path short-circuits the walk and re-surfaces the
+   * `ambiguousSiblings` stored with the cache entry so consumers rendering
+   * from cache still see the ambiguity badge. A mid-walk cache hit on the
+   * TERMINAL segment likewise re-surfaces the stored ambiguity.
    */
   private async resolvePath(
     path: string,
   ): Promise<{ fileId: string; ambiguousSiblings?: string[] }> {
     // Root: fileId === "root".
     if (path === "/" || path === "") return { fileId: DRIVE_ROOT_FILE_ID };
-    // Full-path cache hit — skip walking.
+    // Full-path cache hit — skip walking, preserve ambiguity.
     const cached = this.pathHandleCache.get(path);
     if (cached !== undefined) {
       // LRU bump on read.
       this.pathHandleCache.delete(path);
       this.pathHandleCache.set(path, cached);
-      return { fileId: cached };
+      return {
+        fileId: cached.fileId,
+        ...(cached.ambiguousSiblings && cached.ambiguousSiblings.length > 0
+          ? { ambiguousSiblings: cached.ambiguousSiblings }
+          : {}),
+      };
     }
     const segments = pathSegments(path);
     let parentId = DRIVE_ROOT_FILE_ID;
@@ -433,10 +479,16 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       runningPath = `${runningPath}/${name}`;
       const cachedStep = this.pathHandleCache.get(runningPath);
       if (cachedStep !== undefined) {
-        parentId = cachedStep;
-        // Clear any ambiguity carried from a prior segment — only the
-        // terminal segment's ambiguity is surfaced.
-        terminalSiblings = undefined;
+        parentId = cachedStep.fileId;
+        const isTerminal = i === segments.length - 1;
+        // Only the terminal segment's ambiguity is surfaced. Intermediate
+        // segments' ambiguity is silently resolved by the "oldest wins"
+        // rule of the initial walk; we clear here so ambiguity carried
+        // from a prior step is not inadvertently returned for the leaf.
+        terminalSiblings =
+          isTerminal && cachedStep.ambiguousSiblings
+            ? cachedStep.ambiguousSiblings
+            : undefined;
         continue;
       }
       const q = `name='${encodeDriveQuery(name)}' and '${parentId}' in parents and trashed=false`;
@@ -479,7 +531,6 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         });
       }
       parentId = chosenId;
-      this.cachePathHandle(runningPath, chosenId);
       // Only carry ambiguity from the TERMINAL segment's resolution.
       const isTerminal = i === segments.length - 1;
       if (isTerminal && matches.length > 1) {
@@ -490,6 +541,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       } else {
         terminalSiblings = undefined;
       }
+      // Cache the step, carrying the terminal-segment siblings alongside
+      // the fileId so a subsequent cache hit re-surfaces the ambiguity.
+      this.cachePathHandle(
+        runningPath,
+        chosenId,
+        isTerminal ? terminalSiblings : undefined,
+      );
     }
     return {
       fileId: parentId,
@@ -685,6 +743,11 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     // path, so children get a synthesized path of `/<name>`. Callers that
     // need absolute paths should have resolved via path in the first
     // place — handle-form listing is for tools that operate on fileIds.
+    //
+    // The synthesized `/<name>` path on children returned from a
+    // handle-form listing is NOT guaranteed to be re-addressable via
+    // `{kind: "path"}`; callers MUST re-address via the child entry's
+    // `handle`. See the class header's "Synthesized paths" note.
     const pathPrefix =
       target.kind === "path" ? (target.path === "/" ? "" : target.path) : "";
     const q = `'${fileId}' in parents and trashed=false`;
@@ -745,6 +808,12 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       // from `/<name>` so callers still get an engine path. Recovering a
       // full path from a fileId requires walking parents — not done here
       // to avoid the extra round-trip on search.
+      //
+      // The synthesized `/<name>` path is NOT guaranteed to be
+      // re-addressable via `{kind: "path"}` — a file with that name may
+      // not exist at root, OR a DIFFERENT root-level file with that name
+      // may exist. Callers MUST re-address via the returned entry's
+      // `handle`. See the class header's "Synthesized paths" note.
       out.push(this.buildFileEntry(file, { path: `/${name}` }));
     }
     return out;
@@ -774,7 +843,11 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       path: resolvedPath,
       ...(ambiguousSiblings ? { ambiguousSiblings } : {}),
     });
-    if (entry.handle) this.cachePathHandle(entry.path, entry.handle);
+    if (entry.handle) {
+      // Persist the terminal-segment ambiguity alongside the fileId so the
+      // next cache hit re-surfaces it.
+      this.cachePathHandle(entry.path, entry.handle, ambiguousSiblings);
+    }
     return entry;
   }
 
@@ -975,7 +1048,27 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   // -------------------------------------------------------------------------
 
   protected override async doDeleteFileImpl(target: Target): Promise<void> {
-    const { fileId } = await this.resolveTarget(target);
+    const { fileId, ambiguousSiblings } = await this.resolveTarget(target);
+    // Mutation-on-ambiguous-path guard. If the caller addressed via path
+    // AND the path resolved to multiple Drive files at the same
+    // (parent, name), refuse to silently pick the oldest — that would be a
+    // data-loss trap. Handle-form targets explicitly name one fileId so
+    // they bypass the guard.
+    if (
+      target.kind === "path" &&
+      ambiguousSiblings &&
+      ambiguousSiblings.length > 0
+    ) {
+      throw new DatasourceError<"google-drive">({
+        tag: "conflict",
+        datasourceType: "google-drive",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: { ambiguousSiblings: [fileId, ...ambiguousSiblings] },
+        message:
+          "Ambiguous path — multiple files at this path. Re-address via handle.",
+      });
+    }
     try {
       await this.drive().files.delete({ fileId });
     } catch (err) {

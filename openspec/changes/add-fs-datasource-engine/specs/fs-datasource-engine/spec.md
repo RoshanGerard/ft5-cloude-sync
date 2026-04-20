@@ -78,6 +78,16 @@ The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: 
 - **WHEN** a provider permits duplicate sibling names (e.g., Google Drive) and a `{kind: "path"}` `Target` resolves to more than one provider-side item under the same (parent, name) filter
 - **THEN** the strategy selects the oldest hit (e.g., Drive orders by `createdTime asc`), populates the returned `FileEntry<T>.providerMetadata` with `ambiguous: true` and an `ambiguousSiblings` list containing the other items' handles, and emits NO `status-changed` (or any other) event for the ambiguity — the siblings remain reachable via subsequent `{kind: "handle"}` `Target` calls, and consumers detect the ambiguity by checking `providerMetadata.ambiguous` on the entry
 
+#### Scenario: Mutation on an ambiguous path-form target is rejected; handle-form bypasses the check
+
+- **WHEN** a mutating operation (e.g., `deleteFile`) targets a `{kind: "path"}` `Target` whose resolution would be ambiguous (multiple provider-side items at the terminal (parent, name))
+- **THEN** the strategy rejects with a `DatasourceError` whose `tag` is `"conflict"`, whose `raw` payload includes all candidate handles in `ambiguousSiblings`, and whose `retryable` flag is `false`; no mutation is issued to the provider, and the caller is expected to re-address the desired file via `{kind: "handle"}` to disambiguate. Handle-form targets bypass this check entirely — they explicitly name one provider-side item.
+
+#### Scenario: Search results and handle-form listings expose non-re-addressable synthesized paths
+
+- **WHEN** a caller invokes `client.search(query)` or `client.listDirectory({kind: "handle", handle})` and the provider cannot supply a full engine-facing path for each result
+- **THEN** the strategy synthesizes `path: "/<name>"` on each returned `FileEntry` (good enough for display), but this synthesized path is NOT guaranteed to resolve back to the same file via `{kind: "path"}`; callers re-addressing such entries MUST use `{kind: "handle", handle: entry.handle}` — which names the specific provider-side item — so the original file is reached regardless of its real path depth
+
 ### Requirement: Event schema is typed per provider via `PayloadMap`
 
 The engine SHALL define event types generically: `type DatasourceEvent<T extends DatasourceType, K extends keyof PayloadMap[T]> = { event: K; datasourceType: T; datasourceId: string; ts: number; streaming?: true; payload: PayloadMap[T][K] }`. `PayloadMap` SHALL be declared in `packages/ipc-contracts` keyed by provider type → event name → payload shape. At minimum, the following event names SHALL be present for every provider: `uploading`, `upload-failed`, `file-created`, `deleted`, `delete-failed`, `authenticated`, `authentication-failed`, `token-refreshed`, `token-expired`, `status-changed`, `rate-limited`. Each payload SHALL carry provider-native fields (e.g., S3 emits `{ bucket, key, etag }` on `file-created`; Google Drive emits `{ fileId, mimeType, parents }`).

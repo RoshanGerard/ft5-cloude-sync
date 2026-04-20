@@ -504,6 +504,231 @@ describe("GoogleDriveClient — path ambiguity surfacing", () => {
     ]);
   });
 
+  it("cache hit on an ambiguous path re-surfaces ambiguous + ambiguousSiblings on the returned entry (regression — cache previously dropped ambiguity metadata)", async () => {
+    // Resolve once (walks), then resolve again (cache hit). Both must carry ambiguity.
+    let listCallCount = 0;
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='dup.txt'",
+          handler: () => {
+            listCallCount += 1;
+            return {
+              files: [
+                {
+                  id: "dup-first",
+                  name: "dup.txt",
+                  mimeType: "text/plain",
+                  parents: ["root"],
+                  size: "1",
+                  modifiedTime: "2024-06-01T00:00:00Z",
+                  createdTime: "2024-01-01T00:00:00Z",
+                },
+                {
+                  id: "dup-second",
+                  name: "dup.txt",
+                  mimeType: "text/plain",
+                  parents: ["root"],
+                  size: "2",
+                  modifiedTime: "2024-06-02T00:00:00Z",
+                  createdTime: "2024-02-01T00:00:00Z",
+                },
+              ],
+            };
+          },
+        },
+      ],
+      gets: [
+        {
+          fileId: "dup-first",
+          handler: () => ({
+            id: "dup-first",
+            name: "dup.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            size: "1",
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+
+    const meta1 = await h.client.getMetadata({
+      kind: "path",
+      path: "/dup.txt",
+    });
+    expect(meta1.providerMetadata.ambiguous).toBe(true);
+    expect(meta1.providerMetadata.ambiguousSiblings).toEqual(["dup-second"]);
+    const listsAfterFirst = listCallCount;
+
+    const meta2 = await h.client.getMetadata({
+      kind: "path",
+      path: "/dup.txt",
+    });
+    // Cache hit — no additional resolve list call for the path.
+    expect(listCallCount).toBe(listsAfterFirst);
+    // But ambiguity MUST still surface on the second resolution.
+    expect(meta2.providerMetadata.ambiguous).toBe(true);
+    expect(meta2.providerMetadata.ambiguousSiblings).toEqual(["dup-second"]);
+  });
+
+  it("cache hit on a terminal-segment cached step (partial walk) still re-surfaces ambiguity on the terminal", async () => {
+    // Prime the cache by resolving /folder/dup.txt once, then clear the
+    // full-path entry only (simulate full-path eviction while parent cache
+    // remains) and resolve again — ambiguity must be preserved via the
+    // per-step cache entry for the terminal.
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='folder'",
+          handler: () => ({
+            files: [
+              {
+                id: "folder-id",
+                name: "folder",
+                mimeType: "application/vnd.google-apps.folder",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        {
+          qMatch: "name='dup.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "dup-A",
+                name: "dup.txt",
+                mimeType: "text/plain",
+                parents: ["folder-id"],
+                size: "1",
+                createdTime: "2024-02-01T00:00:00Z",
+              },
+              {
+                id: "dup-B",
+                name: "dup.txt",
+                mimeType: "text/plain",
+                parents: ["folder-id"],
+                size: "2",
+                createdTime: "2024-03-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+      gets: [
+        {
+          fileId: "dup-A",
+          handler: () => ({
+            id: "dup-A",
+            name: "dup.txt",
+            mimeType: "text/plain",
+            parents: ["folder-id"],
+            size: "1",
+            createdTime: "2024-02-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    // First resolution populates cache for /folder and /folder/dup.txt.
+    const meta1 = await h.client.getMetadata({
+      kind: "path",
+      path: "/folder/dup.txt",
+    });
+    expect(meta1.providerMetadata.ambiguous).toBe(true);
+
+    // Evict only the full-path entry, keep the parent step cache entry so
+    // the next resolution takes the per-step-cache branch for the terminal.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<string, unknown>;
+    cache.delete("/folder/dup.txt");
+
+    const meta2 = await h.client.getMetadata({
+      kind: "path",
+      path: "/folder/dup.txt",
+    });
+    expect(meta2.providerMetadata.ambiguous).toBe(true);
+    expect(meta2.providerMetadata.ambiguousSiblings).toEqual(["dup-B"]);
+  });
+
+  it("after a `deleted` bus event for the ambiguous path, the next resolution re-walks and re-surfaces ambiguity from the fresh list response", async () => {
+    let listCallCount = 0;
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='dup.txt'",
+          handler: () => {
+            listCallCount += 1;
+            return {
+              files: [
+                {
+                  id: "dup-first",
+                  name: "dup.txt",
+                  mimeType: "text/plain",
+                  parents: ["root"],
+                  size: "1",
+                  createdTime: "2024-01-01T00:00:00Z",
+                },
+                {
+                  id: "dup-second",
+                  name: "dup.txt",
+                  mimeType: "text/plain",
+                  parents: ["root"],
+                  size: "2",
+                  createdTime: "2024-02-01T00:00:00Z",
+                },
+              ],
+            };
+          },
+        },
+      ],
+      gets: [
+        {
+          fileId: "dup-first",
+          handler: () => ({
+            id: "dup-first",
+            name: "dup.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            size: "1",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+      deletes: [
+        {
+          fileId: "dup-first",
+          handler: () => ({}),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.getMetadata({ kind: "path", path: "/dup.txt" });
+    const listsAfterFirst = listCallCount;
+
+    // Emit a deleted event for this path (via strategy's deleteFile by handle
+    // to avoid the ambiguity-reject on path-form delete).
+    await h.client.deleteFile({ kind: "handle", handle: "dup-first" });
+    // The deleted event fires with a handle-target — cache eviction by
+    // handle clears the /dup.txt entry. Trigger a fresh resolution.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<string, unknown>;
+    // Full-path entry should be gone.
+    expect(cache.get("/dup.txt")).toBeUndefined();
+
+    const meta3 = await h.client.getMetadata({
+      kind: "path",
+      path: "/dup.txt",
+    });
+    expect(listCallCount).toBeGreaterThan(listsAfterFirst);
+    expect(meta3.providerMetadata.ambiguous).toBe(true);
+    expect(meta3.providerMetadata.ambiguousSiblings).toEqual(["dup-second"]);
+  });
+
   it("when a path segment resolves uniquely, ambiguous is NOT set on the providerMetadata (presence is the signal)", async () => {
     const { client } = makeFakeDrive({
       lists: [
@@ -627,6 +852,74 @@ describe("GoogleDriveClient — deleteFile", () => {
     expect(names).toContain("deleted");
   });
 
+  it("by PATH on an ambiguous path rejects with DatasourceError tag=conflict (data-loss guard) — all fileIds in raw.ambiguousSiblings; no delete call made", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='dup.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "dup-A",
+                name: "dup.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+              {
+                id: "dup-B",
+                name: "dup.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-02-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+      deletes: [
+        // A responder exists but MUST NOT be called — the ambiguity guard
+        // should reject before any Drive call.
+        {
+          fileId: "dup-A",
+          handler: () => ({}),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const err = await h.client
+      .deleteFile({ kind: "path", path: "/dup.txt" })
+      .then(
+        () => {
+          throw new Error("expected deleteFile to reject");
+        },
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(DatasourceError);
+    const de = err as DatasourceError<"google-drive">;
+    expect(de.tag).toBe("conflict");
+    expect(de.retryable).toBe(false);
+    const raw = de.raw as { ambiguousSiblings?: string[] } | undefined;
+    expect(raw?.ambiguousSiblings).toEqual(["dup-A", "dup-B"]);
+    // No files.delete call attempted — the guard prevented it.
+    expect(calls.delete).toHaveLength(0);
+  });
+
+  it("by HANDLE — even if that handle came from an ambiguous set, delete succeeds (no ambiguity guard on handle form)", async () => {
+    const { client, calls } = makeFakeDrive({
+      deletes: [
+        {
+          fileId: "dup-B",
+          handler: () => ({}),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.deleteFile({ kind: "handle", handle: "dup-B" });
+    expect(calls.delete).toHaveLength(1);
+    expect(calls.delete[0]!.fileId).toBe("dup-B");
+  });
+
   it("by path — resolves path → fileId, then calls files.delete", async () => {
     const { client, calls } = makeFakeDrive({
       lists: [
@@ -708,6 +1001,76 @@ describe("GoogleDriveClient — search", () => {
     await h.client.search("O'Reilly");
     const q = String(calls.list[0]!.q ?? "");
     expect(q).toContain("O''Reilly");
+  });
+
+  it("search result's synthesized `/<name>` path is NOT guaranteed re-addressable — callers MUST re-address via handle; handle-form round-trip returns the real file", async () => {
+    // A file lives at /nested/folder/hit.jpg (fileId=hit-1). Search returns
+    // it with path="/hit.jpg" (synthesized, not real). Re-addressing that
+    // synthesized path would miss (or hit a DIFFERENT root-level file).
+    // Re-addressing via handle finds the real file.
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name contains 'hit'",
+          handler: () => ({
+            files: [
+              {
+                id: "hit-1",
+                name: "hit.jpg",
+                mimeType: "image/jpeg",
+                parents: ["deep-folder-id"],
+                size: "100",
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        {
+          qMatch: "name='hit.jpg'",
+          handler: () => ({
+            // No root-level /hit.jpg exists.
+            files: [],
+          }),
+        },
+      ],
+      gets: [
+        {
+          fileId: "hit-1",
+          handler: () => ({
+            id: "hit-1",
+            name: "hit.jpg",
+            mimeType: "image/jpeg",
+            parents: ["deep-folder-id"],
+            size: "100",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const results = await h.client.search("hit");
+    expect(results).toHaveLength(1);
+    const entry = results[0]!;
+    // Synthesized path — documented-as-not-reliable.
+    expect(entry.path).toBe("/hit.jpg");
+    expect(entry.handle).toBe("hit-1");
+
+    // Path round-trip fails to find the file because no root-level
+    // /hit.jpg exists — this is the documented trap that the class header
+    // warns about. Callers MUST NOT rely on the synthesized path.
+    await expect(
+      h.client.getMetadata({ kind: "path", path: entry.path }),
+    ).rejects.toSatisfy(
+      (e: unknown) => e instanceof DatasourceError && e.tag === "not-found",
+    );
+
+    // Handle round-trip returns the real file with the real parent chain.
+    const viaHandle = await h.client.getMetadata({
+      kind: "handle",
+      handle: entry.handle,
+    });
+    expect(viaHandle.handle).toBe("hit-1");
+    expect(viaHandle.providerMetadata.parents).toEqual(["deep-folder-id"]);
   });
 
   it("scoped — passes `'<scopeFileId>' in parents` on top of name filter", async () => {
@@ -1231,8 +1594,11 @@ describe("GoogleDriveClient — path↔fileId LRU invalidation", () => {
     const h = makeHarness({ drive: client });
     await h.client.getMetadata({ kind: "path", path: "/doc.txt" });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cache = (h.client as any).pathHandleCache as Map<string, string>;
-    expect(cache.get("/doc.txt")).toBe("doc-id");
+    const cache = (h.client as any).pathHandleCache as Map<
+      string,
+      { fileId: string; ambiguousSiblings?: string[] }
+    >;
+    expect(cache.get("/doc.txt")?.fileId).toBe("doc-id");
 
     await h.client.deleteFile({ kind: "path", path: "/doc.txt" });
     expect(cache.get("/doc.txt")).toBeUndefined();
@@ -1279,8 +1645,11 @@ describe("GoogleDriveClient — dispose()", () => {
     const h = makeHarness({ drive: client });
     await h.client.getMetadata({ kind: "path", path: "/a.txt" });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cache = (h.client as any).pathHandleCache as Map<string, string>;
-    expect(cache.get("/a.txt")).toBe("A");
+    const cache = (h.client as any).pathHandleCache as Map<
+      string,
+      { fileId: string; ambiguousSiblings?: string[] }
+    >;
+    expect(cache.get("/a.txt")?.fileId).toBe("A");
 
     h.client.dispose();
 
@@ -1292,7 +1661,7 @@ describe("GoogleDriveClient — dispose()", () => {
       payload: { target: { kind: "path", path: "/a.txt" } },
     });
 
-    expect(cache.get("/a.txt")).toBe("A");
+    expect(cache.get("/a.txt")?.fileId).toBe("A");
   });
 
   it("dispose() is idempotent", () => {
