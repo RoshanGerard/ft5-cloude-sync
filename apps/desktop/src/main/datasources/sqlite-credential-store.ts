@@ -30,29 +30,27 @@
 //   4. Timestamps are stored as Unix-millis `INTEGER` (what `Date.now()`
 //      produces). They are wall-clock numbers, not UTC strings.
 //
+// Schema ownership: the `datasource_credentials` table is created and
+// evolved by the shared migration runner at
+// `apps/desktop/src/main/db/migrations.ts` (migration
+// `0001_datasource_credentials`). This store does NOT create, alter, or
+// otherwise touch the schema — callers MUST run `runMigrations(db,
+// DEFAULT_MIGRATIONS)` against the injected DB before constructing the
+// store. If the table is missing at read/write time, SQLite will raise a
+// loud error, which is the intended failure mode: schema drift should not
+// be silently papered over by a defense-in-depth `CREATE TABLE IF NOT
+// EXISTS`, because that would ignore any later `ALTER TABLE` migrations.
+//
 // Constructor-injected DB: the store accepts an opened `Database` handle
 // instead of opening one itself. This keeps the store trivially testable
-// (in-memory DB per test) and leaves "where does the app open its single
-// main-process DB?" to Phase 5+ which owns the `EngineContext` wiring.
+// (in-memory DB per test) and leaves DB ownership to the main-process
+// bootstrap (`main/index.ts`) + migration runner.
 
 import type Database from "better-sqlite3";
 import { safeStorage } from "electron";
 
 import type { CredentialStore } from "@ft5/fs-datasource-engine";
 import type { StoredCredentials } from "@ft5/ipc-contracts";
-
-// Schema + migration. Idempotent via `IF NOT EXISTS`, so calling it on a DB
-// that already has the table (e.g., the app's singleton DB opened once at
-// boot) is safe. The column shapes are spec-mandated.
-const MIGRATION_SQL = `
-  CREATE TABLE IF NOT EXISTS datasource_credentials (
-    datasource_id  TEXT    PRIMARY KEY,
-    encrypted_blob BLOB    NOT NULL,
-    schema_version INTEGER NOT NULL DEFAULT 1,
-    created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL
-  );
-`;
 
 // Upsert: on conflict, update the encrypted blob + updated_at but preserve
 // the original created_at. `excluded.*` refers to the values of the proposed
@@ -102,10 +100,12 @@ export class SqliteCredentialStore implements CredentialStore {
       );
     }
     this.db = db;
-    // Idempotent migration. Running it on every construction is cheap on
-    // SQLite and keeps the store self-contained; Phase 5+ can hoist this
-    // into a dedicated migration runner if more tables accumulate.
-    this.db.exec(MIGRATION_SQL);
+    // Schema is owned by the migration runner in `main/db/migrations.ts`
+    // (`0001_datasource_credentials`). The constructor intentionally does
+    // NOT create or alter tables — if the table is missing, queries below
+    // will throw a SQLite error at read/write time, which is the intended
+    // loud-failure mode. Callers MUST run `runMigrations(db,
+    // DEFAULT_MIGRATIONS)` before constructing this store.
   }
 
   async get(datasourceId: string): Promise<StoredCredentials | null> {

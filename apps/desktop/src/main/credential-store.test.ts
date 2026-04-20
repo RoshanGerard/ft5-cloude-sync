@@ -60,6 +60,8 @@ vi.mock("electron", () => ({
 // test would also work; top-level import suffices because `vi.mock` is
 // hoisted by Vitest.
 import { SqliteCredentialStore } from "./datasources/sqlite-credential-store";
+import { runMigrations } from "./db/database";
+import { DEFAULT_MIGRATIONS } from "./db/migrations";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -80,7 +82,12 @@ const SAMPLE_CREDS: StoredCredentials = {
 type SqliteDatabase = InstanceType<typeof Database>;
 
 function openDb(): SqliteDatabase {
-  return new Database(":memory:");
+  // Phase 9a: schema is owned by the migration runner, not the store. Run
+  // the canonical migration list on the fresh in-memory DB so the
+  // `datasource_credentials` table exists before the store is constructed.
+  const db = new Database(":memory:");
+  runMigrations(db, DEFAULT_MIGRATIONS);
+  return db;
 }
 
 interface RawRow {

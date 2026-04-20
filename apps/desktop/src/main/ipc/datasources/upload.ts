@@ -20,6 +20,10 @@ export async function handleDatasourcesUpload(
   req: DatasourcesUploadRequest,
   deps: UploadDeps,
 ): Promise<DatasourcesUploadResponse> {
+  // Error shape contract: pre-dialog errors THROW (renderer surfaces as
+  // IPC rejection); post-dialog errors emit a `failed` progress event AND
+  // return a transactionId so the UI's upload-tracking state machine can
+  // clean up. Do not normalize without also updating the renderer.
   const { registry, factory, credentialStore, bus } = getEngine();
 
   const providerId = registry.getProviderId(req.datasourceId);
@@ -82,6 +86,14 @@ export async function handleDatasourcesUpload(
   // the finer-grained provider events via the datasources:event bridge
   // (Phase 10). Here we send a simple two-stage uploading/completed pair
   // per file so the existing progress bar UI keeps working.
+  //
+  // TODO(phase-10): Coarse byte-counter — `bytesTotal` here tracks FILE COUNT,
+  // not bytes. Fine-grained per-chunk `uploading` events arrive via the
+  // bus bridge wired in Phase 10 (`datasources:event`). Until then, the UI
+  // progress bar sees file-level milestones only. Serial upload + first-
+  // failure-aborts is a documented transitional shape; a follow-up change
+  // can parallelize and report per-file outcomes once the event bridge
+  // lands.
   deps.sendProgress({
     transactionId,
     bytesUploaded: 0,

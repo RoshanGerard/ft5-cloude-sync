@@ -7,11 +7,12 @@
 // compensates.
 //
 // Current migrations:
-//   - 0001_datasource_credentials: mirror of `SqliteCredentialStore`'s
-//     inline `CREATE TABLE IF NOT EXISTS`. The store still keeps its inline
-//     `IF NOT EXISTS` as a defense-in-depth no-op so existing tests (which
-//     do not run the shared runner) still pass; in production the shared
-//     runner is guaranteed to have created the table first.
+//   - 0001_datasource_credentials: owns the `datasource_credentials` table
+//     used by `SqliteCredentialStore`. The store no longer creates the
+//     table itself — callers MUST run `runMigrations(db, DEFAULT_MIGRATIONS)`
+//     before constructing the store, including in tests. This is the single
+//     source of truth for the schema so later `ALTER TABLE` migrations
+//     cannot be silently shadowed by defense-in-depth table creation.
 //   - 0002_datasources: the datasource-registry table used by the new
 //     `DatasourceRegistry` (Phase 9b).
 

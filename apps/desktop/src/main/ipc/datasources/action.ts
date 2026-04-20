@@ -77,6 +77,11 @@ export async function handleDatasourcesAction(
           { bus, credentialStore },
         );
         const state: DatasourceStatus = await client.status();
+        // TODO(12.4): Runtime-validate `status.state ∈ DatasourceStatus` before
+        // writing to the registry. Today all three concrete clients conform by
+        // TypeScript; a future refactor could corrupt rows with an out-of-union
+        // value. Pin this when the `authentication-failed` payload shape is
+        // finalized (Phase 12 open question 12.4).
         registry.setStatus(req.datasourceId, state);
         registry.touchLastSyncAt(req.datasourceId);
       } catch (err) {
