@@ -100,9 +100,9 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 8 — Card integration
 
-- [ ] 8.1 Write failing test extending `features/datasources/card.test.tsx` — the quick-actions menu contains "Explore" as the first item.
-- [ ] 8.2 Add the "Explore" item to the card's quick-actions menu in `features/datasources/card.tsx`; wire it to `router.push(\`/datasources/explore?id=${id}\`)`.
-- [ ] 8.3 Update any snapshot or menu-order tests across the feature to include the new item without drift.
+- [x] 8.1 Write failing test extending `features/datasources/card.test.tsx` — the quick-actions menu contains "Explore" as the first item.
+- [x] 8.2 Add the "Explore" item to the card's quick-actions menu in `features/datasources/card.tsx`; wire it to `router.push(\`/datasources/explore?id=${id}\`)`. *(Impl note: menu order is now Explore | Sync now | Pause/Resume | Upload from local | Settings | — | Remove. Uses the `folder-open` icon already registered in the Icon adapter from Phase 3.)*
+- [x] 8.3 Update any snapshot or menu-order tests across the feature to include the new item without drift. *(Impl note: 4 test files touched — `card.test.tsx` (index shifts + glyph-count bump), `dashboard.test.tsx`, `add-dialog.test.tsx`, `a11y.test.tsx` (all three gained the hoisted `vi.mock("next/navigation", ...)` because they mount real cards that now call `useRouter()`, which would otherwise throw Next's "app router not mounted" invariant).)*
 
 ## Phase 9 — Accessibility, guardrails, and docs
 
