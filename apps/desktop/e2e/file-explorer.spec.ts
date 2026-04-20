@@ -152,18 +152,23 @@ test("keyboard-only explorer workflow: navigate, multi-select, delete, rename, D
     await window.keyboard.press("Enter");
     await expect(dialog).toBeHidden();
 
-    // 4e. Rename a file: folders come first in most seeds, so ArrowDown
-    // until the focused row is a file (data-entry-kind="file"). F2 on a
-    // directory is a spec-refused no-op — the loop finds the first file
-    // reachable via pure keyboard navigation, matching what a user would
-    // do. 20-step cap protects against an all-directory folder.
+    // 4e. Rename a file. Radix's confirm-dialog focus-trap releases to
+    // whatever had focus before open — but after a keyboard-triggered
+    // Delete, that restoration is unreliable (the Delete keypress landed
+    // on the view container, not a specific trigger element). Re-focus
+    // the view container so the ArrowDown keydowns bubble to its
+    // `onKeyDown`. Then loop ArrowDown until the focused row is a file
+    // (data-entry-kind="file") — folders sort first in most seeds, and
+    // F2 on a directory is a spec-refused no-op. 20-step cap protects
+    // against an all-directory folder.
+    await viewContainer.focus();
     let focusedKind: string | null = null;
     for (let step = 0; step < 20; step++) {
       await window.keyboard.press("ArrowDown");
       focusedKind = await root
         .locator("[data-entry-id][tabindex='0']")
         .first()
-        .getAttribute("data-entry-kind");
+        .getAttribute("data-entry-kind", { timeout: 2_000 });
       if (focusedKind === "file") break;
     }
     expect(focusedKind, "ArrowDown did not land on a file row within 20 steps").toBe("file");
