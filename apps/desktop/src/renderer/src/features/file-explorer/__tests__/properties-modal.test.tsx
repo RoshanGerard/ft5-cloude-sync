@@ -199,7 +199,7 @@ describe("PropertiesModal — copy interactions", () => {
     window.localStorage.clear();
   });
 
-  it("clicking Copy Size writes the raw byte count (not the formatted string) to the clipboard", async () => {
+  it("clicking Copy Size writes the formatted string the user sees to the clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     (window as unknown as { api?: { clipboard: { writeText: typeof writeText } } }).api = {
       clipboard: { writeText },
@@ -215,10 +215,12 @@ describe("PropertiesModal — copy interactions", () => {
     const sizeButton = screen.getByRole("button", { name: "Copy Size" });
     fireEvent.click(sizeButton);
 
-    // rawSelector for size returns the number 12288 — String() -> "12288".
-    // The formatted value on the row is "12 KB"; we must NOT write that.
+    // Copy the same formatted value the user sees on the row. Earlier
+    // versions wrote the raw byte count (e.g. "12288") but users read
+    // the mismatch against the visible "12 KB" as a copy bug, so the
+    // modal now copies the display string.
     expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText).toHaveBeenCalledWith("12288");
+    expect(writeText).toHaveBeenCalledWith("12 KB");
   });
 
   it("clicking Copy Name writes the raw file name to the clipboard", () => {

@@ -83,16 +83,21 @@ function PropertiesBody({ entry }: { entry: FileEntry }) {
         const def = defsById.get(id);
         if (!def) return null;
         const value = def.selector(entry);
-        const rawValue = def.rawSelector
-          ? def.rawSelector(entry)
-          : value;
+        // UX: copy what the user SEES. Earlier the copy wrote
+        // `rawSelector(entry)` (ISO timestamps, byte counts, full MIME
+        // strings) but the user-visible row showed the formatted
+        // equivalent ("Jan 3, 2026", "25 KB", "Document"). Users
+        // consistently read that mismatch as a copy bug. Pass the
+        // formatted display string as the clipboard payload — what's
+        // shown is what lands on the clipboard.
+        const displayString = value === null ? null : String(value);
         return (
           <FieldRowWithCopy
             key={def.id}
             label={def.label}
-            value={value === null ? null : String(value)}
+            value={displayString}
             numeric={def.numeric}
-            rawValue={rawValue}
+            rawValue={displayString}
             onCopied={onCopied}
             onCopyError={onCopyError}
           />
