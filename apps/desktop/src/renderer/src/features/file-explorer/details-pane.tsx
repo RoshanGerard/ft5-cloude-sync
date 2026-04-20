@@ -4,8 +4,10 @@ import { useSyncExternalStore } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
+import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
+import { iconForEntry } from "./icons";
 import { FieldRow } from "./metadata/render-primitives";
 import {
   PANE_PROVIDER_METADATA_LIMIT,
@@ -14,7 +16,7 @@ import {
   providerMetadataFields,
 } from "./metadata/field-catalog";
 import type { ExplorerStore } from "./store";
-import { formatSize } from "./view-modes/details-format";
+import { formatSize, formatType } from "./view-modes/details-format";
 
 // Kept mounted in both states so the `data-[state=closed]` exit animation
 // can play. `hidden` + `aria-hidden` remove the closed pane from the
@@ -42,7 +44,7 @@ export function DetailsPane({ store }: DetailsPaneProps) {
       hidden={!open}
       data-state={open ? "open" : "closed"}
       className={cn(
-        "bg-card border-border flex w-80 shrink-0 flex-col border-l overflow-auto",
+        "bg-card border-border flex h-full w-80 shrink-0 flex-col border-l overflow-auto",
         // Slide motion gated on motion-safe: per the reduced-motion rules
         // that shadcn primitives follow; `data-[state=*]:` variants are
         // whitelisted by the motion-budget guardrail.
@@ -78,34 +80,62 @@ function SingleEntryBody({ entry }: { entry: FileEntry }) {
     0,
     PANE_PROVIDER_METADATA_LIMIT,
   );
+  const iconName = iconForEntry(entry);
 
   return (
     <div className="flex flex-col gap-1">
-      {paneFields.map((id) => {
-        const def = defsById.get(id);
-        if (!def) return null;
-        const value = def.selector(entry);
-        return (
-          <FieldRow
-            key={def.id}
-            label={def.label}
-            value={value === null ? null : String(value)}
-            numeric={def.numeric}
-          />
-        );
-      })}
-      {providerRows.length > 0 ? (
-        <div className="border-border mt-3 border-t pt-3">
-          {providerRows.map((row) => (
-            <FieldRow
-              key={row.id}
-              label={row.label}
-              value={row.value === null ? null : String(row.value)}
-              numeric={typeof row.value === "number"}
-            />
-          ))}
+      {/* Icon + name + type header. Pane v1 scope added polish-pass:
+          a prominent entry identity anchor at the top so the user's
+          eye lands on the selection before scanning the metadata
+          rows below. The fields rendered in `paneFields` still
+          follow; the Name row is intentionally kept (it carries the
+          formatted display name and is what the copy-to-clipboard
+          chain already reads in the Properties modal). */}
+      <div
+        data-testid="details-pane-header"
+        className="border-border mb-3 flex flex-col items-center gap-2 border-b pb-3"
+      >
+        <Icon
+          name={iconName}
+          aria-hidden
+          className="text-muted-foreground size-10"
+        />
+        <div className="flex min-w-0 flex-col items-center gap-0.5">
+          <span className="w-full truncate text-center text-sm font-medium">
+            {entry.name}
+          </span>
+          <span className="text-muted-foreground text-xs">
+            {formatType(entry)}
+          </span>
         </div>
-      ) : null}
+      </div>
+      <div data-testid="details-pane-fields" className="flex flex-col gap-1">
+        {paneFields.map((id) => {
+          const def = defsById.get(id);
+          if (!def) return null;
+          const value = def.selector(entry);
+          return (
+            <FieldRow
+              key={def.id}
+              label={def.label}
+              value={value === null ? null : String(value)}
+              numeric={def.numeric}
+            />
+          );
+        })}
+        {providerRows.length > 0 ? (
+          <div className="border-border mt-3 border-t pt-3">
+            {providerRows.map((row) => (
+              <FieldRow
+                key={row.id}
+                label={row.label}
+                value={row.value === null ? null : String(row.value)}
+                numeric={typeof row.value === "number"}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

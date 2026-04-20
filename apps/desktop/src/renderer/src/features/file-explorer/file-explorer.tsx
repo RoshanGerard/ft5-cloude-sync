@@ -27,8 +27,12 @@
 //
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useRouter } from "next/navigation";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
+
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/icon";
 
 import { Breadcrumb } from "./breadcrumb";
 import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
@@ -56,6 +60,30 @@ export interface FileExplorerProps {
    * that predate this prop keep working unchanged.
    */
   providerKind?: ProviderKind;
+}
+
+/**
+ * Back-to-dashboard affordance. The spec's "back returns to the
+ * dashboard" scenario originally leaned on browser-level back, which
+ * Electron does not surface in its chromeless window. A discoverable
+ * in-app home button is the pointer-friendly analog. Kept as a sibling
+ * of HistoryButtons (not inside it) so the existing history-stack
+ * semantics stay unchanged.
+ */
+function DashboardHomeButton() {
+  const router = useRouter();
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label="Back to dashboard"
+      data-testid="file-explorer-dashboard-home"
+      onClick={() => router.push("/")}
+    >
+      <Icon name="home" aria-hidden="true" />
+    </Button>
+  );
 }
 
 export function FileExplorer({
@@ -255,8 +283,9 @@ export function FileExplorer({
       data-testid="file-explorer-root"
       className="bg-background flex h-full flex-col"
     >
-      {/* Chrome row: history buttons + breadcrumb + toolbar. */}
+      {/* Chrome row: dashboard-home + history buttons + breadcrumb + toolbar. */}
       <div className="border-border flex items-center gap-2 border-b px-3 py-2">
+        <DashboardHomeButton />
         <HistoryButtons store={store} />
         <div className="min-w-0 flex-1">
           <Breadcrumb store={store} />

@@ -6,6 +6,7 @@ import { GeistMono } from "geist/font/mono";
 import "../styles/globals.css";
 import { AppFooter } from "../components/app-footer";
 import { AppHeader } from "../components/app-header";
+import { Toaster } from "../components/ui/sonner";
 import { THEME_BOOTSTRAP_SCRIPT } from "../features/theme/theme-script";
 import { MOTION_BOOTSTRAP_SCRIPT } from "../features/settings/motion-script";
 import { DiagnosticsShortcut } from "../features/diagnostics/diagnostics-shortcut";
@@ -64,6 +65,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <AppHeader />
         <main className="flex-1 min-h-0">{children}</main>
         <AppFooter />
+        {/* Sonner toaster — mounted at layout level so every route gets
+            toast delivery (rename failure, delete success, download path,
+            deferred-search clipboard copies, etc.). The wrapper in
+            `components/ui/sonner.tsx` reads the theme store so toasts
+            match the app's Light / Dark / Serene Blue palette. */}
+        <Toaster />
       </body>
     </html>
   );

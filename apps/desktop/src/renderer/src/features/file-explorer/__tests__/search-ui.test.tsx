@@ -39,6 +39,21 @@ import {
 import "@testing-library/jest-dom/vitest";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
+// FileExplorer now calls `useRouter()` for the back-to-dashboard button.
+// Mock `next/navigation` so the App Router invariant doesn't fire under
+// vitest. Push is a no-op — these tests assert explorer surface behaviour,
+// not route navigation.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
+
 import { FileExplorer } from "../file-explorer.js";
 import {
   __resetExplorerStoreCacheForTests,

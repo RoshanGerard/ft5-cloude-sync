@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
@@ -147,13 +148,17 @@ describe("DetailsPane — single selection", () => {
     render(<DetailsPane store={store} />);
 
     // paneFields = [name, type, size, modified, path]. Each renders a
-    // label cell AND a value cell via FieldRow.
-    expect(screen.getByText("Name")).toBeInTheDocument();
-    expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    // label cell AND a value cell via FieldRow. Queries are scoped to
+    // the `details-pane-fields` container because the pane's header
+    // also renders the name + type for prominence — asserting at the
+    // document level would produce "multiple elements" false positives.
+    const fields = within(screen.getByTestId("details-pane-fields"));
+    expect(fields.getByText("Name")).toBeInTheDocument();
+    expect(fields.getByText("report.pdf")).toBeInTheDocument();
 
-    expect(screen.getByText("Type")).toBeInTheDocument();
+    expect(fields.getByText("Type")).toBeInTheDocument();
     // formatType capitalises the mimeFamily
-    expect(screen.getByText("Document")).toBeInTheDocument();
+    expect(fields.getByText("Document")).toBeInTheDocument();
 
     expect(screen.getByText("Size")).toBeInTheDocument();
     expect(screen.getByText("4 KB")).toBeInTheDocument();
