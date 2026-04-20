@@ -101,7 +101,7 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 ### 9f. Review
 
-- [ ] 9.13 Request code review for Phase 9.
+- [x] 9.13 Request code review for Phase 9.
 
 ## 10. Event bridge IPC
 
