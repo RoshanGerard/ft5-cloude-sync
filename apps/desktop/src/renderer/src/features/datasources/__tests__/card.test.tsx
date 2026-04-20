@@ -19,6 +19,25 @@ import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 import { providers } from "@ft5/ipc-contracts";
 
+// Task 8.1 — the Explore quick-action activates `useRouter().push(...)` on
+// the App Router. card.tsx does not consume `next/navigation` today, so we
+// mock the module at hoist-time (see diagnostics-shortcut.test.tsx for the
+// same pattern) and import the card AFTER the mock registers. Keeping the
+// pushMock at module scope lets every test assert call counts independently
+// after `pushMock.mockReset()` in beforeEach.
+const pushMock = vi.fn();
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: pushMock,
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
+
 import { DatasourceCard } from "../card";
 import { DatasourcesProvider } from "../store";
 
@@ -78,6 +97,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  pushMock.mockReset();
 });
 
 describe("DatasourceCard — spec scenarios", () => {
@@ -375,5 +395,62 @@ describe("DatasourceCard — Motion Safe opt-in gating (mechanism changed)", () 
     expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-pulse/);
     expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-sync-ripple/);
     expect(css).toMatch(/html\[data-motion\s*=\s*"safe"\][^{]*\.animate-skeleton-shimmer/);
+  });
+});
+
+describe("DatasourceCard — Explore quick-action (task 8.1)", () => {
+  // Spec delta (openspec/changes/ui-file-explorer/specs/datasources-ui/spec.md):
+  //   - The quick-actions menu gains an "Explore" item positioned FIRST.
+  //   - Activating it navigates the renderer to
+  //     `/datasources/explore?id=<datasourceId>` via the App Router.
+  //
+  // We assert: (1) item present, (2) item is at index 0, (3) activating it
+  // calls `useRouter().push('/datasources/explore?id=<id>')` exactly once
+  // with the card's actual datasource id.
+
+  it("quick-actions menu contains an 'Explore' item", async () => {
+    const summary = buildSummary({ id: "ds-explore-1" });
+    renderWithProvider(<DatasourceCard summary={summary} />);
+
+    const trigger = screen.getByRole("button", { name: /quick actions/i });
+    fireEvent.pointerDown(trigger, { button: 0 });
+
+    const items = await screen.findAllByRole("menuitem");
+    const labels = items.map((i) => (i.textContent ?? "").trim());
+    expect(labels.some((l) => /explore/i.test(l))).toBe(true);
+  });
+
+  it("'Explore' is the FIRST item in the quick-actions menu", async () => {
+    const summary = buildSummary({ id: "ds-explore-2", status: "connected" });
+    renderWithProvider(<DatasourceCard summary={summary} />);
+
+    const trigger = screen.getByRole("button", { name: /quick actions/i });
+    fireEvent.pointerDown(trigger, { button: 0 });
+
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.length).toBeGreaterThanOrEqual(6);
+    expect((items[0].textContent ?? "").trim()).toMatch(/explore/i);
+  });
+
+  it("activating 'Explore' calls router.push with /datasources/explore?id=<datasourceId>", async () => {
+    const summary = buildSummary({ id: "ds-explore-3" });
+    renderWithProvider(<DatasourceCard summary={summary} />);
+
+    const trigger = screen.getByRole("button", { name: /quick actions/i });
+    fireEvent.pointerDown(trigger, { button: 0 });
+
+    const items = await screen.findAllByRole("menuitem");
+    const exploreItem = items.find((i) =>
+      /explore/i.test((i.textContent ?? "").trim()),
+    );
+    expect(exploreItem, "Explore menu item must be present").toBeTruthy();
+
+    // Radix DropdownMenuItem reacts to pointerUp→click for selection.
+    fireEvent.click(exploreItem!);
+
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    expect(pushMock).toHaveBeenCalledWith(
+      "/datasources/explore?id=ds-explore-3",
+    );
   });
 });
