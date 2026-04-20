@@ -157,12 +157,6 @@ function handleUrl(handle: string, suffix: string): string {
     : `${GRAPH_ITEMS}/${handle}${suffix}`;
 }
 
-/** Resolve a Target to a Graph URL with the given method-specific suffix. */
-function targetUrl(target: Target, suffix: string): string {
-  if (target.kind === "handle") return handleUrl(target.handle, suffix);
-  return pathUrl(target.path, suffix);
-}
-
 // ---------------------------------------------------------------------------
 // DriveItem → FileEntry mapping
 // ---------------------------------------------------------------------------
@@ -394,6 +388,28 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     }
   }
 
+  /**
+   * Resolve a `Target` to a Graph URL, consulting the LRU cache when the
+   * target is a path. A cached hit yields a `/me/drive/items/<handle>`-form
+   * URL, which (a) saves a path-resolution round-trip on the Graph API and
+   * (b) is robust to renames (the driveItemId is stable, the path is not).
+   *
+   * Called by every path-addressed read / mutate primitive (`doGetMetadataImpl`,
+   * `doListDirectoryImpl`, `doDeleteFileImpl`). Handle-form targets pass
+   * through unchanged.
+   */
+  private resolveTargetUrl(target: Target, suffix: string): string {
+    if (target.kind === "handle") return handleUrl(target.handle, suffix);
+    const cached = this.pathHandleCache.get(target.path);
+    if (cached !== undefined) {
+      // LRU bump on read.
+      this.pathHandleCache.delete(target.path);
+      this.pathHandleCache.set(target.path, cached);
+      return handleUrl(cached, suffix);
+    }
+    return pathUrl(target.path, suffix);
+  }
+
   // -------------------------------------------------------------------------
   // Graph client access (re-built after token refresh)
   // -------------------------------------------------------------------------
@@ -525,7 +541,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   protected override async doListDirectoryImpl(
     target: Target,
   ): Promise<FileEntry<"onedrive">[]> {
-    const url = targetUrl(target, "/children");
+    const url = this.resolveTargetUrl(target, "/children");
     const resp = (await this.graph().api(url).get()) as { value?: DriveItem[] };
     const entries: FileEntry<"onedrive">[] = [];
     for (const item of resp.value ?? []) {
@@ -546,7 +562,9 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     scope?: Target,
   ): Promise<FileEntry<"onedrive">[]> {
     const suffix = `/search(q='${encodeQueryValue(query)}')`;
-    const url = scope ? targetUrl(scope, suffix) : `${GRAPH_ROOT}${suffix}`;
+    const url = scope
+      ? this.resolveTargetUrl(scope, suffix)
+      : `${GRAPH_ROOT}${suffix}`;
     const resp = (await this.graph().api(url).get()) as { value?: DriveItem[] };
     const out: FileEntry<"onedrive">[] = [];
     for (const item of resp.value ?? []) {
@@ -562,7 +580,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   protected override async doGetMetadataImpl(
     target: Target,
   ): Promise<FileMetadata<"onedrive">> {
-    const url = targetUrl(target, "");
+    const url = this.resolveTargetUrl(target, "");
     const item = (await this.graph().api(url).get()) as DriveItem;
     const entry = buildFileEntry(item);
     if (entry.handle) this.cachePathHandle(entry.path, entry.handle);
@@ -725,7 +743,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   // -------------------------------------------------------------------------
 
   protected override async doDeleteFileImpl(target: Target): Promise<void> {
-    const url = targetUrl(target, "");
+    const url = this.resolveTargetUrl(target, "");
     await this.graph().api(url).delete();
   }
 
@@ -854,7 +872,9 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     if (
       name === "FetchError" ||
       name === "NetworkError" ||
-      name === "TypeError" && typeof message === "string" && message.toLowerCase().includes("fetch") ||
+      (name === "TypeError" &&
+        typeof message === "string" &&
+        message.toLowerCase().includes("fetch")) ||
       code === "ECONNRESET" ||
       code === "ETIMEDOUT" ||
       code === "ENOTFOUND" ||

@@ -735,41 +735,53 @@ describe("OneDriveClient — upload (resumable session for > 4MB)", () => {
 // ---------------------------------------------------------------------------
 
 describe("OneDriveClient — path↔handle LRU invalidation", () => {
-  it("resolves a path → driveItemId and re-uses the cached handle on subsequent call", async () => {
-    let getCalls = 0;
-    const { client } = makeFakeGraph([
+  it("resolves a path → driveItemId and the second call addresses /items/<id> (not /root:/<path>)", async () => {
+    // Prime BOTH addressing variants so the test can tell which one the
+    // second call used. Without the cache, the strategy would re-address by
+    // path; with the cache, it short-circuits to `/items/<id>`.
+    const { client, apiCalls } = makeFakeGraph([
       {
         match: "/me/drive/root:/docs/readme.md:",
         verbs: {
-          get: () => {
-            getCalls += 1;
-            return {
-              id: "cached-id",
-              name: "readme.md",
-              file: { mimeType: "text/markdown" },
-              size: 10,
-              lastModifiedDateTime: "2024-06-01T00:00:00Z",
-              parentReference: { path: "/drive/root:/docs" },
-            };
-          },
+          get: () => ({
+            id: "cached-id",
+            name: "readme.md",
+            file: { mimeType: "text/markdown" },
+            size: 10,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:/docs" },
+          }),
+        },
+      },
+      {
+        match: "/me/drive/items/cached-id",
+        verbs: {
+          get: () => ({
+            id: "cached-id",
+            name: "readme.md",
+            file: { mimeType: "text/markdown" },
+            size: 10,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:/docs" },
+          }),
         },
       },
     ]);
     const h = makeHarness({ graph: client });
     await h.client.getMetadata({ kind: "path", path: "/docs/readme.md" });
     await h.client.getMetadata({ kind: "path", path: "/docs/readme.md" });
-    // Cache populated on first call via response; second call may or may not
-    // hit the provider — but the client MUST NOT duplicate the resolution
-    // work. We just assert the test sees the same handle both times.
-    expect(getCalls).toBeGreaterThanOrEqual(1);
+    // First call used the path endpoint; second should route to /items/<id>.
+    expect(apiCalls[0]).toBe("/me/drive/root:/docs/readme.md:");
+    expect(apiCalls[1]).toBe("/me/drive/items/cached-id");
   });
 
   it("on `deleted` event for a path the cached entry is evicted", async () => {
+    // The seed getMetadata resolves via path; the cached delete then routes
+    // via /items/<id>. Prime both addressing forms.
     const { client: graphClient } = makeFakeGraph([
       {
         match: "/me/drive/root:/todelete.txt:",
         verbs: {
-          delete: () => undefined,
           get: () => ({
             id: "reborn-id",
             name: "todelete.txt",
@@ -779,6 +791,10 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
             parentReference: { path: "/drive/root:" },
           }),
         },
+      },
+      {
+        match: "/me/drive/items/reborn-id",
+        verbs: { delete: () => undefined },
       },
     ]);
     const h = makeHarness({ graph: graphClient });
