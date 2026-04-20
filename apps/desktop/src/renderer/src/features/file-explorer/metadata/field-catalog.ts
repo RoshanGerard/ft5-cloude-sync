@@ -1,6 +1,6 @@
 import type { FileEntry } from "@ft5/ipc-contracts";
 
-import { formatDate, formatSize, formatType } from "../view-modes/details-format.js";
+import { formatDate, formatSize, formatType } from "../view-modes/details-format";
 
 // design.md Decision 4: Details pane AND Properties modal — two surfaces,
 // one shape. The catalog is the single source of truth for both; each
