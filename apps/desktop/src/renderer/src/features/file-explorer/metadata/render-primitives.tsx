@@ -42,6 +42,9 @@ export interface FieldRowWithCopyProps extends FieldRowProps {
   // already-formatted display string (e.g. "12 KB"); `rawValue` carries
   // the original (e.g. the number 12288) so power-users get usable text.
   rawValue: string | number | boolean | null;
+  // Optional success hook — owners wire a sonner toast so the user
+  // sees definitive feedback that the copy landed.
+  onCopied?: (text: string, label: string) => void;
   // Optional rejection hook — Phase 5.6 wires a sonner toast through this.
   onCopyError?: (err: unknown) => void;
 }
@@ -51,6 +54,7 @@ export function FieldRowWithCopy({
   value,
   numeric = false,
   rawValue,
+  onCopied,
   onCopyError,
 }: FieldRowWithCopyProps) {
   const displayValue = value ?? EM_DASH;
@@ -69,10 +73,18 @@ export function FieldRowWithCopy({
         api?: { clipboard?: { writeText?: (s: string) => Promise<void> } };
       };
     }).window?.api?.clipboard;
-    if (api?.writeText === undefined) return;
-    api.writeText(text).catch((err: unknown) => {
-      onCopyError?.(err);
-    });
+    if (api?.writeText === undefined) {
+      onCopyError?.(new Error("Clipboard bridge unavailable"));
+      return;
+    }
+    api
+      .writeText(text)
+      .then(() => {
+        onCopied?.(text, label);
+      })
+      .catch((err: unknown) => {
+        onCopyError?.(err);
+      });
   };
 
   return (

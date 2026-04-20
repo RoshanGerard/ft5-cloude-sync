@@ -66,6 +66,13 @@ function onCopyError(err: unknown): void {
   toast.error("Failed to copy to clipboard");
 }
 
+function onCopied(_text: string, label: string): void {
+  // Success feedback — the user gets an explicit confirmation that the
+  // copy landed in the system clipboard. Matches the tone of the
+  // existing download/delete success toasts.
+  toast.success(`${label} copied to clipboard`);
+}
+
 function PropertiesBody({ entry }: { entry: FileEntry }) {
   const defsById = new Map(fieldCatalog.map((f) => [f.id, f] as const));
   const providerRows = providerMetadataFields(entry);
@@ -86,6 +93,7 @@ function PropertiesBody({ entry }: { entry: FileEntry }) {
             value={value === null ? null : String(value)}
             numeric={def.numeric}
             rawValue={rawValue}
+            onCopied={onCopied}
             onCopyError={onCopyError}
           />
         );
@@ -99,7 +107,8 @@ function PropertiesBody({ entry }: { entry: FileEntry }) {
               value={row.value === null ? null : String(row.value)}
               numeric={typeof row.value === "number"}
               rawValue={row.value}
-              onCopyError={onCopyError}
+              onCopied={onCopied}
+            onCopyError={onCopyError}
             />
           ))}
         </div>

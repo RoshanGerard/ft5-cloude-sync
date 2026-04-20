@@ -161,6 +161,13 @@ describe("FieldRowWithCopy", () => {
     expect(() =>
       fireEvent.click(screen.getByRole("button", { name: /copy path/i })),
     ).not.toThrow();
-    expect(onCopyError).not.toHaveBeenCalled();
+    // When the clipboard bridge is unavailable we surface that as an
+    // explicit error rather than silently swallowing — the user gets a
+    // toast (via onCopyError wiring in properties-modal) and we don't
+    // fail open on "copy succeeded" when it definitely didn't.
+    expect(onCopyError).toHaveBeenCalledTimes(1);
+    const err = onCopyError.mock.calls[0]?.[0];
+    expect(err).toBeInstanceOf(Error);
+    expect(String((err as Error).message)).toMatch(/unavailable/i);
   });
 });
