@@ -26,7 +26,7 @@
 //     succeeds regardless of the active mode.
 //
 
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
 
@@ -66,6 +66,26 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
   // Confirm-delete dialog state — target paths captured at click-time.
   const [confirmOpen, setConfirmOpen] = useState(false);
   const pendingDeleteRef = useRef<string[]>([]);
+
+  // Search → navigate handoff. When a search result is activated the
+  // composite clears the search + navigates to the entry's parentPath.
+  // Because `useExplorerData` fetches the new folder asynchronously,
+  // we can't call `keyboardNav.setFocusedId(entry.id)` synchronously —
+  // the new entries aren't in state yet. Instead we stash the id AND
+  // the expected parent path in a ref and apply it once `currentPath`
+  // reaches `parentPath` and the loading flag has settled. Tracking the
+  // path is what keeps the drain from firing against the stale entries
+  // of the previous folder in the render that falls between
+  // `store.navigate` and `useExplorerData`'s first `setLoading(true)`.
+  // `sawLoading` flips once the data-hook has signalled a load for the
+  // target path; a subsequent loading=false edge without the entry
+  // present means it vanished (moved/deleted) and we drop the pending
+  // id rather than leaking it across the next navigation.
+  const pendingFocusRef = useRef<{
+    id: string;
+    path: string;
+    sawLoading: boolean;
+  } | null>(null);
 
   const entriesById = new Map(state.entries.map((e) => [e.id, e] as const));
   const pathsForSelection = (): string[] => {
@@ -163,6 +183,59 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
     void store.download(entry.id);
   };
 
+  // Click on a search result: remember the entry id + target parent path,
+  // clear the search, navigate to the parent folder. The useEffect below
+  // picks up the pending id once the path has actually switched and the
+  // new path's entries have loaded.
+  const handleSearchResultActivate = (entry: FileEntry) => {
+    pendingFocusRef.current = {
+      id: entry.id,
+      path: entry.parentPath,
+      sawLoading: false,
+    };
+    store.clearSearch();
+    store.navigate(entry.parentPath);
+  };
+
+  // Drain the pending focus id once entries for the new path arrive.
+  // We only act when:
+  //   - `currentPath` matches the remembered target path (guards the
+  //     render between `store.navigate` and `useExplorerData`'s first
+  //     `setLoading(true)`, where entries still reflect the old folder)
+  //   - `loading` is false (entries have actually arrived)
+  // Drop the pending id if the entry vanished (moved/deleted between
+  // click and re-fetch) so we don't wait forever.
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (pending === null) return;
+    if (state.currentPath !== pending.path) return;
+    // Record that the data hook has begun a load for the target path.
+    // Without this marker we can't distinguish "entries haven't loaded
+    // yet" from "entries loaded and the entry isn't there" — React
+    // doesn't guarantee effect ordering between this component and
+    // `useExplorerData`, so after `store.navigate(path)` there's an
+    // intermediate render where `currentPath` has flipped but
+    // `loading` is still `false` (data effect's `setLoading(true)`
+    // hasn't fired yet) and `entries` still reflects the OLD folder.
+    if (state.loading) {
+      pending.sawLoading = true;
+      return;
+    }
+    if (state.entries.some((e) => e.id === pending.id)) {
+      keyboardNav.setFocusedId(pending.id);
+      pendingFocusRef.current = null;
+      return;
+    }
+    // Entries don't contain the target. Only drop the pending id once
+    // the load for this path has actually completed (sawLoading true
+    // then back to false) — that means the entry vanished between the
+    // search click and the re-fetch. Before that, we're still in the
+    // intermediate render and must wait.
+    if (pending.sawLoading) {
+      pendingFocusRef.current = null;
+    }
+  }, [state.currentPath, state.entries, state.loading, keyboardNav]);
+
   return (
     <div
       data-testid="file-explorer-root"
@@ -196,7 +269,10 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
               Failed to load: {state.error}
             </div>
           ) : state.search.active ? (
-            <SearchResults store={store} />
+            <SearchResults
+              store={store}
+              onResultActivate={handleSearchResultActivate}
+            />
           ) : (
             <ViewModeSwitcher
               store={store}

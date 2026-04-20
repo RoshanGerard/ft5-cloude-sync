@@ -260,4 +260,109 @@ describe("FileExplorer — search UI (Phase 7.1)", () => {
     });
     expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(1);
   });
+
+  it("clicking a search result opens its parent folder with the entry focused (Phase 7.4 integration)", async () => {
+    // The spec scenario:
+    //   "clicking an entry opens its parent folder with the entry focused"
+    // This is the end-to-end click-navigate + focus-after-nav handoff:
+    //   SearchResults.onResultActivate → composite stashes entry.id in
+    //   pendingFocusRef → clearSearch + navigate(parentPath) → the
+    //   subsequent `files.list` for parentPath resolves → the composite's
+    //   drain-effect calls keyboardNav.setFocusedId(entry.id), which flips
+    //   that row's `tabindex` from -1 to 0 under the roving-tabindex
+    //   pattern established in Phase 4.4 (see
+    //   view-modes/__tests__/list.test.tsx:112-135).
+    const sibling = seedEntry({
+      id: "p-design",
+      name: "design.md",
+      path: "/projects/docs/design.md",
+      parentPath: "/projects/docs",
+      mimeFamily: "text",
+      mimeType: "text/markdown",
+    });
+    const target = seedEntry({
+      id: "p-readme",
+      name: "readme.md",
+      path: "/projects/docs/readme.md",
+      parentPath: "/projects/docs",
+      mimeFamily: "text",
+      mimeType: "text/markdown",
+    });
+    installApiMock({
+      listResponses: new Map([
+        [
+          "/",
+          {
+            entries: [seedEntry({ id: "root-a", name: "alpha.png", path: "/alpha.png" })],
+            nextCursor: null,
+          },
+        ],
+        // Parent folder of the search hit — returned when the composite
+        // navigates to `/projects/docs` after the result click.
+        [
+          "/projects/docs",
+          {
+            entries: [sibling, target],
+            nextCursor: null,
+          },
+        ],
+      ]),
+      searchResponse: { entries: [target], truncated: false },
+    });
+
+    render(<FileExplorer datasourceId="ds-search-5" />);
+
+    // Wait for the initial `/` load so the composite is stable.
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(1);
+    });
+
+    // Trigger search and submit.
+    fireEvent.click(screen.getByTestId("file-explorer-search-trigger"));
+    const input = await screen.findByRole("searchbox");
+    fireEvent.change(input, { target: { value: "read" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // Wait for SearchResults to mount with our hit.
+    await waitFor(() => {
+      expect(screen.getByTestId("file-explorer-search-results")).toBeInTheDocument();
+    });
+    const resultRow = document.querySelector<HTMLElement>(
+      '[data-testid="file-explorer-search-result"]',
+    );
+    expect(resultRow).not.toBeNull();
+
+    // Click the result row → should clear search, navigate, and (once the
+    // parent folder loads) focus the matching entry.
+    fireEvent.click(resultRow!);
+
+    // Search clears and the main pane swaps back to ViewModeSwitcher —
+    // evidenced by the SearchResults surface vanishing and `explorer-row`
+    // elements returning (now for `/projects/docs`, two of them).
+    await waitFor(() => {
+      expect(screen.queryByTestId("file-explorer-search-results")).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="explorer-row"]').length).toBe(2);
+    });
+
+    // Focus-ring assertion via the roving-tabindex invariant from Phase
+    // 4.4 (see list.test.tsx:112-135). Using `document.activeElement`
+    // would rely on Radix focus-scope / jsdom behaviour that similar
+    // tests in `context-menu.test.tsx` and `properties-modal.test.tsx`
+    // call out as unreliable, so we assert the portable shape: the
+    // target row's tabindex is "0" and the sibling row's is "-1".
+    const targetRow = document.querySelector<HTMLElement>(
+      `[data-testid="explorer-row"][data-entry-id="${target.id}"]`,
+    );
+    const siblingRow = document.querySelector<HTMLElement>(
+      `[data-testid="explorer-row"][data-entry-id="${sibling.id}"]`,
+    );
+    expect(targetRow).not.toBeNull();
+    expect(siblingRow).not.toBeNull();
+    await waitFor(() => {
+      expect(targetRow!.getAttribute("tabindex")).toBe("0");
+    });
+    expect(siblingRow!.getAttribute("tabindex")).toBe("-1");
+  });
 });
