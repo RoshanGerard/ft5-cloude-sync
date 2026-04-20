@@ -281,7 +281,7 @@ export function FileExplorer({
   return (
     <div
       data-testid="file-explorer-root"
-      className="bg-background flex h-full flex-col"
+      className="bg-background flex flex-1 min-h-0 flex-col"
     >
       {/* Chrome row: dashboard-home + history buttons + breadcrumb + toolbar. */}
       <div className="border-border flex items-center gap-2 border-b px-3 py-2">

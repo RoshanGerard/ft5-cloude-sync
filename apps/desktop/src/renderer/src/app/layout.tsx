@@ -55,7 +55,16 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Note: the dashboard used to render its own <main>; the dashboard
           refactor in this decision swaps that root for a <div> so we don't
           end up with nested <main> elements (invalid HTML + a11y regression). */}
-      <body className="min-h-dvh flex flex-col">
+      {/* `h-dvh` (not `min-h-dvh`) pins body to exactly one viewport so
+          the page itself never scrolls. Any inner surface that can
+          overflow — file-explorer's main pane, the diagnostics log, the
+          dashboard grid once we add many cards — owns its own
+          overflow-auto and scrolls internally. This keeps the AppHeader
+          / AppFooter chrome visually pinned at the top / bottom of the
+          app across every route. `overflow-hidden` is belt-and-braces:
+          if a future descendant forgets its own overflow strategy, we
+          clip instead of bleeding onto the html element. */}
+      <body className="h-dvh flex flex-col overflow-hidden">
         {/* Developer keyboard shortcut — Ctrl/Cmd+Shift+D jumps to the
             /diagnostics route from anywhere. Side-effect-only component;
             returns null. Mounted at layout level so the binding is live on
