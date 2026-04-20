@@ -7,6 +7,7 @@ import { enforceSingleInstance } from "./single-instance.js";
 import { willNavigatePolicy, windowOpenPolicy } from "./navigation-policy.js";
 import { openDatabase, runMigrations } from "./db/database.js";
 import { DEFAULT_MIGRATIONS } from "./db/migrations.js";
+import { initEngine } from "./datasources/engine.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -147,14 +148,13 @@ async function bootstrap(): Promise<void> {
   const window = new BrowserWindow(buildMainWindowOptions(preloadPath));
 
   // Open the main-process SQLite database + run migrations BEFORE handler
-  // registration. Handlers will pick up the shared handle via
-  // `getEngine()` / the DB-backed `DatasourceRegistry`. Initialized once per
-  // process lifetime. Phase 9c wires the `initEngine(db)` call after this
-  // runner completes.
+  // registration. `initEngine(db)` then constructs the process-wide
+  // singleton (bus + credential store + registry + factory) that every IPC
+  // handler reads via `getEngine()`. Initialized once per process lifetime.
   const dbPath = path.join(app.getPath("userData"), "ft5.db");
   const db = openDatabase(dbPath);
   runMigrations(db, DEFAULT_MIGRATIONS);
-  void db;
+  initEngine(db);
 
   // Register IPC handlers AFTER window creation so upload progress events can
   // be routed to the correct renderer via webContents.send.

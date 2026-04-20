@@ -88,7 +88,7 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 ### 9c. EngineContext singleton + feature flag
 
-- [ ] 9.9 GREEN: wire a singleton `EngineContext` (bus + credential store) in `main/index.ts` after DB init; expose via `getEngine()` accessor at `apps/desktop/src/main/datasources/engine.ts`. Document the lazy-init choice inline.
+- [x] 9.9 GREEN: wire a singleton `EngineContext` (bus + credential store) in `main/index.ts` after DB init; expose via `getEngine()` accessor at `apps/desktop/src/main/datasources/engine.ts`. Document the lazy-init choice inline.
 
 ### 9d. Datasources IPC handlers → registry + engine
 
