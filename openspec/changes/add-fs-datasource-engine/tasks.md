@@ -82,8 +82,8 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 ### 9b. DB-backed datasource registry (replaces `store.ts`)
 
-- [ ] 9.6 RED: write `apps/desktop/src/main/datasources/registry.test.ts` covering: (a) `list()` returns all rows mapped to `DatasourceSummary`, (b) `add(summary)` inserts with created_at/updated_at stamps, (c) `remove(id)` deletes the row AND calls `credentialStore.delete(id)`, (d) `setPaused(id, paused)` flips the flag, (e) `setStatus(id, status, errorReason?)` updates status columns without touching `paused`.
-- [ ] 9.7 GREEN: implement `apps/desktop/src/main/datasources/registry.ts` exporting `DatasourceRegistry` class wrapping the DB + credential-store. Use prepared statements.
+- [x] 9.6 RED: write `apps/desktop/src/main/datasources/registry.test.ts` covering: (a) `list()` returns all rows mapped to `DatasourceSummary`, (b) `add(summary)` inserts with created_at/updated_at stamps, (c) `remove(id)` deletes the row AND calls `credentialStore.delete(id)`, (d) `setPaused(id, paused)` flips the flag, (e) `setStatus(id, status, errorReason?)` updates status columns without touching `paused`.
+- [x] 9.7 GREEN: implement `apps/desktop/src/main/datasources/registry.ts` exporting `DatasourceRegistry` class wrapping the DB + credential-store. Use prepared statements.
 - [ ] 9.8 Refactor: delete `apps/desktop/src/main/ipc/datasources/store.ts` (in-memory fixture). Update any imports.
 
 ### 9c. EngineContext singleton + feature flag
