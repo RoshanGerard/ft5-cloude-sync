@@ -13,6 +13,7 @@ import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
 import { FileContextMenu } from "../context-menu";
+import { EntryNameCell } from "../entry-name-cell";
 import { iconForEntry } from "../icons";
 import type { ExplorerStore } from "../store";
 import { useSelection } from "../use-selection";
@@ -99,6 +100,7 @@ export function TilesView({
             onProperties={onProperties}
           >
             <Tile
+              store={store}
               entry={entry}
               selected={isSelected}
               pending={pendingOp !== undefined}
@@ -117,6 +119,7 @@ export function TilesView({
 }
 
 interface TileProps extends ComponentPropsWithoutRef<"div"> {
+  store: ExplorerStore;
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
@@ -126,6 +129,7 @@ interface TileProps extends ComponentPropsWithoutRef<"div"> {
 }
 
 function Tile({
+  store,
   entry,
   selected,
   pending,
@@ -174,12 +178,12 @@ function Tile({
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
-          <span
-            className="truncate text-sm font-medium"
-            title={entry.name}
-          >
-            {entry.name}
-          </span>
+          <EntryNameCell
+            store={store}
+            entry={entry}
+            className="text-sm font-medium"
+            titleAttr={entry.name}
+          />
           {pending ? (
             <span
               data-testid="explorer-pending-glyph"

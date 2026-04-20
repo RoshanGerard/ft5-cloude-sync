@@ -12,7 +12,9 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
+import { EntryNameCell } from "../entry-name-cell";
 import { iconForEntry } from "../icons";
+import type { ExplorerStore } from "../store";
 
 /**
  * IconAboveNameCell — shared presentational cell shape for the two
@@ -38,6 +40,12 @@ export type IconAboveNameCellSize = "size-16" | "size-24";
 
 export interface IconAboveNameCellProps
   extends ComponentPropsWithoutRef<"div"> {
+  /**
+   * Optional so existing presentational view-mode tests can still mount
+   * without a store; when present, the inline-rename UI activates for
+   * this cell while editingId matches entry.id.
+   */
+  store?: ExplorerStore;
   entry: FileEntry;
   iconSize: IconAboveNameCellSize;
   selected: boolean;
@@ -52,6 +60,7 @@ export interface IconAboveNameCellProps
 }
 
 export function IconAboveNameCell({
+  store,
   entry,
   iconSize,
   selected,
@@ -99,9 +108,17 @@ export function IconAboveNameCell({
         aria-hidden
         className={cn("text-muted-foreground", iconSize)}
       />
-      <span className="max-w-full truncate text-center text-sm">
-        {entry.name}
-      </span>
+      {store !== undefined ? (
+        <EntryNameCell
+          store={store}
+          entry={entry}
+          className="max-w-full text-center text-sm"
+        />
+      ) : (
+        <span className="max-w-full truncate text-center text-sm">
+          {entry.name}
+        </span>
+      )}
     </div>
   );
 }

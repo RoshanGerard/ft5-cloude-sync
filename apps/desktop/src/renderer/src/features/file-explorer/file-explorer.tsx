@@ -71,9 +71,9 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
       // the Properties modal per design.md Open Question "Does Enter
       // on a file open Properties".
     },
-    // Rename / delete real wiring lands in Phase 6; keep the callbacks
-    // as no-ops so the keyboard shortcuts don't throw in v1.
-    onRenameRequested: () => {},
+    // F2 on a file flips the name cell to an inline input; the store's
+    // editingId + EntryNameCell do the rest.
+    onRenameRequested: (entry) => store.startEdit(entry.id),
     onDeleteRequested: () => {},
     onContextMenuRequested: (entry) => {
       // Programmatic open: find the focused entry's DOM node by
@@ -151,7 +151,7 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
               keyboardNav={keyboardNav}
               onOpen={handleOpen}
               onDownload={handleNoop}
-              onRename={handleNoop}
+              onRename={(entry) => store.startEdit(entry.id)}
               onDelete={handleNoop}
               onCopyPath={handleCopyPath}
               onProperties={(entry) => store.openProperties(entry)}

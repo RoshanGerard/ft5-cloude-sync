@@ -13,6 +13,7 @@ import { Icon, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
 import { FileContextMenu } from "../context-menu";
+import { EntryNameCell } from "../entry-name-cell";
 import { iconForEntry } from "../icons";
 import type { ExplorerStore, SortBy, SortDir } from "../store";
 import { useSelection } from "../use-selection";
@@ -136,6 +137,7 @@ export function DetailsView({
                 onProperties={onProperties}
               >
                 <DataRow
+                  store={store}
                   entry={entry}
                   selected={isSelected}
                   pending={pendingOp !== undefined}
@@ -210,6 +212,7 @@ function HeaderRow({ sortBy, sortDir, onSort }: HeaderRowProps) {
 }
 
 interface DataRowProps extends ComponentPropsWithoutRef<"div"> {
+  store: ExplorerStore;
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
@@ -221,6 +224,7 @@ interface DataRowProps extends ComponentPropsWithoutRef<"div"> {
 }
 
 function DataRow({
+  store,
   entry,
   selected,
   pending,
@@ -281,9 +285,12 @@ function DataRow({
       <div
         role="cell"
         data-testid="explorer-cell-name"
-        className={cn("flex-1 min-w-0 flex items-center gap-1.5 truncate")}
+        className={cn(
+          "flex-1 min-w-0 flex items-center gap-1.5 truncate",
+          pending && "opacity-60",
+        )}
       >
-        <span className="truncate">{entry.name}</span>
+        <EntryNameCell store={store} entry={entry} />
         {pending ? (
           <span
             data-testid="explorer-pending-glyph"

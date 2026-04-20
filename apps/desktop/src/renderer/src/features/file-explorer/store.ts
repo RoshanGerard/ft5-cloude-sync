@@ -1,8 +1,9 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { toast } from "sonner";
 
-import type { FileEntry } from "@ft5/ipc-contracts";
+import type { FileEntry, FilesRenameResponse } from "@ft5/ipc-contracts";
 
 /**
  * File-explorer store. One instance per datasource id — each explorer view
@@ -42,6 +43,8 @@ export type OpKind = "rename" | "remove";
 export interface PendingOp {
   kind: OpKind;
   startedAt: number;
+  // Optimistic rename: requested name shown while the op is in flight.
+  newName?: string;
 }
 
 export interface ExplorerSearchState {
@@ -80,6 +83,8 @@ export interface ExplorerState {
   // Properties modal — nullable entry is the single source of truth;
   // modal open state is derived (`propertiesEntry !== null`).
   propertiesEntry: FileEntry | null;
+  // Inline-rename UI — id of the entry currently being edited or null.
+  editingId: string | null;
 }
 
 export interface ExplorerStore {
@@ -127,7 +132,16 @@ export interface ExplorerStore {
   // Properties modal
   openProperties(entry: FileEntry): void;
   closeProperties(): void;
+
+  // Inline rename
+  startEdit(entryId: string): void;
+  cancelEdit(): void;
+  rename(entryId: string, newName: string): Promise<void>;
 }
+
+export const DIRECTORY_RENAME_REFUSAL =
+  "Folder rename is not supported in this version";
+export const EMPTY_NAME_REFUSAL = "Name cannot be empty";
 
 export const EXPLORER_STORAGE_KEY_PREFIX = "ft5.file-explorer.";
 
@@ -246,6 +260,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     pendingOps: {},
     lastError: null,
     propertiesEntry: null,
+    editingId: null,
   };
 
   function emit(): void {
@@ -503,6 +518,130 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     set({ ...state, propertiesEntry: null }, false);
   }
 
+  // --- Inline rename -----------------------------------------------------
+
+  function startEdit(entryId: string): void {
+    const entry = state.entries.find((e) => e.id === entryId);
+    if (entry === undefined) return;
+    if (entry.kind === "directory") {
+      // Belt-and-suspenders: context menu disables the item, F2 filters in
+      // the keyboard hook — but the store is the source of truth.
+      set(
+        {
+          ...state,
+          lastError: { entryId, reason: DIRECTORY_RENAME_REFUSAL },
+        },
+        false,
+      );
+      return;
+    }
+    // Don't let a stale input re-open on top of an in-flight rename.
+    if (state.pendingOps[entryId] !== undefined) return;
+    set({ ...state, editingId: entryId }, false);
+  }
+
+  function cancelEdit(): void {
+    if (state.editingId === null) return;
+    set({ ...state, editingId: null }, false);
+  }
+
+  async function rename(entryId: string, newName: string): Promise<void> {
+    const entry = state.entries.find((e) => e.id === entryId);
+    if (entry === undefined) return;
+    // Close the inline input regardless of which branch we take below.
+    const clearEditing = (s: ExplorerState): ExplorerState =>
+      s.editingId === entryId ? { ...s, editingId: null } : s;
+
+    if (entry.kind === "directory") {
+      set(
+        clearEditing({
+          ...state,
+          lastError: { entryId, reason: DIRECTORY_RENAME_REFUSAL },
+        }),
+        false,
+      );
+      toast.error(DIRECTORY_RENAME_REFUSAL);
+      return;
+    }
+    const trimmed = newName.trim();
+    if (trimmed.length === 0) {
+      set(
+        clearEditing({
+          ...state,
+          lastError: { entryId, reason: EMPTY_NAME_REFUSAL },
+        }),
+        false,
+      );
+      toast.error(EMPTY_NAME_REFUSAL);
+      return;
+    }
+    if (newName === entry.name) {
+      set(clearEditing(state), false);
+      return;
+    }
+
+    const op: PendingOp = { kind: "rename", startedAt: Date.now(), newName };
+    set(
+      clearEditing({
+        ...state,
+        pendingOps: { ...state.pendingOps, [entryId]: op },
+        lastError: null,
+      }),
+      false,
+    );
+
+    try {
+      const api = (globalThis as unknown as {
+        window?: {
+          api?: {
+            files?: {
+              rename?: (req: {
+                datasourceId: string;
+                path: string;
+                newName: string;
+              }) => Promise<FilesRenameResponse>;
+            };
+          };
+        };
+      }).window?.api?.files?.rename;
+      if (api === undefined) {
+        throw new Error("window.api.files.rename is unavailable");
+      }
+      const response = await api({
+        datasourceId,
+        path: entry.path,
+        newName,
+      });
+      const nextPending: Record<string, PendingOp> = { ...state.pendingOps };
+      delete nextPending[entryId];
+      const nextEntries = state.entries.map((e) =>
+        e.id === entryId ? response.entry : e,
+      );
+      set(
+        {
+          ...state,
+          entries: nextEntries,
+          pendingOps: nextPending,
+          lastError: null,
+        },
+        false,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const nextPending: Record<string, PendingOp> = { ...state.pendingOps };
+      delete nextPending[entryId];
+      set(
+        {
+          ...state,
+          pendingOps: nextPending,
+          lastError: { entryId, reason },
+        },
+        false,
+      );
+      toast.error(reason);
+    }
+  }
+
   return {
     subscribe,
     getSnapshot,
@@ -528,6 +667,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     setLastError,
     openProperties,
     closeProperties,
+    startEdit,
+    cancelEdit,
+    rename,
   };
 }
 

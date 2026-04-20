@@ -72,10 +72,10 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 6 — Rename, delete, download operations
 
-- [ ] 6.1 Write failing test for the `rename` action in the store — inserts into `pendingOps`, awaits IPC, on success replaces the entry, on failure reverts and sets `lastError`; test covers file rename and rejects directory rename with a "not supported in v1" error.
-- [ ] 6.2 Implement the rename action. Wire F2 + context-menu Rename into it.
-- [ ] 6.3 Write failing test for the inline rename UI — F2 flips the name to an editable input with the name selected; Enter commits; Escape aborts without dispatching IPC.
-- [ ] 6.4 Implement the inline rename UI inside each view mode's cell.
+- [x] 6.1 Write failing test for the `rename` action in the store — inserts into `pendingOps`, awaits IPC, on success replaces the entry, on failure reverts and sets `lastError`; test covers file rename and rejects directory rename with a "not supported in v1" error. *(Impl note: refusal copy exported as `DIRECTORY_RENAME_REFUSAL` and `EMPTY_NAME_REFUSAL` constants from `store.ts` so 6.5+ can reuse them.)*
+- [x] 6.2 Implement the rename action. Wire F2 + context-menu Rename into it. *(Impl note: F2 and context-menu Rename both call `store.startEdit(entry.id)` — the inline UI's Enter is what commits the rename. Store actions are `startEdit` / `cancelEdit` / `rename`. `PendingOp` gained an optional `newName` so the optimistic-display path can paint the requested name during flight.)*
+- [x] 6.3 Write failing test for the inline rename UI — F2 flips the name to an editable input with the name selected; Enter commits; Escape aborts without dispatching IPC.
+- [x] 6.4 Implement the inline rename UI inside each view mode's cell. *(Impl note: landed as a shared `features/file-explorer/entry-name-cell.tsx` consumed by every view mode's name element; the cell subscribes to the store directly via `useSyncExternalStore` so editing / pending-op state is reflected in every mode without per-mode plumbing. Input handles onBlur-cancels (click-outside) and stops Enter/Escape/Arrow propagation so they don't bubble to the view-mode keyboard handler.)*
 - [ ] 6.5 Write failing test for `features/file-explorer/confirm-delete-dialog.tsx` — shows "Delete N items?" for N ≥ 1, destructive-styled Delete button, Escape cancels.
 - [ ] 6.6 Implement the confirm-delete dialog.
 - [ ] 6.7 Write failing test for the `remove` action — single-entry and multi-entry cases, partial failure handling (some removed, some failed), proper status-row update, toast announcement including failure count when relevant.

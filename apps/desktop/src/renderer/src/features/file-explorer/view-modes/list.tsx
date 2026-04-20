@@ -13,6 +13,7 @@ import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
 import { FileContextMenu } from "../context-menu";
+import { EntryNameCell } from "../entry-name-cell";
 import { iconForEntry } from "../icons";
 import type { ExplorerStore } from "../store";
 import { useSelection } from "../use-selection";
@@ -105,6 +106,7 @@ export function ListView({
             onProperties={onProperties}
           >
             <ListRow
+              store={store}
               entry={entry}
               selected={isSelected}
               pending={pendingOp !== undefined}
@@ -123,6 +125,7 @@ export function ListView({
 }
 
 interface ListRowProps extends ComponentPropsWithoutRef<"div"> {
+  store: ExplorerStore;
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
@@ -132,6 +135,7 @@ interface ListRowProps extends ComponentPropsWithoutRef<"div"> {
 }
 
 function ListRow({
+  store,
   entry,
   selected,
   pending,
@@ -179,7 +183,7 @@ function ListRow({
         className="text-muted-foreground size-4 shrink-0"
       />
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="truncate">{entry.name}</span>
+        <EntryNameCell store={store} entry={entry} />
         {pending ? (
           <span
             data-testid="explorer-pending-glyph"

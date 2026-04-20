@@ -84,6 +84,7 @@ export function MediumIconsView({
             onProperties={onProperties}
           >
             <IconAboveNameCell
+              store={store}
               entry={entry}
               iconSize="size-16"
               selected={isSelected}

@@ -1,10 +1,20 @@
 /** @vitest-environment jsdom */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { createElement, useSyncExternalStore } from "react";
 
 import type { FileEntry } from "@ft5/ipc-contracts";
+
+// Sonner is mocked so rename's toast.error call is observable.
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
+import { toast } from "sonner";
 
 import {
   EXPLORER_STORAGE_KEY_PREFIX,
@@ -667,6 +677,221 @@ describe("subscribe / getSnapshot contract", () => {
     store.setViewMode("tiles");
     const s2 = store.getSnapshot();
     expect(s1).not.toBe(s2);
+  });
+});
+
+// --- Rename action -------------------------------------------------------
+
+type FilesRenameStub = ReturnType<typeof vi.fn>;
+
+function installFilesApi(renameImpl: FilesRenameStub): void {
+  (window as unknown as { api: unknown }).api = {
+    files: { rename: renameImpl },
+  };
+}
+
+describe("rename action", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("happy path: inserts a pendingOp, awaits IPC, replaces the entry, clears pendingOp", async () => {
+    const entry = makeEntry({ id: "e1", name: "old.txt", path: "/old.txt" });
+    const renamed: FileEntry = { ...entry, name: "new.txt", path: "/new.txt" };
+    // Deferred resolution so we can observe the pendingOp mid-flight.
+    let resolveRename: (value: { entry: FileEntry }) => void = () => {};
+    const renameFn = vi.fn(
+      () =>
+        new Promise<{ entry: FileEntry }>((res) => {
+          resolveRename = res;
+        }),
+    );
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    const promise = store.rename("e1", "new.txt");
+    // Mid-flight: pendingOp present, kind === "rename", carries newName.
+    const mid = snap(store);
+    expect(mid.pendingOps["e1"]).toBeDefined();
+    expect(mid.pendingOps["e1"]?.kind).toBe("rename");
+    expect(mid.pendingOps["e1"]?.newName).toBe("new.txt");
+    expect(renameFn).toHaveBeenCalledTimes(1);
+    expect(renameFn).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/old.txt", newName: "new.txt" }),
+    );
+
+    resolveRename({ entry: renamed });
+    await promise;
+
+    const after = snap(store);
+    expect(after.pendingOps["e1"]).toBeUndefined();
+    expect(after.entries.find((e) => e.id === "e1")?.name).toBe("new.txt");
+    expect(after.entries.find((e) => e.id === "e1")?.path).toBe("/new.txt");
+    expect(after.lastError).toBeNull();
+  });
+
+  it("failure path: rejection clears pendingOp, entries unchanged, lastError populated", async () => {
+    const entry = makeEntry({ id: "e1", name: "old.txt", path: "/old.txt" });
+    const renameFn = vi.fn(() => Promise.reject(new Error("provider locked")));
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    await store.rename("e1", "new.txt");
+
+    const after = snap(store);
+    expect(after.pendingOps["e1"]).toBeUndefined();
+    expect(after.entries).toEqual([entry]);
+    expect(after.lastError).toEqual({ entryId: "e1", reason: "provider locked" });
+    expect(toast.error).toHaveBeenCalledWith("provider locked");
+  });
+
+  it("refuses directory rename: no IPC, lastError set, entries unchanged", async () => {
+    const dir = makeEntry({
+      id: "dir-1",
+      kind: "directory",
+      name: "docs",
+      path: "/docs",
+      size: null,
+    });
+    const renameFn = vi.fn();
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([dir]);
+
+    await store.rename("dir-1", "newdocs");
+
+    const after = snap(store);
+    expect(renameFn).not.toHaveBeenCalled();
+    expect(after.pendingOps["dir-1"]).toBeUndefined();
+    expect(after.entries).toEqual([dir]);
+    expect(after.lastError).toEqual({
+      entryId: "dir-1",
+      reason: "Folder rename is not supported in this version",
+    });
+    expect(toast.error).toHaveBeenCalledWith(
+      "Folder rename is not supported in this version",
+    );
+  });
+
+  it("no-op when newName === entry.name: no IPC, no pendingOp, no lastError", async () => {
+    const entry = makeEntry({ id: "e1", name: "same.txt", path: "/same.txt" });
+    const renameFn = vi.fn();
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    await store.rename("e1", "same.txt");
+
+    const after = snap(store);
+    expect(renameFn).not.toHaveBeenCalled();
+    expect(after.pendingOps["e1"]).toBeUndefined();
+    expect(after.lastError).toBeNull();
+  });
+
+  it("refuses empty / whitespace-only newName: no IPC, lastError 'Name cannot be empty'", async () => {
+    const entry = makeEntry({ id: "e1", name: "a.txt", path: "/a.txt" });
+    const renameFn = vi.fn();
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    await store.rename("e1", "");
+    let after = snap(store);
+    expect(renameFn).not.toHaveBeenCalled();
+    expect(after.pendingOps["e1"]).toBeUndefined();
+    expect(after.lastError).toEqual({
+      entryId: "e1",
+      reason: "Name cannot be empty",
+    });
+
+    await store.rename("e1", "   ");
+    after = snap(store);
+    expect(renameFn).not.toHaveBeenCalled();
+    expect(after.lastError).toEqual({
+      entryId: "e1",
+      reason: "Name cannot be empty",
+    });
+    expect(toast.error).toHaveBeenCalledWith("Name cannot be empty");
+  });
+
+  it("refuses when entry id is not in state.entries: no IPC, no throw", async () => {
+    const renameFn = vi.fn();
+    installFilesApi(renameFn);
+    const store = makeStore("ds-1");
+    store.setEntries([]);
+
+    await store.rename("missing", "new.txt");
+    expect(renameFn).not.toHaveBeenCalled();
+  });
+});
+
+describe("startEdit / cancelEdit actions", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("startEdit on a file entry sets editingId", () => {
+    const entry = makeEntry({ id: "e1", name: "a.txt" });
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    store.startEdit("e1");
+    expect(snap(store).editingId).toBe("e1");
+  });
+
+  it("cancelEdit clears editingId", () => {
+    const entry = makeEntry({ id: "e1", name: "a.txt" });
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+    store.startEdit("e1");
+
+    store.cancelEdit();
+    expect(snap(store).editingId).toBeNull();
+  });
+
+  it("startEdit on a directory entry is a refusal: no editingId, lastError set", () => {
+    const dir = makeEntry({
+      id: "d1",
+      kind: "directory",
+      name: "docs",
+      path: "/docs",
+      size: null,
+    });
+    const store = makeStore("ds-1");
+    store.setEntries([dir]);
+
+    store.startEdit("d1");
+    const after = snap(store);
+    expect(after.editingId).toBeNull();
+    expect(after.lastError).toEqual({
+      entryId: "d1",
+      reason: "Folder rename is not supported in this version",
+    });
+  });
+
+  it("startEdit on an entry with an active pendingOp is a no-op", () => {
+    const entry = makeEntry({ id: "e1", name: "a.txt" });
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+    store.startPendingOp("e1", "rename");
+
+    store.startEdit("e1");
+    expect(snap(store).editingId).toBeNull();
   });
 });
 

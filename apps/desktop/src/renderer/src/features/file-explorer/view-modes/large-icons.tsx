@@ -80,6 +80,7 @@ export function LargeIconsView({
             onProperties={onProperties}
           >
             <IconAboveNameCell
+              store={store}
               entry={entry}
               iconSize="size-24"
               selected={isSelected}

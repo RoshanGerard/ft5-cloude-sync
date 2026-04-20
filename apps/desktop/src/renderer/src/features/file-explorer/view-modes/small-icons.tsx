@@ -13,6 +13,7 @@ import { Icon } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
 import { FileContextMenu } from "../context-menu";
+import { EntryNameCell } from "../entry-name-cell";
 import { iconForEntry } from "../icons";
 import type { ExplorerStore } from "../store";
 import { useSelection } from "../use-selection";
@@ -99,6 +100,7 @@ export function SmallIconsView({
             onProperties={onProperties}
           >
             <Cell
+              store={store}
               entry={entry}
               selected={isSelected}
               pending={pendingOp !== undefined}
@@ -117,6 +119,7 @@ export function SmallIconsView({
 }
 
 interface CellProps extends ComponentPropsWithoutRef<"div"> {
+  store: ExplorerStore;
   entry: FileEntry;
   selected: boolean;
   pending: boolean;
@@ -126,6 +129,7 @@ interface CellProps extends ComponentPropsWithoutRef<"div"> {
 }
 
 function Cell({
+  store,
   entry,
   selected,
   pending,
@@ -172,12 +176,12 @@ function Cell({
         aria-hidden
         className="text-muted-foreground size-4 shrink-0"
       />
-      <span
-        className="max-w-[10rem] truncate text-sm"
-        title={entry.name}
-      >
-        {entry.name}
-      </span>
+      <EntryNameCell
+        store={store}
+        entry={entry}
+        className="max-w-[10rem] text-sm"
+        titleAttr={entry.name}
+      />
       {pending ? (
         <span
           data-testid="explorer-pending-glyph"
