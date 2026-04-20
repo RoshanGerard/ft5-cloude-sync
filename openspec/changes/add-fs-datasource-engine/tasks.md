@@ -68,13 +68,40 @@
 - [x] 8.5 Wire into `ProviderRegistry`; Factory test now returns a real client for `"google-drive"`.
 - [x] 8.6 Request code review for Phase 8.
 
-## 9. IPC handler rewiring
+## 9. IPC handler rewiring + datasource-registry persistence
 
-- [ ] 9.1 RED: update existing handler tests under `apps/desktop/src/main/ipc/datasources/*.test.ts` to spy on `ClientFactory.create` and per-provider clients, asserting handler bodies no longer return fixture arrays (when the feature flag is on). Add new tests for the `files:list` / `files:stat` / `files:search` / `files:rename` / `files:remove` / `files:download` handlers that verify they forward to the engine with the correct `Target` shape.
-- [ ] 9.2 GREEN: rewrite `apps/desktop/src/main/ipc/datasources/*.ts` and `apps/desktop/src/main/ipc/files/*.ts` handler bodies to call the engine. Keep the legacy fixture code behind `if (!process.env.DATASOURCE_ENGINE_LIVE) return fixtureResponse(...)`; flip the flag for test runs.
-- [ ] 9.3 GREEN: wire a singleton `EngineContext` (bus + credential store) in the main-process entrypoint; pass it to the factory at handler-call time (or inject via a small `getEngine()` accessor).
-- [ ] 9.4 RED: add a grep test asserting no file under `apps/desktop/src/main/ipc/` imports `googleapis`, `@microsoft/microsoft-graph-client`, or `@aws-sdk/client-s3` directly. Ensure it passes.
-- [ ] 9.5 Request code review for Phase 9.
+Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live on the `ui-file-explorer` branch and the engine lacks `rename` / `download` primitives. Cross-change note captured in `design.md`. (B) Phase 9 owns the first real main-process DB open: `better-sqlite3` database + migration runner. (C) A persistent `datasources` table replaces the in-memory `store.ts` fixture; management handlers (`list`, `add`, `remove`, `action`) become DB-backed.
+
+### 9a. Main-process DB + migration runner
+
+- [ ] 9.1 RED: write `apps/desktop/src/main/db/database.test.ts` covering: (a) DB opens at `app.getPath("userData")/ft5.db`, (b) missing directory is created automatically, (c) migrations run in order on startup, (d) re-opening the same file does not re-run a migration, (e) `openDatabase(":memory:")` works for tests.
+- [ ] 9.2 GREEN: implement `apps/desktop/src/main/db/database.ts` exporting `openDatabase(pathOrMemory): Database` and `runMigrations(db, migrations): void`. Use `better-sqlite3` (already a dep of `SqliteCredentialStore`).
+- [ ] 9.3 GREEN: add migration `0001_datasource_credentials` matching the existing `datasource_credentials` schema from `SqliteCredentialStore`; confirm the store keeps working when its DB is pre-migrated by the shared runner instead of its own inline migration.
+- [ ] 9.4 GREEN: add migration `0002_datasources` creating table `datasources (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, display_name TEXT NOT NULL, item_count INTEGER, last_sync_at INTEGER, status TEXT NOT NULL, error_reason TEXT, paused INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`.
+- [ ] 9.5 GREEN: wire `openDatabase(app.getPath("userData")/ft5.db)` + migrations into `main/index.ts` before handler registration; construct `SqliteCredentialStore(db)` from the shared handle.
+
+### 9b. DB-backed datasource registry (replaces `store.ts`)
+
+- [ ] 9.6 RED: write `apps/desktop/src/main/datasources/registry.test.ts` covering: (a) `list()` returns all rows mapped to `DatasourceSummary`, (b) `add(summary)` inserts with created_at/updated_at stamps, (c) `remove(id)` deletes the row AND calls `credentialStore.delete(id)`, (d) `setPaused(id, paused)` flips the flag, (e) `setStatus(id, status, errorReason?)` updates status columns without touching `paused`.
+- [ ] 9.7 GREEN: implement `apps/desktop/src/main/datasources/registry.ts` exporting `DatasourceRegistry` class wrapping the DB + credential-store. Use prepared statements.
+- [ ] 9.8 Refactor: delete `apps/desktop/src/main/ipc/datasources/store.ts` (in-memory fixture). Update any imports.
+
+### 9c. EngineContext singleton + feature flag
+
+- [ ] 9.9 GREEN: wire a singleton `EngineContext` (bus + credential store) in `main/index.ts` after DB init; expose via `getEngine()` accessor at `apps/desktop/src/main/datasources/engine.ts`. Document the lazy-init choice inline.
+
+### 9d. Datasources IPC handlers → registry + engine
+
+- [ ] 9.10 RED: update handler tests at `apps/desktop/src/main/ipc/datasources/__tests__/*.test.ts` to spy on `ClientFactory.create`, the returned client methods, and `DatasourceRegistry`. Assert: (a) `list` forwards to `registry.list()`, (b) `add` inserts via registry and persists creds, (c) `remove` deletes from registry (which cascades to credential-store), (d) `action: "pause" | "resume"` flips `registry.setPaused`, (e) `action: "sync-now"` — behaviour TBD below, (f) `upload` resolves the provider via the registry and calls `client.uploadFile(parent, file)` with a path-form `Target`.
+- [ ] 9.11 GREEN: rewrite `datasources/*.ts` handler bodies. Keep the legacy fixture code behind `if (!process.env.DATASOURCE_ENGINE_LIVE) return fixtureResponse(...)`; flip the flag for test runs. `action: "sync-now"` maps to `client.status()` (refreshes the DatasourceSummary's `itemCount` / `lastSyncAt` via registry update) for this phase — a proper sync queue is a follow-up change.
+
+### 9e. Grep guardrail
+
+- [ ] 9.12 RED: add a Vitest grep test asserting no file under `apps/desktop/src/main/ipc/` imports `googleapis`, `@microsoft/microsoft-graph-client`, or `@aws-sdk/client-s3` directly. Ensure it passes.
+
+### 9f. Review
+
+- [ ] 9.13 Request code review for Phase 9.
 
 ## 10. Event bridge IPC
 
