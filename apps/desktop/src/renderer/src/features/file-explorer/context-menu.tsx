@@ -84,12 +84,25 @@ export function FileContextMenu(props: FileContextMenuProps): JSX.Element {
   const downloadDisabled = entry.kind === "directory";
 
   const handleCopyPath = (): void => {
-    const clipboard =
-      typeof navigator !== "undefined"
-        ? (navigator as Navigator & { clipboard?: { writeText?: (s: string) => Promise<void> } }).clipboard
-        : undefined;
-    if (clipboard && typeof clipboard.writeText === "function") {
-      void clipboard.writeText(entry.path);
+    // Use window.api.clipboard (main-process bridge) rather than
+    // navigator.clipboard; the latter is flaky under Radix context-menu
+    // focus handling in packaged Electron. Fall back to navigator for
+    // environments where window.api is not yet injected (e.g. renderer
+    // unit tests that don't stub the preload).
+    const apiWriteText = (
+      globalThis as unknown as {
+        window?: {
+          api?: { clipboard?: { writeText?: (s: string) => Promise<void> } };
+        };
+      }
+    ).window?.api?.clipboard?.writeText;
+    if (apiWriteText !== undefined) {
+      void apiWriteText(entry.path);
+    } else if (
+      typeof navigator !== "undefined" &&
+      typeof navigator.clipboard?.writeText === "function"
+    ) {
+      void navigator.clipboard.writeText(entry.path);
     }
     onCopyPath?.(entry);
   };

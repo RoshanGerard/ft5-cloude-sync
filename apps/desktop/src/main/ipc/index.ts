@@ -1,4 +1,4 @@
-import { dialog, ipcMain, type BrowserWindow } from "electron";
+import { clipboard, dialog, ipcMain, type BrowserWindow } from "electron";
 
 import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
@@ -99,4 +99,15 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
     FILES_CHANNELS.download,
     (_event, req: FilesDownloadRequest) => handleFilesDownload(req),
   );
+
+  // Clipboard bridge — goes through Electron's main-process `clipboard`
+  // module rather than `navigator.clipboard.writeText` in the renderer.
+  // The web API requires transient activation + a focused document,
+  // which Radix's focus-trap inside Dialog doesn't always satisfy in
+  // packaged builds, so copy buttons were silently no-op-ing on the
+  // Properties modal. The main-process clipboard has no such
+  // constraints; the preload exposes it as `window.api.clipboard`.
+  ipcMain.handle("clipboard:writeText", (_event, text: string) => {
+    clipboard.writeText(text);
+  });
 }

@@ -201,10 +201,9 @@ describe("PropertiesModal — copy interactions", () => {
 
   it("clicking Copy Size writes the raw byte count (not the formatted string) to the clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    (window as unknown as { api?: { clipboard: { writeText: typeof writeText } } }).api = {
+      clipboard: { writeText },
+    };
 
     const store = makeStore();
     const entry = entryWithMetadata();
@@ -224,10 +223,9 @@ describe("PropertiesModal — copy interactions", () => {
 
   it("clicking Copy Name writes the raw file name to the clipboard", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    (window as unknown as { api?: { clipboard: { writeText: typeof writeText } } }).api = {
+      clipboard: { writeText },
+    };
 
     const store = makeStore();
     const entry = entryWithMetadata();
@@ -242,10 +240,9 @@ describe("PropertiesModal — copy interactions", () => {
 
   it("a rejected writeText triggers a sonner toast.error", async () => {
     const writeText = vi.fn().mockRejectedValue(new Error("denied"));
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    (window as unknown as { api?: { clipboard: { writeText: typeof writeText } } }).api = {
+      clipboard: { writeText },
+    };
 
     const store = makeStore();
     const entry = entryWithMetadata();

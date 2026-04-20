@@ -96,6 +96,14 @@ const api = {
     download: (req: FilesDownloadRequest): Promise<FilesDownloadResponse> =>
       ipcRenderer.invoke(FILES_CHANNELS.download, req),
   },
+  clipboard: {
+    // Main-process clipboard bridge. `navigator.clipboard.writeText` is
+    // flaky under Radix focus-trap in packaged builds — this path always
+    // works because Electron's `clipboard` module has no transient-
+    // activation requirement.
+    writeText: (text: string): Promise<void> =>
+      ipcRenderer.invoke("clipboard:writeText", text),
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);

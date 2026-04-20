@@ -39,6 +39,9 @@ type ExposedApi = {
     remove: (req: unknown) => Promise<unknown>;
     download: (req: unknown) => Promise<unknown>;
   };
+  clipboard: {
+    writeText: (text: string) => Promise<void>;
+  };
 };
 
 async function loadExposed(): Promise<ExposedApi> {
@@ -66,6 +69,7 @@ describe("preload exposed api", () => {
 
     const exposed = callArgs[1] as Record<string, unknown>;
     expect(Object.keys(exposed).sort()).toEqual([
+      "clipboard",
       "datasources",
       "files",
       "ping",
@@ -73,6 +77,7 @@ describe("preload exposed api", () => {
     expect(typeof exposed.ping).toBe("function");
     expect(typeof exposed.datasources).toBe("object");
     expect(typeof exposed.files).toBe("object");
+    expect(typeof exposed.clipboard).toBe("object");
   });
 
   it("ping() invokes ipcRenderer.invoke('ping') with no other args and returns its resolved value", async () => {

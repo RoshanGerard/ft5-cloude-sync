@@ -59,9 +59,18 @@ export function FieldRowWithCopy({
   const onCopy = (): void => {
     if (disabled) return;
     const text = String(rawValue);
-    // Guard against missing Clipboard API (CSP / test envs); forward any
-    // rejection (permission denial, document-not-focused) to onCopyError.
-    navigator.clipboard?.writeText(text)?.catch((err: unknown) => {
+    // Route through the main-process clipboard via `window.api.clipboard`.
+    // `navigator.clipboard.writeText` requires transient activation + a
+    // focused document, which Radix's Dialog focus-trap doesn't always
+    // propagate reliably in packaged Electron — the main-process bridge
+    // always works. Guard against missing api in test envs.
+    const api = (globalThis as unknown as {
+      window?: {
+        api?: { clipboard?: { writeText?: (s: string) => Promise<void> } };
+      };
+    }).window?.api?.clipboard;
+    if (api?.writeText === undefined) return;
+    api.writeText(text).catch((err: unknown) => {
       onCopyError?.(err);
     });
   };

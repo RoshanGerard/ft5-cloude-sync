@@ -58,6 +58,9 @@ declare global {
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
       };
+      clipboard: {
+        writeText(text: string): Promise<void>;
+      };
     };
   }
 }

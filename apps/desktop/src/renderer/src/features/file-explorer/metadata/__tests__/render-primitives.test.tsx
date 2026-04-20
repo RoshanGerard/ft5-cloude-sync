@@ -44,19 +44,28 @@ describe("FieldRow", () => {
   });
 });
 
+// Helper: install a stub for `window.api.clipboard.writeText`. The click
+// handler routes through the main-process bridge (see render-primitives.tsx)
+// rather than `navigator.clipboard` — the latter is unreliable under
+// Radix focus-trap inside packaged Electron.
+function installClipboardMock(writeText = vi.fn().mockResolvedValue(undefined)) {
+  (window as unknown as { api?: { clipboard: { writeText: typeof writeText } } }).api = {
+    clipboard: { writeText },
+  };
+  return writeText;
+}
+
+function removeClipboardMock() {
+  delete (window as unknown as { api?: unknown }).api;
+}
+
 describe("FieldRowWithCopy", () => {
   beforeEach(() => {
-    // jsdom does not provide navigator.clipboard by default; stub it so
-    // the click handler's `navigator.clipboard.writeText` call resolves.
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-    });
+    installClipboardMock();
   });
   afterEach(() => {
     cleanup();
-    // Best-effort cleanup; the stub is re-set in every beforeEach so
-    // leaving the descriptor in place across tests is fine.
+    removeClipboardMock();
   });
 
   it("renders the label and value like FieldRow", () => {
@@ -76,11 +85,7 @@ describe("FieldRowWithCopy", () => {
   });
 
   it("writes the raw value to the clipboard on click", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    const writeText = installClipboardMock();
 
     render(
       <FieldRowWithCopy
@@ -94,11 +99,7 @@ describe("FieldRowWithCopy", () => {
   });
 
   it("stringifies numeric raw values before writing to clipboard", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    const writeText = installClipboardMock();
 
     render(
       <FieldRowWithCopy label="Revisions" value="7" rawValue={7} numeric />,
@@ -108,11 +109,7 @@ describe("FieldRowWithCopy", () => {
   });
 
   it("does not call clipboard when rawValue is null (button is disabled)", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    const writeText = installClipboardMock();
 
     render(<FieldRowWithCopy label="Lock reason" value={null} rawValue={null} />);
     const button = screen.getByRole("button", { name: /copy lock reason/i });
@@ -131,11 +128,7 @@ describe("FieldRowWithCopy", () => {
 
   it("calls onCopyError when writeText rejects", async () => {
     const rejection = new Error("nope");
-    const writeText = vi.fn().mockRejectedValue(rejection);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    const writeText = installClipboardMock(vi.fn().mockRejectedValue(rejection));
     const onCopyError = vi.fn();
 
     render(
@@ -150,14 +143,12 @@ describe("FieldRowWithCopy", () => {
     // Flush the rejected microtask.
     await Promise.resolve();
     await Promise.resolve();
+    expect(writeText).toHaveBeenCalled();
     expect(onCopyError).toHaveBeenCalledWith(rejection);
   });
 
-  it("does not throw when navigator.clipboard is undefined", () => {
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: undefined,
-    });
+  it("does not throw when window.api.clipboard is unavailable", () => {
+    removeClipboardMock();
     const onCopyError = vi.fn();
     render(
       <FieldRowWithCopy
