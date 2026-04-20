@@ -67,10 +67,35 @@ export function Toolbar({ store }: ToolbarProps) {
       className="flex items-center gap-1"
     >
       <ViewMenu store={store} />
-      {/* Delete / Sort / Search / Details-toggle controls are Phase 4/5/6/7.
-          They compose into this toolbar in a later change; intentionally
-          left out here so Phase 3 ships only what its scope demands. */}
+      <DetailsToggle store={store} />
+      {/* Delete / Sort / Search controls are Phase 6/7. */}
     </div>
+  );
+}
+
+interface DetailsToggleProps {
+  store: ExplorerStore;
+}
+
+function DetailsToggle({ store }: DetailsToggleProps) {
+  const state = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
+  );
+  const open = state.detailsPaneOpen;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label="Details"
+      aria-pressed={open}
+      data-testid="file-explorer-details-toggle"
+      onClick={() => store.toggleDetailsPane()}
+    >
+      Details
+    </Button>
   );
 }
 

@@ -31,6 +31,7 @@ import { useSyncExternalStore } from "react";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { Breadcrumb } from "./breadcrumb";
+import { DetailsPane } from "./details-pane";
 import { HistoryButtons } from "./history-buttons";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
@@ -125,35 +126,38 @@ export function FileExplorer({ datasourceId }: FileExplorerProps) {
         <Toolbar store={store} />
       </div>
 
-      {/* Main pane: loading / error / populated states. */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        {state.loading ? (
-          <div
-            data-testid="file-explorer-loading"
-            className="text-muted-foreground p-4 text-sm"
-          >
-            Loading…
-          </div>
-        ) : state.error !== null ? (
-          <div
-            data-testid="file-explorer-error"
-            role="alert"
-            className="text-destructive p-4 text-sm"
-          >
-            Failed to load: {state.error}
-          </div>
-        ) : (
-          <ViewModeSwitcher
-            store={store}
-            keyboardNav={keyboardNav}
-            onOpen={handleOpen}
-            onDownload={handleNoop}
-            onRename={handleNoop}
-            onDelete={handleNoop}
-            onCopyPath={handleCopyPath}
-            onProperties={handleNoop}
-          />
-        )}
+      {/* overflow-auto on the main column so scrolling entries does not scroll the Details pane. */}
+      <div className="flex min-h-0 flex-1 flex-row">
+        <div className="flex min-w-0 flex-1 flex-col overflow-auto">
+          {state.loading ? (
+            <div
+              data-testid="file-explorer-loading"
+              className="text-muted-foreground p-4 text-sm"
+            >
+              Loading…
+            </div>
+          ) : state.error !== null ? (
+            <div
+              data-testid="file-explorer-error"
+              role="alert"
+              className="text-destructive p-4 text-sm"
+            >
+              Failed to load: {state.error}
+            </div>
+          ) : (
+            <ViewModeSwitcher
+              store={store}
+              keyboardNav={keyboardNav}
+              onOpen={handleOpen}
+              onDownload={handleNoop}
+              onRename={handleNoop}
+              onDelete={handleNoop}
+              onCopyPath={handleCopyPath}
+              onProperties={handleNoop}
+            />
+          )}
+        </div>
+        <DetailsPane store={store} />
       </div>
 
       {/* Status row pinned to bottom. */}
