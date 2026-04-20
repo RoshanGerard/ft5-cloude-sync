@@ -63,8 +63,8 @@ Implementation plan for `ui-file-explorer`. Every task is expected to follow the
 
 ## Phase 5 — Details pane and Properties modal
 
-- [ ] 5.1 Write failing test for `features/file-explorer/metadata/field-catalog.ts` — exports a field list and the two curated subsets (pane / modal).
-- [ ] 5.2 Implement the field catalog and the render primitives for each field (label, value, copy-to-clipboard affordance on modal).
+- [x] 5.1 Write failing test for `features/file-explorer/metadata/field-catalog.ts` — exports a field list and the two curated subsets (pane / modal).
+- [x] 5.2 Implement the field catalog and the render primitives for each field (label, value, copy-to-clipboard affordance on modal). *(Impl note: render primitives co-located at `metadata/render-primitives.tsx`. Selectors are null-safe and return raw nulls; the em-dash substitution lives in `FieldRow` to keep selectors pure over raw data. `FieldRowWithCopy` takes both formatted `value` and `rawValue` — clipboard gets the raw. `PANE_PROVIDER_METADATA_LIMIT = 3` centralises the pane/modal split for provider metadata rows; pane consumers slice to this length, modal renders all.)*
 - [ ] 5.3 Write failing test for `features/file-explorer/details-pane.tsx` — toggles, reflects selection, shows multi-select summary, persists open state per-datasource across mounts (assert via `localStorage` side-effect).
 - [ ] 5.4 Implement the Details pane.
 - [ ] 5.5 Write failing test for `features/file-explorer/properties-modal.tsx` — opens on context-menu Properties, shows full metadata dossier, focus-trapped, Escape closes.

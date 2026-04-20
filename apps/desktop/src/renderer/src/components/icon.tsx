@@ -23,6 +23,7 @@ import {
   ChevronRightIcon,
   ChevronUpIcon,
   CloudIcon,
+  CopyIcon,
   DatabaseIcon,
   DropletsIcon,
   FileArchiveIcon,
@@ -102,6 +103,9 @@ export type IconName =
   | "file-text"
   | "file-archive"
   | "file-code"
+  // ui-file-explorer Phase 5 — Properties modal's per-field copy-to-clipboard
+  // affordance (FieldRowWithCopy in features/file-explorer/metadata).
+  | "copy"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -135,6 +139,7 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "file-text": FileTextIcon,
   "file-archive": FileArchiveIcon,
   "file-code": FileCodeIcon,
+  copy: CopyIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a
