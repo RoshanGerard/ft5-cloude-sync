@@ -74,11 +74,11 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 ### 9a. Main-process DB + migration runner
 
-- [ ] 9.1 RED: write `apps/desktop/src/main/db/database.test.ts` covering: (a) DB opens at `app.getPath("userData")/ft5.db`, (b) missing directory is created automatically, (c) migrations run in order on startup, (d) re-opening the same file does not re-run a migration, (e) `openDatabase(":memory:")` works for tests.
-- [ ] 9.2 GREEN: implement `apps/desktop/src/main/db/database.ts` exporting `openDatabase(pathOrMemory): Database` and `runMigrations(db, migrations): void`. Use `better-sqlite3` (already a dep of `SqliteCredentialStore`).
-- [ ] 9.3 GREEN: add migration `0001_datasource_credentials` matching the existing `datasource_credentials` schema from `SqliteCredentialStore`; confirm the store keeps working when its DB is pre-migrated by the shared runner instead of its own inline migration.
-- [ ] 9.4 GREEN: add migration `0002_datasources` creating table `datasources (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, display_name TEXT NOT NULL, item_count INTEGER, last_sync_at INTEGER, status TEXT NOT NULL, error_reason TEXT, paused INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`.
-- [ ] 9.5 GREEN: wire `openDatabase(app.getPath("userData")/ft5.db)` + migrations into `main/index.ts` before handler registration; construct `SqliteCredentialStore(db)` from the shared handle.
+- [x] 9.1 RED: write `apps/desktop/src/main/db/database.test.ts` covering: (a) DB opens at `app.getPath("userData")/ft5.db`, (b) missing directory is created automatically, (c) migrations run in order on startup, (d) re-opening the same file does not re-run a migration, (e) `openDatabase(":memory:")` works for tests.
+- [x] 9.2 GREEN: implement `apps/desktop/src/main/db/database.ts` exporting `openDatabase(pathOrMemory): Database` and `runMigrations(db, migrations): void`. Use `better-sqlite3` (already a dep of `SqliteCredentialStore`).
+- [x] 9.3 GREEN: add migration `0001_datasource_credentials` matching the existing `datasource_credentials` schema from `SqliteCredentialStore`; confirm the store keeps working when its DB is pre-migrated by the shared runner instead of its own inline migration.
+- [x] 9.4 GREEN: add migration `0002_datasources` creating table `datasources (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, display_name TEXT NOT NULL, item_count INTEGER, last_sync_at INTEGER, status TEXT NOT NULL, error_reason TEXT, paused INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`.
+- [x] 9.5 GREEN: wire `openDatabase(app.getPath("userData")/ft5.db)` + migrations into `main/index.ts` before handler registration; construct `SqliteCredentialStore(db)` from the shared handle.
 
 ### 9b. DB-backed datasource registry (replaces `store.ts`)
 
