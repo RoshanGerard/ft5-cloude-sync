@@ -409,6 +409,20 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     return this.runReadOp(() => this.doGetQuotaImpl());
   }
 
+  /**
+   * Release any host-level resources the client holds. The base implementation
+   * is a no-op — subclasses that subscribe to the bus, hold timers, or own
+   * external handles override this and call their own teardown (MAY call
+   * `super.dispose()` but it is not required).
+   *
+   * `dispose()` is idempotent by contract — callers (e.g., Phase 10's IPC
+   * lifecycle owner) may invoke it more than once. Implementations MUST
+   * guard with their own flag.
+   */
+  dispose(): void {
+    // no-op on the base
+  }
+
   // -------------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------------

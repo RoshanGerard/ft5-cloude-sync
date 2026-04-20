@@ -20,7 +20,7 @@
 //   `search(q='...')` endpoint), authenticate (OAuth intent), refreshToken,
 //   normalizeError for Graph error codes, and getQuota against `/me/drive`.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -198,14 +198,29 @@ function makeHarness(options: {
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     },
   ) as OneDriveClient;
+  createdClients.push(client);
   return { bus, events, client, store };
 }
+
+// Track every client created through `makeHarness` so `afterEach` can dispose
+// each one. Without this, the bus-subscription held by OneDriveClient would
+// leak across tests — mattering once the dispose contract is in place.
+const createdClients: OneDriveClient[] = [];
 
 beforeEach(() => {
   // No global state; fakes are per-test.
 });
 
 afterEach(() => {
+  for (const c of createdClients) {
+    try {
+      c.dispose();
+    } catch {
+      // ignore — dispose must be idempotent, and a throwing subclass is the
+      // bug the contract prevents.
+    }
+  }
+  createdClients.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -600,6 +615,58 @@ describe("OneDriveClient — normalizeError taxonomy", () => {
     expect(normalize(h.client, new Error("no idea")).tag).toBe("provider-error");
     expect(normalize(h.client, "just a string").tag).toBe("provider-error");
   });
+
+  // -------------------------------------------------------------------------
+  // Issue 4 — quotaLimitReached and accessDenied / 403
+  // -------------------------------------------------------------------------
+
+  it("quotaLimitReached → provider-error (non-retryable) and raw is preserved", () => {
+    // The 8-tag taxonomy has no `quota-exceeded` slot. We map storage-quota
+    // errors to `provider-error` with `retryable: false` — taxonomy expansion
+    // is tracked as a follow-up, see the phase-7 review report.
+    const { client } = makeFakeGraph([]);
+    const h = makeHarness({ graph: client });
+    const raw = {
+      code: "quotaLimitReached",
+      statusCode: 507,
+      message: "drive-full",
+    };
+    const e = normalize(h.client, raw);
+    expect(e.tag).toBe("provider-error");
+    expect(e.retryable).toBe(false);
+    expect(e.raw).toEqual(raw);
+  });
+
+  it("403 accessDenied with inner code `unauthenticated` / `invalidAuthenticationToken` / `revoked` → auth-revoked", () => {
+    const { client } = makeFakeGraph([]);
+    const h = makeHarness({ graph: client });
+    // Graph returns 403 with an inner error code when consent is revoked.
+    for (const innerCode of [
+      "unauthenticated",
+      "invalidAuthenticationToken",
+      "revoked",
+    ]) {
+      const e = normalize(h.client, {
+        statusCode: 403,
+        code: "accessDenied",
+        body: { error: { code: innerCode, message: "consent revoked" } },
+      });
+      expect(e.tag, `inner=${innerCode}`).toBe("auth-revoked");
+      expect(e.retryable).toBe(false);
+    }
+  });
+
+  it("403 accessDenied without a revoked-consent inner code → provider-error (non-retryable)", () => {
+    const { client } = makeFakeGraph([]);
+    const h = makeHarness({ graph: client });
+    const e = normalize(h.client, {
+      statusCode: 403,
+      code: "accessDenied",
+      message: "sharing-policy-denied",
+    });
+    expect(e.tag).toBe("provider-error");
+    expect(e.retryable).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -731,6 +798,159 @@ describe("OneDriveClient — upload (resumable session for > 4MB)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Resumable upload — multi-chunk coverage (Phase 7 code-review Issue 1)
+// ---------------------------------------------------------------------------
+//
+// UPLOAD_CHUNK_BYTES = 320 KiB * 32 = 10 MiB (10_485_760 bytes). Two fixtures:
+//   - 25 MiB → 3 chunks (10 + 10 + 5) — exercises the TRAILING-`if
+//     (pending.length > 0)` branch for the final small chunk.
+//   - 30 MiB → 3 chunks (10 + 10 + 10) — exercises the INNER-LOOP
+//     `isLast=true` branch where the last chunk is exactly UPLOAD_CHUNK_BYTES.
+
+describe("OneDriveClient — resumable upload multi-chunk (Content-Range + isLast)", () => {
+  const CHUNK = 320 * 1024 * 32; // must stay in sync with onedrive-client.ts
+
+  function setupMultiChunkTest(totalBytes: number, expectedChunks: number[]) {
+    const dir = mkdtempSync(join(tmpdir(), "od-multichunk-"));
+    const file = join(dir, "huge.bin");
+    writeFileSync(file, Buffer.alloc(totalBytes, 0x42));
+
+    const { client: graphClient } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/uploads/huge.bin:/createUploadSession",
+        verbs: {
+          post: () => ({
+            uploadUrl: "https://up.example.com/session/multichunk",
+            expirationDateTime: "2099-01-01T00:00:00Z",
+          }),
+        },
+      },
+    ]);
+
+    const fetchCalls: Array<{
+      url: string;
+      method: string;
+      contentRange: string;
+      contentLength: string;
+      bodyLength: number;
+    }> = [];
+    let callIdx = 0;
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const hdrs = (init?.headers ?? {}) as Record<string, string>;
+      const body = init?.body;
+      const bodyLength = body instanceof Uint8Array ? body.byteLength : 0;
+      fetchCalls.push({
+        url: String(url),
+        method: (init?.method ?? "").toUpperCase(),
+        contentRange: hdrs["Content-Range"] ?? "",
+        contentLength: hdrs["Content-Length"] ?? "",
+        bodyLength,
+      });
+      const isLast = callIdx === expectedChunks.length - 1;
+      callIdx += 1;
+      // Interim chunks return 202 Accepted with no DriveItem; final returns
+      // 201 Created with the DriveItem JSON. The strategy only parses the
+      // final response.
+      if (!isLast) {
+        return new Response(
+          JSON.stringify({ nextExpectedRanges: [`${callIdx * CHUNK}-`] }),
+          { status: 202 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: "final-id-last-response",
+          name: "huge.bin",
+          file: { mimeType: "application/octet-stream" },
+          size: totalBytes,
+          lastModifiedDateTime: "2024-06-05T00:00:00Z",
+          parentReference: { path: "/drive/root:/uploads" },
+        }),
+        { status: 201 },
+      );
+    }) as unknown as typeof fetch;
+
+    return { file, dir, graphClient, fetchImpl, fetchCalls, totalBytes };
+  }
+
+  it("25 MiB → 3 chunks with the trailing chunk flushed via the post-loop branch; Content-Range headers match exactly and final entry carries the last response's driveItemId", async () => {
+    const total = 25 * 1024 * 1024; // 26_214_400
+    const expected = [CHUNK, CHUNK, total - 2 * CHUNK]; // [10 MiB, 10 MiB, 5 MiB]
+    const { file, graphClient, fetchImpl, fetchCalls, totalBytes } =
+      setupMultiChunkTest(total, expected);
+    try {
+      const h = makeHarness({ graph: graphClient, fetchImpl });
+      const entry = await h.client.uploadFile(
+        { kind: "path", path: "/uploads" },
+        { path: file, name: "huge.bin" },
+      );
+
+      expect(entry.handle).toBe("final-id-last-response");
+      expect(entry.path).toBe("/uploads/huge.bin");
+      expect(fetchCalls).toHaveLength(3);
+
+      // Every PUT targets the uploadUrl and is a PUT.
+      for (const c of fetchCalls) {
+        expect(c.url).toBe("https://up.example.com/session/multichunk");
+        expect(c.method).toBe("PUT");
+      }
+
+      // Content-Range headers.
+      expect(fetchCalls[0]!.contentRange).toBe(
+        `bytes 0-${CHUNK - 1}/${totalBytes}`,
+      );
+      expect(fetchCalls[1]!.contentRange).toBe(
+        `bytes ${CHUNK}-${2 * CHUNK - 1}/${totalBytes}`,
+      );
+      expect(fetchCalls[2]!.contentRange).toBe(
+        `bytes ${2 * CHUNK}-${totalBytes - 1}/${totalBytes}`,
+      );
+
+      // Per-chunk Content-Length + body length
+      expect(fetchCalls[0]!.contentLength).toBe(String(CHUNK));
+      expect(fetchCalls[1]!.contentLength).toBe(String(CHUNK));
+      expect(fetchCalls[2]!.contentLength).toBe(String(total - 2 * CHUNK));
+      expect(fetchCalls[0]!.bodyLength).toBe(CHUNK);
+      expect(fetchCalls[1]!.bodyLength).toBe(CHUNK);
+      expect(fetchCalls[2]!.bodyLength).toBe(total - 2 * CHUNK);
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
+  it("30 MiB → 3 chunks where the last chunk is exactly UPLOAD_CHUNK_BYTES (inner-loop isLast branch)", async () => {
+    const total = 30 * 1024 * 1024; // 31_457_280 — exact multiple of CHUNK
+    const expected = [CHUNK, CHUNK, CHUNK];
+    const { file, graphClient, fetchImpl, fetchCalls, totalBytes } =
+      setupMultiChunkTest(total, expected);
+    try {
+      const h = makeHarness({ graph: graphClient, fetchImpl });
+      const entry = await h.client.uploadFile(
+        { kind: "path", path: "/uploads" },
+        { path: file, name: "huge.bin" },
+      );
+
+      expect(entry.handle).toBe("final-id-last-response");
+      expect(fetchCalls).toHaveLength(3);
+      expect(fetchCalls[0]!.contentRange).toBe(
+        `bytes 0-${CHUNK - 1}/${totalBytes}`,
+      );
+      expect(fetchCalls[1]!.contentRange).toBe(
+        `bytes ${CHUNK}-${2 * CHUNK - 1}/${totalBytes}`,
+      );
+      expect(fetchCalls[2]!.contentRange).toBe(
+        `bytes ${2 * CHUNK}-${totalBytes - 1}/${totalBytes}`,
+      );
+      for (const c of fetchCalls) {
+        expect(c.bodyLength).toBe(CHUNK);
+      }
+    } finally {
+      unlinkSync(file);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LRU handle cache — invalidation on `deleted` and `file-created`
 // ---------------------------------------------------------------------------
 
@@ -810,6 +1030,190 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cacheAfter = (h.client as any).pathHandleCache as Map<string, string>;
     expect(cacheAfter.get("/todelete.txt")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// URL encoding — path segments, child names, and OData query values
+// ---------------------------------------------------------------------------
+//
+// Phase 7 code-review Issue 2: `@microsoft/microsoft-graph-client` v3.0.7
+// does URL joining/normalization in `GraphRequestUtil` but does NOT
+// percent-encode path segments passed to `.api(path)`. Encoding is the
+// strategy's responsibility. Characters like `#`, `?`, `&`, `%`, `+`, and
+// space MUST be percent-encoded in:
+//   - path segments (root-addressed reads/mutates),
+//   - child `name` fragments (createFile / uploadFile / createUploadSession),
+//   - OData `search(q='<v>')` values (after the embedded-quote doubling).
+//
+// The resumable-upload URL returned by Graph from `/createUploadSession` is
+// already fully-formed — the strategy must NOT encode it.
+
+describe("OneDriveClient — URL encoding", () => {
+  it("getMetadata path segments are percent-encoded (space / # / & / + / %)", async () => {
+    const rawPath = "/mix & match/file with # spaces + %.txt";
+    const { client, apiCalls } = makeFakeGraph([
+      {
+        // Match on the literal encoded prefix — `#` and space and `&` MUST
+        // be percent-encoded so they do not act as a URL fragment or
+        // query separator.
+        match: "/me/drive/root:/mix%20%26%20match",
+        verbs: {
+          get: () => ({
+            id: "ok",
+            name: "file with # spaces + %.txt",
+            file: { mimeType: "text/plain" },
+            size: 1,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:/mix & match" },
+          }),
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    await h.client.getMetadata({ kind: "path", path: rawPath });
+    const used = apiCalls[0]!;
+    expect(used).toContain("%20"); // space
+    expect(used).toContain("%23"); // #
+    expect(used).toContain("%26"); // &
+    expect(used).toContain("%2B"); // +
+    expect(used).toContain("%25"); // %
+    // The forward-slash separator must NOT be encoded.
+    expect(used).toContain("/mix%20%26%20match/");
+  });
+
+  it("createFile encodes the child `name` fragment", async () => {
+    const { client, apiCalls } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/uploads/a%20%26%20b%23.txt:/content",
+        verbs: {
+          put: () => ({
+            id: "amp-id",
+            name: "a & b#.txt",
+            file: { mimeType: "text/plain" },
+            size: 1,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:/uploads" },
+          }),
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    // Write a temp fixture — createFile reads from disk.
+    const dir = mkdtempSync(join(tmpdir(), "od-enc-"));
+    const fpath = join(dir, "src.txt");
+    writeFileSync(fpath, "x");
+    try {
+      const entry = await h.client.createFile(
+        { kind: "path", path: "/uploads" },
+        "a & b#.txt",
+        { path: fpath },
+      );
+      expect(entry.handle).toBe("amp-id");
+      const url = apiCalls[0]!;
+      expect(url).toContain("a%20%26%20b%23.txt");
+    } finally {
+      unlinkSync(fpath);
+    }
+  });
+
+  it("search encodes the OData query value (space / & / #) AFTER single-quote doubling", async () => {
+    const { client, apiCalls } = makeFakeGraph([
+      {
+        match: "/me/drive/root/search",
+        verbs: { get: () => ({ value: [] }) },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    // Query has a single quote, ampersand, hash, space, plus — each must be
+    // handled. The single quote is doubled for OData; URL-unsafe chars are
+    // percent-encoded so the surrounding URL is unambiguous. `'` itself is
+    // an RFC 3986 unreserved mark and stays literal after encoding (OData
+    // sees `''` which it treats as an embedded single-quote).
+    await h.client.search("it's a & b #x+y");
+    const url = apiCalls[0]!;
+    // OData quote-doubling is preserved (encodeURIComponent leaves `'` literal)
+    expect(url).toContain("''");
+    // Ampersand + hash must be encoded so they don't terminate the URL.
+    expect(url).toContain("%26");
+    expect(url).toContain("%23");
+    // Space and plus must be encoded (plus especially — unencoded `+` means
+    // space in application/x-www-form-urlencoded contexts, risking
+    // ambiguity)
+    expect(url).toContain("%20");
+    expect(url).toContain("%2B");
+    // And the literal raw chars must NOT appear unencoded inside the q=... body.
+    // (Extract everything between `q='` and `')` and verify.)
+    const qMatch = /search\(q='([^)]*)'\)/.exec(url);
+    expect(qMatch).not.toBeNull();
+    const qBody = qMatch![1]!;
+    expect(qBody.includes(" ")).toBe(false);
+    expect(qBody.includes("&")).toBe(false);
+    expect(qBody.includes("#")).toBe(false);
+    expect(qBody.includes("+")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispose() — bus subscription lifecycle
+// ---------------------------------------------------------------------------
+//
+// Phase 7 code-review finding: OneDriveClient subscribes to `ctx.bus` in its
+// constructor to invalidate its path↔handle LRU on `deleted` / `file-created`
+// events. If the client is discarded without an explicit teardown, the
+// subscription leaks for the lifetime of the bus. `dispose()` unhooks it.
+
+describe("OneDriveClient — dispose()", () => {
+  it("overrides the base no-op — calling dispose() detaches the bus subscription", async () => {
+    // Seed a cache entry via getMetadata so we can observe that a subsequent
+    // `deleted` event evicts the path BEFORE dispose, but NOT after dispose.
+    const { client: graphClient } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/a.txt:",
+        verbs: {
+          get: () => ({
+            id: "A",
+            name: "a.txt",
+            file: { mimeType: "text/plain" },
+            size: 1,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:" },
+          }),
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: graphClient });
+    // Prime cache
+    await h.client.getMetadata({ kind: "path", path: "/a.txt" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<string, string>;
+    expect(cache.get("/a.txt")).toBe("A");
+
+    // Dispose — subsequent bus events must not touch the cache.
+    h.client.dispose();
+
+    // Emit a `deleted` event that WOULD evict "/a.txt" if the subscription
+    // were still live. Use the bus directly to bypass the client.
+    h.bus.emit({
+      event: "deleted",
+      datasourceType: "onedrive",
+      datasourceId: "ds-od-1",
+      ts: Date.now(),
+      payload: { target: { kind: "path", path: "/a.txt" } },
+    });
+
+    // Post-dispose: cache entry MUST still be there, proving the subscription
+    // was torn down.
+    expect(cache.get("/a.txt")).toBe("A");
+  });
+
+  it("dispose() is idempotent — calling twice does not throw", () => {
+    const { client: graphClient } = makeFakeGraph([]);
+    const h = makeHarness({ graph: graphClient });
+    expect(() => {
+      h.client.dispose();
+      h.client.dispose();
+    }).not.toThrow();
   });
 });
 

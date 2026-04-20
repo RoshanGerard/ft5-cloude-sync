@@ -875,6 +875,39 @@ describe("BaseDatasourceClient — authenticate", () => {
 });
 
 // ---------------------------------------------------------------------------
+// dispose() — lifecycle hook
+// ---------------------------------------------------------------------------
+//
+// Phase 7 code-review finding: strategies that subscribe to the bus (e.g.,
+// OneDriveClient's path↔handle cache invalidation) leak the subscription if
+// the client is discarded. The base exposes `dispose(): void` as a no-op by
+// default; subclasses that hold resources (bus subscriptions, timers)
+// override it. The base contract is only that `dispose()` exists and may
+// be called idempotently.
+
+describe("BaseDatasourceClient — dispose()", () => {
+  it("exposes a public `dispose()` method as a no-op on the base", () => {
+    const { client } = makeHarness();
+    expect(typeof (client as unknown as { dispose: unknown }).dispose).toBe(
+      "function",
+    );
+    // No-op: calling it on a subclass that didn't override MUST NOT throw.
+    expect(() =>
+      (client as unknown as { dispose: () => void }).dispose(),
+    ).not.toThrow();
+  });
+
+  it("dispose() is idempotent — calling twice does not throw", () => {
+    const { client } = makeHarness();
+    const d = (client as unknown as { dispose: () => void }).dispose.bind(
+      client,
+    );
+    d();
+    expect(() => d()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Strategies cannot emit events directly
 // ---------------------------------------------------------------------------
 

@@ -187,6 +187,10 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
       };
       // `registry[providerId]` is typed as `ProviderFactoryFn<P>` via the
       // mapped type, so the call returns `DatasourceClient<P>` directly.
+      // NOTE: callers are responsible for calling `.dispose()` on returned
+      // clients when they discard them — strategies that subscribe to the
+      // bus (e.g., OneDriveClient) leak the subscription otherwise. Phase 10
+      // will own the cross-IPC lifecycle.
       return entry(datasourceId, credentials, baseCtx);
     },
   };

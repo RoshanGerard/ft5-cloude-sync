@@ -125,10 +125,19 @@ const OAUTH_SCOPE = "offline_access Files.ReadWrite.All User.Read";
  * into the Graph path segment used after `/root:` and `:/...`. Root is a
  * special case — Graph uses `/me/drive/root` (no `:` suffix) for root
  * addressing.
+ *
+ * Each path segment is percent-encoded via `encodeURIComponent` so characters
+ * that are meaningful in URLs (`#`, `?`, `&`, `%`, `+`, space, etc.) do not
+ * fight the Graph endpoint's path parser. `@microsoft/microsoft-graph-client`
+ * v3 joins and normalizes but does NOT encode caller-supplied path segments,
+ * so encoding is the strategy's responsibility. The forward-slash separator
+ * is preserved (segments are encoded individually then rejoined).
  */
 function pathToGraphSegment(path: string): string {
   if (path === "" || path === "/") return "";
-  return path.startsWith("/") ? path : `/${path}`;
+  const raw = path.startsWith("/") ? path.slice(1) : path;
+  const encoded = raw.split("/").map((seg) => encodeURIComponent(seg)).join("/");
+  return `/${encoded}`;
 }
 
 /**
@@ -320,8 +329,15 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   private readonly pathHandleCache = new Map<string, string>();
 
   /** Unsubscribe handle for the bus subscription driving cache invalidation.
-   * Currently leaked — a future phase will add `dispose()` to the base class. */
+   * Tied to the client lifecycle via `dispose()` — callers that discard a
+   * client MUST call `.dispose()` so the bus stops invoking a stale handler
+   * (see `ClientFactory.create` for the ownership contract). */
   private readonly unsubscribe: () => void;
+
+  /** Idempotency guard for `dispose()`. The bus's unsubscribe closure is
+   * already expected to be idempotent, but guarding at the client layer lets
+   * us skip work (and future instrumentation) on repeat calls. */
+  private disposed = false;
 
   constructor(
     init: { datasourceId: string; ctx: BaseClientContext },
@@ -357,6 +373,17 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         }
       }
     });
+  }
+
+  /**
+   * Tear down the bus subscription so a discarded client stops reacting to
+   * `deleted` / `file-created` events. Idempotent — calling twice is
+   * harmless.
+   */
+  override dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.unsubscribe();
   }
 
   // -------------------------------------------------------------------------
@@ -815,6 +842,11 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       body?: { error?: { code?: string; message?: string } };
     };
     const code = r.code ?? r.body?.error?.code ?? "";
+    // Preserve the inner-error code independently of the outer code. Graph
+    // 403 responses carry the semantically meaningful code inside
+    // `body.error.code` (e.g., `unauthenticated`, `invalidAuthenticationToken`,
+    // `revoked`) while the outer code is the generic `accessDenied`.
+    const innerCode = r.body?.error?.code ?? "";
     const status = r.statusCode ?? r.status ?? 0;
     const name = r.name ?? "";
     const message = r.message ?? r.body?.error?.message ?? undefined;
@@ -842,6 +874,23 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     if (code === "unauthorized_client" || code === "invalid_grant") {
       return mk("auth-revoked", false);
     }
+    // 403 with a revoked-consent inner code — Graph reuses outer
+    // `accessDenied` for both revoked consent and ordinary access denials.
+    // Inner codes `unauthenticated` / `invalidAuthenticationToken` / `revoked`
+    // indicate the token is no longer trusted; everything else (sharing-policy
+    // denial, unified-audit policies, etc.) stays a generic provider-error.
+    // Check BEFORE the 401 branch so a 403 carrying `invalidAuthenticationToken`
+    // in its inner code doesn't get misrouted to `auth-expired`.
+    if (status === 403) {
+      if (
+        innerCode === "unauthenticated" ||
+        innerCode === "invalidAuthenticationToken" ||
+        innerCode === "revoked"
+      ) {
+        return mk("auth-revoked", false);
+      }
+      return mk("provider-error", false);
+    }
     // auth-expired — transient token expiry (Graph returns 401 with
     // `InvalidAuthenticationToken`).
     if (code === "InvalidAuthenticationToken" || status === 401) {
@@ -866,6 +915,17 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
           ? { retryAfterMs }
           : {}),
       });
+    }
+    // quotaLimitReached — storage quota exhausted. The 8-tag taxonomy does
+    // NOT have a dedicated `quota-exceeded` tag (see `DatasourceErrorTag` in
+    // `@ft5/ipc-contracts`). Mapping to `provider-error` with
+    // `retryable: false` is the safe fit: the write will not succeed on
+    // retry until the user frees space. Taxonomy expansion is tracked as a
+    // phase-7 code-review follow-up; until it lands, the outer `raw` payload
+    // preserves `code: "quotaLimitReached"` for any caller that wants
+    // quota-aware UX.
+    if (code === "quotaLimitReached") {
+      return mk("provider-error", false);
     }
     // network-error — Node fetch / undici surface these as FetchError or the
     // underlying socket code bubbles up directly.
@@ -893,25 +953,39 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
  * createFile and uploadFile.
  */
 function childPathUrl(parent: Target, name: string, suffix: string): string {
+  // `name` is user-controlled and must be percent-encoded so characters like
+  // `#`, `&`, `+`, and space do not terminate the Graph path, attach a query
+  // string, or decode to a different name server-side. See pathToGraphSegment
+  // for the SDK-encoding rationale.
+  const encodedName = encodeURIComponent(name);
   if (parent.kind === "handle") {
     // Item-id form: /me/drive/items/<id>:/<name>:<suffix>
     return suffix === ""
-      ? `${GRAPH_ITEMS}/${parent.handle}:/${name}:`
-      : `${GRAPH_ITEMS}/${parent.handle}:/${name}:${suffix}`;
+      ? `${GRAPH_ITEMS}/${parent.handle}:/${encodedName}:`
+      : `${GRAPH_ITEMS}/${parent.handle}:/${encodedName}:${suffix}`;
   }
-  // Path form.
+  // Path form. `parentSeg` is already segment-encoded by pathToGraphSegment;
+  // `pathPosix.join` preserves the encoded segments and inserts the
+  // separator.
   const parentSeg = pathToGraphSegment(parent.path);
-  const joined = parentSeg === "" ? `/${name}` : pathPosix.join(parentSeg, name);
+  const joined =
+    parentSeg === "" ? `/${encodedName}` : pathPosix.join(parentSeg, encodedName);
   return suffix === ""
     ? `${GRAPH_ROOT}:${joined}:`
     : `${GRAPH_ROOT}:${joined}:${suffix}`;
 }
 
 /** Encode a value for the Graph `search(q='...')` expression. The value is
- * wrapped in single quotes; literal single quotes are doubled per OData.
+ * wrapped in single quotes; literal single quotes are doubled per OData's
+ * string-literal rules. AFTER quote-doubling, the result is
+ * percent-encoded so characters that are meaningful in URLs (`#`, `&`, `+`,
+ * space, and the now-doubled `'`) do not terminate or mutate the query
+ * string. The Graph service percent-decodes before OData parsing, so this
+ * is safe: `''` → `%27%27` → decoded back to `''` by the server, which OData
+ * treats as a literal single quote inside the string literal.
  */
 function encodeQueryValue(v: string): string {
-  return v.replace(/'/g, "''");
+  return encodeURIComponent(v.replace(/'/g, "''"));
 }
 
 // ---------------------------------------------------------------------------
