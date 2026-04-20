@@ -250,3 +250,74 @@ describe("providerMetadataFields — row shape matches FileEntry.providerMetadat
     expect(byId.z).toBeNull();
   });
 });
+
+describe("fieldCatalog — rawSelector (clipboard payload for modal copy affordance)", () => {
+  it("name rawSelector returns entry.name", () => {
+    const entry = seedEntry({ name: "report.pdf" });
+    expect(findField("name").rawSelector?.(entry)).toBe("report.pdf");
+  });
+
+  it("path rawSelector returns entry.path", () => {
+    const entry = seedEntry({ path: "/docs/report.pdf" });
+    expect(findField("path").rawSelector?.(entry)).toBe("/docs/report.pdf");
+  });
+
+  it("type rawSelector returns mimeType when present", () => {
+    const entry = seedEntry({ mimeType: "image/png", mimeFamily: "image" });
+    expect(findField("type").rawSelector?.(entry)).toBe("image/png");
+  });
+
+  it("type rawSelector falls back to mimeFamily when mimeType is missing", () => {
+    const entry = seedEntry({ mimeType: undefined, mimeFamily: "archive" });
+    expect(findField("type").rawSelector?.(entry)).toBe("archive");
+  });
+
+  it("size rawSelector returns entry.size (raw bytes) for files", () => {
+    const entry = seedEntry({ size: 12_288 });
+    expect(findField("size").rawSelector?.(entry)).toBe(12_288);
+  });
+
+  it("size rawSelector returns null for directories", () => {
+    const entry = seedEntry({ kind: "directory", size: null });
+    expect(findField("size").rawSelector?.(entry)).toBeNull();
+  });
+
+  it("modified rawSelector returns the raw ISO string", () => {
+    const entry = seedEntry({ modifiedAt: "2026-04-18T10:30:00.000Z" });
+    expect(findField("modified").rawSelector?.(entry)).toBe(
+      "2026-04-18T10:30:00.000Z",
+    );
+  });
+
+  it("created rawSelector returns the raw ISO string when present", () => {
+    const entry = seedEntry({ createdAt: "2026-01-05T00:00:00.000Z" });
+    expect(findField("created").rawSelector?.(entry)).toBe(
+      "2026-01-05T00:00:00.000Z",
+    );
+  });
+
+  it("created rawSelector returns null when createdAt is null", () => {
+    const entry = seedEntry({ createdAt: null });
+    expect(findField("created").rawSelector?.(entry)).toBeNull();
+  });
+});
+
+describe("humanizeKey handles underscore and kebab and UPPER_SNAKE keys", () => {
+  it("converts snake_case to space-separated and capitalizes first char", () => {
+    const entry = seedEntry({ providerMetadata: { owner_email: "x@y" } });
+    const rows = providerMetadataFields(entry);
+    expect(rows[0]!.label).toBe("Owner email");
+  });
+
+  it("converts kebab-case to space-separated and capitalizes first char", () => {
+    const entry = seedEntry({ providerMetadata: { "storage-class": "STANDARD" } });
+    const rows = providerMetadataFields(entry);
+    expect(rows[0]!.label).toBe("Storage class");
+  });
+
+  it("leaves trailing UPPER chars untouched (UPPER_SNAKE → UPPER SNAKE)", () => {
+    const entry = seedEntry({ providerMetadata: { UPPER_SNAKE: "x" } });
+    const rows = providerMetadataFields(entry);
+    expect(rows[0]!.label).toBe("UPPER SNAKE");
+  });
+});

@@ -42,6 +42,8 @@ export interface FieldRowWithCopyProps extends FieldRowProps {
   // already-formatted display string (e.g. "12 KB"); `rawValue` carries
   // the original (e.g. the number 12288) so power-users get usable text.
   rawValue: string | number | boolean | null;
+  // Optional rejection hook — Phase 5.6 wires a sonner toast through this.
+  onCopyError?: (err: unknown) => void;
 }
 
 export function FieldRowWithCopy({
@@ -49,6 +51,7 @@ export function FieldRowWithCopy({
   value,
   numeric = false,
   rawValue,
+  onCopyError,
 }: FieldRowWithCopyProps) {
   const displayValue = value ?? EM_DASH;
   const disabled = rawValue === null;
@@ -56,10 +59,11 @@ export function FieldRowWithCopy({
   const onCopy = (): void => {
     if (disabled) return;
     const text = String(rawValue);
-    // `navigator.clipboard` is provided by Electron's renderer at runtime.
-    // The Promise is intentionally not awaited — failures surface as a
-    // sonner toast in the parent surface (Phase 5.6) if needed.
-    void navigator.clipboard.writeText(text);
+    // Guard against missing Clipboard API (CSP / test envs); forward any
+    // rejection (permission denial, document-not-focused) to onCopyError.
+    navigator.clipboard?.writeText(text)?.catch((err: unknown) => {
+      onCopyError?.(err);
+    });
   };
 
   return (

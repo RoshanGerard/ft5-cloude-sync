@@ -128,4 +128,48 @@ describe("FieldRowWithCopy", () => {
     const valueEl = screen.getByText("12 KB");
     expect(valueEl.className).toMatch(/tabular-nums/);
   });
+
+  it("calls onCopyError when writeText rejects", async () => {
+    const rejection = new Error("nope");
+    const writeText = vi.fn().mockRejectedValue(rejection);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const onCopyError = vi.fn();
+
+    render(
+      <FieldRowWithCopy
+        label="Path"
+        value="/p/x"
+        rawValue="/p/x"
+        onCopyError={onCopyError}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /copy path/i }));
+    // Flush the rejected microtask.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onCopyError).toHaveBeenCalledWith(rejection);
+  });
+
+  it("does not throw when navigator.clipboard is undefined", () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    const onCopyError = vi.fn();
+    render(
+      <FieldRowWithCopy
+        label="Path"
+        value="/p/x"
+        rawValue="/p/x"
+        onCopyError={onCopyError}
+      />,
+    );
+    expect(() =>
+      fireEvent.click(screen.getByRole("button", { name: /copy path/i })),
+    ).not.toThrow();
+    expect(onCopyError).not.toHaveBeenCalled();
+  });
 });

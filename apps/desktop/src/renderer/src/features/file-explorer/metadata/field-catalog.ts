@@ -6,12 +6,21 @@ import { formatDate, formatSize, formatType } from "../view-modes/details-format
 // one shape. The catalog is the single source of truth for both; each
 // surface picks which ids to render via `paneFields` / `modalFields`.
 
-export type FieldValue = string | number | null;
+// FieldValue is the formatted display string; raw values flow through
+// `rawSelector` (clipboard payload for the modal copy affordance).
+export type FieldValue = string | null;
+
+// Raw values may be string/number/boolean/null — matches the union in
+// `FieldRowWithCopyProps.rawValue` and `FileEntry.providerMetadata` values.
+export type FieldRawValue = string | number | boolean | null;
 
 export interface FieldDef {
   id: string;
   label: string;
   selector: (entry: FileEntry) => FieldValue;
+  // Optional raw-value accessor for clipboard copy. Consumers fall back to
+  // `selector(entry)` when `rawSelector` is omitted.
+  rawSelector?: (entry: FileEntry) => FieldRawValue;
   // Drives `tabular-nums` on the rendered value. Sizes, timestamps,
   // and other numeric values line up across rows; names and paths do not.
   numeric: boolean;
@@ -22,18 +31,23 @@ export const fieldCatalog: readonly FieldDef[] = [
     id: "name",
     label: "Name",
     selector: (entry) => entry.name,
+    rawSelector: (entry) => entry.name,
     numeric: false,
   },
   {
     id: "path",
     label: "Path",
     selector: (entry) => entry.path,
+    rawSelector: (entry) => entry.path,
     numeric: false,
   },
   {
     id: "type",
     label: "Type",
     selector: (entry) => formatType(entry),
+    // Raw uses mimeType when available so copy yields e.g. "image/png";
+    // falls back to mimeFamily when mimeType is undefined.
+    rawSelector: (entry) => entry.mimeType ?? entry.mimeFamily,
     numeric: false,
   },
   {
@@ -43,12 +57,14 @@ export const fieldCatalog: readonly FieldDef[] = [
     // over raw data rather than coupling to display strings.
     label: "Size",
     selector: (entry) => (entry.size === null ? null : formatSize(entry.size)),
+    rawSelector: (entry) => entry.size,
     numeric: true,
   },
   {
     id: "modified",
     label: "Modified",
     selector: (entry) => formatDate(entry.modifiedAt),
+    rawSelector: (entry) => entry.modifiedAt,
     numeric: true,
   },
   {
@@ -56,6 +72,7 @@ export const fieldCatalog: readonly FieldDef[] = [
     label: "Created",
     selector: (entry) =>
       entry.createdAt === null ? null : formatDate(entry.createdAt),
+    rawSelector: (entry) => entry.createdAt,
     numeric: true,
   },
 ];
