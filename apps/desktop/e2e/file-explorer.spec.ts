@@ -181,21 +181,24 @@ test("keyboard-only explorer workflow: navigate, multi-select, delete, rename, D
     await expect(renameInput).toBeHidden();
     await expect(root).toContainText("renamed-by-e2e.txt");
 
-    // 4f. Toggle the Details pane. The toggle button carries
-    // `aria-label="Details"` + `data-testid="file-explorer-details-toggle"`
-    // and exposes its state via aria-pressed. Using `Locator.press("Enter")`
-    // is the Playwright-canonical way to activate a focused button — it
-    // targets the element directly (avoiding any focus-dispatch race) and
-    // Enter is equally valid HTML-button activation alongside Space.
-    // (Previous runs with `window.keyboard.press("Space")` failed to flip
-    // the pane state — likely a keydown/keyup sequencing quirk against the
-    // packaged Electron binary.)
+    // 4f. Toggle the Details pane into the OPEN state. The pane's state
+    // is persisted per-datasource in localStorage, so a prior successful
+    // run may have left it open — we can't assume the default is closed.
+    // Read the current `aria-pressed` on the toggle; if it's already
+    // "true", we're done (the pane should already be visible). Otherwise
+    // press Enter to flip it open. Using `Locator.press("Enter")` (not
+    // `window.keyboard.press("Space")`) avoids the keydown/keyup quirk
+    // against the packaged Electron binary.
     const detailsToggle = root.locator(
       "[data-testid='file-explorer-details-toggle']",
     );
     await detailsToggle.focus();
     await expect(detailsToggle).toBeFocused();
-    await detailsToggle.press("Enter");
+    const alreadyOpen =
+      (await detailsToggle.getAttribute("aria-pressed")) === "true";
+    if (!alreadyOpen) {
+      await detailsToggle.press("Enter");
+    }
     const detailsPane = root.locator("aside[aria-label='Details']");
     await expect(detailsPane).toBeVisible();
     await expect(detailsToggle).toHaveAttribute("aria-pressed", "true");
