@@ -8,6 +8,8 @@ The three providers do not present files symmetrically: Drive and OneDrive have 
 
 This change is paired with a new `window.api.files.*` IPC surface whose v1 handlers return from an in-memory mock fixture. The shipping shape — contract, preload, renderer call sites, four-layer guardrail — is real. Only the handler bodies are mocked. Real provider-backed handlers land in a follow-up.
 
+> **Cross-change note (add-fs-datasource-engine).** The real provider-backed handlers referenced above are delivered by change `add-fs-datasource-engine`. No contract conflict: the engine is CALLED BY these `files.*` handlers, not a replacement for their `ipc-contracts` types. When both changes are on trunk, the handler bodies read `getEngine().factory.create(providerId, creds, ctx)` and delegate `list` / `stat` / `search` / `rename` / `remove` / `download` to the resulting `DatasourceClient<T>` instead of returning fixtures.
+
 ## Goals / Non-Goals
 
 **Goals:**
