@@ -155,6 +155,7 @@ export type FileMetadata<T extends DatasourceType> = DatasourceFileEntry<T>;
 interface CanonicalEventPayloads<T extends DatasourceType = DatasourceType> {
   uploading: unknown;
   "upload-failed": unknown;
+  "upload-cancelled": UploadCancelledPayload;
   "file-created": unknown;
   deleted: unknown;
   "delete-failed": unknown;
@@ -173,6 +174,31 @@ interface CanonicalEventPayloads<T extends DatasourceType = DatasourceType> {
   "token-expired": unknown;
   "status-changed": unknown;
   "rate-limited": unknown;
+}
+
+/**
+ * Reason a `cancelUpload` call was issued. Emitted verbatim in the
+ * `upload-cancelled` event payload so subscribers can distinguish
+ * user-initiated cancels from engine-originated shutdown / timeout
+ * cancels (both reserved for future use in v1 — only `"user"` is emitted).
+ */
+export type UploadCancelReason = "user" | "timeout" | "shutdown";
+
+/**
+ * Shared payload shape for the `upload-cancelled` terminal event. The
+ * event fires exactly once per cancelled upload, bypasses the streaming
+ * coalescer (no `streaming: true` on the envelope), and replaces the
+ * `upload-failed` event that would otherwise fire on error-path exit.
+ *
+ * `bytesUploaded` / `bytesTotal` reflect the last known progress tick
+ * (from the strategy's `onProgress` callback). When the cancel fires
+ * before any progress was reported, both are `0`.
+ */
+export interface UploadCancelledPayload {
+  transactionId: string;
+  bytesUploaded: number;
+  bytesTotal: number;
+  reason: UploadCancelReason;
 }
 
 /**
@@ -303,9 +329,15 @@ export interface Quota {
 // ---------------------------------------------------------------------------
 
 /**
- * The 8-tag taxonomy every strategy's `normalizeError` MUST map onto. See
- * Decision 9 in design.md. Consumers (UI toast, telemetry, audit log) switch
- * on `tag` for presentation.
+ * The 9-tag taxonomy every strategy's `normalizeError` MUST map onto. See
+ * Decision 9 in `add-fs-datasource-engine` design.md. Consumers (UI toast,
+ * telemetry, audit log) switch on `tag` for presentation.
+ *
+ * `"cancelled"` is reserved for base-originated cancellation of an
+ * in-flight upload (see `add-fs-engine-cancellation`). Strategies' own
+ * `normalizeError` MUST NOT tag a raw provider exception `"cancelled"` —
+ * only the engine's `BaseDatasourceClient` rejects with this tag, and
+ * only from `uploadFile` after a `cancelUpload` call.
  */
 export type DatasourceErrorTag =
   | "auth-expired"
@@ -315,7 +347,8 @@ export type DatasourceErrorTag =
   | "unsupported"
   | "rate-limited"
   | "network-error"
-  | "provider-error";
+  | "provider-error"
+  | "cancelled";
 
 export interface DatasourceErrorInit<T extends DatasourceType = DatasourceType> {
   tag: DatasourceErrorTag;

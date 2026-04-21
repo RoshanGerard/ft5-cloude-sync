@@ -163,18 +163,23 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     expectTypeOf<OneDrivePayloads>().toMatchTypeOf<Record<string, unknown>>();
   });
 
-  it("PayloadMap declares the eleven canonical event names for every provider", () => {
+  it("PayloadMap declares the twelve canonical event names for every provider", () => {
     // The assertion is compile-time: every provider's key set must be
-    // EXACTLY the canonical 11 — bidirectional equality, not one-way
+    // EXACTLY the canonical 12 — bidirectional equality, not one-way
     // subtype. This catches both accidental drop (a provider missing
     // "rate-limited") and accidental drift (a provider adding a new
     // event name without updating the others).
+    //
+    // The twelfth name, `"upload-cancelled"`, lands with
+    // `add-fs-engine-cancellation` — any future proposal that adds a
+    // 13th event name MUST update this enumeration in the same change.
     type S3Keys = keyof PayloadMap["amazon-s3"];
     type DriveKeys = keyof PayloadMap["google-drive"];
     type OneDriveKeys = keyof PayloadMap["onedrive"];
     type Canonical =
       | "uploading"
       | "upload-failed"
+      | "upload-cancelled"
       | "file-created"
       | "deleted"
       | "delete-failed"
@@ -265,6 +270,26 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     });
     expect(t).toBe("amazon-s3");
   });
+
+  it("upload-cancelled payload is the shared UploadCancelledPayload on every provider", () => {
+    // Unlike `authentication-failed` (pinned per-provider via
+    // `SerializedDatasourceError<T>`), `upload-cancelled` carries base-level
+    // state — transaction id, byte counts, reason — that is identical
+    // across providers. Pinning the payload in `CanonicalEventPayloads`
+    // guarantees that provenance.
+    type S3Cancel = PayloadMap["amazon-s3"]["upload-cancelled"];
+    type DriveCancel = PayloadMap["google-drive"]["upload-cancelled"];
+    type OneDriveCancel = PayloadMap["onedrive"]["upload-cancelled"];
+    type Expected = {
+      transactionId: string;
+      bytesUploaded: number;
+      bytesTotal: number;
+      reason: "user" | "timeout" | "shutdown";
+    };
+    expectTypeOf<S3Cancel>().toEqualTypeOf<Expected>();
+    expectTypeOf<DriveCancel>().toEqualTypeOf<Expected>();
+    expectTypeOf<OneDriveCancel>().toEqualTypeOf<Expected>();
+  });
 });
 
 describe("ipc-contracts fs-datasource-engine types — auth", () => {
@@ -337,7 +362,11 @@ describe("ipc-contracts fs-datasource-engine types — credentials & quota", () 
 });
 
 describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
-  it("DatasourceErrorTag is exactly the documented 8-tag union", () => {
+  it("DatasourceErrorTag is exactly the documented 9-tag union", () => {
+    // `"cancelled"` joined the taxonomy with `add-fs-engine-cancellation`.
+    // It is reserved for base-originated cancellation of in-flight uploads —
+    // strategies' own `normalizeError` MUST NOT emit this tag for raw
+    // provider exceptions.
     expectTypeOf<DatasourceErrorTag>().toEqualTypeOf<
       | "auth-expired"
       | "auth-revoked"
@@ -347,6 +376,7 @@ describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
       | "rate-limited"
       | "network-error"
       | "provider-error"
+      | "cancelled"
     >();
   });
 

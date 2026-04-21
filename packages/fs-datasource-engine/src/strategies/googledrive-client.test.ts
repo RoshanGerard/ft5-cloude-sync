@@ -1549,6 +1549,105 @@ describe("GoogleDriveClient — resumable upload multi-chunk (Content-Range + is
 });
 
 // ---------------------------------------------------------------------------
+// cancelUpload — mid-resumable DELETE with Content-Range: bytes */<total>
+// ---------------------------------------------------------------------------
+
+describe("GoogleDriveClient — cancelUpload (resumable session)", () => {
+  it("mid-chunk cancel DELETEs session URL with Content-Range bytes */<total>; emits upload-cancelled", async () => {
+    const total = 25 * 1024 * 1024;
+    const dir = mkdtempSync(join(tmpdir(), "gd-cancel-"));
+    const file = join(dir, "huge.bin");
+    writeFileSync(file, Buffer.alloc(total, 0x77));
+
+    const { client } = makeFakeDrive({});
+    const sessionUrl = "https://googleapis.com/upload/session/cancel";
+    const deleteCalls: Array<{
+      url: string;
+      method: string;
+      contentRange: string;
+    }> = [];
+    let releasePut!: (resp: Response) => void;
+
+    const fetchImpl = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const method = (init?.method ?? "GET").toUpperCase();
+        const hdrs = (init?.headers ?? {}) as Record<string, string>;
+        if (method === "POST") {
+          return new Response("", {
+            status: 200,
+            headers: { Location: sessionUrl },
+          });
+        }
+        if (method === "DELETE") {
+          deleteCalls.push({
+            url: String(url),
+            method,
+            contentRange: hdrs["Content-Range"] ?? "",
+          });
+          return new Response("", { status: 204 });
+        }
+        if (method === "PUT") {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            throw Object.assign(new Error("aborted"), { name: "AbortError" });
+          }
+          return await new Promise<Response>((resolve, reject) => {
+            releasePut = resolve;
+            signal?.addEventListener("abort", () =>
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" }),
+              ),
+            );
+          });
+        }
+        return new Response("unexpected", { status: 500 });
+      },
+    ) as unknown as typeof fetch;
+
+    try {
+      const h = makeHarness({ drive: client, fetchImpl });
+      const uploadPromise = h.client.uploadFile(
+        { kind: "handle", handle: "root" },
+        { path: file, name: "huge.bin" },
+      );
+      await vi.waitFor(() => {
+        expect(
+          (h.events as Array<{ event: string }>).map((e) => e.event),
+        ).toContain("uploading");
+      });
+      const tx = (
+        (h.events as Array<{ payload: { transactionId: string } }>)[0] ?? {
+          payload: { transactionId: "" },
+        }
+      ).payload.transactionId;
+
+      await h.client.cancelUpload(tx);
+      if (typeof releasePut === "function") {
+        releasePut(new Response("", { status: 308 }));
+      }
+
+      await expect(uploadPromise).rejects.toSatisfy(
+        (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+      );
+
+      expect(deleteCalls).toHaveLength(1);
+      expect(deleteCalls[0]!.url).toBe(sessionUrl);
+      expect(deleteCalls[0]!.method).toBe("DELETE");
+      // The proposal and Drive docs both specify `bytes */<total>` on
+      // cancel-DELETEs. Exact header match verifies we didn't silently drop
+      // it or emit the unknown-total sentinel (`bytes */0`) here.
+      expect(deleteCalls[0]!.contentRange).toBe(`bytes */${total}`);
+
+      const names = (h.events as Array<{ event: string }>).map((e) => e.event);
+      expect(names).toContain("upload-cancelled");
+      expect(names).not.toContain("upload-failed");
+    } finally {
+      unlinkSync(file);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LRU cache invalidation on `deleted` / `file-created`
 // ---------------------------------------------------------------------------
 

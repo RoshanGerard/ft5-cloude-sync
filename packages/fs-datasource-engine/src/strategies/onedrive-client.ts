@@ -640,7 +640,9 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   protected override async doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress?: (loaded: number, total: number) => void,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    register: (cancel: () => Promise<void>) => void,
+    signal: AbortSignal,
   ): Promise<DatasourceFileEntry<"onedrive">> {
     const name = file.name ?? basename(file.path);
     let total = 0;
@@ -650,9 +652,23 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       total = 0;
     }
     if (total <= RESUMABLE_THRESHOLD_BYTES) {
+      // Small-upload path: single `PUT /content` via Graph SDK. There is no
+      // long-running provider-side session to clean up, so we deliberately
+      // skip `register()` — a `cancelUpload` against an in-flight small
+      // upload resolves as a no-op. The Graph SDK does not expose an
+      // `AbortSignal` parameter on `api().put()`, so mid-PUT interruption
+      // is not available on this path anyway.
       return this.uploadSmall(parent, name, file, total, onProgress);
     }
-    return this.uploadResumable(parent, name, file, total, onProgress);
+    return this.uploadResumable(
+      parent,
+      name,
+      file,
+      total,
+      onProgress,
+      register,
+      signal,
+    );
   }
 
   private async uploadSmall(
@@ -675,7 +691,9 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     name: string,
     file: { path: string; mimeType?: string },
     total: number,
-    onProgress?: (loaded: number, total: number) => void,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    register: (cancel: () => Promise<void>) => void,
+    signal: AbortSignal,
   ): Promise<DatasourceFileEntry<"onedrive">> {
     // Step 1: ask Graph for an upload session; get back `uploadUrl`.
     const sessionUrl = childPathUrl(parent, name, "/createUploadSession");
@@ -692,6 +710,14 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       });
     }
     const uploadUrl = session.uploadUrl;
+
+    // Register the provider-native cancel closure. Graph documents that
+    // DELETE-ing the `uploadUrl` cancels the session server-side, releasing
+    // the URL and any uploaded ranges. Errors in the DELETE are swallowed by
+    // the base — a best-effort cleanup is all that's required on this path.
+    register(async () => {
+      await this.fetchImpl(uploadUrl, { method: "DELETE" });
+    });
 
     // Step 2: stream the file from disk in chunks and PUT each chunk to the
     // session URL via raw fetch. The final chunk response carries the new
@@ -713,10 +739,14 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         "Content-Length": String(chunk.length),
         "Content-Range": `bytes ${start}-${end}/${total}`,
       };
+      // Thread the abort signal into each chunk PUT so the base's
+      // `cancelUpload` unblocks promptly. An already-aborted signal makes
+      // fetch reject synchronously with an AbortError.
       const resp = await this.fetchImpl(uploadUrl, {
         method: "PUT",
         headers,
         body: chunk,
+        signal,
       });
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
