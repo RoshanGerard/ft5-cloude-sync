@@ -70,7 +70,15 @@ version of a package, the compiled `.node` binary can only be one ABI at a
 time. Running one side's test/build flips it; the other side then fails to
 load until flipped back.
 
-**Symptom (Electron side):**
+Two helper scripts under `bin/` (also exposed as pnpm scripts) automate the
+flip. Each takes ~5 seconds and is idempotent:
+
+```bash
+pnpm abi:electron   # before: pnpm --filter @ft5/desktop run dev (or package:*)
+pnpm abi:node       # before: pnpm -w test --run, fs-sync tests, or dev:sync-service
+```
+
+**Symptom (Electron side)** — launching the desktop app produces:
 
 ```
 Error: The module '...better_sqlite3.node' was compiled against a different
@@ -78,32 +86,23 @@ Node.js version using NODE_MODULE_VERSION 137. This version of Node.js
 requires NODE_MODULE_VERSION 145.
 ```
 
-Flip to **Electron ABI** (required before `pnpm --filter @ft5/desktop run dev`):
+Run `pnpm abi:electron`, then retry `pnpm --filter @ft5/desktop run dev`.
 
-```bash
-(cd apps/desktop && npx @electron/rebuild -f -w better-sqlite3)
-```
-
-The `-f` flag is required — without it the rebuild is a silent no-op.
-
-**Symptom (Node side):**
-
-When `pnpm -w test --run` or `pnpm --filter @ft5/fs-sync-service test` shows
+**Symptom (Node side)** — `pnpm -w test --run` or
+`pnpm --filter @ft5/fs-sync-service test` shows
 `NODE_MODULE_VERSION 145. This version of Node.js requires NODE_MODULE_VERSION
-137`, flip to **Node ABI**:
+137`. Run `pnpm abi:node`.
 
-```bash
-(cd node_modules/.pnpm/better-sqlite3@12.9.0/node_modules/better-sqlite3 && \
- npx prebuild-install --runtime=node --target=$(node -v) --force)
-```
+Under the hood, `abi:electron` runs `@electron/rebuild -f -w better-sqlite3`
+from `apps/desktop` (the `-f` is required — without it the rebuild is a
+silent no-op), and `abi:node` runs `prebuild-install --runtime=node
+--target=$(node -v) --force` inside the pnpm-store copy of `better-sqlite3`.
+See `bin/README.md` for details.
 
-Running the fs-sync tests or Vitest against any service code sets Node ABI;
-launching the desktop app requires Electron ABI. Switching between the two
-takes ~5 seconds either way. A properly-wired `postinstall` on
-`@ft5/fs-sync-service` that fetches the Node prebuild would make this a
-choice of `pnpm --filter @ft5/fs-sync-service run postinstall` vs
-`pnpm --filter @ft5/desktop run postinstall`; that's a follow-up rather than
-a fix for this setup.
+A properly-wired `postinstall` on `@ft5/fs-sync-service` that fetches the
+Node prebuild would turn the Node-side flip into a standard
+`pnpm --filter @ft5/fs-sync-service run postinstall`; that's a follow-up
+rather than a fix for this setup.
 
 ## Build and package
 
