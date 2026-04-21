@@ -44,7 +44,11 @@ export type {
   ProviderMetadata,
   ProviderMetadataMap,
   Quota,
+  SerializedDatasourceError,
   StoredCredentials,
   Target,
 } from "./fs-datasource-engine.js";
-export { DatasourceError } from "./fs-datasource-engine.js";
+export {
+  DatasourceError,
+  serializeDatasourceError,
+} from "./fs-datasource-engine.js";

@@ -152,14 +152,23 @@ export type FileMetadata<T extends DatasourceType> = FileEntry<T>;
  * Intentionally file-local: this is an internal seam, not part of the
  * package's public surface. Downstream phases widen per provider.
  */
-interface CanonicalEventPayloads {
+interface CanonicalEventPayloads<T extends DatasourceType = DatasourceType> {
   uploading: unknown;
   "upload-failed": unknown;
   "file-created": unknown;
   deleted: unknown;
   "delete-failed": unknown;
   authenticated: unknown;
-  "authentication-failed": unknown;
+  /**
+   * Decision 12.4 (see design.md Open Questions — RESOLVED Phase 12).
+   * The payload carries the full serialized `DatasourceError` — not a
+   * reason string — so subscribers (audit log, telemetry, toast UI)
+   * can reconstruct retry affordances from `retryable` / `retryAfterMs`
+   * and preserve provider diagnostics via `raw`. Structured-clone across
+   * IPC drops the class identity, so consumers field-access the shape
+   * instead of using `instanceof DatasourceError`.
+   */
+  "authentication-failed": SerializedDatasourceError<T>;
   "token-refreshed": unknown;
   "token-expired": unknown;
   "status-changed": unknown;
@@ -172,11 +181,14 @@ interface CanonicalEventPayloads {
  * 6–8). The event *names* are fixed — all 11 canonical names are required on
  * every provider so generic consumers can switch on `event` without knowing
  * which provider emitted it.
+ *
+ * `authentication-failed` is pinned per-provider to `SerializedDatasourceError<T>`
+ * so narrowing on `datasourceType` carries through to the payload.
  */
 export interface PayloadMap {
-  "amazon-s3": CanonicalEventPayloads;
-  "google-drive": CanonicalEventPayloads;
-  onedrive: CanonicalEventPayloads;
+  "amazon-s3": CanonicalEventPayloads<"amazon-s3">;
+  "google-drive": CanonicalEventPayloads<"google-drive">;
+  onedrive: CanonicalEventPayloads<"onedrive">;
 }
 
 /**
@@ -337,4 +349,56 @@ export class DatasourceError<
     // super() calls. No-op on modern targets but cheap insurance.
     Object.setPrototypeOf(this, new.target.prototype);
   }
+}
+
+/**
+ * The structured-clone-safe projection of a `DatasourceError`. Emitted as the
+ * payload of `authentication-failed` events so subscribers (renderer, audit
+ * log, telemetry) receive full error context without depending on the class
+ * identity — structured-clone across IPC drops that.
+ *
+ * Decision 12.4 (design.md Open Questions — RESOLVED Phase 12): the
+ * `authentication-failed` payload is the full serialized error, not a reason
+ * string; consumers need `retryable` / `retryAfterMs` for recovery UX and
+ * `raw` for provider-specific diagnostics.
+ */
+export interface SerializedDatasourceError<
+  T extends DatasourceType = DatasourceType,
+> {
+  tag: DatasourceErrorTag;
+  datasourceType: T;
+  datasourceId: string;
+  retryable: boolean;
+  retryAfterMs?: number;
+  raw?: unknown;
+  message: string;
+}
+
+/**
+ * Project a `DatasourceError` instance into its `SerializedDatasourceError`
+ * shape. Used by the engine's base client before emitting through the bus so
+ * the same payload survives structured-clone across the IPC boundary.
+ *
+ * Honours `exactOptionalPropertyTypes`: optional fields are only set when
+ * the source error carries a concrete value, so `"retryAfterMs" in serialized`
+ * is `false` when the init did not supply one (mirroring the class's own
+ * `declare readonly` treatment).
+ */
+export function serializeDatasourceError<T extends DatasourceType>(
+  err: DatasourceError<T>,
+): SerializedDatasourceError<T> {
+  const out: SerializedDatasourceError<T> = {
+    tag: err.tag,
+    datasourceType: err.datasourceType,
+    datasourceId: err.datasourceId,
+    retryable: err.retryable,
+    message: err.message,
+  };
+  if (err.retryAfterMs !== undefined) {
+    out.retryAfterMs = err.retryAfterMs;
+  }
+  if (err.raw !== undefined) {
+    out.raw = err.raw;
+  }
+  return out;
 }

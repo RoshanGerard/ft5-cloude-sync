@@ -635,6 +635,23 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
     const names = events.map((e) => e.event);
     expect(names).toContain("token-expired");
     expect(names).toContain("authentication-failed");
+
+    // Decision 12.4: `authentication-failed` payload is the full
+    // SerializedDatasourceError shape (not a reason string). The single-
+    // flight refresh-failure path wraps the raw refresh exception into a
+    // `DatasourceError` with tag `auth-expired` before serializing —
+    // consumers receive retry affordances plus the raw cause.
+    const authFailed = events.find((e) => e.event === "authentication-failed");
+    expect(authFailed?.payload).toMatchObject({
+      tag: "auth-expired",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: expect.any(String),
+    });
+    // `raw` preserves the original refresh exception for diagnostics.
+    expect((authFailed?.payload as { raw?: unknown }).raw).toBeDefined();
+
     // Store was NOT updated with new credentials
     expect(store.putMock).not.toHaveBeenCalled();
   });
@@ -682,6 +699,20 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
     expect(names).toContain("token-expired");
     expect(names).toContain("authentication-failed");
     expect(names).not.toContain("token-refreshed");
+
+    // Decision 12.4: `authentication-failed` payload is the full
+    // SerializedDatasourceError shape — the refresh-failure path
+    // serializes a synthesized `auth-expired` DatasourceError carrying
+    // the credential-store exception as `raw`.
+    const authFailed = events.find((e) => e.event === "authentication-failed");
+    expect(authFailed?.payload).toMatchObject({
+      tag: "auth-expired",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: expect.any(String),
+    });
+    expect((authFailed?.payload as { raw?: unknown }).raw).toBeDefined();
 
     // The store.put error is only visible via the spy's rejection — it is
     // NOT re-surfaced to the caller as a distinct error.
@@ -870,6 +901,53 @@ describe("BaseDatasourceClient — authenticate", () => {
     const names = events.map((e) => e.event);
     expect(names).toContain("authentication-failed");
     expect(names).not.toContain("authenticated");
+
+    // Decision 12.4: `authentication-failed` payload is the full
+    // SerializedDatasourceError shape — the intent-completion reject
+    // path normalizes the raw submit() exception and emits the full
+    // serialized error so consumers can reconstruct recovery UX.
+    const authFailed = events.find((e) => e.event === "authentication-failed");
+    expect(authFailed?.payload).toMatchObject({
+      tag: expect.any(String),
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: expect.any(Boolean),
+      message: expect.any(String),
+    });
+
+    expect(store.putMock).not.toHaveBeenCalled();
+  });
+
+  it("emits `authentication-failed` with the full SerializedDatasourceError when `authenticate()` itself throws (pre-intent)", async () => {
+    // Decision 12.4: the general catch path in `authenticate()` — where
+    // `doAuthenticateImpl()` throws BEFORE returning an intent — also
+    // emits the full serialized error, not a reason string.
+    const { client, events, store } = makeHarness({
+      doAuthenticate: async () => {
+        throw new DatasourceError<FakeType>({
+          tag: "provider-error",
+          datasourceType: "amazon-s3",
+          datasourceId: "ds-1",
+          retryable: false,
+          raw: { providerCode: "IntentBuildFailed" },
+          message: "cannot build auth intent",
+        });
+      },
+    });
+
+    await expect(client.authenticate()).rejects.toBeInstanceOf(DatasourceError);
+
+    const authFailed = events.find((e) => e.event === "authentication-failed");
+    expect(authFailed).toBeDefined();
+    expect(authFailed?.payload).toMatchObject({
+      tag: "provider-error",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: "cannot build auth intent",
+      raw: { providerCode: "IntentBuildFailed" },
+    });
+
     expect(store.putMock).not.toHaveBeenCalled();
   });
 });

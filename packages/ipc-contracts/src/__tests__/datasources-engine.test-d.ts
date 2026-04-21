@@ -16,9 +16,12 @@ import type {
   ProviderMetadata,
   ProviderMetadataMap,
   Quota,
+  SerializedDatasourceError,
   StoredCredentials,
   Target,
 } from "../fs-datasource-engine.js";
+import { serializeDatasourceError } from "../fs-datasource-engine.js";
+import { DatasourceError } from "../fs-datasource-engine.js";
 
 describe("ipc-contracts fs-datasource-engine types — addressing", () => {
   it("DatasourceType aliases ProviderId (engine surface is provider-typed)", () => {
@@ -316,5 +319,94 @@ describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
       | "network-error"
       | "provider-error"
     >();
+  });
+
+  it("SerializedDatasourceError<T> mirrors DatasourceError's runtime-carried fields (structured-clone-safe projection)", () => {
+    // Decision 12.4 (see design.md Open Questions — RESOLVED Phase 12):
+    // the `authentication-failed` event payload carries the full serialized
+    // DatasourceError, not a bare reason string. Subscribers on the other
+    // side of IPC receive the serialized shape (structured-clone drops the
+    // class identity) and reconstruct recovery affordances via field
+    // access — `retryable`, `retryAfterMs`, `tag` — without relying on
+    // `instanceof DatasourceError`.
+    expectTypeOf<SerializedDatasourceError>().toEqualTypeOf<{
+      tag: DatasourceErrorTag;
+      datasourceType: DatasourceType;
+      datasourceId: string;
+      retryable: boolean;
+      retryAfterMs?: number;
+      raw?: unknown;
+      message: string;
+    }>();
+
+    // The generic parameter narrows `datasourceType` per-provider so the
+    // typed events preserve provenance through the bus.
+    expectTypeOf<SerializedDatasourceError<"amazon-s3">["datasourceType"]>()
+      .toEqualTypeOf<"amazon-s3">();
+    expectTypeOf<SerializedDatasourceError<"google-drive">["datasourceType"]>()
+      .toEqualTypeOf<"google-drive">();
+    expectTypeOf<SerializedDatasourceError<"onedrive">["datasourceType"]>()
+      .toEqualTypeOf<"onedrive">();
+  });
+
+  it("serializeDatasourceError projects a DatasourceError into its serialized shape", () => {
+    // Minimal — only required fields populated; optional fields must be
+    // ABSENT on the projection (not `undefined`) to honour
+    // `exactOptionalPropertyTypes`.
+    const minimal = new DatasourceError<"amazon-s3">({
+      tag: "auth-expired",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-minimal",
+      retryable: false,
+      message: "token expired",
+    });
+    const minSer = serializeDatasourceError(minimal);
+    expect(minSer).toEqual({
+      tag: "auth-expired",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-minimal",
+      retryable: false,
+      message: "token expired",
+    });
+    expect("retryAfterMs" in minSer).toBe(false);
+    expect("raw" in minSer).toBe(false);
+
+    // Full — every optional field populated survives the projection.
+    const full = new DatasourceError<"google-drive">({
+      tag: "rate-limited",
+      datasourceType: "google-drive",
+      datasourceId: "ds-full",
+      retryable: true,
+      retryAfterMs: 1500,
+      raw: { providerCode: 429 },
+      message: "slow down",
+    });
+    const fullSer = serializeDatasourceError(full);
+    expect(fullSer).toEqual({
+      tag: "rate-limited",
+      datasourceType: "google-drive",
+      datasourceId: "ds-full",
+      retryable: true,
+      retryAfterMs: 1500,
+      raw: { providerCode: 429 },
+      message: "slow down",
+    });
+
+    // Return type carries the provider generic.
+    expectTypeOf(serializeDatasourceError(full)).toEqualTypeOf<
+      SerializedDatasourceError<"google-drive">
+    >();
+  });
+
+  it("PayloadMap[T]['authentication-failed'] is SerializedDatasourceError<T> for every provider", () => {
+    // The payload is NOT a bare reason string: consumers need the full
+    // serialized error so they can reconstruct retry affordances without
+    // round-tripping the class identity through structured-clone.
+    expectTypeOf<PayloadMap["amazon-s3"]["authentication-failed"]>()
+      .toEqualTypeOf<SerializedDatasourceError<"amazon-s3">>();
+    expectTypeOf<PayloadMap["google-drive"]["authentication-failed"]>()
+      .toEqualTypeOf<SerializedDatasourceError<"google-drive">>();
+    expectTypeOf<PayloadMap["onedrive"]["authentication-failed"]>()
+      .toEqualTypeOf<SerializedDatasourceError<"onedrive">>();
   });
 });

@@ -43,7 +43,7 @@ import type {
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, serializeDatasourceError } from "@ft5/ipc-contracts";
 
 import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
@@ -244,10 +244,21 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     } catch (err) {
       const normalized = this.ensureNormalized(err);
       if (normalized.tag !== "unsupported") {
-        this.emit("authentication-failed", false, {
-          tag: normalized.tag,
-          message: normalized.message,
-        });
+        // Decision 12.4: emit the full serialized DatasourceError so
+        // subscribers receive `retryable` / `retryAfterMs` / `raw`
+        // (not a reason string). Structured-clone across IPC drops the
+        // class identity, which is why we project to a plain shape here.
+        // Cast note: TS does not distribute `PayloadMap[T]["authentication-failed"]`
+        // to `SerializedDatasourceError<T>` when T is a generic parameter
+        // (indexed-access-on-generic limitation). At every concrete
+        // instantiation the types are equal — see the test-d assertions.
+        this.emit(
+          "authentication-failed",
+          false,
+          serializeDatasourceError(
+            normalized,
+          ) as PayloadMap[T]["authentication-failed"],
+        );
       }
       throw normalized;
     }
@@ -483,10 +494,35 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       } catch (refreshErr) {
         // Refresh failed: emit both events and throw the original.
         this.emit("token-expired", false, {});
-        this.emit("authentication-failed", false, {
-          tag: "auth-expired",
-          cause: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
-        });
+        // Decision 12.4: emit the full serialized DatasourceError. The raw
+        // refresh exception is preserved under `raw` so consumers can still
+        // surface the underlying cause (replacing the old `cause: string`
+        // shape). When refresh rejected with a DatasourceError we reuse it;
+        // otherwise synthesize one tagged `auth-expired` carrying the raw.
+        const refreshNormalized: DatasourceError<T> =
+          refreshErr instanceof DatasourceError
+            ? (refreshErr as DatasourceError<T>)
+            : new DatasourceError<T>({
+                tag: "auth-expired",
+                datasourceType: this.type,
+                datasourceId: this.datasourceId,
+                retryable: false,
+                raw: refreshErr,
+                message:
+                  refreshErr instanceof Error
+                    ? refreshErr.message
+                    : String(refreshErr),
+              });
+        // Cast note: see the comment at the first emit site — TS cannot
+        // prove the indexed access reduces to `SerializedDatasourceError<T>`
+        // through a generic `T`.
+        this.emit(
+          "authentication-failed",
+          false,
+          serializeDatasourceError(
+            refreshNormalized,
+          ) as PayloadMap[T]["authentication-failed"],
+        );
         throw normalized;
       }
       // Retry once. Any error from the retry (including a second
@@ -579,10 +615,19 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
           ? (err as DatasourceError<T>)
           : this.normalizeErrorImpl(err);
       if (normalized.tag !== "unsupported") {
-        this.emit("authentication-failed", false, {
-          tag: normalized.tag,
-          message: normalized.message,
-        });
+        // Decision 12.4: emit the full serialized DatasourceError so
+        // host-side subscribers can reconstruct retry affordances from
+        // `retryable` / `retryAfterMs` (not a bare reason string).
+        // Cast note: see the comment at the first emit site — TS cannot
+        // prove the indexed access reduces to `SerializedDatasourceError<T>`
+        // through a generic `T`.
+        this.emit(
+          "authentication-failed",
+          false,
+          serializeDatasourceError(
+            normalized,
+          ) as PayloadMap[T]["authentication-failed"],
+        );
       }
       throw normalized;
     }

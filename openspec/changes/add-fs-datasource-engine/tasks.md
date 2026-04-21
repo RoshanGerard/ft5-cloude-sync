@@ -105,7 +105,7 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 ## 10. Event bridge IPC
 
-- [ ] 10.1 Add `DATASOURCES_CHANNELS.event === "datasources:event"` to `packages/ipc-contracts/src/datasources.ts`. Update the existing `datasources.test-d.ts` to assert its presence.
+- [x] 10.1 Add `DATASOURCES_CHANNELS.event === "datasources:event"` to `packages/ipc-contracts/src/datasources.ts`. Update the existing `datasources.test-d.ts` to assert its presence.
 - [ ] 10.2 RED: write a test for the main-process event forwarder that subscribes to `EngineContext.bus`, serializes events via structured-clone, and calls `BrowserWindow.webContents.send` for each active window. Cover (a) per-window broadcast, (b) dead windows are cleaned up, (c) structured-clone of `DatasourceError.raw` strips functions.
 - [ ] 10.3 GREEN: implement the forwarder in `apps/desktop/src/main/ipc/datasources/event-bridge.ts`; wire it into the main-process entrypoint after `EngineContext` construction.
 - [ ] 10.4 RED: write a preload test asserting `window.api.datasources.onEvent(cb)` delivers events over `DATASOURCES_CHANNELS.event` and returns an unsubscribe function.
@@ -117,7 +117,7 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 ## 11. Integration, cross-change note, verification
 
 - [ ] 11.1 Add an integration smoke test at `apps/desktop/src/main/ipc/__tests__/engine-smoke.test.ts` that drives a full upload round-trip against the `S3Client` (backed by `@aws-sdk/client-mock`): handler call → engine call → mock response → event bus → IPC forward → renderer callback invocation. Assert event ordering.
-- [ ] 11.2 Update `openspec/changes/ui-file-explorer/design.md` with a short cross-change note: "The real provider-backed handlers referenced here are delivered by change `add-fs-datasource-engine`; no contract conflict — the engine is called by these handlers, not a replacement for their `ipc-contracts` types."
+- [x] 11.2 Update `openspec/changes/ui-file-explorer/design.md` with a short cross-change note: "The real provider-backed handlers referenced here are delivered by change `add-fs-datasource-engine`; no contract conflict — the engine is called by these handlers, not a replacement for their `ipc-contracts` types."
 - [ ] 11.3 Run `pnpm -w typecheck`, `pnpm -w lint`, and `pnpm -w test` in the worktree. Confirm all pass.
 - [ ] 11.4 Run `openspec validate add-fs-datasource-engine --strict` and resolve any reported issues.
 - [ ] 11.5 Manually exercise the feature flag path with `DATASOURCE_ENGINE_LIVE=1 pnpm -C apps/desktop dev`: add a mock S3 datasource (access-key form), trigger a list, observe a `status-changed` or `file-created` event in the renderer DevTools, and confirm no crash / no regressions in the dashboard.
@@ -125,7 +125,7 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 ## 12. Open-question resolution (before archive)
 
-- [ ] 12.1 Concurrency: decide whether per-datasource mutation queues land in this change or a follow-up. If follow-up, capture a TODO in `design.md`'s Open Questions and leave the code path non-serialized for now.
+- [x] 12.1 Concurrency: decide whether per-datasource mutation queues land in this change or a follow-up. If follow-up, capture a TODO in `design.md`'s Open Questions and leave the code path non-serialized for now.
 - [ ] 12.2 Event replay: confirm the "late subscriber sees only future events" policy and add a renderer-side test verifying a terminal event is still delivered if subscribe happens after upload-start but before upload-completion.
-- [ ] 12.3 Cancellation: file a follow-up OpenSpec change proposal stub named `add-fs-engine-cancellation` and reference it from `design.md`'s Open Questions. Do NOT implement cancellation in this change.
-- [ ] 12.4 `authentication-failed` payload: decide whether the payload carries the full `DatasourceError` or only a reason string. Update `specs/fs-datasource-engine/spec.md` to reflect the decision before archive.
+- [x] 12.3 Cancellation: file a follow-up OpenSpec change proposal stub named `add-fs-engine-cancellation` and reference it from `design.md`'s Open Questions. Do NOT implement cancellation in this change.
+- [x] 12.4 `authentication-failed` payload: decide whether the payload carries the full `DatasourceError` or only a reason string. Update `specs/fs-datasource-engine/spec.md` to reflect the decision before archive. **RESOLVED — the payload carries the full `SerializedDatasourceError<T>`**: added `SerializedDatasourceError<T>` + `serializeDatasourceError` helper in `@ft5/ipc-contracts`, retyped every `PayloadMap[T]["authentication-failed"]` per provider, updated all three `base-client.ts` emit sites (general `authenticate()` catch, intent-completion reject, single-flight refresh failure) to emit the full serialized shape, added type-level assertions in `datasources-engine.test-d.ts`, pinned the payload shape in `base-client.test.ts`, and added the spec scenario "`authentication-failed` payload carries the full serialized error" under the `PayloadMap` requirement. See design.md Open Questions (RESOLVED Phase 12).

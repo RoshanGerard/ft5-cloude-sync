@@ -102,6 +102,11 @@ The engine SHALL define event types generically: `type DatasourceEvent<T extends
 - **WHEN** a hypothetical fourth provider is added in a test fixture by extending `PayloadMap` with a new key and registering a new strategy
 - **THEN** the engine's bus, base class, factory, and existing subscribers compile unchanged; only the new strategy and its `PayloadMap[newProvider]` entry are authored
 
+#### Scenario: `authentication-failed` payload carries the full serialized error
+
+- **WHEN** the engine emits an `authentication-failed` event (from any of: failed `authenticate()`, failed intent-completion, or failed single-flight refresh)
+- **THEN** the payload is a `SerializedDatasourceError<T>` carrying `{ tag, datasourceType, datasourceId, retryable, retryAfterMs?, raw?, message }` — not a bare reason string; subscribers reconstruct recovery affordances from the fields and do NOT rely on `instanceof DatasourceError` (structured-clone across IPC drops the class identity)
+
 ### Requirement: Streaming events are throttled at 1 second OR 10% progress delta
 
 Events tagged `streaming: true` SHALL pass through a coalescing filter in the `EventBus` keyed by `(datasourceId, transactionId)`. The filter SHALL emit the current event when EITHER (a) at least 1 second has elapsed since the previous emission for that key, OR (b) the `progress` field (if present in the payload) has changed by at least 10 percentage points since the previous emission for that key. Terminal events — events whose `event` name ends in `-created`, `-failed`, `token-refreshed`, `token-expired`, or `deleted` — SHALL bypass the throttle entirely and be delivered immediately on emission, even if a throttled event for the same key is pending.
