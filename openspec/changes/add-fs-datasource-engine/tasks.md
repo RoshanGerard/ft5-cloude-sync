@@ -110,8 +110,8 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 - [x] 10.3 GREEN: implement the forwarder in `apps/desktop/src/main/ipc/datasources/event-bridge.ts`; wire it into the main-process entrypoint after `EngineContext` construction.
 - [x] 10.4 RED: write a preload test asserting `window.api.datasources.onEvent(cb)` delivers events over `DATASOURCES_CHANNELS.event` and returns an unsubscribe function.
 - [x] 10.5 GREEN: add the `onEvent` binding to the preload's `contextBridge.exposeInMainWorld` surface. Type it using `DatasourceEvent<T, K>` from `ipc-contracts`.
-- [ ] 10.6 RED: write a renderer integration test (Vitest + `@testing-library`) subscribing via `window.api.datasources.onEvent(cb)` and asserting narrowed payload types under `switch (e.datasourceType)`.
-- [ ] 10.7 GREEN: add a tiny wrapper in `apps/desktop/src/renderer/src/features/datasources/event-stream.ts` that exports a typed `useDatasourceEvents(cb)` React hook built on `onEvent`.
+- [x] 10.6 RED: write a renderer integration test (Vitest + `@testing-library`) subscribing via `window.api.datasources.onEvent(cb)` and asserting narrowed payload types under `switch (e.datasourceType)`.
+- [x] 10.7 GREEN: add a tiny wrapper in `apps/desktop/src/renderer/src/features/datasources/event-stream.ts` that exports a typed `useDatasourceEvents(cb)` React hook built on `onEvent`.
 - [ ] 10.8 Request code review for Phase 10.
 
 ## 11. Integration, cross-change note, verification
