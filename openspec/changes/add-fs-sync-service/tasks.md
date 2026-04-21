@@ -94,12 +94,12 @@
 
 ## 10. `UploadJobExecutor`
 
-- [ ] 10.1 RED: `src/executors/upload.test.ts` — enqueue + execute against a `FakeDatasourceClient`; assert `queued → running → completed`, `uploadFile` called once with `Target { kind: 'path' }` and the source path, and `job-completed` event carries the returned `FileEntry`
-- [ ] 10.2 GREEN: implement `src/executors/upload.ts`; wire in `src/container.ts` so the scheduler dispatches by `job.kind`
-- [ ] 10.3 RED: `upload.conflict-skip.test.ts` — when fake reports "already exists" and policy is `skip`, executor completes with `skipped: true`
-- [ ] 10.4 GREEN: thread `conflictPolicy` into the upload params and handle the `skip` branch
-- [ ] 10.5 RED: `upload.no-sdk-imports.test.ts` — grep test that `services/fs-sync/src/` contains no `@aws-sdk/client-s3`, `@microsoft/microsoft-graph-client`, or `googleapis` imports
-- [ ] 10.6 GREEN: confirm executor resolves `DatasourceClient<T>` only via `ClientFactory.create`
+- [x] 10.1 RED: `src/executors/upload.test.ts` — enqueue + execute against a `FakeDatasourceClient`; assert `queued → running → completed`, `uploadFile` called once with `Target { kind: 'path' }` and the source path, and `job-completed` event carries the returned `FileEntry`
+- [x] 10.2 GREEN: implement `src/executors/upload.ts`; wire in `src/container.ts` so the scheduler dispatches by `job.kind`
+- [x] 10.3 RED: `upload.conflict-skip.test.ts` — when fake reports "already exists" and policy is `skip`, executor completes with `skipped: true`
+- [x] 10.4 GREEN: thread `conflictPolicy` into the upload params and handle the `skip` branch
+- [x] 10.5 RED: `upload.no-sdk-imports.test.ts` — grep test that `services/fs-sync/src/` contains no `@aws-sdk/client-s3`, `@microsoft/microsoft-graph-client`, or `googleapis` imports
+- [x] 10.6 GREEN: confirm executor resolves `DatasourceClient<T>` only via `ClientFactory.create`
 
 ## 11. `MirrorSyncJobExecutor` — source-health, walker, diff
 
