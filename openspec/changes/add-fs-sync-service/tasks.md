@@ -150,12 +150,12 @@
 
 ## 16. Event subscription fan-out
 
-- [ ] 16.1 RED: `src/ipc/subscriptions.test.ts` — after `sync:subscribe-events`, the client receives events written to its socket; after `sync:unsubscribe-events`, no more events arrive; closing the connection cleans up the subscription registry
-- [ ] 16.2 GREEN: implement `src/ipc/subscriptions.ts` — maintains `Set<Connection>` keyed on the internal event bus; wires the bus to the per-connection writer
-- [ ] 16.3 RED: `subscriptions.isolated-per-client.test.ts` — two clients: one subscribed, one not; only the subscribed client receives the emitted events
-- [ ] 16.4 GREEN: confirm per-connection dispatch does not leak
-- [ ] 16.5 RED: `subscriptions.disconnect-no-throw.test.ts` — closing a subscribed client's socket mid-emission does not surface `EPIPE` / `ECONNRESET` as an uncaught error
-- [ ] 16.6 GREEN: wrap writes in try/catch and remove the dead connection on any write error
+- [x] 16.1 RED: `src/ipc/subscriptions.test.ts` — after `sync:subscribe-events`, the client receives events written to its socket; after `sync:unsubscribe-events`, no more events arrive; closing the connection cleans up the subscription registry
+- [x] 16.2 GREEN: implement `src/ipc/subscriptions.ts` — maintains `Set<Connection>` keyed on the internal event bus; wires the bus to the per-connection writer
+- [x] 16.3 RED: `subscriptions.isolated-per-client.test.ts` — two clients: one subscribed, one not; only the subscribed client receives the emitted events
+- [x] 16.4 GREEN: confirm per-connection dispatch does not leak
+- [x] 16.5 RED: `subscriptions.disconnect-no-throw.test.ts` — closing a subscribed client's socket mid-emission does not surface `EPIPE` / `ECONNRESET` as an uncaught error
+- [x] 16.6 GREEN: wrap writes in try/catch and remove the dead connection on any write error
 
 ## 17. Crash recovery on startup
 
