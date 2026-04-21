@@ -136,8 +136,8 @@
 
 ## 14. Full re-upload on network retry
 
-- [ ] 14.1 RED: `src/executors/upload.resume-after-network.test.ts` — after a `network-error` at 50% progress and probe-success, the retry invocation reads the source file from byte 0 to EOF and passes no `startOffset`/`uploadId` parameter
-- [ ] 14.2 GREEN: confirm the upload executor builds its params identically on every attempt; add a comment in the code pointing to the resumable-upload follow-up
+- [x] 14.1 RED: `src/executors/upload.resume-after-network.test.ts` — after a `network-error` at 50% progress and probe-success, the retry invocation reads the source file from byte 0 to EOF and passes no `startOffset`/`uploadId` parameter
+- [x] 14.2 GREEN: confirm the upload executor builds its params identically on every attempt; add a comment in the code pointing to the resumable-upload follow-up
 
 ## 15. `MonitorEventSource` port and no-op implementation
 

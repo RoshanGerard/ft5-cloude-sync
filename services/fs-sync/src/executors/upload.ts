@@ -59,6 +59,11 @@ export function buildUploadExecutor(deps: UploadExecutorDeps): Executor {
     }
 
     try {
+      // v1 policy: full re-upload on retry. The params are identical on
+      // every attempt; there is no startOffset / uploadId / session handle.
+      // Resumable-upload sessions (S3 multipart continue / Drive / OneDrive)
+      // are a follow-up engine change. See openspec/changes/
+      // add-fs-engine-cancellation/ for the umbrella engine-side follow-up.
       const entry: DatasourceFileEntry<DatasourceType> = await client.uploadFile(
         { kind: "path", path: job.targetPath },
         { path: job.sourcePath },
