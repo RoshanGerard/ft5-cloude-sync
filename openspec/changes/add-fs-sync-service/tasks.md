@@ -40,13 +40,13 @@
 
 ## 5. SQLite database: schema, migrations, integrity
 
-- [ ] 5.1 RED: `src/db/schema.test-d.ts` — type-level assertion that Drizzle schema exports match the contract (table names, column names, nullability)
-- [ ] 5.2 GREEN: write `src/db/schema.ts` with `serviceMeta`, `jobs`, `syncSnapshot`, `retryPolicies` table definitions using Drizzle's SQLite builders
-- [ ] 5.3 RED: `src/db/migrations.test.ts` — a fresh empty DB file after `applyMigrations()` has all four tables (checked via `sqlite_master`), `service_meta` has one row with `schemaVersion = 1`, and running `applyMigrations` a second time is idempotent
-- [ ] 5.4 GREEN: author initial migration SQL under `services/fs-sync/drizzle/0001_initial.sql`; implement `src/db/migrations.ts` using Drizzle's `migrate()` helper
-- [ ] 5.5 RED: `src/db/integrity.test.ts` — seeded corrupted DB causes `openDatabase()` to reject with an error whose code/tag is `integrity-check-failed`
-- [ ] 5.6 GREEN: implement `src/db/open.ts` that opens with `journal_mode=WAL`, `synchronous=NORMAL`, runs `PRAGMA integrity_check`, and rejects on failure
-- [ ] 5.7 Wire integrity failure to service exit code `4` in `src/main/index.ts`
+- [x] 5.1 RED: `src/db/schema.test-d.ts` — type-level assertion that Drizzle schema exports match the contract (table names, column names, nullability)
+- [x] 5.2 GREEN: write `src/db/schema.ts` with `serviceMeta`, `jobs`, `syncSnapshot`, `retryPolicies` table definitions using Drizzle's SQLite builders
+- [x] 5.3 RED: `src/db/migrations.test.ts` — a fresh empty DB file after `applyMigrations()` has all four tables (checked via `sqlite_master`), `service_meta` has one row with `schemaVersion = 1`, and running `applyMigrations` a second time is idempotent
+- [x] 5.4 GREEN: author initial migration SQL under `services/fs-sync/drizzle/0001_initial.sql`; implement `src/db/migrations.ts` using Drizzle's `migrate()` helper
+- [x] 5.5 RED: `src/db/integrity.test.ts` — seeded corrupted DB causes `openDatabase()` to reject with an error whose code/tag is `integrity-check-failed`
+- [x] 5.6 GREEN: implement `src/db/open.ts` that opens with `journal_mode=WAL`, `synchronous=NORMAL`, runs `PRAGMA integrity_check`, and rejects on failure
+- [x] 5.7 Wire integrity failure to service exit code `4` in `src/main/index.ts`
 
 ## 6. Job repository and state machine
 

@@ -7,8 +7,14 @@
 //   3 — another live instance holds the PID guard
 //   4 — database integrity check failed (wired in Phase 5)
 
+import { applyMigrations } from "../db/migrations.js";
+import { DatabaseIntegrityError, openDatabase } from "../db/open.js";
 import { ensureDataDir } from "../env/ensure-dir.js";
-import { resolveDataDir, resolvePidPath } from "../env/paths.js";
+import {
+  resolveDataDir,
+  resolveDbPath,
+  resolvePidPath,
+} from "../env/paths.js";
 import {
   AlreadyRunningError,
   acquirePidGuardSync,
@@ -19,6 +25,7 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
   const mode = dev ? "dev" : "prod";
   const dataDir = resolveDataDir({ dev });
   const pidPath = resolvePidPath({ dev });
+  const dbPath = resolveDbPath({ dev });
 
   await ensureDataDir(dataDir);
 
@@ -35,12 +42,33 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
     throw err;
   }
 
-  console.log(`fs-sync-service starting (pid=${process.pid}, mode=${mode})`);
-
   try {
-    // Phase 3 scaffold: no IPC listener yet. Later phases insert the
-    // scheduler start, IPC server bind, and signal-driven shutdown here.
-    return 0;
+    // Integrity-gated DB open: any failure here is a hard-stop (exit 4),
+    // before the IPC listener is bound. Applying migrations afterward is
+    // forward-only and idempotent.
+    let db;
+    try {
+      db = openDatabase(dbPath);
+      applyMigrations(db);
+    } catch (err) {
+      if (err instanceof DatabaseIntegrityError) {
+        console.error(
+          `fs-sync-service integrity-check-failed: ${err.observed}; exiting`,
+        );
+        return 4;
+      }
+      throw err;
+    }
+
+    console.log(`fs-sync-service starting (pid=${process.pid}, mode=${mode})`);
+
+    try {
+      // Phase 5 scaffold: DB is open and migrated. Later phases insert the
+      // scheduler start, IPC server bind, and signal-driven shutdown here.
+      return 0;
+    } finally {
+      db.close();
+    }
   } finally {
     release();
   }
