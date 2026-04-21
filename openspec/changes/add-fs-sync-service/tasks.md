@@ -8,15 +8,15 @@
 
 ## 2. IPC contracts — sync-service subtree in `@ft5/ipc-contracts`
 
-- [ ] 2.1 RED: add `packages/ipc-contracts/src/sync-service/frames.test-d.ts` asserting `Request`, `Response`, `Event` discriminated unions with exact field shapes; run `pnpm -w test --run frames.test-d` and confirm typecheck failure
-- [ ] 2.2 GREEN: implement `packages/ipc-contracts/src/sync-service/frames.ts` exporting `Request`, `Response`, `Event`, `ErrorShape` types; re-export from `packages/ipc-contracts/src/index.ts` under `sync-service` subpath
-- [ ] 2.3 RED: add `commands.test-d.ts` asserting every command in the spec (`sync:enqueue-upload`, `sync:enqueue-mirror`, `sync:list-jobs`, `sync:get-job`, `sync:cancel-job`, `sync:subscribe-events`, `sync:unsubscribe-events`, `sync:set-retry-policy`, `sync:get-retry-policy`, `sync:authenticate`, `sync:get-status`) has matching request params and response result shapes as a discriminated union keyed by `command`
-- [ ] 2.4 GREEN: implement `commands.ts` with the full discriminated union; export `CommandName`, `CommandRequest<N>`, `CommandResult<N>`, `CommandError<N>`
-- [ ] 2.5 RED: add `events.test-d.ts` asserting every event name emitted by the service (`job-enqueued`, `job-started`, `job-progress`, `job-completed`, `job-failed`, `job-cancelled`, `job-recovered`, `sync-completed`, `source-unavailable`, `network-available`, `credential-store-permission-violation`) with its payload shape
-- [ ] 2.6 GREEN: implement `events.ts` with the `ServiceEvent` discriminated union and re-export
-- [ ] 2.7 RED: add `errors.test-d.ts` asserting `SyncAlreadyRunningError` shape `{ tag: 'sync-already-running', existingJobId, datasourceId, sourcePath }` and `unknown-command` shape
-- [ ] 2.8 GREEN: implement `errors.ts` with typed error shapes
-- [ ] 2.9 Verify the new contract surface compiles from a cold `tsc --ignoreConfig` invocation (bypass any stale Vitest cache per the engine Phase 1 lesson)
+- [x] 2.1 RED: add `packages/ipc-contracts/src/sync-service/frames.test-d.ts` asserting `Request`, `Response`, `Event` discriminated unions with exact field shapes; run `pnpm -w test --run frames.test-d` and confirm typecheck failure
+- [x] 2.2 GREEN: implement `packages/ipc-contracts/src/sync-service/frames.ts` exporting `Request`, `Response`, `Event`, `ErrorShape` types; re-export from `packages/ipc-contracts/src/index.ts` under `sync-service` subpath
+- [x] 2.3 RED: add `commands.test-d.ts` asserting every command in the spec (`sync:enqueue-upload`, `sync:enqueue-mirror`, `sync:list-jobs`, `sync:get-job`, `sync:cancel-job`, `sync:subscribe-events`, `sync:unsubscribe-events`, `sync:set-retry-policy`, `sync:get-retry-policy`, `sync:authenticate`, `sync:get-status`) has matching request params and response result shapes as a discriminated union keyed by `command`
+- [x] 2.4 GREEN: implement `commands.ts` with the full discriminated union; export `CommandName`, `CommandRequest<N>`, `CommandResult<N>`, `CommandError<N>`
+- [x] 2.5 RED: add `events.test-d.ts` asserting every event name emitted by the service (`job-enqueued`, `job-started`, `job-progress`, `job-completed`, `job-failed`, `job-cancelled`, `job-recovered`, `sync-completed`, `source-unavailable`, `network-available`, `credential-store-permission-violation`) with its payload shape
+- [x] 2.6 GREEN: implement `events.ts` with the `ServiceEvent` discriminated union and re-export
+- [x] 2.7 RED: add `errors.test-d.ts` asserting `SyncAlreadyRunningError` shape `{ tag: 'sync-already-running', existingJobId, datasourceId, sourcePath }` and `unknown-command` shape
+- [x] 2.8 GREEN: implement `errors.ts` with typed error shapes
+- [x] 2.9 Verify the new contract surface compiles from a cold `tsc --ignoreConfig` invocation (bypass any stale Vitest cache per the engine Phase 1 lesson)
 
 ## 3. Data directory layout and single-instance guard
 
