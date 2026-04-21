@@ -10,6 +10,11 @@
       "types": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./sync-service": {
+      "types": "./src/sync-service/index.ts",
+      "import": "./dist/sync-service/index.js",
+      "default": "./dist/sync-service/index.js"
     }
   },
   "scripts": {

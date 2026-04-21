@@ -99,11 +99,14 @@ jobs:
         uses: actions/checkout@v4
 
       # Dedicated CI guard (shell, not ESLint) enforcing the architectural
-      # rule that `drizzle-orm` must only be referenced from the Electron
-      # main process. This runs once on ubuntu-latest: drizzle import
-      # presence is OS-invariant, ubuntu is the cheapest/fastest runner, and
-      # a single guard job avoids redundant grep work across the 3-OS matrix.
-      - name: Forbid drizzle-orm outside apps/desktop/src/main/**
+      # rule that `drizzle-orm` is only referenced from contexts that own a
+      # SQLite database: the Electron main process AND the per-user sync
+      # service's db/ + main/ subtrees. This runs once on ubuntu-latest:
+      # drizzle import presence is OS-invariant, ubuntu is the cheapest/
+      # fastest runner, and a single guard job avoids redundant grep work
+      # across the 3-OS matrix. Mirror any allowlist edit in
+      # `scripts/drizzle-boundary.test.ts`.
+      - name: Forbid drizzle-orm outside approved subtrees
         shell: bash
         run: |
           set -euo pipefail
@@ -112,10 +115,14 @@ jobs:
             --include='*.mjs' --include='*.cjs' --include='*.js' --include='*.jsx' \
             --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=out \
             --exclude-dir=.next --exclude-dir=release \
-            . | grep -v '^\./apps/desktop/src/main/' || true)
+            . \
+            | grep -v '^\./apps/desktop/src/main/' \
+            | grep -v '^\./services/fs-sync/src/db/' \
+            | grep -v '^\./services/fs-sync/src/main/' \
+            || true)
           if [ -n "$bad" ]; then
-            echo "ERROR: drizzle-orm referenced outside apps/desktop/src/main/:"
+            echo "ERROR: drizzle-orm referenced outside approved subtrees:"
             echo "$bad"
             exit 1
           fi
-          echo "OK: no drizzle-orm imports outside apps/desktop/src/main/"
+          echo "OK: no drizzle-orm imports outside approved subtrees"

@@ -1,0 +1,54 @@
+// Barrel export for the sync-service IPC contract surface. Imported by the
+// service runtime (`services/fs-sync/src/`) and by any client that needs to
+// speak its protocol (including the desktop app, once wired in a follow-up
+// change).
+
+export type {
+  ErrorShape,
+  EventFrame,
+  Frame,
+  RequestFrame,
+  ResponseFrame,
+} from "./frames.js";
+
+export type {
+  BackoffStrategy,
+  CommandError,
+  CommandMap,
+  CommandName,
+  CommandParams,
+  CommandResult,
+  ConflictPolicy,
+  JobKind,
+  JobStatus,
+  JobSummary,
+  NotCancelableErrorShape,
+  NotFoundErrorShape,
+  RetryPolicy,
+  RetryPolicyScope,
+  SyncAlreadyRunningErrorShape,
+  UnknownCommandErrorShape,
+  ValidationErrorShape,
+} from "./commands.js";
+export { COMMAND_NAMES } from "./commands.js";
+
+export type {
+  CredentialStorePermissionViolationPayload,
+  EventName,
+  EventPayloadMap,
+  JobCancelledPayload,
+  JobCompletedPayload,
+  JobEnqueuedPayload,
+  JobFailedPayload,
+  JobProgressPayload,
+  JobRecoveredPayload,
+  JobStartedPayload,
+  NetworkAvailablePayload,
+  ServiceEvent,
+  SourceUnavailablePayload,
+  SyncCompletedPayload,
+} from "./events.js";
+export { EVENT_NAMES } from "./events.js";
+
+export type { ServiceErrorTag } from "./errors.js";
+export { SERVICE_ERROR_TAGS } from "./errors.js";

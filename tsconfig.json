@@ -12,6 +12,7 @@
     { "path": "packages/fs-datasource-engine" },
     { "path": "apps/desktop" },
     { "path": "apps/desktop/src/renderer" },
-    { "path": "services/fs-monitor" }
+    { "path": "services/fs-monitor" },
+    { "path": "services/fs-sync" }
   ]
 }

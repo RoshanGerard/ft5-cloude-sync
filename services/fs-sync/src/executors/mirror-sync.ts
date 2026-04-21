@@ -1,0 +1,143 @@
+// MirrorSyncJobExecutor — composes source-health + walker + diff + per-file
+// ops + snapshot update + terminal summary event.
+
+import * as path from "node:path";
+
+import type {
+  DatasourceClient,
+  DatasourceError,
+} from "@ft5/fs-datasource-engine";
+import type { DatasourceType } from "@ft5/ipc-contracts";
+
+import { SnapshotRepository } from "../jobs/snapshot-repository.js";
+import type { Executor, ExecutorResult } from "../scheduler/scheduler.js";
+
+import { diffLocalAgainstSnapshot } from "./diff.js";
+import { hashFileSha256 } from "./hasher.js";
+import { walkLocalTree } from "./local-walker.js";
+import { checkSourceHealth } from "./source-health.js";
+
+export interface MirrorSyncDeps {
+  readonly db: import("better-sqlite3").Database;
+  readonly resolveClient: (
+    datasourceId: string,
+  ) => Promise<DatasourceClient<DatasourceType>>;
+  /** Test seam for deterministic hashes. Defaults to real streaming sha256. */
+  readonly hashFile?: (absPath: string) => Promise<string>;
+}
+
+export function buildMirrorSyncExecutor(deps: MirrorSyncDeps): Executor {
+  return async (ctx): Promise<ExecutorResult> => {
+    const { job, signal, bus } = ctx;
+    const snapshots = new SnapshotRepository(deps.db);
+
+    const health = await checkSourceHealth(job.sourcePath);
+    if (health.kind === "unavailable") {
+      bus.emit("source-unavailable", {
+        jobId: job.id,
+        sourcePath: job.sourcePath,
+        errorCode: health.errorCode,
+        message: health.message,
+      });
+      return {
+        outcome: "failed",
+        errorTag: "source-unavailable",
+        errorMessage: health.message,
+      };
+    }
+
+    if (signal.aborted) return { outcome: "cancelled" };
+
+    const local = await walkLocalTree(job.sourcePath);
+    const snapshot = snapshots.listForDatasource(job.datasourceId);
+
+    const hashFile = deps.hashFile ?? ((abs: string) => hashFileSha256(abs));
+    const ops = await diffLocalAgainstSnapshot(local, snapshot, (relPath) =>
+      hashFile(path.join(job.sourcePath, relPath)),
+    );
+
+    if (signal.aborted) return { outcome: "cancelled" };
+
+    let client: DatasourceClient<DatasourceType>;
+    try {
+      client = await deps.resolveClient(job.datasourceId);
+    } catch (err) {
+      return {
+        outcome: "failed",
+        errorTag: (err as { tag?: string }).tag ?? "internal-error",
+        errorMessage: (err as { message?: string }).message ?? "resolve failed",
+      };
+    }
+
+    let uploaded = 0;
+    let updated = 0;
+    let deleted = 0;
+    let skipped = 0;
+
+    for (const op of ops) {
+      if (signal.aborted) return { outcome: "cancelled" };
+      try {
+        if (op.kind === "upload-new" || op.kind === "upload-changed") {
+          const abs = path.join(job.sourcePath, op.relPath);
+          const entry = await client.uploadFile(
+            { kind: "path", path: `${job.sourcePath}/${op.relPath}` },
+            { path: abs },
+          );
+          const sha =
+            op.kind === "upload-new"
+              ? await hashFile(abs)
+              : op.sha256;
+          snapshots.upsert(job.datasourceId, {
+            relPath: op.relPath,
+            size: op.size,
+            mtimeMs: op.mtimeMs,
+            sha256: sha,
+            remoteHandle:
+              (entry as { id?: string; path?: string }).id ??
+              (entry as { path?: string }).path ??
+              op.relPath,
+          });
+          if (op.kind === "upload-new") uploaded++;
+          else updated++;
+        } else if (op.kind === "skip") {
+          skipped++;
+        } else if (op.kind === "skip-refresh-mtime") {
+          snapshots.refreshMtime(
+            job.datasourceId,
+            op.relPath,
+            op.newMtimeMs,
+          );
+          skipped++;
+        } else {
+          // delete-remote
+          await client.deleteFile({ kind: "handle", handle: op.remoteHandle });
+          snapshots.delete(job.datasourceId, op.relPath);
+          deleted++;
+        }
+      } catch (err) {
+        const e = err as DatasourceError<DatasourceType>;
+        const tag = (e as { tag?: string }).tag ?? "internal-error";
+        const message = (e as { message?: string }).message ?? "op failed";
+        if (tag === "network-error") {
+          return {
+            outcome: "waiting-network",
+            errorTag: tag,
+            errorMessage: message,
+          };
+        }
+        return { outcome: "failed", errorTag: tag, errorMessage: message };
+      }
+    }
+
+    bus.emit("sync-completed", {
+      jobId: job.id,
+      uploaded,
+      updated,
+      deleted,
+      skipped,
+      completedAt: Date.now(),
+    });
+
+    return { outcome: "completed" };
+  };
+}

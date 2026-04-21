@@ -80,3 +80,8 @@ export {
   DatasourceError,
   serializeDatasourceError,
 } from "./fs-datasource-engine.js";
+
+// Sync-service IPC contract surface. Shipped by `add-fs-sync-service`.
+// Clients reach this via the `@ft5/ipc-contracts/sync-service` subpath
+// (see package.json `exports`).
+export * as SyncService from "./sync-service/index.js";

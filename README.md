@@ -2,6 +2,29 @@
 
 Electron desktop app that syncs a local Claude Code workspace to remote backends.
 
+## Services
+
+Two Node.js background services live under `services/`:
+
+- **`services/fs-sync`** — per-user sync daemon. Owns manual upload and
+  mirror-sync jobs: a named-pipe JSON IPC transport, SQLite-backed job
+  queue + snapshot diff, global concurrency cap of 2, retry split
+  (system-level network + rate-limit, user-level provider-error),
+  ConfigFileCredentialStore plaintext JSON at `$HOME/ft5/sync_app/
+  credentials.json` with `0600` / user-ACL enforcement, and per-OS
+  install hooks (Windows Scheduled Task, macOS LaunchAgent, Linux
+  `systemd --user`). See `services/fs-sync/README.md`.
+- **`services/fs-monitor`** — future filesystem watcher that will feed
+  auto-sync events into `services/fs-sync` via the `MonitorEventSource`
+  port. Only scaffolded in this repo; no runtime behaviour yet.
+
+Dev-mode for the sync service — run it in `--dev` mode (distinct pipe +
+data dir) alongside any installed prod service:
+
+```bash
+pnpm dev:sync-service
+```
+
 ## Native module rebuild recovery
 
 ### Fresh clone
