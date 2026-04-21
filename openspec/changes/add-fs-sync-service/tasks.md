@@ -118,12 +118,12 @@
 
 ## 12. Network probe and system-level retries
 
-- [ ] 12.1 RED: `src/retry/network-probe.test.ts` — probe is idle while `waiting-network.count === 0` (spy reports zero `dns.resolve` calls over 2 minutes with fake timers); arms on 0→>0; disarms on →0
-- [ ] 12.2 GREEN: implement `src/retry/network-probe.ts` with `setInterval`-based arming and a watcher on the repository's `waiting-network` count
-- [ ] 12.3 RED: `network-probe.success.test.ts` — probe success transitions every `waiting-network` row to `queued` in a single UPDATE and emits exactly one `network-available` event
-- [ ] 12.4 GREEN: implement the success path
-- [ ] 12.5 RED: `src/retry/system-retry.test.ts` — `network-error` → `waiting-network`, unlimited attempts gated on probe; `rate-limited` → wait `retryAfterMs` then retry once; `auth-expired` is NOT intercepted (engine handles it)
-- [ ] 12.6 GREEN: implement `src/retry/system-retry.ts`; wire into the scheduler's error-handling branch
+- [x] 12.1 RED: `src/retry/network-probe.test.ts` — probe is idle while `waiting-network.count === 0` (spy reports zero `dns.resolve` calls over 2 minutes with fake timers); arms on 0→>0; disarms on →0
+- [x] 12.2 GREEN: implement `src/retry/network-probe.ts` with `setInterval`-based arming and a watcher on the repository's `waiting-network` count
+- [x] 12.3 RED: `network-probe.success.test.ts` — probe success transitions every `waiting-network` row to `queued` in a single UPDATE and emits exactly one `network-available` event
+- [x] 12.4 GREEN: implement the success path
+- [x] 12.5 RED: `src/retry/system-retry.test.ts` — `network-error` → `waiting-network`, unlimited attempts gated on probe; `rate-limited` → wait `retryAfterMs` then retry once; `auth-expired` is NOT intercepted (engine handles it)
+- [x] 12.6 GREEN: implement `src/retry/system-retry.ts`; wire into the scheduler's error-handling branch
 
 ## 13. User-level retry policy
 
