@@ -108,8 +108,8 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 - [x] 10.1 Add `DATASOURCES_CHANNELS.event === "datasources:event"` to `packages/ipc-contracts/src/datasources.ts`. Update the existing `datasources.test-d.ts` to assert its presence.
 - [x] 10.2 RED: write a test for the main-process event forwarder that subscribes to `EngineContext.bus`, serializes events via structured-clone, and calls `BrowserWindow.webContents.send` for each active window. Cover (a) per-window broadcast, (b) dead windows are cleaned up, (c) structured-clone of `DatasourceError.raw` strips functions.
 - [x] 10.3 GREEN: implement the forwarder in `apps/desktop/src/main/ipc/datasources/event-bridge.ts`; wire it into the main-process entrypoint after `EngineContext` construction.
-- [ ] 10.4 RED: write a preload test asserting `window.api.datasources.onEvent(cb)` delivers events over `DATASOURCES_CHANNELS.event` and returns an unsubscribe function.
-- [ ] 10.5 GREEN: add the `onEvent` binding to the preload's `contextBridge.exposeInMainWorld` surface. Type it using `DatasourceEvent<T, K>` from `ipc-contracts`.
+- [x] 10.4 RED: write a preload test asserting `window.api.datasources.onEvent(cb)` delivers events over `DATASOURCES_CHANNELS.event` and returns an unsubscribe function.
+- [x] 10.5 GREEN: add the `onEvent` binding to the preload's `contextBridge.exposeInMainWorld` surface. Type it using `DatasourceEvent<T, K>` from `ipc-contracts`.
 - [ ] 10.6 RED: write a renderer integration test (Vitest + `@testing-library`) subscribing via `window.api.datasources.onEvent(cb)` and asserting narrowed payload types under `switch (e.datasourceType)`.
 - [ ] 10.7 GREEN: add a tiny wrapper in `apps/desktop/src/renderer/src/features/datasources/event-stream.ts` that exports a typed `useDatasourceEvents(cb)` React hook built on `onEvent`.
 - [ ] 10.8 Request code review for Phase 10.

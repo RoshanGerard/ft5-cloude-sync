@@ -209,6 +209,25 @@ export interface DatasourceEvent<
   payload: PayloadMap[T][K];
 }
 
+/**
+ * The union of every possible `DatasourceEvent<T, K>` across every provider
+ * in `PayloadMap`. Subscribers that don't care about a specific provider —
+ * the main-process IPC forwarder, the preload's broad `onEvent` binding, the
+ * renderer's `useDatasourceEvents` hook, audit log, telemetry — accept this
+ * widened shape and narrow via `switch (e.datasourceType)` / `switch (e.event)`.
+ *
+ * The mapped-then-indexed distribution expresses the exact same union that
+ * the engine's `EventBus` keeps locally in `event-bus.ts`; exporting it here
+ * means the preload and renderer type their callback arguments identically
+ * to the main-process bridge, without either side having to reach into the
+ * engine package (which is main-process-only).
+ */
+export type AnyDatasourceEvent = {
+  [T in DatasourceType]: {
+    [K in keyof PayloadMap[T]]: DatasourceEvent<T, K>;
+  }[keyof PayloadMap[T]];
+}[DatasourceType];
+
 // ---------------------------------------------------------------------------
 // Authentication
 // ---------------------------------------------------------------------------

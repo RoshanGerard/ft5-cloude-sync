@@ -29,6 +29,7 @@ export type {
 export { DATASOURCES_CHANNELS, providers } from "./datasources.js";
 
 export type {
+  AnyDatasourceEvent,
   AuthIntent,
   AuthResult,
   CredentialsFormIntent,

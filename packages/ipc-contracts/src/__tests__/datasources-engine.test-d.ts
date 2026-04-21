@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type {
+  AnyDatasourceEvent,
   AuthIntent,
   AuthResult,
   CredentialsFormIntent,
@@ -218,6 +219,34 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     expectTypeOf<
       DatasourceEvent<"amazon-s3", "uploading">["streaming"]
     >().toEqualTypeOf<true | undefined>();
+  });
+
+  it("AnyDatasourceEvent is the distributed union of every provider's DatasourceEvent<T, K>", () => {
+    // Every provider-narrowed event is assignable to the widened union;
+    // subscribers that don't care about a specific provider accept this
+    // shape and narrow client-side via `switch (e.datasourceType)`.
+    expectTypeOf<DatasourceEvent<"amazon-s3", "file-created">>()
+      .toMatchTypeOf<AnyDatasourceEvent>();
+    expectTypeOf<DatasourceEvent<"google-drive", "uploading">>()
+      .toMatchTypeOf<AnyDatasourceEvent>();
+    expectTypeOf<DatasourceEvent<"onedrive", "authentication-failed">>()
+      .toMatchTypeOf<AnyDatasourceEvent>();
+
+    // The discriminant field narrows on the widened union. If
+    // `AnyDatasourceEvent` ever collapses into a single provider's shape
+    // (regression: accidental narrowing of `DatasourceType` at the
+    // mapped-type head), the narrowed branches below would each reduce
+    // to `never` and the assertion would fail.
+    type ProviderBranch<T extends DatasourceType> = Extract<
+      AnyDatasourceEvent,
+      { datasourceType: T }
+    >;
+    expectTypeOf<ProviderBranch<"amazon-s3">["datasourceType"]>()
+      .toEqualTypeOf<"amazon-s3">();
+    expectTypeOf<ProviderBranch<"google-drive">["datasourceType"]>()
+      .toEqualTypeOf<"google-drive">();
+    expectTypeOf<ProviderBranch<"onedrive">["datasourceType"]>()
+      .toEqualTypeOf<"onedrive">();
   });
 
   it("DatasourceEvent narrows payload by provider via switch", () => {
