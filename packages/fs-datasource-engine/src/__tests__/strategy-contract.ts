@@ -316,5 +316,19 @@ export function runStrategyContractSuite<T extends DatasourceType>(
           e instanceof DatasourceError && e.tag === fixture.expectedAuthErrorTag,
       );
     });
+
+    it("cancelUpload against an unknown transactionId resolves silently (idempotent contract)", async () => {
+      // Cheap universal assertion that the strategy exposes `cancelUpload`
+      // and the base's idempotent-no-op path is reachable from every
+      // provider without fixture setup. Per-strategy cancel behaviour
+      // (DELETE session / Upload.abort()) is verified in each provider's
+      // own test file — this scenario guards the interface surface only.
+      fixture.resetMock();
+      const { client, events } = makeHarness();
+      await expect(
+        client.cancelUpload("tx-nonexistent"),
+      ).resolves.toBeUndefined();
+      expect(events).toHaveLength(0);
+    });
   });
 }

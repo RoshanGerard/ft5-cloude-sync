@@ -25,7 +25,7 @@ import {
   CompleteMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { mockClient } from "aws-sdk-client-mock";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   CredentialsFormIntent,
@@ -574,6 +574,53 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
     expect(names).toContain("file-created");
     // file-created emits AFTER uploading
     expect(names.indexOf("uploading")).toBeLessThan(names.indexOf("file-created"));
+  });
+
+  it("cancelUpload mid-PutObject causes Upload.abort(), emits upload-cancelled, rejects cancelled", async () => {
+    // Hold PutObject open so the base has a window to observe the cancel.
+    // When `upload.abort()` fires, lib-storage's `__doMultipartUpload` sees
+    // `abortController.signal.aborted` on resumption (since PutObject is the
+    // only in-flight work via `Promise.all(concurrentUploaders)`) and rejects
+    // the done() promise with an AbortError. No CreateMultipartUpload was
+    // issued for a small body, so no AbortMultipartUpload is needed either —
+    // the cleanup path only activates when UploadId was allocated.
+    let releasePut!: () => void;
+    s3Mock.on(PutObjectCommand).callsFake(
+      () =>
+        new Promise<{ ETag: string }>((resolve) => {
+          releasePut = () => resolve({ ETag: '"etag-never"' });
+        }),
+    );
+    const { client, events } = makeHarness();
+
+    const uploadPromise = client.uploadFile(
+      { kind: "path", path: "/uploads" },
+      { path: bigFile, name: "big.bin" },
+    );
+    // Wait for the first `uploading` event — that's the signal the tracker
+    // was created and the strategy registered its cancel closure.
+    await vi.waitFor(() => {
+      expect(
+        (events as Array<{ event: string }>).map((e) => e.event),
+      ).toContain("uploading");
+    });
+    const tx = (
+      (events as Array<{ payload: { transactionId: string } }>)[0] ?? {
+        payload: { transactionId: "" },
+      }
+    ).payload.transactionId;
+
+    await client.cancelUpload(tx);
+    // Release the pending PutObject so the test doesn't hang if the abort
+    // doesn't unwind (defensive — shouldn't be needed).
+    releasePut?.();
+
+    await expect(uploadPromise).rejects.toSatisfy(
+      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+    );
+    const names = (events as Array<{ event: string }>).map((e) => e.event);
+    expect(names).toContain("upload-cancelled");
+    expect(names).not.toContain("upload-failed");
   });
 });
 

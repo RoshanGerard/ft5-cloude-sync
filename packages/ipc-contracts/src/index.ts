@@ -75,6 +75,8 @@ export type {
   SerializedDatasourceError,
   StoredCredentials,
   Target,
+  UploadCancelReason,
+  UploadCancelledPayload,
 } from "./fs-datasource-engine.js";
 export {
   DatasourceError,

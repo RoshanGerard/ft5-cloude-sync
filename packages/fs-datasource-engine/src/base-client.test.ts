@@ -50,7 +50,9 @@ interface FakeConfig {
   doUploadFile?: (
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress?: (loaded: number, total: number) => void,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    register: (cancel: () => Promise<void>) => void,
+    signal: AbortSignal,
   ) => Promise<DatasourceFileEntry<FakeType>>;
   doDeleteFile?: (target: Target) => Promise<void>;
   doGetQuota?: () => Promise<Quota>;
@@ -102,7 +104,9 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
     (
       parent: Target,
       file: { path: string; name?: string; mimeType?: string },
-      onProgress?: (loaded: number, total: number) => void,
+      onProgress: ((loaded: number, total: number) => void) | undefined,
+      register: (cancel: () => Promise<void>) => void,
+      signal: AbortSignal,
     ) => Promise<DatasourceFileEntry<FakeType>>
   >();
   readonly doDeleteFile = vi.fn<(target: Target) => Promise<void>>();
@@ -195,9 +199,11 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   protected doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress?: (loaded: number, total: number) => void,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    register: (cancel: () => Promise<void>) => void,
+    signal: AbortSignal,
   ): Promise<DatasourceFileEntry<FakeType>> {
-    return this.doUploadFile(parent, file, onProgress);
+    return this.doUploadFile(parent, file, onProgress, register, signal);
   }
   protected doDeleteFileImpl(target: Target): Promise<void> {
     return this.doDeleteFile(target);
@@ -488,6 +494,247 @@ describe("BaseDatasourceClient — failure path emission", () => {
     // Flag: this is deliberate routing until `create-failed` is added.
     const payload = failed?.payload as { via?: string } | undefined;
     expect(payload?.via).toBe("createFile");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelUpload — in-flight cancellation
+// ---------------------------------------------------------------------------
+
+describe("BaseDatasourceClient — cancelUpload", () => {
+  it("mid-upload cancel emits upload-cancelled, skips upload-failed, rejects with cancelled tag", async () => {
+    // A fake strategy that:
+    //   1. registers a cancel closure,
+    //   2. reports progress via onProgress,
+    //   3. waits for the abort signal, then throws AbortError.
+    const closureSpy = vi.fn<() => Promise<void>>().mockResolvedValue();
+    const { client, events } = makeHarness({
+      doUploadFile: (_parent, _file, onProgress, register, signal) => {
+        register(closureSpy);
+        onProgress?.(4096, 10_000);
+        return new Promise<DatasourceFileEntry<FakeType>>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
+        });
+      },
+    });
+
+    const uploadPromise = client.uploadFile(
+      { kind: "path", path: "/" },
+      { path: "/big.bin" },
+    );
+    // Let the initial `uploading` event fire and the fake register its cancel
+    // closure before the cancel arrives.
+    await vi.waitFor(() => {
+      expect(events.map((e) => e.event)).toContain("uploading");
+    });
+    const first = events.find((e) => e.event === "uploading");
+    const tx = (first?.payload as { transactionId: string }).transactionId;
+    await client.cancelUpload(tx);
+    await expect(uploadPromise).rejects.toSatisfy(
+      (e: unknown) =>
+        e instanceof DatasourceError && e.tag === "cancelled" && !e.retryable,
+    );
+
+    expect(closureSpy).toHaveBeenCalledTimes(1);
+    const names = events.map((e) => e.event);
+    expect(names).toContain("upload-cancelled");
+    expect(names).not.toContain("upload-failed");
+    const cancelled = events.find((e) => e.event === "upload-cancelled");
+    expect(cancelled?.streaming).toBeUndefined();
+    expect(cancelled?.payload).toEqual({
+      transactionId: tx,
+      bytesUploaded: 4096,
+      bytesTotal: 10_000,
+      reason: "user",
+    });
+  });
+
+  it("cancel-before-register race: strategy not yet registered when cancel arrives", async () => {
+    // Strategy delays registration by one microtask; the caller cancels
+    // before `register` runs. The base must apply the cancel the moment
+    // register lands. The registered closure itself rejects the pending
+    // upload promise — mirroring how real strategies react to a DELETE
+    // of their session URL (the in-flight chunk PUT unwinds).
+    let rejectUpload!: (err: Error) => void;
+    const closureSpy = vi.fn<() => Promise<void>>(async () => {
+      rejectUpload(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    });
+    const { client, events } = makeHarness({
+      doUploadFile: async (_parent, _file, _op, register, signal) => {
+        // Simulate the session-init round-trip by yielding before registration.
+        await new Promise<void>((r) => setTimeout(r, 0));
+        // If the signal was aborted while we were yielding, short-circuit.
+        // Real strategies (OneDrive/Drive) hit this via `fetch(url, {signal})`
+        // throwing synchronously; the fake reconstructs the same guard.
+        if (signal.aborted) {
+          throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        }
+        register(closureSpy);
+        return new Promise<DatasourceFileEntry<FakeType>>((_resolve, reject) => {
+          rejectUpload = reject;
+        });
+      },
+    });
+
+    const upload = client.uploadFile(
+      { kind: "path", path: "/" },
+      { path: "/pending.bin" },
+    );
+    await vi.waitFor(() => {
+      expect(events.map((e) => e.event)).toContain("uploading");
+    });
+    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
+    // Cancel BEFORE the fake registers. The base aborts the signal; when the
+    // strategy's setTimeout(0) yield resolves, the fake sees `signal.aborted`
+    // and throws — mirroring a real fetch(sessionUrl, {signal}) failing
+    // synchronously on an already-aborted signal.
+    await client.cancelUpload(tx);
+    await expect(upload).rejects.toSatisfy(
+      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+    );
+
+    // The strategy bailed from its session-init guard rather than reaching
+    // the `register(closureSpy)` line — closureSpy was not called. This is
+    // correct: the abort signal fired first, no provider-side state to clean.
+    expect(closureSpy).not.toHaveBeenCalled();
+    expect(events.map((e) => e.event)).toContain("upload-cancelled");
+  });
+
+  it("cancel-before-register race with registration still reached: closure runs from register()", async () => {
+    // Variant: strategy does NOT check `signal.aborted` on yield resume; it
+    // reaches `register(cancel)` with cancelPending already set. The base
+    // invokes the closure synchronously from `register` (Decision 5 of
+    // design.md). The closure then rejects the upload.
+    //
+    // Note the deferred-reject pattern: `rejectUpload` MUST be assigned
+    // before `register(closureSpy)` runs, because the base invokes the
+    // closure synchronously from `register` when `cancelPending` is set.
+    // If we assigned `rejectUpload` inside the Promise executor AFTER
+    // `register(...)`, the closure would call a not-yet-wired reject
+    // and the upload promise would never settle.
+    let rejectUpload!: (err: Error) => void;
+    const uploadPromise = new Promise<DatasourceFileEntry<FakeType>>(
+      (_res, rej) => {
+        rejectUpload = rej;
+      },
+    );
+    const closureSpy = vi.fn<() => Promise<void>>(async () => {
+      rejectUpload(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    });
+    const { client, events } = makeHarness({
+      doUploadFile: async (_parent, _file, _op, register, signal) => {
+        // Yield once, then ALWAYS register — no signal.aborted guard.
+        await new Promise<void>((r) => setTimeout(r, 0));
+        register(closureSpy);
+        void signal;
+        return uploadPromise;
+      },
+    });
+
+    const upload = client.uploadFile(
+      { kind: "path", path: "/" },
+      { path: "/race.bin" },
+    );
+    await vi.waitFor(() => {
+      expect(events.map((e) => e.event)).toContain("uploading");
+    });
+    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
+    await client.cancelUpload(tx);
+    await expect(upload).rejects.toSatisfy(
+      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+    );
+    expect(closureSpy).toHaveBeenCalledTimes(1);
+    expect(events.map((e) => e.event)).toContain("upload-cancelled");
+  });
+
+  it("unknown transactionId resolves silently with no side effects", async () => {
+    const { client, events } = makeHarness();
+    await expect(client.cancelUpload("tx-does-not-exist")).resolves.toBeUndefined();
+    expect(events).toHaveLength(0);
+  });
+
+  it("double-cancel is idempotent — second call awaits settlement, no duplicate event", async () => {
+    const closureSpy = vi.fn<() => Promise<void>>().mockResolvedValue();
+    const { client, events } = makeHarness({
+      doUploadFile: async (_p, _f, _o, register, signal) => {
+        register(closureSpy);
+        return new Promise<DatasourceFileEntry<FakeType>>((_res, rej) =>
+          signal.addEventListener("abort", () =>
+            rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          ),
+        );
+      },
+    });
+    const upload = client.uploadFile(
+      { kind: "path", path: "/" },
+      { path: "/x.bin" },
+    );
+    await vi.waitFor(() => {
+      expect(events.map((e) => e.event)).toContain("uploading");
+    });
+    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
+    const [a, b] = await Promise.all([
+      client.cancelUpload(tx),
+      client.cancelUpload(tx),
+    ]);
+    expect(a).toBeUndefined();
+    expect(b).toBeUndefined();
+    await expect(upload).rejects.toSatisfy(
+      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+    );
+
+    // Exactly one closure invocation (race was coalesced), exactly one event.
+    expect(closureSpy).toHaveBeenCalledTimes(1);
+    expect(
+      events.filter((e) => e.event === "upload-cancelled"),
+    ).toHaveLength(1);
+  });
+
+  it("completed upload removes the tracker — cancel-after-complete is a no-op", async () => {
+    const { client, events } = makeHarness({
+      doUploadFile: async (_p, _f, _o, register, signal) => {
+        register(async () => {});
+        void signal;
+        return makeEntry("/done.txt");
+      },
+    });
+    await client.uploadFile(
+      { kind: "path", path: "/" },
+      { path: "/done.txt" },
+    );
+    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
+    await expect(client.cancelUpload(tx)).resolves.toBeUndefined();
+    expect(
+      events.filter((e) => e.event === "upload-cancelled"),
+    ).toHaveLength(0);
+    expect(events.filter((e) => e.event === "file-created")).toHaveLength(1);
+  });
+
+  it("explicit reason arg is carried through to the event payload", async () => {
+    const { client, events } = makeHarness({
+      doUploadFile: async (_p, _f, _o, register, signal) => {
+        register(async () => {});
+        return new Promise<DatasourceFileEntry<FakeType>>((_res, rej) =>
+          signal.addEventListener("abort", () =>
+            rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          ),
+        );
+      },
+    });
+    const upload = client.uploadFile(
+      { kind: "path", path: "/" },
+      { path: "/x.bin" },
+    );
+    await vi.waitFor(() => {
+      expect(events.map((e) => e.event)).toContain("uploading");
+    });
+    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
+    await client.cancelUpload(tx, "shutdown");
+    await expect(upload).rejects.toBeInstanceOf(DatasourceError);
+    const cancelled = events.find((e) => e.event === "upload-cancelled");
+    expect((cancelled?.payload as { reason: string }).reason).toBe("shutdown");
   });
 });
 

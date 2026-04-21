@@ -951,6 +951,171 @@ describe("OneDriveClient — resumable upload multi-chunk (Content-Range + isLas
 });
 
 // ---------------------------------------------------------------------------
+// cancelUpload — mid-resumable DELETE session URL
+// ---------------------------------------------------------------------------
+
+describe("OneDriveClient — cancelUpload (resumable session)", () => {
+  const CHUNK = 320 * 1024 * 32;
+
+  it("mid-chunk cancel DELETEs the session URL, emits upload-cancelled, rejects cancelled", async () => {
+    const total = 25 * 1024 * 1024; // 25 MiB — forces resumable path
+    const dir = mkdtempSync(join(tmpdir(), "od-cancel-"));
+    const file = join(dir, "huge.bin");
+    writeFileSync(file, Buffer.alloc(total, 0x42));
+
+    const { client: graphClient } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/uploads/huge.bin:/createUploadSession",
+        verbs: {
+          post: () => ({
+            uploadUrl: "https://up.example.com/session/cancel",
+            expirationDateTime: "2099-01-01T00:00:00Z",
+          }),
+        },
+      },
+    ]);
+
+    // fetchImpl: block the first PUT open, let the DELETE resolve. After
+    // DELETE fires we release the pending PUT so the test's cleanup doesn't
+    // hang — the strategy's chunk loop will observe the aborted signal /
+    // fetch rejection and throw.
+    let releasePut!: (value: Response) => void;
+    let abortedMidPut = false;
+    const deleteCalls: Array<{ url: string; method: string }> = [];
+    const fetchImpl = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (method === "DELETE") {
+          deleteCalls.push({ url: String(url), method });
+          return new Response("", { status: 204 });
+        }
+        if (method === "PUT") {
+          // Honour the signal: if it arrives aborted or is aborted while we
+          // wait, reject with an AbortError (mirrors the real fetch spec).
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            throw Object.assign(new Error("aborted"), { name: "AbortError" });
+          }
+          return await new Promise<Response>((resolve, reject) => {
+            releasePut = resolve;
+            signal?.addEventListener("abort", () => {
+              abortedMidPut = true;
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" }),
+              );
+            });
+          });
+        }
+        return new Response("unexpected", { status: 500 });
+      },
+    ) as unknown as typeof fetch;
+
+    try {
+      const h = makeHarness({ graph: graphClient, fetchImpl });
+      const uploadPromise = h.client.uploadFile(
+        { kind: "path", path: "/uploads" },
+        { path: file, name: "huge.bin" },
+      );
+
+      await vi.waitFor(() => {
+        expect(
+          (h.events as Array<{ event: string }>).map((e) => e.event),
+        ).toContain("uploading");
+      });
+      const tx = (
+        (h.events as Array<{ payload: { transactionId: string } }>)[0] ?? {
+          payload: { transactionId: "" },
+        }
+      ).payload.transactionId;
+
+      await h.client.cancelUpload(tx);
+      // Safety net if abort didn't unblock the PUT for any reason.
+      if (!abortedMidPut && typeof releasePut === "function") {
+        releasePut(new Response("", { status: 202 }));
+      }
+
+      await expect(uploadPromise).rejects.toSatisfy(
+        (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+      );
+
+      // Exactly one DELETE to the session URL.
+      expect(deleteCalls).toHaveLength(1);
+      expect(deleteCalls[0]!.url).toBe("https://up.example.com/session/cancel");
+      expect(deleteCalls[0]!.method).toBe("DELETE");
+
+      const names = (h.events as Array<{ event: string }>).map((e) => e.event);
+      expect(names).toContain("upload-cancelled");
+      expect(names).not.toContain("upload-failed");
+      // `abortedMidPut` is observational rather than load-bearing: whether
+      // the test's cancel caught the PUT mid-flight or before it started
+      // depends on microtask ordering (graph-session-post vs.
+      // cancelUpload arrival). Either path is a valid cancellation —
+      // the DELETE + cancelled-tag + cancelled-event assertions above
+      // are the invariants.
+      void abortedMidPut;
+    } finally {
+      unlinkSync(file);
+    }
+    void CHUNK;
+  });
+
+  it("small-upload (<= 4 MiB) cancel is a silent no-op (no DELETE, no upload-cancelled event)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "od-cancel-small-"));
+    const file = join(dir, "small.bin");
+    writeFileSync(file, Buffer.alloc(1024, 0x11)); // 1 KiB, well under threshold
+
+    const { client: graphClient } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/uploads/small.bin:/content",
+        verbs: {
+          put: () => ({
+            id: "small-id",
+            name: "small.bin",
+            file: { mimeType: "application/octet-stream" },
+            size: 1024,
+            lastModifiedDateTime: "2024-06-05T00:00:00Z",
+            parentReference: { path: "/drive/root:/uploads" },
+          }),
+        },
+      },
+    ]);
+    const deleteCalls: string[] = [];
+    const fetchImpl = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (method === "DELETE") {
+          deleteCalls.push(String(url));
+        }
+        return new Response("{}", { status: 200 });
+      },
+    ) as unknown as typeof fetch;
+
+    try {
+      const h = makeHarness({ graph: graphClient, fetchImpl });
+      // Complete the upload first so we can test post-completion cancel.
+      const entry = await h.client.uploadFile(
+        { kind: "path", path: "/uploads" },
+        { path: file, name: "small.bin" },
+      );
+      expect(entry.handle).toBe("small-id");
+      const tx = (
+        (h.events as Array<{ payload: { transactionId: string } }>)[0] ?? {
+          payload: { transactionId: "" },
+        }
+      ).payload.transactionId;
+
+      // After completion, the tracker is gone — cancel is a no-op.
+      await h.client.cancelUpload(tx);
+      expect(deleteCalls).toHaveLength(0);
+      const names = (h.events as Array<{ event: string }>).map((e) => e.event);
+      expect(names).not.toContain("upload-cancelled");
+    } finally {
+      unlinkSync(file);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LRU handle cache — invalidation on `deleted` and `file-created`
 // ---------------------------------------------------------------------------
 

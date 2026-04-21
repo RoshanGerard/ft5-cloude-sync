@@ -860,7 +860,24 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     name: string,
     content: { path: string },
   ): Promise<DatasourceFileEntry<"google-drive">> {
-    return this.uploadResumable(parent, name, content, undefined, undefined);
+    // `createFile` is not exposed as cancellable — it's a metadata-adjacent
+    // op, not a user-visible upload. Supply a no-op register + a
+    // never-aborted signal so `uploadResumable` can share the same
+    // codepath as `doUploadFileImpl` without also flowing cancel plumbing
+    // into the createFile surface.
+    const noopRegister = (cancel: () => Promise<void>): void => {
+      void cancel;
+    };
+    const neverAborted = new AbortController().signal;
+    return this.uploadResumable(
+      parent,
+      name,
+      content,
+      undefined,
+      undefined,
+      noopRegister,
+      neverAborted,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -870,10 +887,20 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   protected override async doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress?: (loaded: number, total: number) => void,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    register: (cancel: () => Promise<void>) => void,
+    signal: AbortSignal,
   ): Promise<DatasourceFileEntry<"google-drive">> {
     const name = file.name ?? basename(file.path);
-    return this.uploadResumable(parent, name, file, onProgress, file.mimeType);
+    return this.uploadResumable(
+      parent,
+      name,
+      file,
+      onProgress,
+      file.mimeType,
+      register,
+      signal,
+    );
   }
 
   /**
@@ -885,8 +912,10 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     parent: Target,
     name: string,
     file: { path: string; mimeType?: string },
-    onProgress?: (loaded: number, total: number) => void,
-    mimeType?: string,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    mimeType: string | undefined,
+    register: (cancel: () => Promise<void>) => void,
+    signal: AbortSignal,
   ): Promise<DatasourceFileEntry<"google-drive">> {
     const { fileId: parentFileId } = await this.resolveTarget(parent);
     let total = 0;
@@ -934,6 +963,20 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       });
     }
 
+    // Register the provider-native cancel closure. Drive documents that a
+    // DELETE to the session URL cancels the resumable session; the DELETE
+    // MUST carry a `Content-Range: bytes */<total>` header (or `*/0` when
+    // total is unknown) to match Drive's documented cancellation semantics.
+    // Errors are swallowed by the base — best-effort cleanup.
+    const cancelContentRange =
+      total > 0 ? `bytes */${total}` : `bytes */0`;
+    register(async () => {
+      await this.fetchImpl(sessionUrl, {
+        method: "DELETE",
+        headers: { "Content-Range": cancelContentRange },
+      });
+    });
+
     // Step 2: stream the file in chunks, PUT each to the session URL.
     onProgress?.(0, total);
     const stream = createReadStream(file.path, {
@@ -951,10 +994,14 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         "Content-Length": String(chunk.length),
         "Content-Range": `bytes ${start}-${end}/${totalHeader}`,
       };
+      // Thread the abort signal into each chunk PUT so the base's
+      // `cancelUpload` unblocks promptly. An already-aborted signal makes
+      // fetch reject synchronously with AbortError.
       const resp = await this.fetchImpl(sessionUrl, {
         method: "PUT",
         headers,
         body: chunk,
+        signal,
       });
       // Drive returns 308 Resume Incomplete for interim chunks (body
       // typically empty, `Range` header shows bytes received); 200/201
@@ -991,6 +1038,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         method: "PUT",
         headers,
         body: new Uint8Array(0),
+        signal,
       });
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");

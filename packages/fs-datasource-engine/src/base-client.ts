@@ -42,6 +42,7 @@ import type {
   Quota,
   StoredCredentials,
   Target,
+  UploadCancelReason,
 } from "@ft5/ipc-contracts";
 import { DatasourceError, serializeDatasourceError } from "@ft5/ipc-contracts";
 
@@ -82,6 +83,24 @@ export interface DatasourceClient<T extends DatasourceType> {
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
   ): Promise<DatasourceFileEntry<T>>;
+  /**
+   * Cancel an in-flight upload identified by `transactionId` (the value the
+   * caller received in the first `uploading` event for the upload). Resolves
+   * silently when the transaction is unknown (never started, already terminal,
+   * or cancelled previously) — `cancelUpload` is idempotent.
+   *
+   * When the transaction is in-flight, the base triggers the strategy's
+   * provider-native cancel (S3 `Upload.abort()`, OneDrive `DELETE uploadUrl`,
+   * Drive `DELETE sessionUrl`), emits exactly one terminal `upload-cancelled`
+   * event, and causes the in-flight `uploadFile(...)` promise to reject with
+   * `DatasourceError<T>{ tag: "cancelled", retryable: false }`. No
+   * `upload-failed` event fires in that path — `upload-cancelled` is its
+   * terminal analogue.
+   */
+  cancelUpload(
+    transactionId: string,
+    reason?: UploadCancelReason,
+  ): Promise<void>;
   deleteFile(target: Target): Promise<void>;
   deleteDirectory(target: Target): Promise<never>;
   getQuota(): Promise<Quota>;
@@ -103,8 +122,38 @@ export interface BaseClientInit {
 }
 
 // ---------------------------------------------------------------------------
-// Internal: emit helper carries the envelope wrapping for every method.
+// Internal: in-flight upload tracker
 // ---------------------------------------------------------------------------
+
+/**
+ * Per-upload state held by the base while `uploadFile` is running.
+ *
+ * Lifecycle, per transaction id:
+ *   1. `uploadFile` inserts a tracker before invoking `doUploadFileImpl`.
+ *   2. Strategy calls `register(cancel)`; base stores the closure in
+ *      `cancel`. If `cancelPending` is non-null at that moment the base
+ *      invokes the closure immediately (cancel-before-register race).
+ *   3. Strategy's `onProgress` ticks update `bytesUploaded` / `bytesTotal`
+ *      — those values are the ones emitted in `upload-cancelled` if the
+ *      upload terminates by cancel.
+ *   4. Either the upload completes (base removes the tracker and emits
+ *      `file-created`) OR `cancelUpload` flips `cancelPending`, aborts
+ *      the `AbortController`, and invokes `cancel?.()` — the strategy's
+ *      loop unwinds, base's `uploadFile` catch branch emits
+ *      `upload-cancelled` and removes the tracker.
+ *
+ * `settled` is a promise that resolves once the tracker leaves the map;
+ * `cancelUpload` awaits it so the caller's await reflects actual cleanup.
+ */
+interface UploadTracker {
+  bytesUploaded: number;
+  bytesTotal: number;
+  abortController: AbortController;
+  cancel: (() => Promise<void>) | null;
+  cancelPending: { reason: UploadCancelReason } | null;
+  settled: Promise<void>;
+  resolveSettled: () => void;
+}
 
 // ---------------------------------------------------------------------------
 // Template base class
@@ -124,6 +173,17 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   /** Last known status value; used so `status()` can emit `status-changed`
    * only when the value actually changes between calls. */
   private lastStatus: DatasourceStatus | null = null;
+
+  /**
+   * Trackers for in-flight uploads, keyed by `transactionId`. The base
+   * creates an entry at the start of every `uploadFile` call and removes
+   * it once the call settles (success, failure, or cancel). Concurrent
+   * uploads on the same client carry distinct transaction ids.
+   *
+   * A missing key is always interpreted as "not running" — `cancelUpload`
+   * against it is a silent no-op.
+   */
+  private readonly activeUploads = new Map<string, UploadTracker>();
 
   constructor(init: BaseClientInit) {
     this.datasourceId = init.datasourceId;
@@ -167,11 +227,31 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * throttle them per Decision 5. Strategies without per-chunk progress
    * signals MAY omit the callback entirely — the base's pre-op `uploading`
    * event plus the terminal `file-created` event still fire.
+   *
+   * `register(cancel)` hands the base a provider-native cancellation
+   * closure (e.g., `() => upload.abort()`, `() => fetch(sessionUrl,
+   * { method: "DELETE" })`). Strategies MUST call `register` exactly
+   * once per upload, as early as possible after provider-side upload
+   * state is created, so that a `cancelUpload(transactionId)` call can
+   * clean up on the provider side. Uploads that have NO long-running
+   * provider state (e.g., OneDrive's small-file `PUT /content` path)
+   * MAY omit the `register` call — a cancel against such an upload
+   * resolves as a no-op.
+   *
+   * `signal` is an `AbortSignal` the base aborts on cancel; strategies
+   * SHOULD pass it into fetch / SDK calls that accept one (Drive raw
+   * fetch, OneDrive raw fetch on chunk PUTs, S3's `new Upload({
+   * abortController })`) so in-flight HTTP requests unblock promptly
+   * when the base aborts. The `register` closure is an additional,
+   * strategy-specific cleanup step — the two mechanisms complement
+   * each other.
    */
   protected abstract doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress?: (loaded: number, total: number) => void,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    register: (cancel: () => Promise<void>) => void,
+    signal: AbortSignal,
   ): Promise<DatasourceFileEntry<T>>;
   protected abstract doDeleteFileImpl(target: Target): Promise<void>;
   protected abstract doGetQuotaImpl(): Promise<Quota>;
@@ -318,6 +398,24 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     file: { path: string; name?: string; mimeType?: string },
   ): Promise<DatasourceFileEntry<T>> {
     const transactionId = this.newTransactionId();
+    // Build the tracker BEFORE emitting `uploading` so that a cancel call
+    // that races the caller's receipt of the first event always finds the
+    // tracker present. The tracker lives in `activeUploads` for the lifetime
+    // of the upload and is removed in the finally branch.
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((r) => {
+      resolveSettled = r;
+    });
+    const tracker: UploadTracker = {
+      bytesUploaded: 0,
+      bytesTotal: 0,
+      abortController: new AbortController(),
+      cancel: null,
+      cancelPending: null,
+      settled,
+      resolveSettled,
+    };
+    this.activeUploads.set(transactionId, tracker);
     // Pre-op: streaming-flagged so the bus runs it through the coalescing
     // filter. Post-op and failure are terminal.
     this.emit("uploading", true, {
@@ -332,7 +430,19 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     // same `transactionId` so the bus coalescer at Decision 5 groups ticks
     // per-upload. `total === 0` (SDK emits progress before content-length
     // is known) is handled defensively — progress stays at 0 for that tick.
+    //
+    // The onProgress callback also captures (loaded, total) onto the
+    // tracker so that a subsequent `cancelUpload` can emit `upload-cancelled`
+    // with the last known byte counts without needing to round-trip through
+    // the strategy.
     const onProgress = (loaded: number, total: number): void => {
+      tracker.bytesUploaded = loaded;
+      tracker.bytesTotal = total;
+      // Skip emission once a cancel is in flight so the caller doesn't see
+      // a post-cancel `uploading` event after `upload-cancelled`. The base
+      // flips `cancelPending` synchronously in `cancelUpload`, so this gate
+      // is deterministic at the JS-turn boundary.
+      if (tracker.cancelPending !== null) return;
       const progress =
         total > 0 ? Math.max(0, Math.min(100, (loaded / total) * 100)) : 0;
       this.emit("uploading", true, {
@@ -341,9 +451,28 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
         path: file.path,
       });
     };
+    // `register(cancel)` lets the strategy hand the base a provider-native
+    // cancel closure. If a `cancelUpload` call already arrived (race: cancel
+    // before session-init completed), invoke the closure immediately and
+    // preserve the cancelled state for the catch branch.
+    const register = (cancel: () => Promise<void>): void => {
+      tracker.cancel = cancel;
+      if (tracker.cancelPending !== null) {
+        // Fire-and-forget; errors in the cancel closure are swallowed —
+        // the abort signal already propagated, and the base's cancelled
+        // state is the authoritative signal.
+        void cancel().catch(() => {});
+      }
+    };
     try {
       const entry = await this.withRefresh(() =>
-        this.doUploadFileImpl(parent, file, onProgress),
+        this.doUploadFileImpl(
+          parent,
+          file,
+          onProgress,
+          register,
+          tracker.abortController.signal,
+        ),
       );
       this.emit("file-created", false, {
         transactionId,
@@ -352,6 +481,25 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       });
       return entry;
     } catch (err) {
+      if (tracker.cancelPending !== null) {
+        // Cancelled path: emit `upload-cancelled` (NOT `upload-failed`) and
+        // throw a `cancelled`-tagged DatasourceError. The strategy's actual
+        // rejection (AbortError, HTTP 499, etc.) is discarded — the cancel
+        // is the canonical cause.
+        this.emit("upload-cancelled", false, {
+          transactionId,
+          bytesUploaded: tracker.bytesUploaded,
+          bytesTotal: tracker.bytesTotal,
+          reason: tracker.cancelPending.reason,
+        });
+        throw new DatasourceError<T>({
+          tag: "cancelled",
+          datasourceType: this.type,
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message: "upload cancelled",
+        });
+      }
       const normalized = this.ensureNormalized(err);
       if (normalized.tag !== "unsupported") {
         this.emit("upload-failed", false, {
@@ -361,7 +509,38 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
         });
       }
       throw normalized;
+    } finally {
+      this.activeUploads.delete(transactionId);
+      tracker.resolveSettled();
     }
+  }
+
+  async cancelUpload(
+    transactionId: string,
+    reason: UploadCancelReason = "user",
+  ): Promise<void> {
+    const tracker = this.activeUploads.get(transactionId);
+    // Unknown tx — completed, never started, or cancelled previously.
+    // Cancel is idempotent: resolve silently.
+    if (!tracker) return;
+    // Second cancel arriving while the first is unwinding: already marked,
+    // just wait for settlement.
+    if (tracker.cancelPending !== null) {
+      await tracker.settled;
+      return;
+    }
+    tracker.cancelPending = { reason };
+    tracker.abortController.abort();
+    if (tracker.cancel !== null) {
+      // Fire-and-forget; errors in the closure are swallowed. The tracker's
+      // cancelled state is the authoritative signal — a failed DELETE /
+      // abort still lets the base emit `upload-cancelled` once the strategy
+      // loop observes the abort signal and unwinds.
+      void tracker.cancel().catch(() => {});
+    }
+    // Await the upload's cleanup so the caller's `await cancelUpload(...)`
+    // reflects actual settlement (tracker removed, event emitted).
+    await tracker.settled;
   }
 
   async deleteFile(target: Target): Promise<void> {
