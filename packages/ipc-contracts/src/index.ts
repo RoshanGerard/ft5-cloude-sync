@@ -28,6 +28,9 @@ export type {
 } from "./datasources.js";
 export { DATASOURCES_CHANNELS, providers } from "./datasources.js";
 
+// UI / file-explorer-facing file primitives (non-generic). These are the
+// shapes the renderer's file-explorer feature consumes via
+// `window.api.files.*`. Shipped by the `ui-file-explorer` change.
 export type {
   EntryKind,
   FileEntry,
@@ -47,3 +50,33 @@ export type {
   MimeFamily,
 } from "./files.js";
 export { FILES_CHANNELS } from "./files.js";
+
+// Engine-facing file primitives (generic over `DatasourceType`). These live
+// alongside the UI's `FileEntry` / `MimeFamily` rather than replacing them;
+// the two serve different domains (UI display vs. provider abstraction) and
+// carry different fields. Shipped by `add-fs-datasource-engine`.
+export type {
+  AnyDatasourceEvent,
+  AuthIntent,
+  AuthResult,
+  CredentialsFormIntent,
+  DatasourceErrorInit,
+  DatasourceErrorTag,
+  DatasourceEvent,
+  DatasourceFileEntry,
+  DatasourceMimeFamily,
+  DatasourceType,
+  FileMetadata,
+  OAuthIntent,
+  PayloadMap,
+  ProviderMetadata,
+  ProviderMetadataMap,
+  Quota,
+  SerializedDatasourceError,
+  StoredCredentials,
+  Target,
+} from "./fs-datasource-engine.js";
+export {
+  DatasourceError,
+  serializeDatasourceError,
+} from "./fs-datasource-engine.js";

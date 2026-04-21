@@ -4,6 +4,7 @@
 // intentionally not shared, so renderer code never picks up Node/Electron
 // types through the preload's `.d.ts`.
 import type {
+  AnyDatasourceEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -48,6 +49,9 @@ declare global {
         onUploadProgress(
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,
+        ): () => void;
+        onEvent(
+          callback: (event: AnyDatasourceEvent) => void,
         ): () => void;
       };
       files: {

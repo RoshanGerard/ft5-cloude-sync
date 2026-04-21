@@ -5,6 +5,10 @@ import { buildMainWindowOptions } from "./window-options.js";
 import { registerIpcHandlers } from "./ipc/index.js";
 import { enforceSingleInstance } from "./single-instance.js";
 import { willNavigatePolicy, windowOpenPolicy } from "./navigation-policy.js";
+import { openDatabase, runMigrations } from "./db/database.js";
+import { DEFAULT_MIGRATIONS } from "./db/migrations.js";
+import { getEngine, initEngine } from "./datasources/engine.js";
+import { createEventBridge } from "./ipc/datasources/event-bridge.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -143,6 +147,27 @@ async function bootstrap(): Promise<void> {
   // a single relative path works in both modes (no `app.isPackaged` branch).
   const preloadPath = path.join(__dirname, "..", "preload", "index.js");
   const window = new BrowserWindow(buildMainWindowOptions(preloadPath));
+
+  // Open the main-process SQLite database + run migrations BEFORE handler
+  // registration. `initEngine(db)` then constructs the process-wide
+  // singleton (bus + credential store + registry + factory) that every IPC
+  // handler reads via `getEngine()`. Initialized once per process lifetime.
+  const dbPath = path.join(app.getPath("userData"), "ft5.db");
+  const db = openDatabase(dbPath);
+  runMigrations(db, DEFAULT_MIGRATIONS);
+  initEngine(db);
+
+  // Phase 10.3 — wire the engine's EventBus to the renderer. The bridge
+  // subscribes to `getEngine().bus` once and fans every delivered
+  // `DatasourceEvent<T, K>` out to every registered `BrowserWindow` over
+  // the one-way channel `datasources:event`. Today there's exactly one
+  // window; future multi-window work can call `eventBridge.registerWindow`
+  // on each additional window without touching this wiring.
+  const eventBridge = createEventBridge(getEngine().bus);
+  eventBridge.registerWindow(window);
+  window.on("closed", () => {
+    eventBridge.dispose();
+  });
 
   // Register IPC handlers AFTER window creation so upload progress events can
   // be routed to the correct renderer via webContents.send.

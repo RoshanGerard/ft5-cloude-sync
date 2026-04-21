@@ -9,6 +9,7 @@
   "include": [],
   "references": [
     { "path": "packages/ipc-contracts" },
+    { "path": "packages/fs-datasource-engine" },
     { "path": "apps/desktop" },
     { "path": "apps/desktop/src/renderer" },
     { "path": "services/fs-monitor" }

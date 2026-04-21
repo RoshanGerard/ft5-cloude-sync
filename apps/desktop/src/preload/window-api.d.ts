@@ -1,4 +1,5 @@
 import type {
+  AnyDatasourceEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -54,6 +55,9 @@ declare global {
         onUploadProgress(
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,
+        ): () => void;
+        onEvent(
+          callback: (event: AnyDatasourceEvent) => void,
         ): () => void;
       };
       files: {

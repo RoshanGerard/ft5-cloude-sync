@@ -19,5 +19,8 @@
   },
   "include": ["src/main/**/*.ts", "src/preload/**/*.ts"],
   "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
-  "references": [{ "path": "../../packages/ipc-contracts" }]
+  "references": [
+    { "path": "../../packages/ipc-contracts" },
+    { "path": "../../packages/fs-datasource-engine" }
+  ]
 }

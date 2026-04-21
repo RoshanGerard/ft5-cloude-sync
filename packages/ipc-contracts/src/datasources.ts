@@ -109,4 +109,10 @@ export const DATASOURCES_CHANNELS = {
   action: "datasources:action",
   upload: "datasources:upload",
   uploadProgress: "datasources:upload:progress",
+  // One-way main → renderer stream carrying `DatasourceEvent<T, K>` envelopes
+  // emitted by the FS Datasource Engine's bus. Wired up by the event bridge
+  // in Phase 10 of `openspec/changes/add-fs-datasource-engine`; declared here
+  // in Phase 1 so contract consumers can name the channel without reaching
+  // into a later-phase file.
+  event: "datasources:event",
 } as const;

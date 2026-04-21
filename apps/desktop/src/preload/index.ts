@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
+  AnyDatasourceEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -79,6 +80,29 @@ const api = {
           DATASOURCES_CHANNELS.uploadProgress,
           listener,
         );
+      };
+    },
+    // Broad subscription to the engine's event stream over
+    // `DATASOURCES_CHANNELS.event`. Unlike `onUploadProgress`, there is no
+    // filter here — every `DatasourceEvent<T, K>` that crosses the main →
+    // renderer bridge is delivered to the callback, and the caller narrows
+    // via `switch (e.datasourceType)` / `switch (e.event)`.
+    //
+    // Each invocation registers its own listener, so multiple subscribers
+    // can coexist independently; the returned dispose function removes that
+    // specific listener (not all listeners on the channel).
+    onEvent: (
+      callback: (event: AnyDatasourceEvent) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: IpcRendererEvent,
+        payload: AnyDatasourceEvent,
+      ): void => {
+        callback(payload);
+      };
+      ipcRenderer.on(DATASOURCES_CHANNELS.event, listener);
+      return () => {
+        ipcRenderer.removeListener(DATASOURCES_CHANNELS.event, listener);
       };
     },
   },

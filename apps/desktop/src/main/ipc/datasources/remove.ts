@@ -3,12 +3,13 @@ import type {
   DatasourcesRemoveResponse,
 } from "@ft5/ipc-contracts";
 
-import { removeDatasource } from "./store.js";
+import { getEngine } from "../../datasources/engine.js";
 
-export function handleDatasourcesRemove(
+export async function handleDatasourcesRemove(
   req: DatasourcesRemoveRequest,
-): DatasourcesRemoveResponse {
-  const removed = removeDatasource(req.datasourceId);
+): Promise<DatasourcesRemoveResponse> {
+  const { registry } = getEngine();
+  const removed = await registry.remove(req.datasourceId);
   if (!removed) {
     throw new Error(`datasource not found: ${req.datasourceId}`);
   }
