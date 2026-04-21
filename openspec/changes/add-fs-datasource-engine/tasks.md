@@ -118,8 +118,8 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 
 - [x] 11.1 Add an integration smoke test at `apps/desktop/src/main/ipc/__tests__/engine-smoke.test.ts` that drives a full upload round-trip against the `S3Client` (backed by `@aws-sdk/client-mock`): handler call → engine call → mock response → event bus → IPC forward → renderer callback invocation. Assert event ordering. _(Relocated to `apps/desktop/src/main/__tests__/engine-smoke.test.ts` so the test can take a `devDependency` on `@aws-sdk/client-s3` + `aws-sdk-client-mock` without tripping the Phase 9.12 guardrail walk of `ipc/`. Justification recorded in design.md under "Impact / Dependencies".)_
 - [x] 11.2 Update `openspec/changes/ui-file-explorer/design.md` with a short cross-change note: "The real provider-backed handlers referenced here are delivered by change `add-fs-datasource-engine`; no contract conflict — the engine is called by these handlers, not a replacement for their `ipc-contracts` types."
-- [ ] 11.3 Run `pnpm -w typecheck`, `pnpm -w lint`, and `pnpm -w test` in the worktree. Confirm all pass.
-- [ ] 11.4 Run `openspec validate add-fs-datasource-engine --strict` and resolve any reported issues.
+- [x] 11.3 Run `pnpm -w typecheck`, `pnpm -w lint`, and `pnpm -w test` in the worktree. Confirm all pass. (Verified 2026-04-21 after all Phase 10/11/12 work: typecheck clean, lint clean, 70 test files / 613 tests passed.)
+- [x] 11.4 Run `openspec validate add-fs-datasource-engine --strict` and resolve any reported issues. (Verified 2026-04-21: "Change 'add-fs-datasource-engine' is valid".)
 - [ ] 11.5 Manually exercise the feature flag path with `DATASOURCE_ENGINE_LIVE=1 pnpm -C apps/desktop dev`: add a mock S3 datasource (access-key form), trigger a list, observe a `status-changed` or `file-created` event in the renderer DevTools, and confirm no crash / no regressions in the dashboard.
 - [ ] 11.6 Request the final code review via `superpowers:requesting-code-review` with a consolidated summary of the full engine surface before moving to `/opsx:archive`.
 
