@@ -59,14 +59,14 @@
 
 ## 7. IPC transport: named-pipe server and framing
 
-- [ ] 7.1 RED: `src/ipc/framing.test.ts` — the line-delimited JSON codec parses a stream of two frames split across arbitrary chunk boundaries, rejects malformed JSON with a `parse-error` response, and caps single-frame size to prevent DoS
-- [ ] 7.2 GREEN: implement `src/ipc/framing.ts` as a Transform that buffers until newline, emits parsed frames, and hard-caps frame size (e.g., 10 MB)
-- [ ] 7.3 RED: `src/ipc/server.test.ts` — opening the server on a temp pipe path allows a client to connect, send a request, and receive a response correlated by id; closing the server rejects new connections
-- [ ] 7.4 GREEN: implement `src/ipc/server.ts` using `net.createServer({ allowHalfOpen: false })` with pipe path selection from `resolveSocketPath`; set Unix socket mode `0600` post-listen
-- [ ] 7.5 RED: `ipc/server.concurrent-requests.test.ts` — two concurrent requests on the same connection with ids `"a"` and `"b"` are independently correlated; responses may arrive in either order
-- [ ] 7.6 GREEN: ensure the per-connection dispatch is async-safe and does not serialize requests internally
-- [ ] 7.7 RED: `ipc/server.unknown-command.test.ts` — a request with an unrecognized `command` receives `{ ok: false, error.tag: 'unknown-command' }`
-- [ ] 7.8 GREEN: implement the central dispatcher with an exhaustive switch keyed on `CommandName`; default branch returns `unknown-command`
+- [x] 7.1 RED: `src/ipc/framing.test.ts` — the line-delimited JSON codec parses a stream of two frames split across arbitrary chunk boundaries, rejects malformed JSON with a `parse-error` response, and caps single-frame size to prevent DoS
+- [x] 7.2 GREEN: implement `src/ipc/framing.ts` as a Transform that buffers until newline, emits parsed frames, and hard-caps frame size (e.g., 10 MB)
+- [x] 7.3 RED: `src/ipc/server.test.ts` — opening the server on a temp pipe path allows a client to connect, send a request, and receive a response correlated by id; closing the server rejects new connections
+- [x] 7.4 GREEN: implement `src/ipc/server.ts` using `net.createServer({ allowHalfOpen: false })` with pipe path selection from `resolveSocketPath`; set Unix socket mode `0600` post-listen
+- [x] 7.5 RED: `ipc/server.concurrent-requests.test.ts` — two concurrent requests on the same connection with ids `"a"` and `"b"` are independently correlated; responses may arrive in either order
+- [x] 7.6 GREEN: ensure the per-connection dispatch is async-safe and does not serialize requests internally
+- [x] 7.7 RED: `ipc/server.unknown-command.test.ts` — a request with an unrecognized `command` receives `{ ok: false, error.tag: 'unknown-command' }`
+- [x] 7.8 GREEN: implement the central dispatcher with an exhaustive switch keyed on `CommandName`; default branch returns `unknown-command`
 
 ## 8. Command handlers (happy paths, no scheduler yet)
 
