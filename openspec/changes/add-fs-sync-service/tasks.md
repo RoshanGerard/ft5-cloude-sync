@@ -30,13 +30,13 @@
 
 ## 4. `ConfigFileCredentialStore`
 
-- [ ] 4.1 RED: `src/credential-store/config-file.test.ts` — `put` + `get` round-trips plaintext; the on-disk file contains the literal token strings; schema is `{ schemaVersion: 1, credentials: {...} }`
-- [ ] 4.2 GREEN: implement `src/credential-store/config-file.ts` with `get`, `put`, `delete`; atomic write via `write-temp + rename`; Unix `fchmod(0o600)` after write
-- [ ] 4.3 RED: `config-file.permissions.test.ts` (Unix-gated) — file with mode `0o644` causes `get` to throw `CredentialStorePermissionError` and emit `credential-store-permission-violation` with the observed mode; file with `0o600` proceeds normally
-- [ ] 4.4 GREEN: implement the `fs.stat` pre-check in every method and wire a permission-violation emitter onto an internal event bus
-- [ ] 4.5 RED: `config-file.atomic-crash.test.ts` — simulate crash between temp write and rename; verify the previously-committed value is still readable and the tmp file is cleaned up on the next successful write
-- [ ] 4.6 GREEN: confirm atomic-write pattern; add tmp-file cleanup on startup (unlink any leftover `credentials.json.tmp`)
-- [ ] 4.7 Verify `ConfigFileCredentialStore` is assignable to the engine's `CredentialStore` interface via a type-level assertion in `config-file.test-d.ts`
+- [x] 4.1 RED: `src/credential-store/config-file.test.ts` — `put` + `get` round-trips plaintext; the on-disk file contains the literal token strings; schema is `{ schemaVersion: 1, credentials: {...} }`
+- [x] 4.2 GREEN: implement `src/credential-store/config-file.ts` with `get`, `put`, `delete`; atomic write via `write-temp + rename`; Unix `fchmod(0o600)` after write
+- [x] 4.3 RED: `config-file.permissions.test.ts` (Unix-gated) — file with mode `0o644` causes `get` to throw `CredentialStorePermissionError` and emit `credential-store-permission-violation` with the observed mode; file with `0o600` proceeds normally
+- [x] 4.4 GREEN: implement the `fs.stat` pre-check in every method and wire a permission-violation emitter onto an internal event bus
+- [x] 4.5 RED: `config-file.atomic-crash.test.ts` — simulate crash between temp write and rename; verify the previously-committed value is still readable and the tmp file is cleaned up on the next successful write
+- [x] 4.6 GREEN: confirm atomic-write pattern; add tmp-file cleanup on startup (unlink any leftover `credentials.json.tmp`)
+- [x] 4.7 Verify `ConfigFileCredentialStore` is assignable to the engine's `CredentialStore` interface via a type-level assertion in `config-file.test-d.ts`
 
 ## 5. SQLite database: schema, migrations, integrity
 
