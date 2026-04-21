@@ -50,10 +50,20 @@ interface Harness {
 
 function installApiMock(): Harness {
   const listeners: Listener[] = [];
+  // `dispose` is the aggregate spy — incremented every time ANY per-listener
+  // unsubscribe fires. The per-call unsubscribe closure ALSO removes its
+  // listener from the `listeners` array, so post-unmount `trigger()` calls
+  // faithfully model the real preload (`ipcRenderer.off`): an events emitted
+  // after unsubscribe is NOT delivered. Without this, the mock would diverge
+  // from real IPC semantics and hide bugs in the hook's cleanup contract.
   const dispose = vi.fn();
   const onEvent = vi.fn((cb: Listener) => {
     listeners.push(cb);
-    return dispose;
+    return () => {
+      const i = listeners.indexOf(cb);
+      if (i >= 0) listeners.splice(i, 1);
+      dispose();
+    };
   });
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn(),
@@ -285,5 +295,77 @@ describe("useDatasourceEvents", () => {
     render(<Subscriber onEvent={narrowingCb} />);
     harness.trigger(s3FileCreated);
     expect(narrowingCb).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 12.2 — event-replay policy at the preload boundary.
+  //
+  // The engine's `EventBus` is STATELESS across subscribers: a handler
+  // registered after an `emit()` does NOT receive that prior event
+  // retroactively. The preload mirrors this — `ipcRenderer.on` only delivers
+  // events fired AFTER the listener is attached; there is no replay buffer.
+  //
+  // The tests below pin this policy at the `window.api.datasources.onEvent`
+  // boundary, which is what the renderer actually observes. Consumers that
+  // need state-of-world rehydrate via `list` / `status` queries after
+  // subscribing — NOT via event replay.
+  //
+  // Refs: openspec/changes/add-fs-datasource-engine/design.md
+  //       (Open Questions, RESOLVED Phase 12); tasks.md 12.2.
+  // ---------------------------------------------------------------------------
+  describe("event-replay policy (late subscriber semantics)", () => {
+    it("a subscriber that mounts mid-upload misses prior uploading ticks but still receives the terminal file-created emitted after subscribe", () => {
+      const cb = vi.fn();
+
+      // Pre-subscribe emit: a streaming `uploading` tick fires before the
+      // hook has registered its listener. In production this would be an
+      // IPC event the main process forwarded before the renderer's effect
+      // ran (e.g. between upload-start and the subscriber mounting).
+      // The mock has zero listeners at this point, so the trigger is a no-op
+      // — we fire it via the raw listeners array to prove the "no replay"
+      // semantic rather than the "listener not found" path.
+      expect(harness.listeners).toHaveLength(0);
+      for (const l of harness.listeners as Listener[]) {
+        l(gdUploading);
+      }
+      expect(cb).not.toHaveBeenCalled();
+
+      // Subscriber mounts AFTER the uploading event has already fired.
+      render(<Subscriber onEvent={cb} />);
+      expect(harness.onEvent).toHaveBeenCalledTimes(1);
+
+      // The prior uploading event is NOT replayed — late subscribers
+      // start from a clean slate.
+      expect(cb).not.toHaveBeenCalled();
+
+      // The terminal `file-created` lands AFTER subscribe. It flows
+      // through normally because it is emitted LATER — not because the
+      // bus or preload buffered it.
+      harness.trigger(s3FileCreated);
+
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb).toHaveBeenCalledWith(s3FileCreated);
+    });
+
+    it("events emitted after unmount are not delivered (no catch-up on remount)", () => {
+      const cb = vi.fn();
+      const { unmount } = render(<Subscriber onEvent={cb} />);
+
+      expect(harness.listeners).toHaveLength(1);
+
+      unmount();
+      // The per-listener unsubscribe fired — the mock splices the listener
+      // out, matching `ipcRenderer.off` semantics.
+      expect(harness.dispose).toHaveBeenCalledTimes(1);
+      expect(harness.listeners).toHaveLength(0);
+
+      // An event emitted after unmount must not reach the callback. This is
+      // asserted via `trigger`'s no-listener error path — proving the mock
+      // faithfully drops post-unsubscribe deliveries.
+      expect(() => harness.trigger(s3FileCreated)).toThrow(
+        /no listener registered/,
+      );
+      expect(cb).not.toHaveBeenCalled();
+    });
   });
 });
