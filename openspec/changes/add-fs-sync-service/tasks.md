@@ -185,12 +185,12 @@
 
 ## 20. Observability and logging
 
-- [ ] 20.1 RED: `src/observability/logger.test.ts` — logger emits JSON lines with `{ ts, level, msg, ... }`; rotation happens at 5 MB × 5 files; level gating respects `LOG_LEVEL` env
-- [ ] 20.2 GREEN: implement `src/observability/logger.ts` (hand-rolled rotation, no new dep)
-- [ ] 20.3 RED: `observability.ipc-audit.test.ts` — every incoming command logs at `debug` with the command name (params redacted for `sync:authenticate`), every response logs with `ok` + elapsed time
-- [ ] 20.4 GREEN: add the audit middleware to the command dispatcher
-- [ ] 20.5 RED: `observability.transitions.test.ts` — every job state transition logs at `info` with `{ jobId, from, to, attempt }`
-- [ ] 20.6 GREEN: wire the logger into the state machine's transition callback
+- [x] 20.1 RED: `src/observability/logger.test.ts` — logger emits JSON lines with `{ ts, level, msg, ... }`; rotation happens at 5 MB × 5 files; level gating respects `LOG_LEVEL` env
+- [x] 20.2 GREEN: implement `src/observability/logger.ts` (hand-rolled rotation, no new dep)
+- [x] 20.3 RED: `observability.ipc-audit.test.ts` — every incoming command logs at `debug` with the command name (params redacted for `sync:authenticate`), every response logs with `ok` + elapsed time
+- [x] 20.4 GREEN: add the audit middleware to the command dispatcher
+- [x] 20.5 RED: `observability.transitions.test.ts` — every job state transition logs at `info` with `{ jobId, from, to, attempt }`
+- [x] 20.6 GREEN: wire the logger into the state machine's transition callback
 
 ## 21. Integration and end-to-end tests
 
