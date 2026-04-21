@@ -70,16 +70,16 @@
 
 ## 8. Command handlers (happy paths, no scheduler yet)
 
-- [ ] 8.1 RED: `src/commands/get-status.test.ts` — handler returns `{ version, serviceUuid, runningJobs: 0, queuedJobs: 0, waitingNetworkJobs: 0, monitorConnected: false }` on a fresh DB
-- [ ] 8.2 GREEN: implement `src/commands/get-status.ts`
-- [ ] 8.3 RED: `src/commands/enqueue-upload.test.ts` — handler validates params, calls `JobRepository.insert`, returns `{ jobId }`, and emits `job-enqueued`
-- [ ] 8.4 GREEN: implement `src/commands/enqueue-upload.ts`
-- [ ] 8.5 RED: `src/commands/enqueue-mirror.test.ts` — handler applies the dedup guard, returns `SyncAlreadyRunningError` or `{ jobId }` as appropriate, emits `job-enqueued` on success only
-- [ ] 8.6 GREEN: implement `src/commands/enqueue-mirror.ts`
-- [ ] 8.7 RED: `src/commands/list-jobs.test.ts` + `src/commands/get-job.test.ts` — correct row(s) returned; unknown id returns `{ ok: false, error.tag: 'not-found' }`
-- [ ] 8.8 GREEN: implement both handlers
-- [ ] 8.9 RED: `src/commands/cancel-job.test.ts` — cancel from `queued` transitions to `cancelled` and emits `job-cancelled`; cancel from terminal status returns `{ ok: false, error.tag: 'not-cancelable' }`
-- [ ] 8.10 GREEN: implement `src/commands/cancel-job.ts`
+- [x] 8.1 RED: `src/commands/get-status.test.ts` — handler returns `{ version, serviceUuid, runningJobs: 0, queuedJobs: 0, waitingNetworkJobs: 0, monitorConnected: false }` on a fresh DB
+- [x] 8.2 GREEN: implement `src/commands/get-status.ts`
+- [x] 8.3 RED: `src/commands/enqueue-upload.test.ts` — handler validates params, calls `JobRepository.insert`, returns `{ jobId }`, and emits `job-enqueued`
+- [x] 8.4 GREEN: implement `src/commands/enqueue-upload.ts`
+- [x] 8.5 RED: `src/commands/enqueue-mirror.test.ts` — handler applies the dedup guard, returns `SyncAlreadyRunningError` or `{ jobId }` as appropriate, emits `job-enqueued` on success only
+- [x] 8.6 GREEN: implement `src/commands/enqueue-mirror.ts`
+- [x] 8.7 RED: `src/commands/list-jobs.test.ts` + `src/commands/get-job.test.ts` — correct row(s) returned; unknown id returns `{ ok: false, error.tag: 'not-found' }`
+- [x] 8.8 GREEN: implement both handlers
+- [x] 8.9 RED: `src/commands/cancel-job.test.ts` — cancel from `queued` transitions to `cancelled` and emits `job-cancelled`; cancel from terminal status returns `{ ok: false, error.tag: 'not-cancelable' }`
+- [x] 8.10 GREEN: implement `src/commands/cancel-job.ts`
 
 ## 9. Job scheduler and global semaphore
 
