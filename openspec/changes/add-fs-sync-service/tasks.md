@@ -20,13 +20,13 @@
 
 ## 3. Data directory layout and single-instance guard
 
-- [ ] 3.1 RED: `src/env/paths.test.ts` — `resolveDataDir()` returns `$HOME/ft5/sync_app` by default, honours `FT5_SYNC_DATA_DIR`, and produces dev-variant paths under `--dev`
-- [ ] 3.2 GREEN: implement `src/env/paths.ts` exporting `resolveDataDir({ dev })`, `resolveCredentialsPath`, `resolveDbPath`, `resolveSocketPath`, `resolvePidPath`, `resolveLogPath`
-- [ ] 3.3 RED: `src/env/ensure-dir.test.ts` — creates the dir on first call with mode `0700` on Unix (`(stat.mode & 0o777) === 0o700`) and user-only ACL stub on Windows (spy on `icacls`)
-- [ ] 3.4 GREEN: implement `src/env/ensure-dir.ts` using `fs.mkdir` + `fs.chmod` on Unix and an `icacls` shell-out path on Windows
-- [ ] 3.5 RED: `src/single-instance/pid-guard.test.ts` — fresh PID file gets written; live-matching PID causes `acquire()` to throw `AlreadyRunningError`; stale PID (non-matching image name) gets overwritten and `acquire()` succeeds
-- [ ] 3.6 GREEN: implement `src/single-instance/pid-guard.ts` with platform-specific live-check (`process.kill(pid, 0)` plus `ps`/`tasklist` name match)
-- [ ] 3.7 Wire `pid-guard.acquire()` into `src/main/index.ts` before any other startup work; stub exit with code `3` on collision
+- [x] 3.1 RED: `src/env/paths.test.ts` — `resolveDataDir()` returns `$HOME/ft5/sync_app` by default, honours `FT5_SYNC_DATA_DIR`, and produces dev-variant paths under `--dev`
+- [x] 3.2 GREEN: implement `src/env/paths.ts` exporting `resolveDataDir({ dev })`, `resolveCredentialsPath`, `resolveDbPath`, `resolveSocketPath`, `resolvePidPath`, `resolveLogPath`
+- [x] 3.3 RED: `src/env/ensure-dir.test.ts` — creates the dir on first call with mode `0700` on Unix (`(stat.mode & 0o777) === 0o700`) and user-only ACL stub on Windows (spy on `icacls`)
+- [x] 3.4 GREEN: implement `src/env/ensure-dir.ts` using `fs.mkdir` + `fs.chmod` on Unix and an `icacls` shell-out path on Windows
+- [x] 3.5 RED: `src/single-instance/pid-guard.test.ts` — fresh PID file gets written; live-matching PID causes `acquire()` to throw `AlreadyRunningError`; stale PID (non-matching image name) gets overwritten and `acquire()` succeeds
+- [x] 3.6 GREEN: implement `src/single-instance/pid-guard.ts` with platform-specific live-check (`process.kill(pid, 0)` plus `ps`/`tasklist` name match)
+- [x] 3.7 Wire `pid-guard.acquire()` into `src/main/index.ts` before any other startup work; stub exit with code `3` on collision
 
 ## 4. `ConfigFileCredentialStore`
 
