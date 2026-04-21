@@ -127,12 +127,12 @@
 
 ## 13. User-level retry policy
 
-- [ ] 13.1 RED: `src/commands/set-retry-policy.test.ts` + `get-retry-policy.test.ts` — store and retrieve per-scope policies; per-datasource overrides global; defaults apply when nothing set
-- [ ] 13.2 GREEN: implement both handlers and `src/retry/policy-store.ts`
-- [ ] 13.3 RED: `src/retry/user-retry.test.ts` — `provider-error` with `retryable: true` retries up to `maxAttempts` with the configured backoff; `retryable: false` fails immediately; other terminal tags (`auth-revoked`, `not-found`, `conflict`, `unsupported`) fail immediately
-- [ ] 13.4 GREEN: implement `src/retry/user-retry.ts`; wire into the scheduler after `system-retry` has declined the error
-- [ ] 13.5 RED: `user-retry.max-age.test.ts` — a job past its `maxAgeMs` fails on the next `provider-error` regardless of `attempt < maxAttempts`
-- [ ] 13.6 GREEN: add the age check to `user-retry.ts`
+- [x] 13.1 RED: `src/commands/set-retry-policy.test.ts` + `get-retry-policy.test.ts` — store and retrieve per-scope policies; per-datasource overrides global; defaults apply when nothing set
+- [x] 13.2 GREEN: implement both handlers and `src/retry/policy-store.ts`
+- [x] 13.3 RED: `src/retry/user-retry.test.ts` — `provider-error` with `retryable: true` retries up to `maxAttempts` with the configured backoff; `retryable: false` fails immediately; other terminal tags (`auth-revoked`, `not-found`, `conflict`, `unsupported`) fail immediately
+- [x] 13.4 GREEN: implement `src/retry/user-retry.ts`; wire into the scheduler after `system-retry` has declined the error
+- [x] 13.5 RED: `user-retry.max-age.test.ts` — a job past its `maxAgeMs` fails on the next `provider-error` regardless of `attempt < maxAttempts`
+- [x] 13.6 GREEN: add the age check to `user-retry.ts`
 
 ## 14. Full re-upload on network retry
 

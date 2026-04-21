@@ -13,6 +13,7 @@ import type {
 import { enqueueMirror, SyncAlreadyRunningError } from "../jobs/enqueue.js";
 import { JobRepository } from "../jobs/repository.js";
 import type { EventBus } from "../events/event-bus.js";
+import { PolicyStore } from "../retry/policy-store.js";
 import type Database from "better-sqlite3";
 
 export interface HandlersDeps {
@@ -24,6 +25,7 @@ export interface HandlersDeps {
 
 export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
   const repo = new JobRepository(deps.db);
+  const policies = new PolicyStore(deps.db);
 
   return {
     "sync:get-status": async () => ({
@@ -169,6 +171,33 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
         priorStatus: prior,
       });
       return { ok: true, result: { cancelled: true } };
+    },
+
+    "sync:set-retry-policy": async (params) => {
+      policies.upsert({
+        scope: params.scope,
+        datasourceId: params.datasourceId ?? null,
+        maxAttempts: params.maxAttempts,
+        backoffMs: params.backoffMs,
+        backoffStrategy: params.backoffStrategy,
+        maxAgeMs: params.maxAgeMs ?? null,
+      });
+      const stored = policies.get(params.scope, params.datasourceId);
+      return { ok: true, result: { policy: stored! } };
+    },
+
+    "sync:get-retry-policy": async (params) => {
+      const stored = policies.get(params.scope, params.datasourceId);
+      if (!stored) {
+        return {
+          ok: false,
+          error: {
+            tag: "not-found",
+            message: `no policy for scope=${params.scope} datasourceId=${params.datasourceId ?? ""}`,
+          },
+        };
+      }
+      return { ok: true, result: { policy: stored } };
     },
 
     "sync:subscribe-events": async (_params, _ctx) => {
