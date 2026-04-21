@@ -121,7 +121,7 @@ Scope decisions (2026-04-20): (A) `files/*` handlers are deferred — they live 
 - [x] 11.3 Run `pnpm -w typecheck`, `pnpm -w lint`, and `pnpm -w test` in the worktree. Confirm all pass. (Verified 2026-04-21 after all Phase 10/11/12 work: typecheck clean, lint clean, 70 test files / 613 tests passed.)
 - [x] 11.4 Run `openspec validate add-fs-datasource-engine --strict` and resolve any reported issues. (Verified 2026-04-21: "Change 'add-fs-datasource-engine' is valid".)
 - [ ] 11.5 Manually exercise the feature flag path with `DATASOURCE_ENGINE_LIVE=1 pnpm -C apps/desktop dev`: add a mock S3 datasource (access-key form), trigger a list, observe a `status-changed` or `file-created` event in the renderer DevTools, and confirm no crash / no regressions in the dashboard.
-- [ ] 11.6 Request the final code review via `superpowers:requesting-code-review` with a consolidated summary of the full engine surface before moving to `/opsx:archive`.
+- [x] 11.6 Request the final code review via `superpowers:requesting-code-review` with a consolidated summary of the full engine surface before moving to `/opsx:archive`. Review ran against `e618ddc..HEAD` covering the entire 12-phase change. Verdict: **Ready to archive** — no Critical or Important issues. Three Minor cross-cutting findings (S3 `normalizeError` skipping `auth-expired` on purpose, OneDrive `quotaLimitReached` degrading to `provider-error`, and a latent `dispose()` leak risk once a caching handler lands) plus a follow-up debt list have been folded into `design.md` under a new `## Known debt for follow-ups` section. typecheck / lint / full test suite (70 files, 613 tests) all green; `openspec validate --strict` valid.
 
 ## 12. Open-question resolution (before archive)
 
