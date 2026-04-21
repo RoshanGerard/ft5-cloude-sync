@@ -7,7 +7,8 @@ import { enforceSingleInstance } from "./single-instance.js";
 import { willNavigatePolicy, windowOpenPolicy } from "./navigation-policy.js";
 import { openDatabase, runMigrations } from "./db/database.js";
 import { DEFAULT_MIGRATIONS } from "./db/migrations.js";
-import { initEngine } from "./datasources/engine.js";
+import { getEngine, initEngine } from "./datasources/engine.js";
+import { createEventBridge } from "./ipc/datasources/event-bridge.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -155,6 +156,18 @@ async function bootstrap(): Promise<void> {
   const db = openDatabase(dbPath);
   runMigrations(db, DEFAULT_MIGRATIONS);
   initEngine(db);
+
+  // Phase 10.3 — wire the engine's EventBus to the renderer. The bridge
+  // subscribes to `getEngine().bus` once and fans every delivered
+  // `DatasourceEvent<T, K>` out to every registered `BrowserWindow` over
+  // the one-way channel `datasources:event`. Today there's exactly one
+  // window; future multi-window work can call `eventBridge.registerWindow`
+  // on each additional window without touching this wiring.
+  const eventBridge = createEventBridge(getEngine().bus);
+  eventBridge.registerWindow(window);
+  window.on("closed", () => {
+    eventBridge.dispose();
+  });
 
   // Register IPC handlers AFTER window creation so upload progress events can
   // be routed to the correct renderer via webContents.send.
