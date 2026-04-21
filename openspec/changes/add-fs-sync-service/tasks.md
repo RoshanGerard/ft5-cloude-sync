@@ -174,14 +174,14 @@
 
 ## 19. Install and uninstall hooks
 
-- [ ] 19.1 RED: `installer/windows/register.test.ts` (Win-gated in CI) — hook registers a Scheduled Task `"ft5-sync"` with `/SC ONLOGON` and `/RL LIMITED`; task's "Run as user" matches the current user; no UAC prompt needed
-- [ ] 19.2 GREEN: implement `services/fs-sync/installer/windows/register.ps1` + `unregister.ps1` using `schtasks`; wire them into `apps/desktop`'s electron-builder `afterInstall` / `afterUninstall` hooks on Win
-- [ ] 19.3 RED: `installer/macos/register.test.ts` (macOS-gated) — hook writes the plist and `launchctl list` finds `tech.forti5.ft5-sync`
-- [ ] 19.4 GREEN: implement `services/fs-sync/installer/macos/register.sh` + `unregister.sh`; wire into electron-builder
-- [ ] 19.5 RED: `installer/linux/register.test.ts` (Linux-gated) — hook writes `~/.config/systemd/user/ft5-sync.service`, runs `systemctl --user enable --now`, and `loginctl show-user` reports `Linger=yes`
-- [ ] 19.6 GREEN: implement `services/fs-sync/installer/linux/register.sh` + `unregister.sh`; fall back to `~/.config/autostart/ft5-sync.desktop` when `systemd --user` is unavailable (log the fallback)
-- [ ] 19.7 RED: `installer.uninstall.test.ts` (all platforms) — after uninstall, the per-OS query reports no entry and the registration file is gone
-- [ ] 19.8 GREEN: confirm unregister scripts are idempotent (no error if already removed)
+- [x] 19.1 RED: `installer/windows/register.test.ts` (Win-gated in CI) — hook registers a Scheduled Task `"ft5-sync"` with `/SC ONLOGON` and `/RL LIMITED`; task's "Run as user" matches the current user; no UAC prompt needed
+- [x] 19.2 GREEN: implement `services/fs-sync/installer/windows/register.ps1` + `unregister.ps1` using `schtasks`; wire them into `apps/desktop`'s electron-builder `afterInstall` / `afterUninstall` hooks on Win
+- [x] 19.3 RED: `installer/macos/register.test.ts` (macOS-gated) — hook writes the plist and `launchctl list` finds `tech.forti5.ft5-sync`
+- [x] 19.4 GREEN: implement `services/fs-sync/installer/macos/register.sh` + `unregister.sh`; wire into electron-builder
+- [x] 19.5 RED: `installer/linux/register.test.ts` (Linux-gated) — hook writes `~/.config/systemd/user/ft5-sync.service`, runs `systemctl --user enable --now`, and `loginctl show-user` reports `Linger=yes`
+- [x] 19.6 GREEN: implement `services/fs-sync/installer/linux/register.sh` + `unregister.sh`; fall back to `~/.config/autostart/ft5-sync.desktop` when `systemd --user` is unavailable (log the fallback)
+- [x] 19.7 RED: `installer.uninstall.test.ts` (all platforms) — after uninstall, the per-OS query reports no entry and the registration file is gone
+- [x] 19.8 GREEN: confirm unregister scripts are idempotent (no error if already removed)
 
 ## 20. Observability and logging
 
