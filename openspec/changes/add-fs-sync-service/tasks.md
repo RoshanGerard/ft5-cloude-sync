@@ -1,6 +1,6 @@
 ## 1. Package scaffold and workspace wiring
 
-- [ ] 1.1 Create `services/fs-sync/` with `package.json` (`name: "@ft5/fs-sync-service"`, `private: true`, `type: "module"`), `tsconfig.json` extending the repo base with strict TS, and an empty `src/` tree; add the new workspace to `pnpm-workspace.yaml`
+- [x] 1.1 Create `services/fs-sync/` with `package.json` (`name: "@ft5/fs-sync-service"`, `private: true`, `type: "module"`), `tsconfig.json` extending the repo base with strict TS, and an empty `src/` tree; add the new workspace to `pnpm-workspace.yaml`
 - [ ] 1.2 Add runtime deps (`drizzle-orm`, `better-sqlite3`) and dev deps (`@types/better-sqlite3`, `vitest`, `@ft5/ipc-contracts` via workspace, `@ft5/fs-datasource-engine` via workspace); verify `pnpm install` resolves without network pulls for workspace deps
 - [ ] 1.3 Add a `vitest.config.ts` for the service with `environment: 'node'`, test glob covering `src/**/*.test.ts` and `src/**/*.test-d.ts`, and the `typecheck: { enabled: true }` block matching the engine package's config
 - [ ] 1.4 Add `services/fs-sync/src/main/index.ts` stub that logs `"fs-sync-service starting"` and exits 0; verify `pnpm --filter @ft5/fs-sync-service build` succeeds
