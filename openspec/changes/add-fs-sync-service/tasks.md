@@ -50,12 +50,12 @@
 
 ## 6. Job repository and state machine
 
-- [ ] 6.1 RED: `src/jobs/repository.test.ts` — `insert`, `getById`, `listByStatus`, `transition` all round-trip through SQLite; `transition` validates legal edges
-- [ ] 6.2 GREEN: implement `src/jobs/repository.ts` (the DAO — pure Drizzle queries, no business logic)
-- [ ] 6.3 RED: `src/jobs/state-machine.test.ts` — every legal transition listed in the spec succeeds; every illegal transition throws `IllegalJobTransitionError` before any DB write
-- [ ] 6.4 GREEN: implement `src/jobs/state-machine.ts` with an explicit adjacency map and a `transition(from, to)` guard
-- [ ] 6.5 RED: `src/jobs/dedup.test.ts` — concurrent `enqueueMirror` for the same `(datasourceId, sourcePath)` with one already in `queued` returns `SyncAlreadyRunningError`; different sourcePath succeeds; upload enqueues do not dedup
-- [ ] 6.6 GREEN: implement `src/jobs/enqueue.ts` with `BEGIN IMMEDIATE` transaction wrapping the dedup query and INSERT
+- [x] 6.1 RED: `src/jobs/repository.test.ts` — `insert`, `getById`, `listByStatus`, `transition` all round-trip through SQLite; `transition` validates legal edges
+- [x] 6.2 GREEN: implement `src/jobs/repository.ts` (the DAO — pure Drizzle queries, no business logic)
+- [x] 6.3 RED: `src/jobs/state-machine.test.ts` — every legal transition listed in the spec succeeds; every illegal transition throws `IllegalJobTransitionError` before any DB write
+- [x] 6.4 GREEN: implement `src/jobs/state-machine.ts` with an explicit adjacency map and a `transition(from, to)` guard
+- [x] 6.5 RED: `src/jobs/dedup.test.ts` — concurrent `enqueueMirror` for the same `(datasourceId, sourcePath)` with one already in `queued` returns `SyncAlreadyRunningError`; different sourcePath succeeds; upload enqueues do not dedup
+- [x] 6.6 GREEN: implement `src/jobs/enqueue.ts` with `BEGIN IMMEDIATE` transaction wrapping the dedup query and INSERT
 
 ## 7. IPC transport: named-pipe server and framing
 
