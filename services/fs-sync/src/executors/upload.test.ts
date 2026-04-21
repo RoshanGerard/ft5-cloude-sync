@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEventBus, type EventBus } from "../events/event-bus.js";
 import type {
-  Executor,
   ExecutorCtx,
   ExecutorResult,
 } from "../scheduler/scheduler.js";

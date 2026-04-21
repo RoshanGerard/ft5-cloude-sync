@@ -203,10 +203,10 @@
 
 ## 22. Verification and polish
 
-- [ ] 22.1 Run `pnpm -w lint` and `pnpm -w typecheck` across the entire repo; fix any drift introduced in `@ft5/ipc-contracts` consumers (should be none, since all additions are subpath-scoped)
-- [ ] 22.2 Run `pnpm -w test --run` — full suite passes
-- [ ] 22.3 Run `openspec validate add-fs-sync-service --strict` — passes
-- [ ] 22.4 Manually walk through the service on one of each supported OS in a VM: install → enqueue upload via a hand-crafted IPC client → observe completion → uninstall → confirm no residual files beyond the user's data dir
-- [ ] 22.5 Update `services/fs-sync/README.md` with the IPC surface, the data-dir layout, the dev-mode command, and the known-limitation on plaintext credentials with a pointer to the migration follow-up
-- [ ] 22.6 Update root `README.md` section on services to list `services/fs-sync` alongside `services/fs-monitor`
-- [ ] 22.7 Run `superpowers:finishing-a-development-branch` to decide merge/PR/archive; archive the change in the worktree before merging
+- [x] 22.1 Run `pnpm -w lint` and `pnpm -w typecheck` across the entire repo; fix any drift introduced in `@ft5/ipc-contracts` consumers (should be none, since all additions are subpath-scoped)
+- [x] 22.2 Run `pnpm -w test --run` — full suite passes
+- [x] 22.3 Run `openspec validate add-fs-sync-service --strict` — passes
+- [ ] 22.4 Manually walk through the service on one of each supported OS in a VM: install → enqueue upload via a hand-crafted IPC client → observe completion → uninstall → confirm no residual files beyond the user's data dir — *deferred: requires per-OS VM matrix, out of reach from this session. Follow-up once CI runners are wired.*
+- [x] 22.5 Update `services/fs-sync/README.md` with the IPC surface, the data-dir layout, the dev-mode command, and the known-limitation on plaintext credentials with a pointer to the migration follow-up
+- [x] 22.6 Update root `README.md` section on services to list `services/fs-sync` alongside `services/fs-monitor`
+- [ ] 22.7 Run `superpowers:finishing-a-development-branch` to decide merge/PR/archive; archive the change in the worktree before merging — *in-progress; handled outside this commit*

@@ -144,7 +144,7 @@ describe("IPC server — round-trip", () => {
 
   it("handles two concurrent requests on the same connection (out-of-order ok)", async () => {
     const order: string[] = [];
-    const handler: CommandHandler<"sync:get-status"> = async (_params, _ctx) => {
+    const handler: CommandHandler<"sync:get-status"> = async () => {
       // First request (id "a") should still be pending when the second
       // (id "b") arrives; we introduce a gate so b finishes first.
       return await new Promise((resolve) => {

@@ -8,10 +8,12 @@ import type {
 } from "./monitor.js";
 
 export class NoopMonitorEventSource implements MonitorEventSource {
-  onChange(_listener: (e: MonitorChangeEvent) => void): () => void {
+  onChange(listener: (e: MonitorChangeEvent) => void): () => void {
+    void listener;
     return () => void 0;
   }
-  onSnapshot(_listener: (e: MonitorSnapshotEvent) => void): () => void {
+  onSnapshot(listener: (e: MonitorSnapshotEvent) => void): () => void {
+    void listener;
     return () => void 0;
   }
   async start(): Promise<void> {

@@ -200,7 +200,7 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       return { ok: true, result: { policy: stored } };
     },
 
-    "sync:subscribe-events": async (_params, _ctx) => {
+    "sync:subscribe-events": async () => {
       // Subscription wiring lands in phase 16 — for v1 of this file we
       // accept the subscribe and return ok. The connection-level event
       // fan-out is installed in that phase; until then, broadcast via
