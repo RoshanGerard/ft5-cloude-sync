@@ -166,11 +166,11 @@
 
 ## 18. Dev mode
 
-- [ ] 18.1 RED: `src/main/dev-mode.test.ts` — launching with `--dev` selects the dev pipe path, dev data dir (`$HOME/ft5/sync_app/dev/`), and dev PID file (`service-dev.pid`); launching without `--dev` uses prod paths
-- [ ] 18.2 GREEN: implement the `--dev` argv parse in `src/main/index.ts`; propagate a `dev: boolean` flag through `resolveDataDir`, `resolveSocketPath`, `resolvePidPath`
-- [ ] 18.3 RED: `dev-mode.coexist.test.ts` — starting a dev service with a prod service already running succeeds; both serve their respective pipes concurrently
-- [ ] 18.4 GREEN: confirm the two PID files and two pipe paths are fully independent
-- [ ] 18.5 Add `pnpm dev:sync-service` root script that runs `node --enable-source-maps services/fs-sync/dist/main.js --dev`; verify it launches cleanly on each supported OS in CI
+- [x] 18.1 RED: `src/main/dev-mode.test.ts` — launching with `--dev` selects the dev pipe path, dev data dir (`$HOME/ft5/sync_app/dev/`), and dev PID file (`service-dev.pid`); launching without `--dev` uses prod paths
+- [x] 18.2 GREEN: implement the `--dev` argv parse in `src/main/index.ts`; propagate a `dev: boolean` flag through `resolveDataDir`, `resolveSocketPath`, `resolvePidPath`
+- [x] 18.3 RED: `dev-mode.coexist.test.ts` — starting a dev service with a prod service already running succeeds; both serve their respective pipes concurrently
+- [x] 18.4 GREEN: confirm the two PID files and two pipe paths are fully independent
+- [x] 18.5 Add `pnpm dev:sync-service` root script that runs `node --enable-source-maps services/fs-sync/dist/main.js --dev`; verify it launches cleanly on each supported OS in CI
 
 ## 19. Install and uninstall hooks
 
