@@ -159,10 +159,10 @@
 
 ## 17. Crash recovery on startup
 
-- [ ] 17.1 RED: `src/startup/recovery.test.ts` — seeded DB with 2 `running` rows + 1 `completed` row → after startup, the two are `queued` with `attempt++` and `lastErrorTag = 'service-restart'`; the `completed` row is unchanged; two `job-recovered` events fire once the IPC listener accepts connections
-- [ ] 17.2 GREEN: implement `src/startup/recovery.ts`; call it after migrations and integrity check, before opening the IPC listener
-- [ ] 17.3 RED: `recovery.waiting-network-untouched.test.ts` — rows in `waiting-network` are NOT modified by recovery
-- [ ] 17.4 GREEN: confirm recovery's WHERE clause is exactly `status = 'running'`
+- [x] 17.1 RED: `src/startup/recovery.test.ts` — seeded DB with 2 `running` rows + 1 `completed` row → after startup, the two are `queued` with `attempt++` and `lastErrorTag = 'service-restart'`; the `completed` row is unchanged; two `job-recovered` events fire once the IPC listener accepts connections
+- [x] 17.2 GREEN: implement `src/startup/recovery.ts`; call it after migrations and integrity check, before opening the IPC listener
+- [x] 17.3 RED: `recovery.waiting-network-untouched.test.ts` — rows in `waiting-network` are NOT modified by recovery
+- [x] 17.4 GREEN: confirm recovery's WHERE clause is exactly `status = 'running'`
 
 ## 18. Dev mode
 
