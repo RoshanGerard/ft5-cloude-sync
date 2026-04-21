@@ -103,18 +103,18 @@
 
 ## 11. `MirrorSyncJobExecutor` — source-health, walker, diff
 
-- [ ] 11.1 RED: `src/executors/source-health.test.ts` — missing source, EACCES, ENOTDIR, and broken symlink all cause `failed` with tag `source-unavailable` and zero remote calls, even when `sync_snapshot` has 50 entries
-- [ ] 11.2 GREEN: implement `src/executors/source-health.ts` with `fs.stat + fs.readdir` precondition; emit `source-unavailable`
-- [ ] 11.3 RED: `src/executors/local-walker.test.ts` — walks a fixture tree in a tmp dir, skips symlinks escaping root, skips `.DS_Store` / `Thumbs.db` / `.git/**` / `*.tmp`, returns `{ relPath, size, mtimeMs }` for each file
-- [ ] 11.4 GREEN: implement `src/executors/local-walker.ts` using `fs.promises.opendir` for streaming traversal
-- [ ] 11.5 RED: `src/executors/diff.test.ts` — given a fixture walk + snapshot, classify each file as `upload-new`, `upload-changed`, `skip`, or `delete-remote`; mtime changed but hash matches → `skip`
-- [ ] 11.6 GREEN: implement `src/executors/diff.ts` with the spec's algorithm (size+mtime cheap check, then sha256 for tie-break)
-- [ ] 11.7 RED: `src/executors/hasher.test.ts` — streaming sha256 of a 10 MB fixture matches the reference hash without loading the whole file into memory
-- [ ] 11.8 GREEN: implement `src/executors/hasher.ts` using `crypto.createHash('sha256').pipe` from `fs.createReadStream`
-- [ ] 11.9 RED: `src/executors/mirror-sync.test.ts` — end-to-end sync job produces `sync-completed { uploaded, updated, deleted, skipped }` counts matching a fixture; fake client's `uploadFile`/`deleteFile` are called exactly as classified
-- [ ] 11.10 GREEN: implement `src/executors/mirror-sync.ts` composing source-health + walker + snapshot-load + diff + per-file ops + summary
-- [ ] 11.11 RED: `mirror-sync.snapshot-update.test.ts` — after a successful sync, `sync_snapshot` rows match the post-state exactly (no stale rows, no missing rows)
-- [ ] 11.12 GREEN: wire snapshot writes into the per-file success path
+- [x] 11.1 RED: `src/executors/source-health.test.ts` — missing source, EACCES, ENOTDIR, and broken symlink all cause `failed` with tag `source-unavailable` and zero remote calls, even when `sync_snapshot` has 50 entries
+- [x] 11.2 GREEN: implement `src/executors/source-health.ts` with `fs.stat + fs.readdir` precondition; emit `source-unavailable`
+- [x] 11.3 RED: `src/executors/local-walker.test.ts` — walks a fixture tree in a tmp dir, skips symlinks escaping root, skips `.DS_Store` / `Thumbs.db` / `.git/**` / `*.tmp`, returns `{ relPath, size, mtimeMs }` for each file
+- [x] 11.4 GREEN: implement `src/executors/local-walker.ts` using `fs.promises.opendir` for streaming traversal
+- [x] 11.5 RED: `src/executors/diff.test.ts` — given a fixture walk + snapshot, classify each file as `upload-new`, `upload-changed`, `skip`, or `delete-remote`; mtime changed but hash matches → `skip`
+- [x] 11.6 GREEN: implement `src/executors/diff.ts` with the spec's algorithm (size+mtime cheap check, then sha256 for tie-break)
+- [x] 11.7 RED: `src/executors/hasher.test.ts` — streaming sha256 of a 10 MB fixture matches the reference hash without loading the whole file into memory
+- [x] 11.8 GREEN: implement `src/executors/hasher.ts` using `crypto.createHash('sha256').pipe` from `fs.createReadStream`
+- [x] 11.9 RED: `src/executors/mirror-sync.test.ts` — end-to-end sync job produces `sync-completed { uploaded, updated, deleted, skipped }` counts matching a fixture; fake client's `uploadFile`/`deleteFile` are called exactly as classified
+- [x] 11.10 GREEN: implement `src/executors/mirror-sync.ts` composing source-health + walker + snapshot-load + diff + per-file ops + summary
+- [x] 11.11 RED: `mirror-sync.snapshot-update.test.ts` — after a successful sync, `sync_snapshot` rows match the post-state exactly (no stale rows, no missing rows)
+- [x] 11.12 GREEN: wire snapshot writes into the per-file success path
 
 ## 12. Network probe and system-level retries
 
