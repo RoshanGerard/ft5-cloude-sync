@@ -194,12 +194,12 @@
 
 ## 21. Integration and end-to-end tests
 
-- [ ] 21.1 Write an integration test `test/integration/end-to-end-upload.test.ts`: spin the service up against a fake datasource registered in the engine's `ClientFactory`, open an IPC client, enqueue upload, observe `job-enqueued → job-started → job-completed`, confirm the row is `completed`
-- [ ] 21.2 Write `test/integration/end-to-end-mirror.test.ts`: seed a fixture tree, enqueue mirror, observe `sync-completed` with correct counts, verify snapshot rows match the tree; then delete a local file, re-enqueue, verify remote delete propagates and snapshot row disappears
-- [ ] 21.3 Write `test/integration/dedup.test.ts`: enqueue two concurrent mirror jobs for the same `(datasourceId, sourcePath)`, assert second returns `SyncAlreadyRunningError` with the first job's id
-- [ ] 21.4 Write `test/integration/network-retry.test.ts`: stub fake client to throw `network-error` for 3 iterations then succeed; stub network probe to succeed on 2nd tick; assert job completes, `waiting-network` state is observed, and `job-completed` fires
-- [ ] 21.5 Write `test/integration/crash-recovery.test.ts`: start service, enqueue a long-running job, kill the service mid-execution (`process.kill`), restart, assert the formerly-running job is `queued` with `attempt = 2` and `job-recovered` event fires on restart
-- [ ] 21.6 Write `test/integration/source-unavailable.test.ts`: enqueue mirror against a nonexistent path with a populated snapshot, assert zero remote calls and `source-unavailable` event
+- [x] 21.1 Write an integration test `test/integration/end-to-end-upload.test.ts`: spin the service up against a fake datasource registered in the engine's `ClientFactory`, open an IPC client, enqueue upload, observe `job-enqueued → job-started → job-completed`, confirm the row is `completed`
+- [x] 21.2 Write `test/integration/end-to-end-mirror.test.ts`: seed a fixture tree, enqueue mirror, observe `sync-completed` with correct counts, verify snapshot rows match the tree; then delete a local file, re-enqueue, verify remote delete propagates and snapshot row disappears
+- [x] 21.3 Write `test/integration/dedup.test.ts`: enqueue two concurrent mirror jobs for the same `(datasourceId, sourcePath)`, assert second returns `SyncAlreadyRunningError` with the first job's id
+- [x] 21.4 Write `test/integration/network-retry.test.ts`: stub fake client to throw `network-error` for 3 iterations then succeed; stub network probe to succeed on 2nd tick; assert job completes, `waiting-network` state is observed, and `job-completed` fires
+- [x] 21.5 Write `test/integration/crash-recovery.test.ts`: start service, enqueue a long-running job, kill the service mid-execution (`process.kill`), restart, assert the formerly-running job is `queued` with `attempt = 2` and `job-recovered` event fires on restart
+- [x] 21.6 Write `test/integration/source-unavailable.test.ts`: enqueue mirror against a nonexistent path with a populated snapshot, assert zero remote calls and `source-unavailable` event
 
 ## 22. Verification and polish
 
