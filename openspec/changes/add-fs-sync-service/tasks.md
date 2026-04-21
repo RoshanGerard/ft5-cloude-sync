@@ -141,12 +141,12 @@
 
 ## 15. `MonitorEventSource` port and no-op implementation
 
-- [ ] 15.1 RED: `src/ports/monitor.test-d.ts` — the `MonitorEventSource` interface has `onChange`, `onSnapshot`, `start`, `stop`; `MonitorChangeEvent` is a discriminated union of the spec's five variants
-- [ ] 15.2 GREEN: implement `src/ports/monitor.ts`
-- [ ] 15.3 RED: `src/ports/noop-monitor.test.ts` — `start` resolves, `stop` resolves, registered listeners are never invoked over a 2-second window with local file activity, `sync:get-status` reports `monitorConnected: false`
-- [ ] 15.4 GREEN: implement `src/ports/noop-monitor.ts`
-- [ ] 15.5 RED: `commands.no-auto-sync.test.ts` — sending `sync:enable-auto` to the dispatcher returns `unknown-command`
-- [ ] 15.6 GREEN: confirm the command enum does not include `sync:enable-auto` / `sync:disable-auto` in v1
+- [x] 15.1 RED: `src/ports/monitor.test-d.ts` — the `MonitorEventSource` interface has `onChange`, `onSnapshot`, `start`, `stop`; `MonitorChangeEvent` is a discriminated union of the spec's five variants
+- [x] 15.2 GREEN: implement `src/ports/monitor.ts`
+- [x] 15.3 RED: `src/ports/noop-monitor.test.ts` — `start` resolves, `stop` resolves, registered listeners are never invoked over a 2-second window with local file activity, `sync:get-status` reports `monitorConnected: false`
+- [x] 15.4 GREEN: implement `src/ports/noop-monitor.ts`
+- [x] 15.5 RED: `commands.no-auto-sync.test.ts` — sending `sync:enable-auto` to the dispatcher returns `unknown-command`
+- [x] 15.6 GREEN: confirm the command enum does not include `sync:enable-auto` / `sync:disable-auto` in v1
 
 ## 16. Event subscription fan-out
 
