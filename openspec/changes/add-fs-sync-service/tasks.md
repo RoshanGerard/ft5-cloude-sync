@@ -83,14 +83,14 @@
 
 ## 9. Job scheduler and global semaphore
 
-- [ ] 9.1 RED: `src/scheduler/semaphore.test.ts` — a 2-permit semaphore allows exactly 2 concurrent `acquire`s; a 3rd waits; release order is FIFO
-- [ ] 9.2 GREEN: implement `src/scheduler/semaphore.ts` (hand-rolled, no new dep)
-- [ ] 9.3 RED: `src/scheduler/scheduler.test.ts` — enqueue 3 jobs against a fake-client that delays 500 ms; at 200 ms exactly 2 rows are in `running`; after 600 ms the 3rd has started
-- [ ] 9.4 GREEN: implement `src/scheduler/scheduler.ts` (poll `queued` rows, acquire semaphore, transition to `running`, invoke executor, handle outcome)
-- [ ] 9.5 RED: `scheduler.sequential-fallback.test.ts` — constructed with `{ allowParallel: false }`, only 1 job runs at a time
-- [ ] 9.6 GREEN: parameterize the semaphore's permit count from the scheduler options
-- [ ] 9.7 RED: `scheduler.cancel-during-run.test.ts` — cancelling a `running` job aborts the executor via `AbortSignal` and transitions to `cancelled`
-- [ ] 9.8 GREEN: thread an `AbortController` through `ExecutorCtx`; wire `cancel-job` to call `abort()`
+- [x] 9.1 RED: `src/scheduler/semaphore.test.ts` — a 2-permit semaphore allows exactly 2 concurrent `acquire`s; a 3rd waits; release order is FIFO
+- [x] 9.2 GREEN: implement `src/scheduler/semaphore.ts` (hand-rolled, no new dep)
+- [x] 9.3 RED: `src/scheduler/scheduler.test.ts` — enqueue 3 jobs against a fake-client that delays 500 ms; at 200 ms exactly 2 rows are in `running`; after 600 ms the 3rd has started
+- [x] 9.4 GREEN: implement `src/scheduler/scheduler.ts` (poll `queued` rows, acquire semaphore, transition to `running`, invoke executor, handle outcome)
+- [x] 9.5 RED: `scheduler.sequential-fallback.test.ts` — constructed with `{ allowParallel: false }`, only 1 job runs at a time
+- [x] 9.6 GREEN: parameterize the semaphore's permit count from the scheduler options
+- [x] 9.7 RED: `scheduler.cancel-during-run.test.ts` — cancelling a `running` job aborts the executor via `AbortSignal` and transitions to `cancelled`
+- [x] 9.8 GREEN: thread an `AbortController` through `ExecutorCtx`; wire `cancel-job` to call `abort()`
 
 ## 10. `UploadJobExecutor`
 
