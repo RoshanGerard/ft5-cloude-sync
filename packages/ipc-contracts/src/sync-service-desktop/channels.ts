@@ -17,6 +17,8 @@ export const SYNC_CHANNELS = {
   enqueueMirror: "sync:enqueue-mirror",
   cancelJob: "sync:cancel-job",
   authenticate: "sync:authenticate",
+  authenticateStart: "sync:authenticate-start",
+  authenticateComplete: "sync:authenticate-complete",
   getStatus: "sync:get-status",
   getRetryPolicy: "sync:get-retry-policy",
   setRetryPolicy: "sync:set-retry-policy",

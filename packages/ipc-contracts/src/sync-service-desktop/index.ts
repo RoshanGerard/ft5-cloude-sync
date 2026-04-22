@@ -5,6 +5,8 @@
 // strictly for the main ↔ service daemon hop.
 
 export type {
+  SerializableAuthCompletion,
+  SerializableAuthIntent,
   SyncListJobsRequest,
   SyncListJobsResponse,
   SyncGetJobRequest,
@@ -17,6 +19,10 @@ export type {
   SyncCancelJobResponse,
   SyncAuthenticateRequest,
   SyncAuthenticateResponse,
+  SyncAuthenticateStartRequest,
+  SyncAuthenticateStartResponse,
+  SyncAuthenticateCompleteRequest,
+  SyncAuthenticateCompleteResponse,
   SyncGetStatusRequest,
   SyncGetStatusResponse,
   SyncGetRetryPolicyRequest,

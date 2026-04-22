@@ -10,10 +10,12 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { SYNC_CHANNELS } from "./channels.js";
 
 describe("sync-service-desktop SYNC_CHANNELS constants", () => {
-  it("exposes exactly the 10 expected keys", () => {
+  it("exposes exactly the 12 expected keys", () => {
     expect(Object.keys(SYNC_CHANNELS).sort()).toEqual(
       [
         "authenticate",
+        "authenticateStart",
+        "authenticateComplete",
         "cancelJob",
         "enqueueMirror",
         "enqueueUpload",

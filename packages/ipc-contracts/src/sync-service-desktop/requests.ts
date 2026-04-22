@@ -27,7 +27,17 @@ import type {
   NotCancelableErrorShape,
   RetryPolicy,
   RetryPolicyScope,
+  SerializableAuthCompletion,
+  SerializableAuthIntent,
   SyncAlreadyRunningErrorShape,
+} from "../sync-service/commands.js";
+
+// Re-export the wire-safe descriptors so renderer + preload can import
+// them from the renderer-facing subpath without reaching into the wire
+// contract directly.
+export type {
+  SerializableAuthCompletion,
+  SerializableAuthIntent,
 } from "../sync-service/commands.js";
 
 // ---- listJobs ------------------------------------------------------------
@@ -103,6 +113,34 @@ export interface SyncAuthenticateRequest {
 }
 
 export interface SyncAuthenticateResponse {
+  readonly authResult: AuthResult;
+}
+
+// ---- authenticateStart / authenticateComplete (design.md Decision 10) ----
+//
+// The original single-shot `authenticate` call shipped an `AuthIntent` with
+// closures, which could not survive the wire or Electron structured-clone
+// IPC. The split pair replaces it: `authenticateStart` returns a pure-data
+// descriptor plus a correlation id; `authenticateComplete` posts the user's
+// response against that correlation id. Both response shapes are flat —
+// errors throw, matching the existing `SyncAuthenticateResponse` style.
+
+export interface SyncAuthenticateStartRequest {
+  readonly datasourceId: string;
+  readonly type: DatasourceType;
+}
+
+export interface SyncAuthenticateStartResponse {
+  readonly correlationId: string;
+  readonly intent: SerializableAuthIntent;
+}
+
+export interface SyncAuthenticateCompleteRequest {
+  readonly correlationId: string;
+  readonly completion: SerializableAuthCompletion;
+}
+
+export interface SyncAuthenticateCompleteResponse {
   readonly authResult: AuthResult;
 }
 
