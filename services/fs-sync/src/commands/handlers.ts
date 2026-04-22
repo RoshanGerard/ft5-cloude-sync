@@ -16,6 +16,8 @@ import type { EventBus } from "../events/event-bus.js";
 import { PolicyStore } from "../retry/policy-store.js";
 import type Database from "better-sqlite3";
 
+import { handleAuthenticateStart } from "./authenticate-start.js";
+
 export interface HandlersDeps {
   readonly db: Database.Database;
   readonly bus: EventBus;
@@ -213,6 +215,8 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       ok: true,
       result: { unsubscribed: true },
     }),
+
+    "sync:authenticate-start": handleAuthenticateStart,
   };
 }
 
