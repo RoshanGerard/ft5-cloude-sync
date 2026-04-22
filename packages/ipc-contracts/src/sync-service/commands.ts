@@ -278,6 +278,15 @@ interface AuthenticateCompleteCommand {
           readonly expectedKind: "oauth" | "credentials-form";
           readonly receivedKind: "oauth" | "credentials-form";
         };
+      }
+    | {
+        // Present while the service-side handler ships as a stub (see
+        // openspec design.md Decision 11). The follow-up change
+        // `implement-datasource-onboarding` removes this variant; callers
+        // should treat it defensively as "service does not yet support
+        // this operation" rather than as a domain error.
+        readonly tag: "not-implemented";
+        readonly message: string;
       };
 }
 

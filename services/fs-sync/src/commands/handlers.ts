@@ -17,6 +17,7 @@ import { PolicyStore } from "../retry/policy-store.js";
 import type Database from "better-sqlite3";
 
 import { handleAuthenticateStart } from "./authenticate-start.js";
+import { handleAuthenticateComplete } from "./authenticate-complete.js";
 
 export interface HandlersDeps {
   readonly db: Database.Database;
@@ -217,6 +218,8 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
     }),
 
     "sync:authenticate-start": handleAuthenticateStart,
+
+    "sync:authenticate-complete": handleAuthenticateComplete,
   };
 }
 
