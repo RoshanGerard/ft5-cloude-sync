@@ -35,10 +35,19 @@ interface FakeChild {
   once: ReturnType<typeof vi.fn>;
 }
 
-const spawnedChildren: FakeChild[] = [];
-const spawnMock = vi.fn(
-  (_command: string, _args: readonly string[], _options: unknown): FakeChild => {
-    const child: FakeChild = {
+// `vi.mock` factories are hoisted above local `const` declarations, so
+// sharing state between factory and tests requires `vi.hoisted`. See
+// https://vitest.dev/api/vi.html#vi-hoisted.
+const hoisted = vi.hoisted(() => {
+  const spawnedChildren: {
+    pid: number;
+    unref: ReturnType<typeof vi.fn>;
+    killed: boolean;
+    on: ReturnType<typeof vi.fn>;
+    once: ReturnType<typeof vi.fn>;
+  }[] = [];
+  const spawnMock = vi.fn(() => {
+    const child = {
       pid: 12345 + spawnedChildren.length,
       unref: vi.fn(),
       killed: false,
@@ -47,14 +56,19 @@ const spawnMock = vi.fn(
     };
     spawnedChildren.push(child);
     return child;
-  },
-);
+  });
+  return { spawnMock, spawnedChildren };
+});
+const { spawnMock, spawnedChildren } = hoisted as {
+  spawnMock: ReturnType<typeof vi.fn>;
+  spawnedChildren: FakeChild[];
+};
 
 // Full replacement of `node:child_process` — no `importOriginal` passthrough.
 // The supervisor under test touches only `spawn`. If it starts using other
 // members, widen this stub.
 vi.mock("node:child_process", () => ({
-  spawn: spawnMock,
+  spawn: hoisted.spawnMock,
 }));
 
 function pipeFor(tag: string): string {
