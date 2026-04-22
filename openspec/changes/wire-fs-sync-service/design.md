@@ -201,21 +201,32 @@ t+y    any event that arrived in (t, t+x) is queued server-side via
 
 **Why not keep the old contract and make the service-side handler re-derive the closures from the incoming serialized data.** Rejected because the engine's `authenticate()` is the only authoritative producer of intents — its internal state (e.g., a half-configured OAuth client, a datasource-specific signing key) is captured in the closure. Trying to recreate that closure from a wire-serializable descriptor would require duplicating a significant fraction of the engine on both sides of the wire.
 
-**Dependency on engine construction change (Decision 11).** The service-side `authenticate-start` handler needs to invoke `client.authenticate()` on a fresh client *before* credentials exist. `ClientFactory.create(...)` requires a full `StoredCredentials` at construction time — which is the chicken-and-egg. Decision 11 lands the minimal engine adjustment (new `factory.createForAuth` path + `StoredCredentials | null` through the per-strategy factories) so this handler has something to call. Ships in the same change under section 5.B.
+**Service-side implementation is deferred to a follow-up change (Decision 11).** Wiring a real `engine.authenticate()` end-to-end proved to require more than "IPC contract + correlation store". Decision 11 records what was discovered and why the service-side handlers ship as stubs.
 
-### Decision 11 — Engine: no-creds construction path
+### Decision 11 — Service-side authenticate implementation: deferred to `implement-datasource-onboarding`
 
-**What.** Extend `ProviderFactoryFn<P>` to accept `StoredCredentials | null` and add `ClientFactory.createForAuth(providerId, datasourceId, ctx)` that constructs a client without credentials. Each strategy (`s3-client`, `googledrive-client`, `onedrive-client`) stores credentials as `*CredsMeta | null`; operational methods (list, upload, etc.) throw `auth-revoked` if creds are null; `authenticate()` / `doAuthenticateImpl` remain unchanged because they never consult the stored creds.
+**Discovery during 5.A prep.** Drafting the service-side `authenticate-start` handler surfaced two architecture gaps not anticipated by the original proposal:
 
-**Why this shape.** Considered three alternatives in the prep for 5.B:
+1. **No-creds client construction.** `ClientFactory.create(...)` requires a full `StoredCredentials`. Each strategy's factory calls `readCredsFromStored(...)` which throws on empty fields. You can't build a client with no creds to call `authenticate()` on.
+2. **OAuth app config at `doAuthenticateImpl` time.** `googledrive-client.ts:636` and `onedrive-client.ts:466` read `this.creds.{clientId, redirectUri, tenantId, clientSecret}` when building `authorizeUrl` and when the `completeWith(code)` closure exchanges the code for tokens. OAuth *app* config (clientId, clientSecret, redirectUri) is different from OAuth *user* tokens — it exists before first-time auth, yet the engine sources it from `StoredCredentials.authResult.meta`. There is no service-level config file, no env-var source, no "add datasource" UI in the codebase that collects this data.
 
-- *2b (creds optional throughout).* Push the null-check into every operational method. Most invasive — every strategy gets sprinkled with null guards. Rejected.
-- *2c (hoist `authenticate` off the client).* Make `authenticate` a function on the provider descriptor, not the client. Cleanest conceptually but requires moving a non-trivial amount of logic out of `base-client.ts`. Rejected as scope creep.
-- *2a (this decision).* Add a parallel construction entry point that treats null-creds as the pre-auth state. Smallest diff, additive, matches how the existing factory already separates "configure a provider" (the registry / `createClientFactory`) from "get a client for a datasource" (the `create` call). Chosen.
+Fixing either gap properly requires touching the engine and adding a config sourcing story (env file, service-level key-value store, or a UI-collected intake flow). That is a standalone feature, not a wiring detail.
 
-**Surface area.** Four files under `packages/fs-datasource-engine/src/`: `factory.ts` (interface + impl), `strategies/s3-client.ts`, `strategies/googledrive-client.ts`, `strategies/onedrive-client.ts`. One public API addition (`createForAuth`), no removals. Existing `factory.create(...)` call sites in the service (upload + mirror executors) and their `resolveClient` paths continue to work unchanged — they always have real creds.
+**What we ship in this change.** The `sync:authenticate-start` and `sync:authenticate-complete` handlers on the service return `{ ok: false, error: { tag: "not-implemented", message: "authenticate flow pending follow-up change" } }`. The correlation store (section 5.A.5/5.A.6) stands as built but goes unused by the stub handlers — it is dormant infrastructure, ready for the real handlers. The wire contract split, the `SyncClient.authenticateStart/authenticateComplete` wrappers, the desktop IPC handlers, and the preload surface in section 6 all ship with the final shape; they simply propagate a `not-implemented` error until the follow-up change lands.
 
-**Scope note.** This is "engine construction ergonomics", not a redesign of the authenticate flow. The `AuthIntent` type, the `submit` / `completeWith` closures, `decorateIntent`'s persistence via `credentialStore.put`, the per-strategy `doAuthenticateImpl` bodies — none of that changes. We're only letting you reach `authenticate()` without pre-existing creds.
+**What we do NOT ship.** No engine changes to `factory.ts` or the three strategies. No OAuth-app-config sourcing mechanism. No "add datasource" UI.
+
+**Follow-up change.** A future OpenSpec change (working name `implement-datasource-onboarding`) will cover:
+
+1. Engine adjustment — likely the `createForAuth` path from the rejected option 2a here, with a pre-auth StoredCredentials shape that includes OAuth app config in `meta` but empty tokens.
+2. A service-level config source for OAuth app config (candidates: a config file alongside `credentials.json`, or a new `sync:register-provider` command that stores per-provider OAuth app config in the service DB).
+3. Service-side `authenticate-start` / `authenticate-complete` real handlers that use the correlation store.
+4. Renderer "add datasource" UI that collects OAuth app config for OAuth providers and credentials-form fields for non-OAuth.
+5. Remove the `not-implemented` error tag from the command error unions.
+
+**Why this split works.** No existing caller invokes `authenticate` today — zero references to `client.authenticate()` in the renderer, preload, main, or service. The stubbed handlers are behaviorally identical to any real handler from the user's perspective: there is no user-facing path that exercises them. Once the onboarding UI exists, it will call the already-shipped `window.api.sync.authenticateStart/...Complete`; only the service handlers change from stub to real.
+
+**Contract impact of the stub.** The `authenticate-start` and `authenticate-complete` command error unions both gain a `{ tag: "not-implemented"; message: string }` variant. The follow-up change removes that variant when the real implementation ships; consumers should handle it defensively as "the service does not yet support this operation" rather than as a domain error.
 
 ## Risks / Trade-offs
 
