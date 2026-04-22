@@ -22,7 +22,20 @@
 //     spawns the service (design.md Decision 6, :136-144) — the pnpm
 //     parallel supervisor already started it. Spawn options, if passed,
 //     are ignored in dev.
-//   - race-tolerant retry lands in 4.8/4.9
+//   - **Race-tolerant by construction** (tasks.md 4.8/4.9). When two
+//     desktops start in parallel against a non-listening pipe, both
+//     fall through to the spawn branch and both invoke
+//     `child_process.spawn`. The service's PID guard ensures only one
+//     of the spawned processes binds the listener; the other exits
+//     code 3 (see `services/fs-sync/src/main/index.ts`). This
+//     supervisor tolerates the loser's exit WITHOUT special-case code
+//     because the retry-connect loop is driven ENTIRELY by
+//     `net.connect` success/failure against the pipe path — we never
+//     attach `.on('exit', ...)` to the spawned child, never track its
+//     pid, and never reference it after `unref()`. The loser dying is
+//     invisible to both supervisors; both eventually connect to the
+//     winner's listener. The invariant is locked by
+//     `supervisor.race.test.ts`.
 //
 // Design decisions made at this step:
 //   1. `pipePath` is a PARAMETER on `StartSupervisorOptions`. The
@@ -42,8 +55,11 @@
 //      rejects with an error listing the missing option — that is how
 //      callers opt out of the spawn path.
 //   5. The retry loop uses the EXACT schedule 25/50/100/200/400 ms
-//      measured from the start of the previous failure; task 4.8/4.9
-//      will add race-awareness (tolerating a loser's exit-3) on top.
+//      measured from the start of the previous failure. Race-awareness
+//      (tolerating a PID-loser's exit-3) is achieved structurally by
+//      decision #3 above — the loop is connect-driven, not
+//      child-lifecycle-driven — so no additional code was required for
+//      tasks 4.8/4.9 beyond the test that locks the invariant.
 
 import * as net from "node:net";
 import { spawn } from "node:child_process";
