@@ -1,8 +1,12 @@
 // Renderer-observable event union delivered over `SYNC_CHANNELS.event`.
 //
+// Envelope shape is `{ kind, payload }` — deliberately renamed from the wire
+// contract's `{ name, payload }` so the renderer can `switch (event.kind)`
+// without `name` colliding with `Error.name`-style intuition in IDE hover.
+//
 // The renderer sees THREE categories of events, all multiplexed through the
-// same `{ kind, payload }` envelope so a single `onEvent(cb)` listener can
-// switch on `kind` exhaustively:
+// same envelope so a single `onEvent(cb)` listener can switch on `kind`
+// exhaustively:
 //
 //   1. The 10 lifecycle events emitted by the fs-sync service itself. Their
 //      payload shapes are re-exported (NOT duplicated) from the wire
@@ -19,23 +23,6 @@
 //      "Service events are relayed to the renderer").
 
 import type { JobSummary } from "../sync-service/commands.js";
-
-// Re-export the wire-contract payload shapes so downstream consumers can
-// import them from the renderer-facing subpath without reaching into the
-// wire contract.
-export type {
-  JobCancelledPayload,
-  JobCompletedPayload,
-  JobEnqueuedPayload,
-  JobFailedPayload,
-  JobProgressPayload,
-  JobRecoveredPayload,
-  JobStartedPayload,
-  NetworkAvailablePayload,
-  SourceUnavailablePayload,
-  SyncCompletedPayload,
-} from "../sync-service/events.js";
-
 import type {
   JobCancelledPayload,
   JobCompletedPayload,
@@ -48,6 +35,22 @@ import type {
   SourceUnavailablePayload,
   SyncCompletedPayload,
 } from "../sync-service/events.js";
+
+// Re-export the wire-contract payload shapes so downstream consumers can
+// import them from the renderer-facing subpath without reaching into the
+// wire contract. Re-exports mirror the import list above — keep them in sync.
+export type {
+  JobCancelledPayload,
+  JobCompletedPayload,
+  JobEnqueuedPayload,
+  JobFailedPayload,
+  JobProgressPayload,
+  JobRecoveredPayload,
+  JobStartedPayload,
+  NetworkAvailablePayload,
+  SourceUnavailablePayload,
+  SyncCompletedPayload,
+};
 
 /**
  * Snapshot of in-progress jobs delivered to the renderer once per supervisor
