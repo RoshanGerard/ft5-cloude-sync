@@ -6,7 +6,7 @@
 - [x] 1.4 GREEN: implement `sync-service-desktop/events.ts`; re-use payload shapes from `@ft5/ipc-contracts/sync-service` via `export type { ... } from` so event payload definitions are NOT duplicated
 - [x] 1.5 RED: `packages/ipc-contracts/src/sync-service-desktop/channels.test-d.ts` — declare `SYNC_CHANNELS = { listJobs, getJob, enqueueUpload, enqueueMirror, cancelJob, authenticate, getStatus, getRetryPolicy, setRetryPolicy, event } as const`; assert each value is a stable string literal (e.g., `"sync:list-jobs"`)
 - [x] 1.6 GREEN: implement `sync-service-desktop/channels.ts`; re-export from the subpath barrel and from the top-level `@ft5/ipc-contracts` index
-- [ ] 1.7 Build `pnpm --filter @ft5/ipc-contracts build` cold (no Vitest cache); confirm the emitted `.d.ts` includes the new subpath; request code review before proceeding to consuming tasks
+- [x] 1.7 Build `pnpm --filter @ft5/ipc-contracts build` cold (no Vitest cache); confirm the emitted `.d.ts` includes the new subpath; request code review before proceeding to consuming tasks
 
 ## 2. Service bootstrap composition (intra-service wiring — Problem A)
 
