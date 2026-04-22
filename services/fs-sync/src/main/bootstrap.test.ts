@@ -101,6 +101,8 @@ describe("bootstrap ordering", () => {
     runtime = null;
     const elapsed = Date.now() - t0;
     // Stop should be near-instant with an idle scheduler + disarmed probe.
-    expect(elapsed).toBeLessThan(2_000);
+    // A 500ms budget absorbs CI jitter while still catching a regression
+    // where someone forgets clearInterval and stop waits a full poll tick.
+    expect(elapsed).toBeLessThan(500);
   });
 });

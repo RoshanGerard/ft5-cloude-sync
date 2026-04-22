@@ -40,7 +40,11 @@ import {
 import { createEventBus, type EventBus } from "../events/event-bus.js";
 import { buildMirrorSyncExecutor } from "../executors/mirror-sync.js";
 import { buildUploadExecutor } from "../executors/upload.js";
-import { startServer, type RunningServer } from "../ipc/server.js";
+import {
+  startServer,
+  type CommandHandler,
+  type RunningServer,
+} from "../ipc/server.js";
 import { createSubscriptionRegistry } from "../ipc/subscriptions.js";
 import { NetworkProbe } from "../retry/network-probe.js";
 import { Scheduler } from "../scheduler/scheduler.js";
@@ -208,26 +212,26 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       serviceVersion: options.serviceVersion ?? "0.0.0",
       serviceUuid: options.serviceUuid ?? "",
     });
+    const subscribeHandler: CommandHandler<"sync:subscribe-events"> = async (
+      _params,
+      ctx,
+    ) => {
+      subs.subscribe(ctx.connection);
+      return { ok: true, result: { subscribed: true } };
+    };
+    const unsubscribeHandler: CommandHandler<"sync:unsubscribe-events"> =
+      async (_params, ctx) => {
+        subs.unsubscribe(ctx.connection);
+        return { ok: true, result: { unsubscribed: true } };
+      };
     const handlers = {
       ...baseHandlers,
-      "sync:subscribe-events": async (
-        _params: unknown,
-        ctx: { connection: Parameters<typeof subs.subscribe>[0] },
-      ) => {
-        subs.subscribe(ctx.connection);
-        return { ok: true as const, result: { subscribed: true as const } };
-      },
-      "sync:unsubscribe-events": async (
-        _params: unknown,
-        ctx: { connection: Parameters<typeof subs.unsubscribe>[0] },
-      ) => {
-        subs.unsubscribe(ctx.connection);
-        return { ok: true as const, result: { unsubscribed: true as const } };
-      },
+      "sync:subscribe-events": subscribeHandler,
+      "sync:unsubscribe-events": unsubscribeHandler,
     };
     server = await startServer({
       pipePath: socketPath,
-      handlers: handlers as never,
+      handlers,
       commandNames: COMMAND_NAMES,
     });
     observer?.onStage("ipc-listen");
@@ -235,7 +239,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     logger?.info("bootstrap-complete", {
       pid: process.pid,
       mode: dev ? "dev" : "prod",
-      pipePath: socketPath,
+      socketPath,
     });
 
     const runtimeScheduler = scheduler;
