@@ -201,6 +201,22 @@ t+y    any event that arrived in (t, t+x) is queued server-side via
 
 **Why not keep the old contract and make the service-side handler re-derive the closures from the incoming serialized data.** Rejected because the engine's `authenticate()` is the only authoritative producer of intents — its internal state (e.g., a half-configured OAuth client, a datasource-specific signing key) is captured in the closure. Trying to recreate that closure from a wire-serializable descriptor would require duplicating a significant fraction of the engine on both sides of the wire.
 
+**Dependency on engine construction change (Decision 11).** The service-side `authenticate-start` handler needs to invoke `client.authenticate()` on a fresh client *before* credentials exist. `ClientFactory.create(...)` requires a full `StoredCredentials` at construction time — which is the chicken-and-egg. Decision 11 lands the minimal engine adjustment (new `factory.createForAuth` path + `StoredCredentials | null` through the per-strategy factories) so this handler has something to call. Ships in the same change under section 5.B.
+
+### Decision 11 — Engine: no-creds construction path
+
+**What.** Extend `ProviderFactoryFn<P>` to accept `StoredCredentials | null` and add `ClientFactory.createForAuth(providerId, datasourceId, ctx)` that constructs a client without credentials. Each strategy (`s3-client`, `googledrive-client`, `onedrive-client`) stores credentials as `*CredsMeta | null`; operational methods (list, upload, etc.) throw `auth-revoked` if creds are null; `authenticate()` / `doAuthenticateImpl` remain unchanged because they never consult the stored creds.
+
+**Why this shape.** Considered three alternatives in the prep for 5.B:
+
+- *2b (creds optional throughout).* Push the null-check into every operational method. Most invasive — every strategy gets sprinkled with null guards. Rejected.
+- *2c (hoist `authenticate` off the client).* Make `authenticate` a function on the provider descriptor, not the client. Cleanest conceptually but requires moving a non-trivial amount of logic out of `base-client.ts`. Rejected as scope creep.
+- *2a (this decision).* Add a parallel construction entry point that treats null-creds as the pre-auth state. Smallest diff, additive, matches how the existing factory already separates "configure a provider" (the registry / `createClientFactory`) from "get a client for a datasource" (the `create` call). Chosen.
+
+**Surface area.** Four files under `packages/fs-datasource-engine/src/`: `factory.ts` (interface + impl), `strategies/s3-client.ts`, `strategies/googledrive-client.ts`, `strategies/onedrive-client.ts`. One public API addition (`createForAuth`), no removals. Existing `factory.create(...)` call sites in the service (upload + mirror executors) and their `resolveClient` paths continue to work unchanged — they always have real creds.
+
+**Scope note.** This is "engine construction ergonomics", not a redesign of the authenticate flow. The `AuthIntent` type, the `submit` / `completeWith` closures, `decorateIntent`'s persistence via `credentialStore.put`, the per-strategy `doAuthenticateImpl` bodies — none of that changes. We're only letting you reach `authenticate()` without pre-existing creds.
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
