@@ -29,6 +29,8 @@ describe("sync-service command contract", () => {
       | "sync:set-retry-policy"
       | "sync:get-retry-policy"
       | "sync:authenticate"
+      | "sync:authenticate-start"
+      | "sync:authenticate-complete"
       | "sync:get-status";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });

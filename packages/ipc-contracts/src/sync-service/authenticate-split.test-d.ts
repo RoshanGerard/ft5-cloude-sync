@@ -105,12 +105,12 @@ describe("sync-service authenticate split — wire contract", () => {
   it("sync:authenticate-start error covers validation + authentication-failed", () => {
     type ErrU = CommandError<"sync:authenticate-start">;
     expectTypeOf<ValidationErrorShape>().toMatchTypeOf<ErrU>();
-    // authentication-failed is inlined (matches the existing AuthenticateCommand style)
-    expectTypeOf<{
-      readonly tag: "authentication-failed";
-      readonly message: string;
-      readonly details: unknown;
-    }>().toMatchTypeOf<ErrU>();
+    // authentication-failed is inlined (matches the existing AuthenticateCommand
+    // style). Prove the variant is present in the union by extracting it and
+    // asserting the extracted type is non-never.
+    type AuthFailed = Extract<ErrU, { tag: "authentication-failed" }>;
+    expectTypeOf<AuthFailed>().not.toBeNever();
+    expectTypeOf<AuthFailed["message"]>().toEqualTypeOf<string>();
   });
 
   it("sync:authenticate-complete params are { correlationId, completion }", () => {
@@ -129,18 +129,18 @@ describe("sync-service authenticate split — wire contract", () => {
   it("sync:authenticate-complete error includes correlation-expired and correlation-kind-mismatch", () => {
     type ErrU = CommandError<"sync:authenticate-complete">;
     expectTypeOf<ValidationErrorShape>().toMatchTypeOf<ErrU>();
-    expectTypeOf<{
-      readonly tag: "correlation-expired";
-      readonly message: string;
-    }>().toMatchTypeOf<ErrU>();
-    expectTypeOf<{
-      readonly tag: "correlation-kind-mismatch";
-      readonly message: string;
-      readonly details: {
-        readonly expectedKind: "oauth" | "credentials-form";
-        readonly receivedKind: "oauth" | "credentials-form";
-      };
-    }>().toMatchTypeOf<ErrU>();
+
+    type Expired = Extract<ErrU, { tag: "correlation-expired" }>;
+    expectTypeOf<Expired>().not.toBeNever();
+    expectTypeOf<Expired["message"]>().toEqualTypeOf<string>();
+
+    type Mismatch = Extract<ErrU, { tag: "correlation-kind-mismatch" }>;
+    expectTypeOf<Mismatch>().not.toBeNever();
+    expectTypeOf<Mismatch["message"]>().toEqualTypeOf<string>();
+    expectTypeOf<Mismatch["details"]>().toEqualTypeOf<{
+      readonly expectedKind: "oauth" | "credentials-form";
+      readonly receivedKind: "oauth" | "credentials-form";
+    }>();
   });
 
   it("CommandMap includes both new command keys", () => {

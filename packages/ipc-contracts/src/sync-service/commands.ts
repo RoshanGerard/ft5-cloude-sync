@@ -6,6 +6,7 @@
 //
 // See design.md D2+D3 and the base spec "IPC command surface" requirement.
 
+import type { CredentialsSchema } from "../datasources.js";
 import type {
   AuthIntent,
   AuthResult,
@@ -190,6 +191,87 @@ interface AuthenticateCommand {
       };
 }
 
+// ---- Authenticate split (design.md Decision 10) --------------------------
+//
+// `AuthIntent` carries closures (`completeWith` / `submit`) that cannot cross
+// the JSON-over-socket wire or the Electron structured-clone IPC boundary.
+// The split pair replaces the single-shot `sync:authenticate` with:
+//   1. `sync:authenticate-start` — service runs `engine.authenticate`, stashes
+//      the live intent in an in-memory correlation map, returns a pure-data
+//      descriptor.
+//   2. `sync:authenticate-complete` — caller supplies the correlation id and
+//      the user's response (OAuth code / form values); service looks up the
+//      stashed intent and dispatches on its kind.
+// The old `AuthenticateCommand` stays live until the atomic swap in the
+// section-5 handler / registration replacement.
+
+/**
+ * Wire-safe view of {@link AuthIntent}: the same discriminated union with
+ * the function fields stripped, leaving only data that JSON-serializes.
+ */
+export type SerializableAuthIntent =
+  | { readonly kind: "oauth"; readonly authorizeUrl: string }
+  | { readonly kind: "credentials-form"; readonly schema: CredentialsSchema };
+
+/**
+ * Wire-safe payload the caller sends with `sync:authenticate-complete` —
+ * whichever response the user produced for the intent they were shown.
+ */
+export type SerializableAuthCompletion =
+  | { readonly kind: "oauth"; readonly code: string }
+  | {
+      readonly kind: "credentials-form";
+      readonly values: Record<string, unknown>;
+    };
+
+interface AuthenticateStartCommand {
+  readonly command: "sync:authenticate-start";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly type: DatasourceType;
+  };
+  readonly result: {
+    readonly correlationId: string;
+    readonly intent: SerializableAuthIntent;
+  };
+  readonly error:
+    | ValidationErrorShape
+    | {
+        readonly tag: "authentication-failed";
+        readonly message: string;
+        readonly details: SerializedDatasourceError<DatasourceType>;
+      };
+}
+
+interface AuthenticateCompleteCommand {
+  readonly command: "sync:authenticate-complete";
+  readonly params: {
+    readonly correlationId: string;
+    readonly completion: SerializableAuthCompletion;
+  };
+  readonly result: { readonly authResult: AuthResult };
+  readonly error:
+    | ValidationErrorShape
+    | {
+        readonly tag: "authentication-failed";
+        readonly message: string;
+        readonly details: SerializedDatasourceError<DatasourceType>;
+      }
+    | {
+        readonly tag: "correlation-expired";
+        readonly message: string;
+        readonly details?: unknown;
+      }
+    | {
+        readonly tag: "correlation-kind-mismatch";
+        readonly message: string;
+        readonly details: {
+          readonly expectedKind: "oauth" | "credentials-form";
+          readonly receivedKind: "oauth" | "credentials-form";
+        };
+      };
+}
+
 interface GetStatusCommand {
   readonly command: "sync:get-status";
   readonly params: Record<string, never>;
@@ -217,6 +299,8 @@ export interface CommandMap {
   "sync:set-retry-policy": SetRetryPolicyCommand;
   "sync:get-retry-policy": GetRetryPolicyCommand;
   "sync:authenticate": AuthenticateCommand;
+  "sync:authenticate-start": AuthenticateStartCommand;
+  "sync:authenticate-complete": AuthenticateCompleteCommand;
   "sync:get-status": GetStatusCommand;
 }
 
@@ -240,5 +324,7 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "sync:set-retry-policy",
   "sync:get-retry-policy",
   "sync:authenticate",
+  "sync:authenticate-start",
+  "sync:authenticate-complete",
   "sync:get-status",
 ] as const;
