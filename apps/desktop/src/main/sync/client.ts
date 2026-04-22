@@ -246,14 +246,17 @@ export class SyncClient {
     if (!this.connected) return;
     this.connected = false;
 
-    // Reject every in-flight request BEFORE invoking listeners so any
-    // listener that consults `isConnected` or pending state sees a
-    // fully-settled client.
-    for (const [, entry] of this.pending) {
+    // Snapshot and clear BEFORE rejecting. A `.catch` handler running in
+    // the microtask tail of `entry.reject` could otherwise observe stale
+    // entries via internal paths (or re-enter request, see them linger,
+    // and reason incorrectly). Clearing up-front makes the client's
+    // observable state fully-settled before any user code runs.
+    const entries = Array.from(this.pending.values());
+    this.pending.clear();
+    for (const entry of entries) {
       if (entry.timer) clearTimeout(entry.timer);
       entry.reject(new SyncDisconnectedError({ command: entry.command }));
     }
-    this.pending.clear();
 
     // Snapshot listeners so a callback that unsubscribes itself (or its
     // siblings) during iteration cannot perturb the walk.
