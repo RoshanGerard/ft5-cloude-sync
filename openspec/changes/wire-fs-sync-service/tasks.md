@@ -65,6 +65,28 @@
   - **I-1** `SyncCommandError.message` composite loss on enqueue-mirror + cancel-job structured-error paths. Renderer receives `"sync:<command> failed: <tag> — <orig>"` instead of the raw service message. Fix: add `rawMessage` to `SyncCommandError` and have handlers read that. Defer to pre-section-10 (no renderer consumer yet).
   - **I-2** `CredentialsFormIntent.submit` is a function field; will not survive Electron structured-clone IPC serialization. Section-5 handler correctly does nothing about this (it's a passthrough), but section 6's preload and section 7's design must re-shape the credentials-form flow (likely a two-step `authenticate` + `authenticate-submit`) before section 6 can ship. **Flag at top of section-6 design notes.**
 
+### 5.A Authenticate flow redesign (resolves I-2, supersedes 5.11/5.12)
+
+See `design.md` Decision 10. Splits the single-shot `sync:authenticate` into `sync:authenticate-start` + `sync:authenticate-complete` bound by a server-side correlation id. Closures stay on the service (where `engine.authenticate()` produces them); desktop and renderer see only serializable descriptors.
+
+- [ ] 5.A.1 RED: `packages/ipc-contracts/src/sync-service/__tests__/authenticate-split.test-d.ts` — type-level test asserting `AuthenticateStartCommand` and `AuthenticateCompleteCommand` exist, the old `AuthenticateCommand` is gone, and the new `SerializableAuthIntent` / `SerializableAuthCompletion` unions are pure-data (no function fields)
+- [ ] 5.A.2 GREEN: edit `packages/ipc-contracts/src/sync-service/commands.ts` to split the command; add `SerializableAuthIntent` + `SerializableAuthCompletion` types; extend the error union on `authenticate-complete` with `correlation-expired` + `correlation-kind-mismatch`
+- [ ] 5.A.3 RED: `packages/ipc-contracts/src/sync-service-desktop/__tests__/authenticate-split.test-d.ts` — `SyncAuthenticateStartRequest/Response`, `SyncAuthenticateCompleteRequest/Response` types exist; the old `SyncAuthenticateRequest/Response` types are gone
+- [ ] 5.A.4 GREEN: edit `packages/ipc-contracts/src/sync-service-desktop/requests.ts`; update `channels.ts` to add `authenticateStart` + `authenticateComplete` and remove `authenticate`
+- [ ] 5.A.5 RED: `services/fs-sync/src/state/__tests__/auth-correlation-store.test.ts` — create + get + consume + TTL-expiry + kind-mismatch detection; verify that process-exit discards the map implicitly (just don't persist)
+- [ ] 5.A.6 GREEN: implement `services/fs-sync/src/state/auth-correlation-store.ts` with a `Map<correlationId, { intent, createdAt, timer }>`, 5-minute TTL via `setTimeout(…).unref()`, `crypto.randomUUID()` for keys
+- [ ] 5.A.7 RED: `services/fs-sync/src/commands/__tests__/authenticate-start.test.ts` — handler calls `engine.authenticate(datasourceId)`, stashes the returned intent by correlation id, returns the serialized descriptor (oauth → `{ kind, authorizeUrl }`, form → `{ kind, schema }`)
+- [ ] 5.A.8 GREEN: implement `services/fs-sync/src/commands/authenticate-start.ts`; register against `sync:authenticate-start`
+- [ ] 5.A.9 RED: `services/fs-sync/src/commands/__tests__/authenticate-complete.test.ts` — happy path for both oauth and form; `correlation-expired` when TTL passed or unknown id; `correlation-kind-mismatch` when completion.kind disagrees with stored intent.kind; entry is consumed (next complete with same id returns `correlation-expired`) regardless of success/failure
+- [ ] 5.A.10 GREEN: implement `services/fs-sync/src/commands/authenticate-complete.ts`; register against `sync:authenticate-complete`
+- [ ] 5.A.11 Update `services/fs-sync/src/observability/logger.ts` — redact both `sync:authenticate-start` params and `sync:authenticate-complete` params/result as `[redacted]`; update `logger.test.ts` accordingly
+- [ ] 5.A.12 RED + GREEN: split `SyncClient.authenticate` into `authenticateStart(params)` + `authenticateComplete(params)` in `apps/desktop/src/main/sync/client.ts`; extend `client.typed-methods.test.ts`
+- [ ] 5.A.13 RED: replace `apps/desktop/src/main/ipc/sync/__tests__/authenticate.test.ts` with `authenticate-start.test.ts` and `authenticate-complete.test.ts` — both are thin identity proxies (no closures to worry about; everything is pure data); the credential-storage grep invariant now covers both handler modules
+- [ ] 5.A.14 GREEN: replace `apps/desktop/src/main/ipc/sync/authenticate.ts` with `authenticate-start.ts` + `authenticate-complete.ts`; delete the old handler
+- [ ] 5.A.15 Update `apps/desktop/src/main/ipc/index.ts` — replace the single `SYNC_CHANNELS.authenticate` registration with the two new channels
+- [ ] 5.A.16 Amend tasks 5.11/5.12 note to point at 5.A.13/5.A.14 as the active implementation; keep the old handler's commits in git history as the record of the superseded shape
+- [ ] 5.A.17 Request code review on the flow redesign — same two-stage review as 5.15; approval is the gate for section 6
+
 ## 6. Preload `window.api.sync.*`
 
 - [ ] 6.1 RED: `apps/desktop/src/preload/__tests__/sync-surface.test.ts` — given a fake `ipcRenderer`, the preload exposes `window.api.sync` with exactly the method set declared in `SYNC_CHANNELS`, each calling `ipcRenderer.invoke(channel, args)` and returning the typed response

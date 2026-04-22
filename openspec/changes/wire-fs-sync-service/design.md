@@ -163,6 +163,44 @@ t+y    any event that arrived in (t, t+x) is queued server-side via
 
 **What.** `packages/fs-datasource-engine/src/index.ts:52-53` comments claim "three placeholder strategy stubs" that the strategies have long since replaced. Rewrite the comment block to describe the current state (three real strategies, each with contract tests). This is mechanical and carried in this change so it doesn't rot further.
 
+### Decision 10 — Authenticate flow: two-step with server-side correlation
+
+**Context.** The merged `add-fs-sync-service` wire contract defines a single-shot `sync:authenticate` command whose params include an `AuthIntent` — a discriminated union with *function fields* (`OAuthIntent.completeWith(code)`, `CredentialsFormIntent.submit(values)`). The contract was never exercised end-to-end: `services/fs-sync/` has no handler for `sync:authenticate` (only logger redaction at `services/fs-sync/src/observability/logger.ts:134`). Section 5 of this change discovered the flaw while wiring the desktop-side proxy: closures cannot cross a newline-delimited-JSON socket, and even if they could, the same problem recurs at the Electron preload boundary (structured-clone IPC silently drops function properties). The section-5 reviewer correctly flagged this as blocking the preload surface (section 6).
+
+**What.** Split the authenticate wire command into two, bound by a server-side correlation id:
+
+1. **`sync:authenticate-start`** — desktop requests an intent.
+   - Params: `{ datasourceId: string; type: DatasourceType }`
+   - Result: `{ correlationId: string; intent: SerializableAuthIntent }`
+   - `SerializableAuthIntent` is a pure-data view of `AuthIntent` with the closures removed:
+     - `{ kind: 'oauth'; authorizeUrl: string }`
+     - `{ kind: 'credentials-form'; schema: CredentialsSchema }`
+   - Service-side: run `engine.authenticate(datasourceId)` to get the live `AuthIntent`, store it in an in-memory map keyed by a freshly-minted correlation id, return the serialized descriptor. No disk state; on service restart all correlations are discarded.
+
+2. **`sync:authenticate-complete`** — desktop posts the user's response.
+   - Params: `{ correlationId: string; completion: SerializableAuthCompletion }`
+   - `SerializableAuthCompletion` is a discriminated union:
+     - `{ kind: 'oauth'; code: string }`
+     - `{ kind: 'credentials-form'; values: Record<string, unknown> }`
+   - Result: `{ authResult: AuthResult }`
+   - Errors: `correlation-expired`, `correlation-kind-mismatch` (desktop sent a form completion for an oauth correlation), plus inherited `validation-error` and `authentication-failed`.
+   - Service-side: look up the stashed `AuthIntent` by correlation id, dispatch on its kind, invoke `completeWith(code)` or `submit(values)` accordingly, remove the entry from the map whether the call succeeds or fails.
+
+**Correlation store design.**
+- `Map<string, { intent: AuthIntent; createdAt: number }>` scoped to the service process.
+- Correlation ids are `crypto.randomUUID()`; short enough to log, unguessable enough that a rogue local actor can't forge them without having observed a legitimate `authenticate-start` response.
+- TTL: **5 minutes**. Chosen to cover a realistic OAuth redirect round-trip (user opens provider, signs in, redirects back) without keeping stale intents around. A setTimeout per entry self-removes on expiry; `authenticate-complete` checks freshness defensively in case the timer is late under event-loop pressure.
+- On service SIGINT/SIGTERM: the map evaporates with the process. Desktops holding a pending correlation id surface `correlation-expired` on the next complete call.
+- Redaction: `services/fs-sync/src/observability/logger.ts` redacts both `sync:authenticate-start` (may contain datasourceId, benign but consistent) and `sync:authenticate-complete` (contains OAuth codes or form values — MUST redact) as `[redacted]`. Result redaction applies to `authenticate-complete` (carries `AuthResult.accessToken`).
+
+**Renderer-facing surface.** The renderer never sees a closure. `window.api.sync.authenticateStart({ datasourceId, type })` returns `{ correlationId, intent }`; the renderer shows the OAuth URL or form based on `intent.kind`, collects the code or values, then calls `window.api.sync.authenticateComplete({ correlationId, completion })`. The correlation id is opaque to the renderer — it's a cursor.
+
+**Impact on section 5.** The section-5 single-shot `authenticate` handler (`apps/desktop/src/main/ipc/sync/authenticate.ts`, commits `708e449` + `9ee5c1a`) becomes obsolete. Task 5.11/5.12 are superseded by new tasks 5.16/5.17. The old handler, its tests, and its registration line in `ipc/index.ts` are deleted in the same commit that introduces the replacement pair, so the suite never sees both shapes coexist. `SyncClient.authenticate` also splits into `authenticateStart` + `authenticateComplete` wrappers.
+
+**Why not stash the closure in a renderer-side registry.** One of the alternatives considered: keep a single command, ship an opaque `intentId` to the renderer, have the renderer call back through the preload with `{ intentId, code }`, main-process dispatcher looks up a RENDERER-keyed closure. Rejected because the closure lives on the *service* side, not the main-process side — a main-side registry would still need a correlation with a service-side lookup, adding a second hop with no gain. The correlation store must live where the engine's `authenticate()` returned the closure: in the service process. Once that's given, the two-command shape falls out naturally.
+
+**Why not keep the old contract and make the service-side handler re-derive the closures from the incoming serialized data.** Rejected because the engine's `authenticate()` is the only authoritative producer of intents — its internal state (e.g., a half-configured OAuth client, a datasource-specific signing key) is captured in the closure. Trying to recreate that closure from a wire-serializable descriptor would require duplicating a significant fraction of the engine on both sides of the wire.
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
