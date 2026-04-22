@@ -75,11 +75,11 @@ describe("SyncClient socket.write synchronous throw", () => {
     // Replace .write with a synchronous thrower. We only need this on the
     // first call; subsequent internal writes (unlikely here) would also
     // throw, which is fine for this test's scope.
-    const originalWrite = socket.write.bind(socket);
     const writeError = new Error("destroyed");
-    (socket as unknown as { write: typeof originalWrite }).write = () => {
-      throw writeError;
-    };
+    (socket as unknown as { write: (...args: unknown[]) => boolean }).write =
+      () => {
+        throw writeError;
+      };
 
     const client = new SyncClient(socket, { generateId: () => "wx-1" });
 
@@ -105,10 +105,10 @@ describe("SyncClient socket.write synchronous throw", () => {
     const socket = await connectClient(pipePath);
     sockets.push(socket);
 
-    const originalWrite = socket.write.bind(socket);
-    (socket as unknown as { write: typeof originalWrite }).write = () => {
-      throw new Error("destroyed");
-    };
+    (socket as unknown as { write: (...args: unknown[]) => boolean }).write =
+      () => {
+        throw new Error("destroyed");
+      };
 
     const client = new SyncClient(socket, { generateId: () => "wx-2" });
 

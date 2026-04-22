@@ -163,10 +163,13 @@ const wrappers: ReadonlyArray<{
     invoke: (c) =>
       c.authenticate({
         datasourceId: "ds-1",
-        type: "s3",
+        type: "amazon-s3",
         intent: {
           kind: "credentials-form",
-          credentials: { accessKeyId: "x", secretAccessKey: "y", region: "r", bucket: "b" },
+          schema: "aws-access-key",
+          // Stub submit — this test never drives the form; the wrapper
+          // just forwards the intent opaquely to the service.
+          submit: async () => ({ accessToken: "noop" }),
         },
       }),
   },

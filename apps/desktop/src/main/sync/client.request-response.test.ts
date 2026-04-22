@@ -161,7 +161,7 @@ describe("SyncClient request/response", () => {
     });
 
     const pA = client.request("sync:get-status", {});
-    const pB = client.request("sync:list-jobs", { filter: undefined });
+    const pB = client.request("sync:list-jobs", {});
 
     // Wait until the stub has buffered both and flushed replies.
     await new Promise<void>((r) => {
@@ -170,8 +170,8 @@ describe("SyncClient request/response", () => {
 
     const [resA, resB] = await Promise.all([pA, pB]);
     // The client must pair responses by id, not by arrival order.
-    expect((resA as { echoed: string }).echoed).toBe("a-result");
-    expect((resB as { echoed: string }).echoed).toBe("b-result");
+    expect((resA as unknown as { echoed: string }).echoed).toBe("a-result");
+    expect((resB as unknown as { echoed: string }).echoed).toBe("b-result");
   });
 
   it("rejects a request with tag='request-timeout' when the server never replies", async () => {
@@ -253,7 +253,7 @@ describe("SyncClient request/response", () => {
 
       const result = await client.request("sync:get-status", {});
       expect(realRequestId).toBe("real-1");
-      expect((result as { echoed: string }).echoed).toBe("ok");
+      expect((result as unknown as { echoed: string }).echoed).toBe("ok");
       // Settle any microtasks before checking the unhandled-rejection bucket.
       await new Promise((r) => setTimeout(r, 10));
       expect(unhandled).toEqual([]);

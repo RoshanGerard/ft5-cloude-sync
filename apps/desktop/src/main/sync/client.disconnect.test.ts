@@ -202,7 +202,7 @@ describe("SyncClient disconnect handling", () => {
       await stub.whenConnected;
 
       const pA = client.request("sync:get-status", {});
-      const pB = client.request("sync:list-jobs", { filter: undefined });
+      const pB = client.request("sync:list-jobs", {});
 
       // Wait for both requests to reach the stub before forcing the drop
       // — otherwise we'd race against the OS-level send buffer.
@@ -286,7 +286,9 @@ describe("SyncClient disconnect handling", () => {
 
         // Client must still be usable.
         const result = await client.request("sync:get-status", {});
-        expect((result as { echoed: string }).echoed).toBe("survived");
+        expect((result as unknown as { echoed: string }).echoed).toBe(
+          "survived",
+        );
         // Settle microtasks before checking unhandled bucket.
         await new Promise((r) => setTimeout(r, 10));
         expect(unhandled).toEqual([]);

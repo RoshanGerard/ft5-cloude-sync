@@ -83,7 +83,7 @@ export class RequestTimeoutError extends Error {
  */
 export class SyncDisconnectedError extends Error {
   readonly tag = "service-disconnected" as const;
-  readonly command?: string;
+  readonly command: string | undefined;
 
   constructor(params: { command?: string } = {}) {
     const suffix = params.command ? ` (command=${params.command})` : "";
@@ -97,7 +97,7 @@ interface PendingEntry {
   readonly command: CommandName;
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: unknown) => void;
-  readonly timer?: NodeJS.Timeout;
+  readonly timer: NodeJS.Timeout | undefined;
 }
 
 type DisconnectListener = () => void;
@@ -106,7 +106,7 @@ type EventListener = (event: EventFrame) => void;
 export class SyncClient {
   private readonly socket: net.Socket;
   private readonly pending = new Map<string, PendingEntry>();
-  private readonly defaultTimeoutMs?: number;
+  private readonly defaultTimeoutMs: number | undefined;
   private readonly generateId: () => string;
   private readonly decoder: FramingDecoder;
   private readonly disconnectListeners = new Set<DisconnectListener>();
@@ -236,6 +236,77 @@ export class SyncClient {
         reject(err);
       }
     });
+  }
+
+  // ---- Typed wrapper methods per SYNC_CHANNELS -----------------------------
+  //
+  // Thin delegates over `request()` that name each wire command explicitly.
+  // Task 5.1 (section 5) consumes these via `syncClient.listJobs(params)`.
+  // The methods return the wire result shape (`CommandResult<N>`); the
+  // main-process IPC handler in section 5 is what composes richer
+  // renderer-facing shapes like `{ ...wire, derivedSyncingDatasourceIds }`.
+
+  listJobs(
+    params: CommandParams<"sync:list-jobs">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:list-jobs">> {
+    return this.request("sync:list-jobs", params, opts);
+  }
+
+  getJob(
+    params: CommandParams<"sync:get-job">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:get-job">> {
+    return this.request("sync:get-job", params, opts);
+  }
+
+  enqueueUpload(
+    params: CommandParams<"sync:enqueue-upload">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:enqueue-upload">> {
+    return this.request("sync:enqueue-upload", params, opts);
+  }
+
+  enqueueMirror(
+    params: CommandParams<"sync:enqueue-mirror">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:enqueue-mirror">> {
+    return this.request("sync:enqueue-mirror", params, opts);
+  }
+
+  cancelJob(
+    params: CommandParams<"sync:cancel-job">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:cancel-job">> {
+    return this.request("sync:cancel-job", params, opts);
+  }
+
+  authenticate(
+    params: CommandParams<"sync:authenticate">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:authenticate">> {
+    return this.request("sync:authenticate", params, opts);
+  }
+
+  getStatus(
+    params: CommandParams<"sync:get-status">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:get-status">> {
+    return this.request("sync:get-status", params, opts);
+  }
+
+  getRetryPolicy(
+    params: CommandParams<"sync:get-retry-policy">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:get-retry-policy">> {
+    return this.request("sync:get-retry-policy", params, opts);
+  }
+
+  setRetryPolicy(
+    params: CommandParams<"sync:set-retry-policy">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:set-retry-policy">> {
+    return this.request("sync:set-retry-policy", params, opts);
   }
 
   private onFrame(frame: Frame): void {
