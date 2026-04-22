@@ -44,6 +44,8 @@ interface StubHandle {
   readonly pipePath: string;
   readonly server: net.Server;
   readonly close: () => Promise<void>;
+  /** Resolves once the first client has connected server-side. */
+  readonly whenConnected: Promise<void>;
   /** Write a raw frame to the first (and only) client. */
   send: (frame: ResponseFrame | { kind: "event"; name: string; payload: unknown }) => void;
 }
@@ -54,6 +56,10 @@ async function startStub(
 ): Promise<StubHandle> {
   const pipePath = pipeFor(tag);
   let clientSocket: net.Socket | null = null;
+  let connectedResolve!: () => void;
+  const whenConnected = new Promise<void>((r) => {
+    connectedResolve = r;
+  });
   const server = net.createServer((socket) => {
     clientSocket = socket;
     const decoder = new FramingDecoder({
@@ -66,6 +72,7 @@ async function startStub(
     });
     socket.on("data", (chunk) => decoder.push(chunk));
     socket.on("error", () => void 0);
+    connectedResolve();
   });
   const send: StubHandle["send"] = (frame) => {
     if (!clientSocket) throw new Error("stub has no connected client yet");
@@ -86,7 +93,7 @@ async function startStub(
       }
       server.close(() => resolve());
     });
-  return { pipePath, server, close, send };
+  return { pipePath, server, close, send, whenConnected };
 }
 
 async function connectClient(pipePath: string): Promise<net.Socket> {
@@ -192,6 +199,7 @@ describe("SyncClient request/response", () => {
 
     // Late arrival for an already-timed-out id must be dropped silently —
     // the client is still usable for subsequent requests.
+    await stub.whenConnected;
     stub.send({
       id: "t-1",
       kind: "response",
@@ -227,6 +235,10 @@ describe("SyncClient request/response", () => {
       const client = new SyncClient(socket, {
         generateId: () => "real-1",
       });
+
+      // Wait until the server has accepted the connection so that
+      // `stub.send` has a live client-side socket to write to.
+      await stub.whenConnected;
 
       // Inject a response whose id matches nothing pending — client
       // must drop it without throwing or registering any rejection.
