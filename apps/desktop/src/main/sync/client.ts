@@ -2,17 +2,19 @@
 //
 // Owns a connected `net.Socket` (opened by the supervisor), writes
 // newline-framed Request frames, and correlates inbound Response frames
-// back to their caller by `id`. Scope of this module (tasks.md 3.3–3.4):
+// back to their caller by `id`. Scope of this module (tasks.md 3.3–3.6):
 //   - typed `request<N>(name, params, { timeoutMs? })` round-trip
 //   - per-request timeout (falls back to ctor `defaultTimeoutMs`, else none)
 //   - silent drop of responses whose id matches nothing pending
+//   - on socket close: flip `isConnected`, reject every pending request
+//     with `SyncDisconnectedError` (tag `service-disconnected`), and
+//     notify listeners registered via `client.on("disconnect", cb)`
+//   - reject requests issued after disconnect with the same error
+//   - validate event-frame shape; drop malformed frames silently
 //
 // Explicitly NOT in scope yet:
-//   - `onEvent` dispatch (pair 4: tasks 3.7 + 3.8)
-//   - disconnect / service-disconnected rejection (pair 3: 3.5 + 3.6)
-// Event frames reach the decoder and are intentionally ignored here.
-// Malformed or oversized frames from the decoder are logged via
-// `console.warn` and dropped; a future pair may wire a structured logger.
+//   - `onEvent` dispatch (pair 4: tasks 3.7 + 3.8) — well-formed event
+//     frames reach `onFrame` and are intentionally ignored.
 //
 // Correlation-id strategy: defaults to `crypto.randomUUID()`. Tests may
 // inject a deterministic generator via the ctor `generateId` seam —
@@ -29,7 +31,6 @@ import type {
   ErrorShape,
   Frame,
   RequestFrame,
-  ResponseFrame,
 } from "@ft5/ipc-contracts/sync-service";
 
 import {
@@ -75,6 +76,24 @@ export class RequestTimeoutError extends Error {
   }
 }
 
+/**
+ * Thrown/rejected when the socket is closed (or has already closed) at
+ * the moment a request would otherwise be issued or awaited. Carries
+ * the in-flight command name for caller diagnostics; empty when the
+ * disconnect fired between requests.
+ */
+export class SyncDisconnectedError extends Error {
+  readonly tag = "service-disconnected" as const;
+  readonly command?: string;
+
+  constructor(params: { command?: string } = {}) {
+    const suffix = params.command ? ` (command=${params.command})` : "";
+    super(`sync service disconnected${suffix}`);
+    this.name = "SyncDisconnectedError";
+    this.command = params.command;
+  }
+}
+
 interface PendingEntry {
   readonly command: CommandName;
   readonly resolve: (value: unknown) => void;
@@ -82,12 +101,16 @@ interface PendingEntry {
   readonly timer?: NodeJS.Timeout;
 }
 
+type DisconnectListener = () => void;
+
 export class SyncClient {
   private readonly socket: net.Socket;
   private readonly pending = new Map<string, PendingEntry>();
   private readonly defaultTimeoutMs?: number;
   private readonly generateId: () => string;
   private readonly decoder: FramingDecoder;
+  private readonly disconnectListeners = new Set<DisconnectListener>();
+  private connected = true;
 
   constructor(socket: net.Socket, opts: SyncClientOptions = {}) {
     this.socket = socket;
@@ -99,10 +122,34 @@ export class SyncClient {
       onError: (err) => this.onDecoderError(err),
     });
     this.socket.on("data", (chunk) => this.decoder.push(chunk));
-    // Attach a no-op error listener now so a mid-request socket error does
-    // not crash the main process via Node's default unhandled-error rethrow.
-    // Pair 3 (disconnect handling) replaces this with a reject-all handler.
+    // Absorb the socket-error event so Node's default handler does not
+    // rethrow (mid-request ECONNRESET on Windows named pipes is common).
+    // Actual disconnect bookkeeping is centralised in `handleDisconnect`,
+    // driven by "close" which fires after both "end" and "error".
     this.socket.on("error", () => void 0);
+    this.socket.on("close", () => this.handleDisconnect());
+    this.socket.on("end", () => this.handleDisconnect());
+  }
+
+  /** True from construction until the underlying socket closes. */
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
+  /**
+   * Subscribe to the synthetic disconnect event. Returns an unsubscribe
+   * function. Listeners fire exactly once (when the socket first closes);
+   * listeners registered after disconnect do NOT fire — callers should
+   * check `isConnected` first if they attach late.
+   */
+  on(event: "disconnect", cb: DisconnectListener): () => void {
+    // Parameter `event` kept for future extension and clarity at the
+    // call site; today "disconnect" is the only supported event.
+    void event;
+    this.disconnectListeners.add(cb);
+    return () => {
+      this.disconnectListeners.delete(cb);
+    };
   }
 
   request<N extends CommandName>(
@@ -110,6 +157,13 @@ export class SyncClient {
     params: CommandParams<N>,
     opts: { timeoutMs?: number } = {},
   ): Promise<CommandResult<N>> {
+    // Fail fast if the socket has already closed — do NOT write to a
+    // destroyed socket and do NOT register a pending entry that would
+    // never resolve.
+    if (!this.connected) {
+      return Promise.reject(new SyncDisconnectedError({ command: name }));
+    }
+
     const id = this.generateId();
     const frame: RequestFrame = {
       id,
@@ -161,13 +215,56 @@ export class SyncClient {
       }
       return;
     }
-    // Event frames: dispatch is wired in pair 4 (tasks 3.7 + 3.8).
-    // Ignore silently so the decoder continues processing the stream.
+    if (frame.kind === "event") {
+      // Shape-check. The decoder parses JSON and the Frame discriminator
+      // is structural, so a service bug (or a hostile peer) could emit a
+      // "kind":"event" object with a wrong-typed `name`. Drop silently;
+      // pair 4 will dispatch well-formed events.
+      if (typeof frame.name !== "string") {
+        console.warn(
+          "[sync-client] dropped malformed event frame (name is not a string)",
+        );
+        return;
+      }
+      // Well-formed event: dispatch wiring lands in pair 4 (3.7 + 3.8).
+      return;
+    }
   }
 
   private onDecoderError(err: FrameParseError | FrameTooLargeError): void {
     // Structured logger wiring is a later pair. For now, surface via
     // console.warn so dev builds don't swallow a wire-level problem.
     console.warn("[sync-client] dropped malformed frame:", err.message);
+  }
+
+  /**
+   * Idempotent disconnect handler. Both "end" and "close" feed into it
+   * (close always fires last), so the first invocation does the work
+   * and subsequent invocations are no-ops.
+   */
+  private handleDisconnect(): void {
+    if (!this.connected) return;
+    this.connected = false;
+
+    // Reject every in-flight request BEFORE invoking listeners so any
+    // listener that consults `isConnected` or pending state sees a
+    // fully-settled client.
+    for (const [, entry] of this.pending) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.reject(new SyncDisconnectedError({ command: entry.command }));
+    }
+    this.pending.clear();
+
+    // Snapshot listeners so a callback that unsubscribes itself (or its
+    // siblings) during iteration cannot perturb the walk.
+    const snapshot = Array.from(this.disconnectListeners);
+    for (const cb of snapshot) {
+      try {
+        cb();
+      } catch (err) {
+        // A misbehaving listener must not prevent siblings from firing.
+        console.warn("[sync-client] disconnect listener threw:", err);
+      }
+    }
   }
 }
