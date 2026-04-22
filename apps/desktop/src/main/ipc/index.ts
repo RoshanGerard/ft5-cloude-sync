@@ -1,6 +1,10 @@
 import { clipboard, dialog, ipcMain, type BrowserWindow } from "electron";
 
-import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
+import {
+  DATASOURCES_CHANNELS,
+  FILES_CHANNELS,
+  SYNC_CHANNELS,
+} from "@ft5/ipc-contracts";
 import type {
   DatasourcesActionRequest,
   DatasourcesAddRequest,
@@ -13,6 +17,16 @@ import type {
   FilesSearchRequest,
   FilesStatRequest,
 } from "@ft5/ipc-contracts";
+import type {
+  SyncAuthenticateRequest,
+  SyncCancelJobRequest,
+  SyncEnqueueMirrorRequest,
+  SyncEnqueueUploadRequest,
+  SyncGetJobRequest,
+  SyncGetRetryPolicyRequest,
+  SyncListJobsRequest,
+  SyncSetRetryPolicyRequest,
+} from "@ft5/ipc-contracts/sync-service-desktop";
 
 import { handleDatasourcesAction } from "./datasources/action.js";
 import { handleDatasourcesAdd } from "./datasources/add.js";
@@ -26,6 +40,15 @@ import { handleFilesRename } from "./files/rename.js";
 import { handleFilesSearch } from "./files/search.js";
 import { handleFilesStat } from "./files/stat.js";
 import { handlePing } from "./ping.js";
+import { handleSyncAuthenticate } from "./sync/authenticate.js";
+import { handleSyncCancelJob } from "./sync/cancel-job.js";
+import { handleSyncEnqueueMirror } from "./sync/enqueue-mirror.js";
+import { handleSyncEnqueueUpload } from "./sync/enqueue-upload.js";
+import { handleSyncGetJob } from "./sync/get-job.js";
+import { handleSyncGetRetryPolicy } from "./sync/get-retry-policy.js";
+import { handleSyncGetStatus } from "./sync/get-status.js";
+import { handleSyncListJobs } from "./sync/list-jobs.js";
+import { handleSyncSetRetryPolicy } from "./sync/set-retry-policy.js";
 
 // Central IPC handler registration. Called once from `main/index.ts` after
 // `app.whenReady()`. Keeping the `ipcMain.handle` calls here (rather than
@@ -100,6 +123,50 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
   ipcMain.handle(
     FILES_CHANNELS.download,
     (_event, req: FilesDownloadRequest) => handleFilesDownload(req),
+  );
+
+  // Sync IPC surface — proxied to the out-of-process fs-sync-service via
+  // the bootstrapped SyncClient singleton. Availability gating is
+  // structural: each handler's `client = getSyncClient()` default argument
+  // throws a descriptive error if invoked before the supervisor has set
+  // the client, which `ipcMain.handle` surfaces as a rejected IPC call.
+  ipcMain.handle(
+    SYNC_CHANNELS.listJobs,
+    async (_event, req: SyncListJobsRequest) => handleSyncListJobs(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.getJob,
+    async (_event, req: SyncGetJobRequest) => handleSyncGetJob(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.enqueueUpload,
+    async (_event, req: SyncEnqueueUploadRequest) =>
+      handleSyncEnqueueUpload(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.enqueueMirror,
+    async (_event, req: SyncEnqueueMirrorRequest) =>
+      handleSyncEnqueueMirror(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.cancelJob,
+    async (_event, req: SyncCancelJobRequest) => handleSyncCancelJob(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.authenticate,
+    async (_event, req: SyncAuthenticateRequest) =>
+      handleSyncAuthenticate(req),
+  );
+  ipcMain.handle(SYNC_CHANNELS.getStatus, () => handleSyncGetStatus());
+  ipcMain.handle(
+    SYNC_CHANNELS.getRetryPolicy,
+    async (_event, req: SyncGetRetryPolicyRequest) =>
+      handleSyncGetRetryPolicy(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.setRetryPolicy,
+    async (_event, req: SyncSetRetryPolicyRequest) =>
+      handleSyncSetRetryPolicy(req),
   );
 
   // Clipboard bridge — goes through Electron's main-process `clipboard`
