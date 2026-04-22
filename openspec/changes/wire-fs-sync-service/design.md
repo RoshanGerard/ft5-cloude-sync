@@ -1,0 +1,199 @@
+## Context
+
+`@ft5/fs-datasource-engine`, `apps/desktop`, and `services/fs-sync` each landed as a finished island over the last month (changes: `add-fs-datasource-engine`, `add-fs-sync-service`, `add-fs-engine-cancellation`, plus the renderer-side `ui-file-explorer` and `ui-ux-design`). Nothing to date has composed them into a running system.
+
+Current shape:
+
+```
+                    ┌─────────────────────────────┐
+                    │  @ft5/fs-datasource-engine  │  framework-agnostic lib
+                    │   — strategies, factory,    │   ✓ done
+                    │     bus, port interfaces    │
+                    └────────────┬────────────────┘
+                                 │
+                   ┌─────────────┴──────────────┐
+                   ▼                            ▼
+     ┌────────────────────────┐     ┌──────────────────────────┐
+     │  apps/desktop main     │     │  services/fs-sync         │
+     │  ✓ engine wired        │     │  ✗ main/index.ts exits    │
+     │  ✓ datasource IPC      │     │    after opening DB       │
+     │  ✓ in-proc upload      │     │  ✓ all parts exist:       │
+     │  ✗ no sync client      │     │    scheduler, ipc server, │
+     │  ✗ no supervisor       │     │    commands, executors,   │
+     │                        │     │    recovery, retry, etc.  │
+     └────────────────────────┘     └──────────────────────────┘
+```
+
+The reader is a dev who's just read the proposal. The change must:
+
+1. Complete the service's own bootstrap so it becomes a running daemon.
+2. Build the desktop side of the pipe: transport client, supervisor, IPC proxy handlers, preload, renderer reflection.
+3. Retire the in-process upload path entirely. "Any upload the user triggers via the desktop UI SHALL go through the service" is the invariant.
+4. Retire desktop-local credential storage. Credentials live on the service side only. The engine port (`CredentialStore`) is unchanged; the engine's framework-agnostic charter is preserved.
+
+## Goals / Non-Goals
+
+**Goals**
+
+- A user can launch the desktop app, add a datasource, upload a file, close the window, and have the upload finish in the background.
+- A user who closes the app during a mirror-sync and re-opens the app sees the sync in progress on the datasource card (status = syncing, subsequent `sync-completed` event applied).
+- A user who re-opens the app mid-upload sees the in-flight upload with its current progress bar.
+- Fresh installs and in-repo dev both work. `pnpm dev` boots all three processes in one terminal.
+- Zero Electron imports in the service; zero desktop-path imports in the service; engine stays framework-agnostic.
+
+**Non-Goals (explicit)**
+
+- Auto-sync commands (`sync:enable-auto` / `sync:disable-auto`) and the `fs-monitor` service. The `MonitorEventSource` port stays bound to `NoopMonitorEventSource`.
+- The retry-after-backoff loop inside `Scheduler.applyOutcome` (the README-flagged gap). We wire through whatever the existing scheduler emits; the rate-limit path stays half-wired.
+- Resumable uploads. Network retries continue to restart from byte 0.
+- Installer end-to-end matrix. The installer registration path already exists; we are not extending its CI coverage.
+- OS keyring migration for credentials. Plaintext `credentials.json` with `0600` / user-ACL stays.
+- Any UI redesign. We surface existing service state on existing cards using existing components; we do not rethink the dashboard.
+
+## Decisions
+
+### Decision 1 — Credential ownership: service-exclusive (Option B)
+
+**What.** The service's `ConfigFileCredentialStore` is the only concrete `CredentialStore` implementation in the repo. Desktop's `SqliteCredentialStore` is deleted along with its migration.
+
+**Why.** The user confirmed this over two other options:
+
+- *Option A* (move storage into the engine package) breaks `openspec/project.md`'s non-negotiable rule that `packages/fs-datasource-engine/` is framework-agnostic, and regresses desktop from safeStorage-encrypted storage to plaintext.
+- *Option C* (keep both, sync across) is the most work and solves the least.
+
+Option B is the only one consistent with *all* the user's locked decisions — uploads-via-service, Option-3 supervisor, service-outlives-app. With the service owning credentials, the duality the engine port was designed around ("multiple host processes implementing the same port") collapses to a single host: the service. The port interface stays as future-proofing for a non-Electron CLI or web host; in this change, it has exactly one implementor.
+
+**How it lands.** The renderer's auth flow changes from "main calls `engine.authenticate` → writes to `SqliteCredentialStore`" to "main sends `sync:authenticate` → service runs `engine.authenticate` with its own `ConfigFileCredentialStore`." No app code other than the service touches `credentials.json`.
+
+### Decision 2 — Supervisor model: connect-or-spawn-detached (Option 3)
+
+**What.** On desktop startup, `startSupervisor()`:
+
+1. Attempt `net.connect(pipePath)`. If it succeeds, hand the socket to the sync client. Done.
+2. If the connect rejects with `ENOENT`/`ECONNREFUSED`, spawn the service as a *detached* child process (`child_process.spawn(…, { detached: true, stdio: 'ignore' })` followed by `unref()`).
+3. Retry-connect with small backoff (25ms, 50ms, 100ms, 200ms, up to ~1s total) to allow the service to bind its listener. If all retries fail, surface a fatal error to the renderer ("sync service failed to start").
+4. A race where two desktop processes spawn simultaneously is handled by the service's existing PID guard: the loser exits with code 3, the winner is already listening, and our retry-connect finds it.
+
+**Why.** Option 3 is the only one compatible with "service outlives the app." Option 1 (installer-only) breaks dev ergonomics; Option 2 (child-process lifetime tied to desktop) breaks the "if app closes, sync continues" invariant by design. Option 3 piggybacks on the PID guard the `add-fs-sync-service` change already ships.
+
+**What the supervisor does NOT do.** It does **NOT** kill the service on desktop quit. It does not maintain a reference to the spawned process (the detach + `unref` intentionally severs the handle). It does **NOT** forward stdio. The service writes to its own rotating `service.log` under `$HOME/ft5/sync_app/`.
+
+**Path resolution.** In packaged builds, the service binary lives under `app.getAppPath()/resources/fs-sync/index.js` (electron-builder `extraResources` entry). In dev, it lives at `<repo>/services/fs-sync/dist/main/index.js`. Both are invoked via the bundled Node binary (`process.execPath` for Electron, but for the *service* we want a plain Node, NOT Electron's Node — so we locate the packaged Node in prod, and fall back to the dev host's Node in dev. Exact strategy: document in tasks; spike if ambiguous.)
+
+### Decision 3 — Upload rerouting is a REPLACE, not an ADD
+
+**What.** Delete `apps/desktop/src/main/ipc/datasources/upload.ts` (the handler that calls `engine.uploadFile` in-process) along with its progress-forwarding. Rewrite the renderer-facing `window.api.datasources.upload` so it still shows the main-process file picker but then enqueues a job on the service and relays `job-progress` events back.
+
+**Why.** If we added the sync path alongside the existing path, we'd ship two codepaths that do the same thing with different behaviour on app quit. The whole point of this change is "uploads survive the window closing"; you cannot preserve that invariant if the direct path still exists.
+
+**Shape of the replacement.**
+
+```
+renderer                  main (IPC handler)                  sync service
+---------                 ---------------------                -----------
+api.datasources           datasources:upload handler           sync:enqueue-upload
+  .upload({ dsId })  ──▶  1. dialog.showOpenDialog        ──▶  returns { jobId }
+                          2. syncClient.enqueueUpload(...)
+                          3. return { transactionId: jobId }
+
+api.datasources           event-bridge forwards the            emits job-progress
+  .onUploadProgress  ◀──  service's job-progress events   ◀──  (throttled as before)
+  ({ transactionId })     matching the transactionId
+```
+
+**Preserving the existing contract.** `DATASOURCES_CHANNELS.upload` and `DATASOURCES_CHANNELS.uploadProgress` stay in the contract, so the renderer's existing call sites compile without edits. Only the *handler* changes. (Rationale: datasources-ui's "upload quick action" requirement explicitly calls `window.api.datasources.upload`; the renderer doesn't need to know that the work moved to the service.)
+
+**Progress-event translation.** The service emits `job-progress { jobId, sentBytes, totalBytes }`. The desktop IPC proxy maps `jobId → transactionId` and emits `DatasourcesUploadProgressEvent { transactionId, sentBytes, totalBytes, percent }` — the same shape the current renderer subscribes to. No renderer change needed.
+
+### Decision 4 — Two distinct IPC contracts
+
+**What.** The service's on-the-wire contract lives at `@ft5/ipc-contracts/sync-service` (already complete; frames, commands, events). We add a new `@ft5/ipc-contracts/sync-service-desktop` module containing the *renderer-facing* `window.api.sync.*` request/response types. The two contracts are related but distinct: the renderer contract is synchronous request/response over Electron IPC; the service contract is bidirectional frames over a pipe.
+
+**Why.** Renderer call sites should not import types from a module that references `net.Socket` or a pipe path. Clear separation also means the renderer surface can diverge from the service wire format over time (e.g., adding optimistic UI shapes, renderer-side retry state) without forcing a service protocol bump.
+
+**Translation rules.** The IPC proxy in main is responsible for mapping one to the other. Most calls are shape-preserving: `window.api.sync.listJobs(filter) → sync:list-jobs { filter }`. A few are enriched on the way back: `listJobs` responses gain a `derivedSyncingDatasourceIds: string[]` convenience field computed in main, so the renderer doesn't re-group jobs by datasource.
+
+### Decision 5 — App-open reconciliation
+
+**What.** Immediately after the sync-client connects (supervisor step "done"), main fires `sync:list-jobs { statuses: ['queued','running','waiting-network'] }` AND `sync:subscribe-events` on the same socket. The list-jobs response seeds the renderer's in-memory state; the event stream delivers subsequent deltas.
+
+**Flow.**
+
+```
+t=0    supervisor connects/spawns
+t=0    main: sync:subscribe-events (before list-jobs, to avoid gap)
+t=0    main: sync:list-jobs { statuses: [running, queued, waiting-network] }
+t+x    main receives list-jobs response. Renderer emits
+         datasources:event (kind=sync-state-seed) with the in-progress set
+t+y    any event that arrived in (t, t+x) is queued server-side via
+         subscribe-events — there is no gap, because subscribe went out first
+```
+
+**Why subscribe first.** `sync:subscribe-events` is a single round-trip command whose effect is "from *now* forward, send me every event on this connection." Issuing it before list-jobs gives us a zero-gap seed: by the time list-jobs returns, any job whose state changed since the list query is represented on the event stream. Swapping the order introduces a race window between "snapshot taken" and "subscription armed."
+
+**What the renderer does with it.** `DatasourceCard` already has a `status: 'idle' | 'syncing' | ...` field driven by datasource events. We add a derivation: `card.status === 'syncing'` if the card's `datasourceId` appears in any active-sync-job set from the seed or any subsequent `job-started / sync-completed / job-failed` stream. For uploads, we surface a per-card progress bar when there's at least one active upload job on that datasource.
+
+### Decision 6 — Dev loop: single `pnpm dev` via pnpm parallel
+
+**What.** Root `package.json` gains `"dev": "pnpm -r --parallel --filter=./apps/desktop --filter=./services/fs-sync run dev"` (or an equivalent orchestrator; the exact tool is a mechanical choice). The desktop's `dev` script stays as-is (`electron-vite dev` or whatever it currently does). The service's `dev` script becomes `node --enable-source-maps --watch dist/main/index.js --dev` (already defined). Dev mode uses the dev pipe (`\\.\pipe\ft5-sync-dev` / `sync-dev.sock`) and `$HOME/ft5/sync_app/dev/`.
+
+**Why.** The user asked for a single command. pnpm's built-in parallel runner is already in the toolchain; adding `concurrently` would violate the CLAUDE.md rule about new dependencies without justification.
+
+**Coordinated shutdown.** Ctrl-C on the parent pnpm terminal propagates SIGINT to both children. The service's existing SIGINT handler (already in `single-instance/pid-guard`) cleans up the PID file and pipe. Desktop's Electron process handles SIGINT via `app.quit`.
+
+**Dev-mode supervisor hook.** The supervisor detects `--dev` mode via `process.env.NODE_ENV === 'development'` (or an Electron-specific check) and uses the dev pipe. In dev, we do **not** spawn the service from desktop — pnpm already started it. If `connect(devPipe)` fails, we show a clear error ("run `pnpm dev` to start the sync service") and exit rather than spawning a detached dev service, which would confuse the pnpm supervisor tree.
+
+### Decision 7 — Sync-client resilience
+
+**What.** The sync client handles exactly three non-happy-path conditions:
+
+1. **Disconnect while alive** (service crashed or was restarted). Reconnect with the same list-jobs-then-subscribe handshake; in-flight requests receive a synthetic `service-disconnected` error and any upload-progress subscriptions the renderer holds are told the transaction's fate is unknown (emit one final progress event with `status: 'disconnected'` or similar).
+2. **Request timeout** (service is up but not responding). Default 30s per request. On timeout, emit an internal error; the caller sees a failed promise.
+3. **Malformed frame from server.** Log at error, drop the frame, do not dispatch to subscribers. This is treated as a programming error, not a user-visible one.
+
+**What we're deliberately not doing.** We do not implement an offline queue — calls made while disconnected reject immediately. We do not implement renderer-side optimistic updates; the event stream is the source of truth.
+
+### Decision 8 — Events bridged, not duplicated
+
+**What.** Desktop main keeps the existing `createEventBridge(getEngine().bus)` call — the engine's in-process event bus is still useful for *non-upload* events emitted by direct main-process operations (auth intent completions from `window.api.datasources.action`, quota changes, etc.). The new sync-client event stream is a *second* source feeding the same `datasources:event` renderer channel.
+
+**Merge rule.** Events from both sources fan out to the same renderer channel. The renderer doesn't need to know the origin. Overlap (e.g., `authenticated` event could be emitted by both when a renderer-initiated auth flow completes) is tolerable as long as the duplicate carries the same payload, which it does because both paths run `engine.authenticate` (desktop via in-proc engine, service via its own engine instance). In practice, we route *authentication* through the service too (Decision 1), so the overlap is narrow and not a real duplication.
+
+### Decision 9 — Stale docs cleanup
+
+**What.** `packages/fs-datasource-engine/src/index.ts:52-53` comments claim "three placeholder strategy stubs" that the strategies have long since replaced. Rewrite the comment block to describe the current state (three real strategies, each with contract tests). This is mechanical and carried in this change so it doesn't rot further.
+
+## Risks / Trade-offs
+
+| Risk | Mitigation |
+|---|---|
+| Spawning a detached Node process from Electron is platform-fiddly (execpath resolution, PATH issues on Windows). | Tasks include an early spike to verify the path-resolution strategy on all three OSes. Dev mode avoids the problem entirely by relying on pnpm to start the service. |
+| Deleting `SqliteCredentialStore` + its migration regresses prior-installed users (their encrypted credentials are in `datasource_credentials`; service has no way to read them). | This is a one-way migration. Because no real users have shipped-software installs yet (pre-release monorepo), we accept data loss: existing dev databases lose their stored datasource credentials, and the user re-authenticates. Document explicitly in tasks + release notes when this ships. |
+| Renderer's existing `onUploadProgress` listeners assume a specific event shape. | The IPC proxy translates `job-progress` → `DatasourcesUploadProgressEvent` with the existing shape — no renderer edit needed. Contract tests cover the mapping. |
+| The service's bootstrap composition order (recovery → scheduler → ipc-server) has data-race implications if IPC accepts connections before recovery finishes. | The existing `fs-sync-service` spec already requires "BEFORE the IPC listener is opened to new clients" for recovery; we preserve that ordering in `main/index.ts`. |
+| Single-`pnpm dev` turning off the service when desktop exits in dev is *desirable* (clean dev loop), but the same reflex in production would break the invariant. | The supervisor deliberately differs by mode: dev connects only (does not spawn); prod spawns detached and never kills. The modes are chosen by `--dev` / NODE_ENV. Test both paths. |
+| Race at startup: desktop launches, service is starting but not listening; connect fails, desktop spawns a second service; second service exits code 3 when it hits the PID guard; desktop's retry-connect finds the first service. Expected flow, but easy to break if retry budget is wrong. | Lock retry budget to ~1s total across ~5 attempts with geometric backoff. Cover with an integration test that starts a slow-binding fake service. |
+| Dual engine-bus and sync-stream delivery of `authenticated` events could cause renderer state flicker. | Authentication flows are routed through the service (Decision 1), so the engine bus in main won't emit duplicate `authenticated` events for datasource credentials. Only non-credential engine events (e.g., `status-changed`) flow through the bus. |
+| `@ft5/ipc-contracts` grows. | Two clearly-named sub-paths (`sync-service` for the wire, `sync-service-desktop` for the renderer) keep import sites unambiguous. |
+
+## Migration Plan
+
+This change does not need a runtime migration strategy per se — it's a code-path swap, not a data swap. But it does need a **deployment ordering guarantee** for in-repo developers:
+
+1. Branch lands with `SqliteCredentialStore` + `0001_datasource_credentials` migration **deleted**.
+2. Any dev with an existing `ft5.db` under Electron's userData path will find that migration gone on next start. Drizzle's migration runner is forward-only; a missing migration file means the dev's DB shows a migration we don't know about. We need to either:
+   - (a) Leave the migration file in place but delete the store & its callers. The table becomes unused but harmless. Slightly dishonest.
+   - (b) Add a forward migration that drops the `datasource_credentials` table. Adds a line to the migration runner, deletes the table on next boot. Clean.
+
+   Pick (b). It's ~5 lines of SQL and preserves the principle that the schema accurately reflects what's used.
+
+3. Users of the pre-release codebase must re-authenticate every datasource after the update, because credentials have moved from `SqliteCredentialStore` (Electron-encrypted) to `ConfigFileCredentialStore` (service-side plaintext). Documented in release notes.
+
+**Rollback.** If this change is reverted, the DROP TABLE migration stays applied (non-reversible in our forward-only runner). A rollback would need a new migration that re-creates the table empty. Acceptable risk: rollback is not a supported workflow for in-monorepo changes.
+
+## Open Questions
+
+None blocking implementation. Two items to verify during `/opsx:apply`:
+
+- **Service execpath in packaged builds.** Do we ship a Node binary alongside the service, or do we run the service in Electron's Node? The service's charter forbids `electron` imports, but running under Electron's Node *binary* is not the same as importing Electron. Prefer a standalone Node binary via electron-builder's `extraResources`; fall back to Electron's bundled Node if binary size is a concern. Spike during task A2.
+- **Exact IPC channel names for the renderer-facing sync surface.** The existing `DATASOURCES_CHANNELS` pattern is `datasources:list`, `datasources:add`, etc. Mirror it as `sync:list-jobs`, `sync:enqueue-upload`, etc. — same names as the service's wire protocol, but dispatched via Electron IPC. The proxy handler translates one to the other; the name reuse keeps grep-ability high and avoids a second vocabulary.
