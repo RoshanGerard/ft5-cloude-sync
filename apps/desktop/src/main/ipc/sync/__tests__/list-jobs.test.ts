@@ -63,14 +63,17 @@ describe("handleSyncListJobs", () => {
     });
   });
 
-  it("passes undefined filter through when req.filter is absent", async () => {
+  it("omits the filter key entirely when req.filter is absent", async () => {
+    // exactOptionalPropertyTypes is on — passing `filter: undefined`
+    // would not type-check. The handler omits the key so the wire
+    // request is an empty object.
     const { client, listJobs } = makeFakeClient([]);
     const req: SyncListJobsRequest = {};
 
     await handleSyncListJobs(req, client);
 
     expect(listJobs).toHaveBeenCalledTimes(1);
-    expect(listJobs).toHaveBeenCalledWith({ filter: undefined });
+    expect(listJobs).toHaveBeenCalledWith({});
   });
 
   it("returns the jobs array the client produced", async () => {
