@@ -9,6 +9,11 @@ import { openDatabase, runMigrations } from "./db/database.js";
 import { DEFAULT_MIGRATIONS } from "./db/migrations.js";
 import { getEngine, initEngine } from "./datasources/engine.js";
 import { createEventBridge } from "./ipc/datasources/event-bridge.js";
+import { startSupervisor } from "./sync/supervisor.js";
+import { resolveSyncPipePath } from "./sync/pipe-paths.js";
+import { resolveServiceNodeBinary } from "./sync/node-binary-resolver.js";
+import { setSyncClient } from "./sync/sync-client-holder.js";
+import type { SyncClient } from "./sync/client.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -156,6 +161,64 @@ async function bootstrap(): Promise<void> {
   const db = openDatabase(dbPath);
   runMigrations(db, DEFAULT_MIGRATIONS);
   initEngine(db);
+
+  // Bring up the fs-sync-service transport BEFORE IPC handler
+  // registration so section-5 sync handlers can rely on
+  // `getSyncClient()` returning a live client at call time.
+  //
+  // Mode is `dev` when running unpackaged (from `electron-vite dev` /
+  // `pnpm dev`), `prod` when packaged. See design.md Decision 6.
+  // In dev, the service is owned by pnpm's parallel supervisor — we
+  // ONLY connect, never spawn. In prod, we connect-first and fall
+  // through to detached spawn on ENOENT/ECONNREFUSED.
+  //
+  // If supervisor bring-up fails (expected when `pnpm dev` is not
+  // running in dev), we continue booting with an uninitialized holder.
+  // Subsequent sync IPC calls will throw a clear "sync client not
+  // initialized" error via `getSyncClient()`, which the renderer
+  // surfaces as a structured IPC failure. Crashing bootstrap here
+  // would hide unrelated failures (renderer, datasources) behind a
+  // single missing-service black screen; logging and degrading is the
+  // documented trade-off (task 4.10 wiring spec).
+  const isDev = !app.isPackaged;
+  const pipePath = resolveSyncPipePath({ dev: isDev });
+
+  let nodeBinary: string | undefined;
+  let servicePath: string | undefined;
+  if (!isDev) {
+    nodeBinary = resolveServiceNodeBinary({
+      isPackaged: true,
+      appPath: app.getAppPath(),
+    });
+    // electron-builder copies services/fs-sync/dist → resources/fs-sync
+    // (see node-binary-resolver.spike.md §4). fs-sync's entry is
+    // dist/main/index.js per its package.json `main`, so the packaged
+    // layout is resources/fs-sync/main/index.js. app.getAppPath() ends
+    // in resources/app.asar (or resources/app), so `..` strips that
+    // off and we land in resources/.
+    servicePath = path.join(
+      app.getAppPath(),
+      "..",
+      "fs-sync",
+      "main",
+      "index.js",
+    );
+  }
+
+  try {
+    const syncClient: SyncClient = await startSupervisor({
+      mode: isDev ? "dev" : "prod",
+      pipePath,
+      ...(nodeBinary !== undefined ? { nodeBinary } : {}),
+      ...(servicePath !== undefined ? { servicePath } : {}),
+    });
+    setSyncClient(syncClient);
+  } catch (err) {
+    console.error(
+      "[desktop] fs-sync supervisor failed to start — sync IPC handlers will reject until the service is reachable.",
+      err,
+    );
+  }
 
   // Phase 10.3 — wire the engine's EventBus to the renderer. The bridge
   // subscribes to `getEngine().bus` once and fans every delivered
