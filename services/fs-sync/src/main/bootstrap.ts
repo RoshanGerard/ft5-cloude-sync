@@ -84,7 +84,6 @@ export interface BootstrapLogger {
 // `index.ts` can map it to its own exit code (5). Wraps the underlying
 // listen error on `cause` for diagnostics.
 export class IpcBindError extends Error {
-  readonly cause: unknown;
   constructor(cause: unknown) {
     const suffix =
       cause instanceof Error
@@ -92,9 +91,10 @@ export class IpcBindError extends Error {
         : typeof cause === "string"
           ? cause
           : "unknown";
-    super(`ipc-bind-failed: ${suffix}`);
+    // Use ES2022 Error cause slot (inherited) rather than declaring a shadow
+    // field — avoids useDefineForClassFields redefining it at construction.
+    super(`ipc-bind-failed: ${suffix}`, { cause });
     this.name = "IpcBindError";
-    this.cause = cause;
   }
 }
 
@@ -262,7 +262,20 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       // Stage 11 bind failure. Emit the operator-visible "ipc-bind-failed"
       // log line, then rethrow as IpcBindError so the outer catch tears down
       // stages 1-10 and `index.ts` can map it to exit code 5.
-      logger?.error?.("ipc-bind-failed", { cause, socketPath });
+      // Flatten `cause` into string fields — raw Error objects have no
+      // enumerable properties so `JSON.stringify` would drop the code and
+      // message, leaving operators nothing to grep for.
+      const causeMessage =
+        cause instanceof Error ? cause.message : String(cause);
+      const causeCode =
+        cause && typeof cause === "object" && "code" in cause
+          ? String((cause as { code?: unknown }).code)
+          : undefined;
+      logger?.error?.("ipc-bind-failed", {
+        socketPath,
+        causeMessage,
+        causeCode,
+      });
       throw new IpcBindError(cause);
     }
     observer?.onStage("ipc-listen");
