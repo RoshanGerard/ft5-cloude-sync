@@ -29,7 +29,7 @@
 - [x] 3.6 GREEN: implement the disconnect + cleanup path; emit a synthetic `service-disconnected` event to registered listeners; expose `client.isConnected` and `client.on('disconnect', ...)` hooks for the supervisor
 - [x] 3.7 RED: `sync/client.events.test.ts` — subscribed listeners receive every `Event` frame; unsubscribing stops delivery; multiple listeners coexist
 - [x] 3.8 GREEN: implement `client.onEvent(cb): () => void` with a simple set of callbacks fanned out per event
-- [ ] 3.9 Request code review: client transport is the trust boundary between desktop and service; critical issues block supervisor work
+- [x] 3.9 Request code review: client transport is the trust boundary between desktop and service; critical issues block supervisor work — reviewer returned 0 Critical, 2 Important (typed-wrappers gap; socket.write leak), both fixed (commits 2faff2a + 6bbaebd + 489bb7f + 4ccfed3). Sections 1 & 2 gained small collateral fixes (root SYNC_CHANNELS re-export; pre-existing exactOptionalPropertyTypes cleanups in section-3 files) so `pnpm typecheck` + `pnpm lint` + 1404-test suite are all clean before starting section 4.
 
 ## 4. Supervisor (Option 3)
 
