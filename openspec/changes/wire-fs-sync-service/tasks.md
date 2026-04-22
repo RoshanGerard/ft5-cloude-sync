@@ -33,17 +33,17 @@
 
 ## 4. Supervisor (Option 3)
 
-- [ ] 4.1 Spike — `apps/desktop/src/main/sync/node-binary-resolver.spike.md`: document how we resolve the Node binary used to spawn the detached service on Windows, macOS, Linux, in both packaged (electron-builder `extraResources`) and unpacked (dev) modes. Include a 20-line reference implementation. Land the doc; implementation follows.
-- [ ] 4.2 RED: `sync/supervisor.prod-connect.test.ts` — given a running fake service on the prod pipe, `startSupervisor({ mode: 'prod' })` resolves with a `SyncClient` without spawning; the test spies on `child_process.spawn` and asserts zero invocations
-- [ ] 4.3 GREEN: implement `apps/desktop/src/main/sync/supervisor.ts` with the connect-first path
-- [ ] 4.4 RED: `sync/supervisor.prod-spawn.test.ts` — no service running; supervisor spawns `child_process.spawn(nodeBinary, [servicePath], { detached: true, stdio: 'ignore' })`, calls `unref()`, retries connect on 25/50/100/200/400 ms, and resolves with a `SyncClient`; asserting that after resolving, the spawned child's handle has been unref'd (observable via `child.killed === false` + no parent waitpid)
-- [ ] 4.5 GREEN: implement the spawn path with geometric backoff; surface a fatal error after 5 failed retry attempts; do NOT track or kill the spawned child during `app.quit`
-- [ ] 4.6 RED: `sync/supervisor.dev-no-spawn.test.ts` — mode=dev, pipe unreachable; supervisor does NOT spawn, rejects start with a user-visible error message naming `pnpm dev`; test spies on `child_process.spawn` and asserts zero invocations
-- [ ] 4.7 GREEN: add the dev-mode branch to `supervisor.ts`
-- [ ] 4.8 RED: `sync/supervisor.race.test.ts` — two supervisors start in parallel against the same pipe, neither finds a service, both spawn; the service's PID guard ensures only one wins; both supervisors resolve with connected clients pointing at the winner
-- [ ] 4.9 GREEN: ensure the retry-connect loop tolerates the loser's exit-3 without failing its own resolution
-- [ ] 4.10 Wire `startSupervisor()` into `apps/desktop/src/main/index.ts` before `registerIpcHandlers(window)`; hold the resulting `SyncClient` on a module-scoped variable that IPC handlers in section 5 can import
-- [ ] 4.11 Request code review: supervisor is the unique piece of new cross-process logic; critical issues require rework before section 5
+- [x] 4.1 Spike — `apps/desktop/src/main/sync/node-binary-resolver.spike.md`: document how we resolve the Node binary used to spawn the detached service on Windows, macOS, Linux, in both packaged (electron-builder `extraResources`) and unpacked (dev) modes. Include a 20-line reference implementation. Land the doc; implementation follows.
+- [x] 4.2 RED: `sync/supervisor.prod-connect.test.ts` — given a running fake service on the prod pipe, `startSupervisor({ mode: 'prod' })` resolves with a `SyncClient` without spawning; the test spies on `child_process.spawn` and asserts zero invocations
+- [x] 4.3 GREEN: implement `apps/desktop/src/main/sync/supervisor.ts` with the connect-first path
+- [x] 4.4 RED: `sync/supervisor.prod-spawn.test.ts` — no service running; supervisor spawns `child_process.spawn(nodeBinary, [servicePath], { detached: true, stdio: 'ignore' })`, calls `unref()`, retries connect on 25/50/100/200/400 ms, and resolves with a `SyncClient`; asserting that after resolving, the spawned child's handle has been unref'd (observable via `child.killed === false` + no parent waitpid)
+- [x] 4.5 GREEN: implement the spawn path with geometric backoff; surface a fatal error after 5 failed retry attempts; do NOT track or kill the spawned child during `app.quit`
+- [x] 4.6 RED: `sync/supervisor.dev-no-spawn.test.ts` — mode=dev, pipe unreachable; supervisor does NOT spawn, rejects start with a user-visible error message naming `pnpm dev`; test spies on `child_process.spawn` and asserts zero invocations
+- [x] 4.7 GREEN: add the dev-mode branch to `supervisor.ts`
+- [x] 4.8 RED: `sync/supervisor.race.test.ts` — two supervisors start in parallel against the same pipe, neither finds a service, both spawn; the service's PID guard ensures only one wins; both supervisors resolve with connected clients pointing at the winner
+- [x] 4.9 GREEN: ensure the retry-connect loop tolerates the loser's exit-3 without failing its own resolution — verified no code change needed; retry loop is structurally indifferent to child exit events (commit 451958c RED passed on first run; 6c60010 locks the invariant in docs)
+- [x] 4.10 Wire `startSupervisor()` into `apps/desktop/src/main/index.ts` before `registerIpcHandlers(window)`; hold the resulting `SyncClient` on a module-scoped variable that IPC handlers in section 5 can import
+- [x] 4.11 Request code review: supervisor is the unique piece of new cross-process logic; critical issues require rework before section 5 — reviewer returned 0 Critical, 3 Important, 6 Minor; all 3 Important fixed in commit fa7752a (EPIPE in isNoListenerError, bootstrap try/catch scope, header-comment typo). Section 5 unblocked.
 
 ## 5. Desktop main IPC handlers proxying to the service
 
