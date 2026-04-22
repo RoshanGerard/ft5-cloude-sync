@@ -288,6 +288,20 @@ export class SyncClient {
     return this.request("sync:authenticate", params, opts);
   }
 
+  authenticateStart(
+    params: CommandParams<"sync:authenticate-start">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:authenticate-start">> {
+    return this.request("sync:authenticate-start", params, opts);
+  }
+
+  authenticateComplete(
+    params: CommandParams<"sync:authenticate-complete">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:authenticate-complete">> {
+    return this.request("sync:authenticate-complete", params, opts);
+  }
+
   getStatus(
     params: CommandParams<"sync:get-status">,
     opts?: { timeoutMs?: number },
