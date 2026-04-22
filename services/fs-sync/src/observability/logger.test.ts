@@ -84,6 +84,23 @@ describe("redactCommandParams", () => {
     expect(redactCommandParams("sync:authenticate", params)).toBe("[redacted]");
   });
 
+  it("replaces sync:authenticate-start params with [redacted]", () => {
+    const params = { datasourceId: "ds-1", type: "amazon-s3" };
+    expect(redactCommandParams("sync:authenticate-start", params)).toBe(
+      "[redacted]",
+    );
+  });
+
+  it("replaces sync:authenticate-complete params with [redacted]", () => {
+    const params = {
+      correlationId: "corr-1",
+      completion: { kind: "oauth", code: "secret-code" },
+    };
+    expect(redactCommandParams("sync:authenticate-complete", params)).toBe(
+      "[redacted]",
+    );
+  });
+
   it("passes through params for every other command", () => {
     const params = { datasourceId: "ds-1" };
     expect(redactCommandParams("sync:get-job", params)).toBe(params);
