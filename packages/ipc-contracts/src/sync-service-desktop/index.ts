@@ -24,3 +24,23 @@ export type {
   SyncSetRetryPolicyRequest,
   SyncSetRetryPolicyResponse,
 } from "./requests.js";
+
+export type {
+  JobCancelledPayload,
+  JobCompletedPayload,
+  JobEnqueuedPayload,
+  JobFailedPayload,
+  JobProgressPayload,
+  JobRecoveredPayload,
+  JobStartedPayload,
+  NetworkAvailablePayload,
+  ServiceDisconnectedPayload,
+  ServiceReconnectedPayload,
+  SourceUnavailablePayload,
+  SyncCompletedPayload,
+  SyncEvent,
+  SyncEventKind,
+  SyncEventPayloadMap,
+  SyncStateSeedPayload,
+} from "./events.js";
+export { SYNC_EVENT_KINDS } from "./events.js";
