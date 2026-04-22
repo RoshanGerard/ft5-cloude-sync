@@ -281,13 +281,6 @@ export class SyncClient {
     return this.request("sync:cancel-job", params, opts);
   }
 
-  authenticate(
-    params: CommandParams<"sync:authenticate">,
-    opts?: { timeoutMs?: number },
-  ): Promise<CommandResult<"sync:authenticate">> {
-    return this.request("sync:authenticate", params, opts);
-  }
-
   authenticateStart(
     params: CommandParams<"sync:authenticate-start">,
     opts?: { timeoutMs?: number },

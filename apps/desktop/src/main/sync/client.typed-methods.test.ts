@@ -158,22 +158,6 @@ const wrappers: ReadonlyArray<{
     invoke: (c) => c.cancelJob({ jobId: "j-1" }),
   },
   {
-    method: "authenticate",
-    expectedCommand: SYNC_CHANNELS.authenticate,
-    invoke: (c) =>
-      c.authenticate({
-        datasourceId: "ds-1",
-        type: "amazon-s3",
-        intent: {
-          kind: "credentials-form",
-          schema: "aws-access-key",
-          // Stub submit — this test never drives the form; the wrapper
-          // just forwards the intent opaquely to the service.
-          submit: async () => ({ accessToken: "noop" }),
-        },
-      }),
-  },
-  {
     method: "authenticateStart",
     expectedCommand: SYNC_CHANNELS.authenticateStart,
     invoke: (c) =>
