@@ -99,6 +99,10 @@ export class SyncClient {
       onError: (err) => this.onDecoderError(err),
     });
     this.socket.on("data", (chunk) => this.decoder.push(chunk));
+    // Attach a no-op error listener now so a mid-request socket error does
+    // not crash the main process via Node's default unhandled-error rethrow.
+    // Pair 3 (disconnect handling) replaces this with a reject-all handler.
+    this.socket.on("error", () => void 0);
   }
 
   request<N extends CommandName>(
