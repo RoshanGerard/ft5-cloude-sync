@@ -10,7 +10,6 @@
 // Cross-platform pipe-path pattern mirrors `client.request-response.test.ts`
 // — Windows named pipes and Unix domain sockets without extra config.
 
-import * as child_process from "node:child_process";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -19,6 +18,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SyncClient } from "./client.js";
 import { startSupervisor } from "./supervisor.js";
+
+// Partial mock of `node:child_process`: replace `spawn` with a spy so the
+// test can assert zero invocations. We use `vi.mock` with an
+// `importOriginal` factory because `vi.spyOn` on an ESM module namespace
+// fails with "Cannot redefine property: spawn" (see Vitest ESM limits).
+// Other exports (`exec`, `execFile`, etc.) pass through unchanged.
+const spawnSpy = vi.fn();
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: (...args: unknown[]) => {
+      spawnSpy(...args);
+      return (actual.spawn as unknown as (...a: unknown[]) => unknown)(
+        ...args,
+      );
+    },
+  };
+});
 
 function pipeFor(tag: string): string {
   if (process.platform === "win32") {
@@ -56,6 +75,7 @@ let clients: SyncClient[] = [];
 beforeEach(() => {
   servers = [];
   clients = [];
+  spawnSpy.mockClear();
 });
 
 afterEach(async () => {
@@ -77,15 +97,13 @@ describe("startSupervisor in prod mode connects to a running service without spa
     const server = await startFakeService(pipePath);
     servers.push(server);
 
-    // Spy BEFORE startSupervisor so any spawn call (there must be none in
-    // the connect-first path) is captured. We assert zero invocations.
-    const spawnSpy = vi.spyOn(child_process, "spawn");
-
     const client = await startSupervisor({ mode: "prod", pipePath });
     clients.push(client);
 
     expect(client).toBeInstanceOf(SyncClient);
     expect(client.isConnected).toBe(true);
+    // The connect-first path must not touch `child_process.spawn`.
+    // spawnSpy is wired via the module-level `vi.mock` above.
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 });
