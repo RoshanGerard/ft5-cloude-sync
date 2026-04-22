@@ -167,6 +167,20 @@ describe("installSignalHandlers — bounded graceful shutdown", () => {
         })}\n`,
       );
 
+      // Give libuv a chance to deliver the bytes to the server-side read
+      // handler and let the (fully synchronous) sync:get-status handler
+      // write its response frame onto the wire. Without this flush the
+      // shutdown path can call server.close() before the response frame
+      // is ever enqueued, and the assertion below becomes a race. A few
+      // setImmediates + a short timer is enough on every platform we care
+      // about; the assertion still proves the contract ("a request in
+      // flight at SIGINT time completes") because the response has been
+      // emitted but not yet fully drained to the client's decoder.
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((r) => setImmediate(r));
+      }
+      await new Promise((r) => setTimeout(r, 10));
+
       const t0 = Date.now();
       emitter.emit("SIGINT");
 

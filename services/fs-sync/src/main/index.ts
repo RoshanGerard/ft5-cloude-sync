@@ -1,7 +1,8 @@
 // fs-sync-service entry point. Parses --dev, hands off to `bootstrap()`,
 // and installs SIGINT / SIGTERM handlers that gracefully stop the Runtime.
 // All composition lives in `bootstrap.ts` so tests can drive the same
-// wiring against a scratch data dir; this file is the process-level shell.
+// wiring against a scratch data dir; signal handling lives in `signals.ts`
+// so the grace-period contract has its own unit test.
 //
 // Exit codes:
 //   0 — normal (signal-driven shutdown)
@@ -9,12 +10,12 @@
 //   3 — another live instance holds the PID guard (AlreadyRunningError)
 //   4 — database integrity check failed (DatabaseIntegrityError)
 //
-// Task 2.4 fleshes out the signal path with a bounded grace period; for
-// now a basic handler that calls Runtime.stop() and exits 0 is enough.
 // Task 2.6 handles the ipc-bind-failure path (exit 5).
 
 import { AlreadyRunningError, bootstrap, type Runtime } from "./bootstrap.js";
 import { DatabaseIntegrityError } from "../db/open.js";
+import { resolvePidPath } from "../env/paths.js";
+import { installSignalHandlers } from "./signals.js";
 
 async function main(argv: ReadonlyArray<string>): Promise<number> {
   const dev = argv.includes("--dev");
@@ -43,18 +44,13 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
     `fs-sync-service started (pid=${process.pid}, mode=${mode}, pipe=${runtime.socketPath})`,
   );
 
-  // Idle wait until a signal arrives. Resolves with the exit code.
-  return new Promise<number>((resolve) => {
-    const shutdown = (signal: NodeJS.Signals): void => {
-      console.log(`fs-sync-service received ${signal}; shutting down`);
-      void runtime
-        .stop()
-        .catch(() => void 0)
-        .then(() => resolve(0));
-    };
-    process.once("SIGINT", () => shutdown("SIGINT"));
-    process.once("SIGTERM", () => shutdown("SIGTERM"));
-  });
+  // Delegate signal wiring to signals.ts — it registers SIGINT/SIGTERM on
+  // `process`, runs runtime.stop() against a 5 s grace budget, and cleans
+  // up the PID file. The returned `shutdown` promise resolves with the
+  // exit code.
+  const pidPath = resolvePidPath({ dev }, process.env);
+  const installed = installSignalHandlers(runtime, { pidPath });
+  return installed.shutdown;
 }
 
 main(process.argv.slice(2)).then(
