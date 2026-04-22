@@ -78,17 +78,20 @@ export interface BootstrapOptions {
   readonly logger?: BootstrapLogger;
   readonly serviceVersion?: string;
   readonly serviceUuid?: string;
-  readonly pathOverrides?: {
-    readonly dataDir?: string;
-    readonly pidPath?: string;
-    readonly dbPath?: string;
-    readonly socketPath?: string;
-    readonly credentialsPath?: string;
-  };
+  // Path seams. `dataDir` and `socketPath` are the two the spec names
+  // explicitly; the remaining three are internal knobs so tests can isolate
+  // the PID file, DB file, and credentials file under a scratch dir.
+  readonly dataDir?: string;
+  readonly socketPath?: string;
+  readonly pidPath?: string;
+  readonly dbPath?: string;
+  readonly credentialsPath?: string;
 }
 
 export interface Runtime {
-  readonly pipePath: string;
+  readonly socketPath: string;
+  readonly db: Database.Database;
+  readonly scheduler: Scheduler;
   readonly stop: () => Promise<void>;
 }
 
@@ -97,14 +100,12 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
   const pathOpts = { dev };
   const env = options.env ?? process.env;
 
-  const dataDir = options.pathOverrides?.dataDir ?? resolveDataDir(pathOpts, env);
-  const pidPath = options.pathOverrides?.pidPath ?? resolvePidPath(pathOpts, env);
-  const dbPath = options.pathOverrides?.dbPath ?? resolveDbPath(pathOpts, env);
-  const socketPath =
-    options.pathOverrides?.socketPath ?? resolveSocketPath(pathOpts, env);
+  const dataDir = options.dataDir ?? resolveDataDir(pathOpts, env);
+  const pidPath = options.pidPath ?? resolvePidPath(pathOpts, env);
+  const dbPath = options.dbPath ?? resolveDbPath(pathOpts, env);
+  const socketPath = options.socketPath ?? resolveSocketPath(pathOpts, env);
   const credentialsPath =
-    options.pathOverrides?.credentialsPath ??
-    resolveCredentialsPath(pathOpts, env);
+    options.credentialsPath ?? resolveCredentialsPath(pathOpts, env);
 
   // Data directory must exist with the right mode BEFORE anything else
   // touches it (openDatabase will create sync.db inside). This is setup,
@@ -243,7 +244,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     const runtimeRelease = releasePid;
     const runtimeDb: Database.Database = db;
     return {
-      pipePath: socketPath,
+      socketPath,
+      db: runtimeDb,
+      scheduler: runtimeScheduler,
       async stop(): Promise<void> {
         // Shutdown: probe → scheduler → server → db → PID. Swallow
         // per-step errors so later steps still run.

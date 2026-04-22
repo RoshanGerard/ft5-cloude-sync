@@ -53,13 +53,11 @@ describe("bootstrap ordering", () => {
 
     runtime = await bootstrap({
       dev: true,
-      pathOverrides: {
-        dataDir: scratchDir,
-        pidPath: path.join(scratchDir, "service-dev.pid"),
-        dbPath: path.join(scratchDir, "sync.db"),
-        socketPath: pipePath,
-        credentialsPath: path.join(scratchDir, "credentials.json"),
-      },
+      dataDir: scratchDir,
+      pidPath: path.join(scratchDir, "service-dev.pid"),
+      dbPath: path.join(scratchDir, "sync.db"),
+      socketPath: pipePath,
+      credentialsPath: path.join(scratchDir, "credentials.json"),
       observer: {
         onStage(stage) {
           observed.push(stage);
@@ -84,20 +82,18 @@ describe("bootstrap ordering", () => {
     expect(observed).toEqual(expected);
 
     // IPC listen is the LAST observable side-effect before the runtime is
-    // returned — sanity-check the pipePath surface.
-    expect(runtime.pipePath).toBe(pipePath);
+    // returned — sanity-check the socketPath surface.
+    expect(runtime.socketPath).toBe(pipePath);
   });
 
   it("settles stop() without leaking timers when no jobs are queued", async () => {
     runtime = await bootstrap({
       dev: true,
-      pathOverrides: {
-        dataDir: scratchDir,
-        pidPath: path.join(scratchDir, "service-dev.pid"),
-        dbPath: path.join(scratchDir, "sync.db"),
-        socketPath: pipeFor("stop"),
-        credentialsPath: path.join(scratchDir, "credentials.json"),
-      },
+      dataDir: scratchDir,
+      pidPath: path.join(scratchDir, "service-dev.pid"),
+      dbPath: path.join(scratchDir, "sync.db"),
+      socketPath: pipeFor("stop"),
+      credentialsPath: path.join(scratchDir, "credentials.json"),
     });
 
     const t0 = Date.now();

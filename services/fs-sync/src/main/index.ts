@@ -40,7 +40,7 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
   }
 
   console.log(
-    `fs-sync-service started (pid=${process.pid}, mode=${mode}, pipe=${runtime.pipePath})`,
+    `fs-sync-service started (pid=${process.pid}, mode=${mode}, pipe=${runtime.socketPath})`,
   );
 
   // Idle wait until a signal arrives. Resolves with the exit code.
