@@ -174,6 +174,24 @@ const wrappers: ReadonlyArray<{
       }),
   },
   {
+    method: "authenticateStart",
+    expectedCommand: SYNC_CHANNELS.authenticateStart,
+    invoke: (c) =>
+      c.authenticateStart({
+        datasourceId: "ds-1",
+        type: "amazon-s3",
+      }),
+  },
+  {
+    method: "authenticateComplete",
+    expectedCommand: SYNC_CHANNELS.authenticateComplete,
+    invoke: (c) =>
+      c.authenticateComplete({
+        correlationId: "corr-1",
+        completion: { kind: "oauth", code: "noop" },
+      }),
+  },
+  {
     method: "getStatus",
     expectedCommand: SYNC_CHANNELS.getStatus,
     invoke: (c) => c.getStatus({}),
