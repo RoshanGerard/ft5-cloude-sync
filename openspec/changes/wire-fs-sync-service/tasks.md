@@ -21,8 +21,8 @@
 
 ## 3. Sync client (desktop transport)
 
-- [ ] 3.1 RED: `apps/desktop/src/main/sync/framing.test.ts` — parser handles two frames split across chunks, rejects malformed JSON, caps single-frame size (reuse the service-side test cases to prove parity of behavior)
-- [ ] 3.2 GREEN: implement `apps/desktop/src/main/sync/framing.ts` (a `Transform`-style codec; may be ported / shared with service's version via a copy or via a new `@ft5/sync-framing` shared module — pick copy for this change, shared-package is a follow-up)
+- [x] 3.1 RED: `apps/desktop/src/main/sync/framing.test.ts` — parser handles two frames split across chunks, rejects malformed JSON, caps single-frame size (reuse the service-side test cases to prove parity of behavior)
+- [x] 3.2 GREEN: implement `apps/desktop/src/main/sync/framing.ts` (a `Transform`-style codec; may be ported / shared with service's version via a copy or via a new `@ft5/sync-framing` shared module — pick copy for this change, shared-package is a follow-up)
 - [ ] 3.3 RED: `apps/desktop/src/main/sync/client.request-response.test.ts` — client sends two requests with ids `a`/`b`, service stub replies in order `b` then `a`; both promises resolve with correct payloads; a third request with a 100 ms timeout rejects with `request-timeout`; a response with an unknown id is dropped silently
 - [ ] 3.4 GREEN: implement `apps/desktop/src/main/sync/client.ts` (`class SyncClient`) — takes a connected `net.Socket`, owns the in-flight map, exposes typed methods per `SYNC_CHANNELS`
 - [ ] 3.5 RED: `sync/client.disconnect.test.ts` — a disconnected socket rejects all in-flight requests with `service-disconnected`; a new request issued post-disconnect rejects the same way; a malformed event frame is dropped without dispatch
