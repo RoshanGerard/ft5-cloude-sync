@@ -12,7 +12,7 @@
 //       * `child_process.spawn(nodeBinary, [servicePath],
 //          { detached: true, stdio: 'ignore' })` then `unref()`
 //       * retry-connect on a 25/50/100/200/400 ms geometric schedule
-//         (5 attempts, ~975 ms wall time before giving up)
+//         (5 attempts, ~775 ms wall time sleeping before giving up)
 //       * on all retries failing, reject with a fatal error that names
 //         the pipe path and the attempt count
 //   - mode='prod', on ENOENT/ECONNREFUSED with no spawn paths given,
@@ -169,14 +169,18 @@ function sleep(ms: number): Promise<void> {
  * Detect "nothing is listening on this pipe" — the signal to fall
  * through to the spawn path. Both Unix-domain sockets and Windows named
  * pipes surface this as ENOENT; TCP-style setups (unused here today)
- * would use ECONNREFUSED. We deliberately do NOT catch timeouts — a
- * timeout means "a listener MAY exist but is too slow," which is a
- * different failure mode and should not trigger a spawn.
+ * would use ECONNREFUSED. On Windows a half-closed named pipe left over
+ * by a crashed service surfaces EPIPE — the service's own health probe
+ * at `services/fs-sync/src/main/signals.test.ts:213` already treats
+ * EPIPE as "listener gone," so we match for consistency. We deliberately
+ * do NOT catch timeouts — a timeout means "a listener MAY exist but is
+ * too slow," which is a different failure mode and should not trigger
+ * a spawn.
  */
 function isNoListenerError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as NodeJS.ErrnoException).code;
-  return code === "ENOENT" || code === "ECONNREFUSED";
+  return code === "ENOENT" || code === "ECONNREFUSED" || code === "EPIPE";
 }
 
 function connectWithTimeout(

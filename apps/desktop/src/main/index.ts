@@ -181,31 +181,36 @@ async function bootstrap(): Promise<void> {
   // single missing-service black screen; logging and degrading is the
   // documented trade-off (task 4.10 wiring spec).
   const isDev = !app.isPackaged;
-  const pipePath = resolveSyncPipePath({ dev: isDev });
-
-  let nodeBinary: string | undefined;
-  let servicePath: string | undefined;
-  if (!isDev) {
-    nodeBinary = resolveServiceNodeBinary({
-      isPackaged: true,
-      appPath: app.getAppPath(),
-    });
-    // electron-builder copies services/fs-sync/dist → resources/fs-sync
-    // (see node-binary-resolver.spike.md §4). fs-sync's entry is
-    // dist/main/index.js per its package.json `main`, so the packaged
-    // layout is resources/fs-sync/main/index.js. app.getAppPath() ends
-    // in resources/app.asar (or resources/app), so `..` strips that
-    // off and we land in resources/.
-    servicePath = path.join(
-      app.getAppPath(),
-      "..",
-      "fs-sync",
-      "main",
-      "index.js",
-    );
-  }
 
   try {
+    const pipePath = resolveSyncPipePath({ dev: isDev });
+
+    let nodeBinary: string | undefined;
+    let servicePath: string | undefined;
+    if (!isDev) {
+      // `resolveServiceNodeBinary` can throw on unsupported arch/platform.
+      // Keeping the call inside the try block so a bad packaged target
+      // degrades the same as a supervisor failure — logged, skipped, and
+      // bootstrap continues rather than leaving a blank BrowserWindow.
+      nodeBinary = resolveServiceNodeBinary({
+        isPackaged: true,
+        appPath: app.getAppPath(),
+      });
+      // electron-builder copies services/fs-sync/dist → resources/fs-sync
+      // (see node-binary-resolver.spike.md §4). fs-sync's entry is
+      // dist/main/index.js per its package.json `main`, so the packaged
+      // layout is resources/fs-sync/main/index.js. app.getAppPath() ends
+      // in resources/app.asar (or resources/app), so `..` strips that
+      // off and we land in resources/.
+      servicePath = path.join(
+        app.getAppPath(),
+        "..",
+        "fs-sync",
+        "main",
+        "index.js",
+      );
+    }
+
     const syncClient: SyncClient = await startSupervisor({
       mode: isDev ? "dev" : "prod",
       pipePath,
