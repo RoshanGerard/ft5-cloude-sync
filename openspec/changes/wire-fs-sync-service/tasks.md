@@ -47,21 +47,23 @@
 
 ## 5. Desktop main IPC handlers proxying to the service
 
-- [ ] 5.1 RED: `apps/desktop/src/main/ipc/sync/list-jobs.test.ts` — handler calls `syncClient.listJobs(params)`, returns the result, and computes `derivedSyncingDatasourceIds` as the set of `datasourceId` where any returned job has `kind==='sync' && status ∈ ['running','queued','waiting-network']`
-- [ ] 5.2 GREEN: implement `apps/desktop/src/main/ipc/sync/list-jobs.ts` registered against `SYNC_CHANNELS.listJobs`
-- [ ] 5.3 RED: `ipc/sync/get-job.test.ts` — identity proxy to `syncClient.getJob`
-- [ ] 5.4 GREEN: implement handler
-- [ ] 5.5 RED: `ipc/sync/enqueue-upload.test.ts` — identity proxy; input validated against the `sync-service-desktop` request type; errors from the service surface as structured response fields, NOT thrown
-- [ ] 5.6 GREEN: implement handler
-- [ ] 5.7 RED: `ipc/sync/enqueue-mirror.test.ts` — identity proxy; `sync-already-running` error passes through as structured `{ error: {...} }` response
-- [ ] 5.8 GREEN: implement handler
-- [ ] 5.9 RED: `ipc/sync/cancel-job.test.ts` — identity proxy; `not-cancelable` error passes through as structured error
-- [ ] 5.10 GREEN: implement handler
-- [ ] 5.11 RED: `ipc/sync/authenticate.test.ts` — identity proxy; carries OAuth and credentials-form intents through to the service without storing any token on the desktop side
-- [ ] 5.12 GREEN: implement handler; verify via grep that no `writeFileSync`, no `credentials.json`, no `encryptString`, no `safeStorage` references appear in the handler module
-- [ ] 5.13 RED + GREEN: `ipc/sync/get-status.ts`, `get-retry-policy.ts`, `set-retry-policy.ts` — identity proxies
-- [ ] 5.14 Register all handlers in `apps/desktop/src/main/ipc/index.ts` gated on the supervisor's `SyncClient` being available (i.e., handler throws a clear error if invoked before supervisor start)
-- [ ] 5.15 Request code review: the IPC proxy surface is the renderer's contract; breaking changes here block renderer work
+- [x] 5.1 RED: `apps/desktop/src/main/ipc/sync/list-jobs.test.ts` — handler calls `syncClient.listJobs(params)`, returns the result, and computes `derivedSyncingDatasourceIds` as the set of `datasourceId` where any returned job has `kind==='sync' && status ∈ ['running','queued','waiting-network']` — commit 0400475, 9 tests
+- [x] 5.2 GREEN: implement `apps/desktop/src/main/ipc/sync/list-jobs.ts` registered against `SYNC_CHANNELS.listJobs` — commit 7b1a93e; plural→singular filter rename (`statuses`→`status`), omits absent filter key for exactOptionalPropertyTypes, full suite 1438 pass. Handler NOT yet registered in ipc/index.ts (task 5.14).
+- [x] 5.3 RED: `ipc/sync/get-job.test.ts` — identity proxy to `syncClient.getJob` — commit dafbdd2, 4 tests
+- [x] 5.4 GREEN: implement handler — commit aaba773; NOT a pure identity proxy: wire throws `SyncCommandError` with tag `not-found`, renderer expects `{ job: JobSummary | null }`. Handler catches `not-found` → null, re-throws anything else.
+- [x] 5.5 RED: `ipc/sync/enqueue-upload.test.ts` — identity proxy; input validated against the `sync-service-desktop` request type; errors from the service surface as structured response fields, NOT thrown — commit 244ff12, 3 tests
+- [x] 5.6 GREEN: implement handler — commit 2519ca5; true one-liner — renderer `SyncEnqueueUploadResponse` is flat `{ jobId }`, only `validation-error` path and it propagates as a throw.
+- [x] 5.7 RED: `ipc/sync/enqueue-mirror.test.ts` — identity proxy; `sync-already-running` error passes through as structured `{ error: {...} }` response — commit 2db9fb1, 5 tests
+- [x] 5.8 GREEN: implement handler — commit c515091; renderer type has `{ error }` union; handler catches SyncCommandError and returns the structured response. Follow-up noted: SyncCommandError reformats the raw message — a future tweak to SyncClient can recover the raw `ErrorShape.message`.
+- [x] 5.9 RED: `ipc/sync/cancel-job.test.ts` — identity proxy; `not-cancelable` error passes through as structured error — commit f404dc0, 4 tests
+- [x] 5.10 GREEN: implement handler — commit 300db7e; same structured-error pattern as enqueue-mirror. Full suite 1438 → 1454 tests, typecheck + lint clean.
+- [x] 5.11 RED: `ipc/sync/authenticate.test.ts` — identity proxy; carries OAuth and credentials-form intents through to the service without storing any token on the desktop side — commit 708e449, 5 tests (OAuth happy path, credentials-form happy path, intent-not-mutated, both error paths re-thrown)
+- [x] 5.12 GREEN: implement handler; verify via grep that no `writeFileSync`, no `credentials.json`, no `encryptString`, no `safeStorage` references appear in the handler module — commit 9ee5c1a; grep verification ran clean (0 matches on writeFileSync, credentials.json, encryptString, safeStorage, keytar, fs.writeFile, fs.*). Wire/renderer request and response types are structurally identical — true one-liner handler. Full suite 1459 pass / 7 skip.
+- [x] 5.13 RED + GREEN: `ipc/sync/get-status.ts`, `get-retry-policy.ts`, `set-retry-policy.ts` — identity proxies — commits 3f3b548/6b5ee8b (get-status), 18642c5/484f3ff (get-retry-policy), f11ec09/d04b5ad (set-retry-policy). get-status NOT pure identity: wire request is `Record<string, never>` vs renderer `void`, and wire result carries service-internal `monitorConnected` absent from renderer type — handler explicitly projects the 5 visible fields. Full suite 1459 → 1470 pass, typecheck + lint clean.
+- [x] 5.14 Register all handlers in `apps/desktop/src/main/ipc/index.ts` gated on the supervisor's `SyncClient` being available (i.e., handler throws a clear error if invoked before supervisor start) — commit a921a15. Availability gate is structural: each handler's default arg `client = getSyncClient()` throws if bootstrap hasn't set the client. Type imports split to `@ft5/ipc-contracts/sync-service-desktop` subpath (request types aren't re-exported at the root). Full suite 1470 pass, typecheck + lint clean.
+- [x] 5.15 Request code review: the IPC proxy surface is the renderer's contract; breaking changes here block renderer work — superpowers:code-reviewer approved 2026-04-22. Section-5 commits 0400475..a921a15 (19 commits). Verdict: 0 Critical, 2 Important follow-ups (deferrable), 4 Minor. Full suite 1470 pass / 7 skip. Per-task spec-compliance confirmed for 5.1–5.14. Two Important follow-ups tracked:
+  - **I-1** `SyncCommandError.message` composite loss on enqueue-mirror + cancel-job structured-error paths. Renderer receives `"sync:<command> failed: <tag> — <orig>"` instead of the raw service message. Fix: add `rawMessage` to `SyncCommandError` and have handlers read that. Defer to pre-section-10 (no renderer consumer yet).
+  - **I-2** `CredentialsFormIntent.submit` is a function field; will not survive Electron structured-clone IPC serialization. Section-5 handler correctly does nothing about this (it's a passthrough), but section 6's preload and section 7's design must re-shape the credentials-form flow (likely a two-step `authenticate` + `authenticate-submit`) before section 6 can ship. **Flag at top of section-6 design notes.**
 
 ## 6. Preload `window.api.sync.*`
 
