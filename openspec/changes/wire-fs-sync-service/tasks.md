@@ -17,7 +17,7 @@
 - [x] 2.5 RED: `src/main/bootstrap.ipc-bind-failure.test.ts` — seed a PID-guard-holding parent test harness that releases immediately, then force `ipcServer.listen` to reject (e.g., permissions-locked pipe path); assert the runtime exits non-zero (code 5), releases the PID guard, and logs `"ipc-bind-failed"`
 - [x] 2.6 GREEN: wire `ipcServer.listen` failure to a finally-release PID + exit-5 path in `bootstrap.ts`
 - [x] 2.7 Smoke: run the service (`pnpm --filter @ft5/fs-sync-service start --dev`), connect with `nc -U $HOME/ft5/sync_app/dev/sync-dev.sock` (Unix) / a Windows named-pipe test client, send `{"id":"1","kind":"request","command":"sync:get-status","params":{}}\n`, verify a `{"ok":true,...}` response; record the manual steps in a smoke-test doc so CI can port later
-- [ ] 2.8 Request code review: service is now a self-sufficient daemon — any critical issue here blocks all downstream tasks
+- [x] 2.8 Request code review: service is now a self-sufficient daemon — any critical issue here blocks all downstream tasks
 
 ## 3. Sync client (desktop transport)
 
