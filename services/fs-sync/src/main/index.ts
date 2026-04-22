@@ -9,10 +9,14 @@
 //   1 — uncaught fatal error during startup
 //   3 — another live instance holds the PID guard (AlreadyRunningError)
 //   4 — database integrity check failed (DatabaseIntegrityError)
-//
-// Task 2.6 handles the ipc-bind-failure path (exit 5).
+//   5 — IPC listener failed to bind its socket / named pipe (IpcBindError)
 
-import { AlreadyRunningError, bootstrap, type Runtime } from "./bootstrap.js";
+import {
+  AlreadyRunningError,
+  bootstrap,
+  IpcBindError,
+  type Runtime,
+} from "./bootstrap.js";
 import { DatabaseIntegrityError } from "../db/open.js";
 import { resolvePidPath } from "../env/paths.js";
 import { installSignalHandlers } from "./signals.js";
@@ -36,6 +40,12 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
         `fs-sync-service integrity-check-failed: ${err.observed}; exiting`,
       );
       return 4;
+    }
+    if (err instanceof IpcBindError) {
+      console.error(
+        `fs-sync-service ipc-bind-failed (mode=${mode}): ${err.message}; exiting`,
+      );
+      return 5;
     }
     throw err;
   }

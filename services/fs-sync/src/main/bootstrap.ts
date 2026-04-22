@@ -73,6 +73,29 @@ export interface BootstrapObserver {
 
 export interface BootstrapLogger {
   info(msg: string, fields?: Record<string, unknown>): void;
+  // `error` is optional so existing callers passing `{ info }` still type-check.
+  // Bootstrap uses it to surface ipc-bind failures (task 2.6) — operators grep
+  // the service log for the exact message tag.
+  error?(msg: string, fields?: Record<string, unknown>): void;
+}
+
+// Raised when stage 11 (`ipcServer.listen`) fails to bind. Distinct from
+// `AlreadyRunningError` (stage 4) and `DatabaseIntegrityError` (stage 1) so
+// `index.ts` can map it to its own exit code (5). Wraps the underlying
+// listen error on `cause` for diagnostics.
+export class IpcBindError extends Error {
+  readonly cause: unknown;
+  constructor(cause: unknown) {
+    const suffix =
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === "string"
+          ? cause
+          : "unknown";
+    super(`ipc-bind-failed: ${suffix}`);
+    this.name = "IpcBindError";
+    this.cause = cause;
+  }
 }
 
 export interface BootstrapOptions {
@@ -229,11 +252,19 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       "sync:subscribe-events": subscribeHandler,
       "sync:unsubscribe-events": unsubscribeHandler,
     };
-    server = await startServer({
-      pipePath: socketPath,
-      handlers,
-      commandNames: COMMAND_NAMES,
-    });
+    try {
+      server = await startServer({
+        pipePath: socketPath,
+        handlers,
+        commandNames: COMMAND_NAMES,
+      });
+    } catch (cause) {
+      // Stage 11 bind failure. Emit the operator-visible "ipc-bind-failed"
+      // log line, then rethrow as IpcBindError so the outer catch tears down
+      // stages 1-10 and `index.ts` can map it to exit code 5.
+      logger?.error?.("ipc-bind-failed", { cause, socketPath });
+      throw new IpcBindError(cause);
+    }
     observer?.onStage("ipc-listen");
 
     logger?.info("bootstrap-complete", {
