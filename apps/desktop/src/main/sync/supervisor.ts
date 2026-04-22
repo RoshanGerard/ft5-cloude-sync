@@ -3,19 +3,26 @@
 // Design: `openspec/changes/wire-fs-sync-service/design.md:68-81`
 // (Decision 2 — connect-or-spawn-detached, Option 3).
 //
-// Scope of THIS module today (tasks.md 4.3 — connect-first; 4.5 — spawn):
+// Scope of THIS module today (tasks.md 4.3 — connect-first; 4.5 — spawn;
+// 4.7 — dev-mode connect-only branch):
 //   - attempt `net.connect(pipePath)` with a bounded timeout
 //   - on success, hand the socket to a new `SyncClient` and resolve
-//   - on ENOENT/ECONNREFUSED, if `nodeBinary`+`servicePath` were given:
+//   - mode='prod', on ENOENT/ECONNREFUSED, if `nodeBinary`+`servicePath`
+//     were given:
 //       * `child_process.spawn(nodeBinary, [servicePath],
 //          { detached: true, stdio: 'ignore' })` then `unref()`
 //       * retry-connect on a 25/50/100/200/400 ms geometric schedule
 //         (5 attempts, ~975 ms wall time before giving up)
 //       * on all retries failing, reject with a fatal error that names
 //         the pipe path and the attempt count
-//   - on ENOENT/ECONNREFUSED with no spawn paths given, reject with a
-//     clear "opt-out" error naming the missing options
-//   - dev-mode branch and race-tolerant retry land in 4.6/4.7 and 4.8/4.9
+//   - mode='prod', on ENOENT/ECONNREFUSED with no spawn paths given,
+//     reject with a clear "opt-out" error naming the missing options
+//   - mode='dev', on ENOENT/ECONNREFUSED, reject with a user-visible
+//     error telling the operator to run `pnpm dev`. Dev mode NEVER
+//     spawns the service (design.md Decision 6, :136-144) — the pnpm
+//     parallel supervisor already started it. Spawn options, if passed,
+//     are ignored in dev.
+//   - race-tolerant retry lands in 4.8/4.9
 //
 // Design decisions made at this step:
 //   1. `pipePath` is a PARAMETER on `StartSupervisorOptions`. The
@@ -76,8 +83,15 @@ export async function startSupervisor(
     return new SyncClient(socket, opts.clientOptions ?? {});
   } catch (err) {
     if (!isNoListenerError(err)) throw err;
-    // Initial connect failed because nothing was listening. Fall through
-    // to the spawn path (or error out if the caller opted out).
+    // Initial connect failed because nothing was listening. In dev, we
+    // refuse to spawn — pnpm's parallel supervisor already owns the
+    // service lifecycle (design.md Decision 6). In prod, fall through
+    // to the spawn path (or the opt-out error if no spawn paths given).
+    if (opts.mode === "dev") {
+      throw new Error(
+        `supervisor: sync service not reachable at ${opts.pipePath}. In dev mode the service is managed by pnpm — run \`pnpm dev\` from the repo root to start it.`,
+      );
+    }
   }
 
   if (!opts.nodeBinary || !opts.servicePath) {
