@@ -138,6 +138,15 @@ export class SyncClient {
   }
 
   /**
+   * Number of in-flight requests (pending response). Exposed so tests can
+   * assert the pending map is not leaking on throw/cancel paths. Safe for
+   * production readers too — it's just a map size.
+   */
+  get pendingCount(): number {
+    return this.pending.size;
+  }
+
+  /**
    * Subscribe to the synthetic disconnect event. Returns an unsubscribe
    * function. Listeners fire exactly once (when the socket first closes);
    * listeners registered after disconnect do NOT fire — callers should
@@ -212,7 +221,20 @@ export class SyncClient {
         timer,
       });
 
-      this.socket.write(encodeFrame(frame));
+      // `socket.write` can throw synchronously if the pipe was torn down
+      // between our `isConnected` check and this line (common Windows
+      // named-pipe race), or if the frame serialises to something the
+      // socket refuses. Without the unwind below the pending entry and
+      // its timer would linger — observable as `pendingCount > 0` for
+      // the rest of the lifetime, and a stale timer firing `reject()` on
+      // an already-settled promise at the timeout mark.
+      try {
+        this.socket.write(encodeFrame(frame));
+      } catch (err) {
+        this.pending.delete(id);
+        if (timer) clearTimeout(timer);
+        reject(err);
+      }
     });
   }
 

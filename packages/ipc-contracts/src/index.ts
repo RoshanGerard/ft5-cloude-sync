@@ -93,5 +93,5 @@ export * as SyncService from "./sync-service/index.js";
 // level for convenience (the preload and main process are the primary
 // consumers; the full subpath `@ft5/ipc-contracts/sync-service-desktop`
 // is the canonical import for the type surface).
-export type { SyncChannelName } from "./sync-service-desktop/channels.js";
 export { SYNC_CHANNELS } from "./sync-service-desktop/channels.js";
+export type { SyncChannelName } from "./sync-service-desktop/channels.js";
