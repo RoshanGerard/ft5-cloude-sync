@@ -27,8 +27,8 @@
 - [x] 3.4 GREEN: implement `apps/desktop/src/main/sync/client.ts` (`class SyncClient`) — takes a connected `net.Socket`, owns the in-flight map, exposes typed methods per `SYNC_CHANNELS`
 - [x] 3.5 RED: `sync/client.disconnect.test.ts` — a disconnected socket rejects all in-flight requests with `service-disconnected`; a new request issued post-disconnect rejects the same way; a malformed event frame is dropped without dispatch
 - [x] 3.6 GREEN: implement the disconnect + cleanup path; emit a synthetic `service-disconnected` event to registered listeners; expose `client.isConnected` and `client.on('disconnect', ...)` hooks for the supervisor
-- [ ] 3.7 RED: `sync/client.events.test.ts` — subscribed listeners receive every `Event` frame; unsubscribing stops delivery; multiple listeners coexist
-- [ ] 3.8 GREEN: implement `client.onEvent(cb): () => void` with a simple set of callbacks fanned out per event
+- [x] 3.7 RED: `sync/client.events.test.ts` — subscribed listeners receive every `Event` frame; unsubscribing stops delivery; multiple listeners coexist
+- [x] 3.8 GREEN: implement `client.onEvent(cb): () => void` with a simple set of callbacks fanned out per event
 - [ ] 3.9 Request code review: client transport is the trust boundary between desktop and service; critical issues block supervisor work
 
 ## 4. Supervisor (Option 3)

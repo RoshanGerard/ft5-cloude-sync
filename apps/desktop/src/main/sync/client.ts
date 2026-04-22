@@ -2,7 +2,7 @@
 //
 // Owns a connected `net.Socket` (opened by the supervisor), writes
 // newline-framed Request frames, and correlates inbound Response frames
-// back to their caller by `id`. Scope of this module (tasks.md 3.3–3.6):
+// back to their caller by `id`. Scope of this module (tasks.md 3.3–3.8):
 //   - typed `request<N>(name, params, { timeoutMs? })` round-trip
 //   - per-request timeout (falls back to ctor `defaultTimeoutMs`, else none)
 //   - silent drop of responses whose id matches nothing pending
@@ -11,10 +11,8 @@
 //     notify listeners registered via `client.on("disconnect", cb)`
 //   - reject requests issued after disconnect with the same error
 //   - validate event-frame shape; drop malformed frames silently
-//
-// Explicitly NOT in scope yet:
-//   - `onEvent` dispatch (pair 4: tasks 3.7 + 3.8) — well-formed event
-//     frames reach `onFrame` and are intentionally ignored.
+//   - fan well-formed event frames out to listeners registered via
+//     `onEvent(cb)`; one throwing listener must not break the others
 //
 // Correlation-id strategy: defaults to `crypto.randomUUID()`. Tests may
 // inject a deterministic generator via the ctor `generateId` seam —
@@ -29,6 +27,7 @@ import type {
   CommandParams,
   CommandResult,
   ErrorShape,
+  EventFrame,
   Frame,
   RequestFrame,
 } from "@ft5/ipc-contracts/sync-service";
@@ -102,6 +101,7 @@ interface PendingEntry {
 }
 
 type DisconnectListener = () => void;
+type EventListener = (event: EventFrame) => void;
 
 export class SyncClient {
   private readonly socket: net.Socket;
@@ -110,6 +110,7 @@ export class SyncClient {
   private readonly generateId: () => string;
   private readonly decoder: FramingDecoder;
   private readonly disconnectListeners = new Set<DisconnectListener>();
+  private readonly eventListeners = new Set<EventListener>();
   private connected = true;
 
   constructor(socket: net.Socket, opts: SyncClientOptions = {}) {
@@ -149,6 +150,23 @@ export class SyncClient {
     this.disconnectListeners.add(cb);
     return () => {
       this.disconnectListeners.delete(cb);
+    };
+  }
+
+  /**
+   * Subscribe to well-formed event frames pushed by the service.
+   * Returns an unsubscribe function. Each listener receives every
+   * event that passes the shape check in `onFrame`; malformed frames
+   * are dropped before dispatch. A listener that throws does not
+   * prevent its siblings from firing (mirrors the disconnect fan-out).
+   *
+   * Listeners registered after disconnect do NOT receive any events
+   * — the socket is closed, so no new event frames can arrive.
+   */
+  onEvent(cb: EventListener): () => void {
+    this.eventListeners.add(cb);
+    return () => {
+      this.eventListeners.delete(cb);
     };
   }
 
@@ -218,15 +236,25 @@ export class SyncClient {
     if (frame.kind === "event") {
       // Shape-check. The decoder parses JSON and the Frame discriminator
       // is structural, so a service bug (or a hostile peer) could emit a
-      // "kind":"event" object with a wrong-typed `name`. Drop silently;
-      // pair 4 will dispatch well-formed events.
+      // "kind":"event" object with a wrong-typed `name`. Drop silently
+      // — listeners must not see garbage payloads.
       if (typeof frame.name !== "string") {
         console.warn(
           "[sync-client] dropped malformed event frame (name is not a string)",
         );
         return;
       }
-      // Well-formed event: dispatch wiring lands in pair 4 (3.7 + 3.8).
+      // Snapshot the listener set so a callback that subscribes or
+      // unsubscribes during dispatch cannot perturb the current walk.
+      const snapshot = Array.from(this.eventListeners);
+      for (const cb of snapshot) {
+        try {
+          cb(frame);
+        } catch (err) {
+          // A misbehaving listener must not prevent siblings from firing.
+          console.warn("[sync-client] event listener threw:", err);
+        }
+      }
       return;
     }
   }
