@@ -44,3 +44,6 @@ export type {
   SyncStateSeedPayload,
 } from "./events.js";
 export { SYNC_EVENT_KINDS } from "./events.js";
+
+export type { SyncChannelName } from "./channels.js";
+export { SYNC_CHANNELS } from "./channels.js";

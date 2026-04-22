@@ -4,8 +4,8 @@
 - [x] 1.2 GREEN: implement `packages/ipc-contracts/src/sync-service-desktop/requests.ts` with the declared types, re-exporting from an `index.ts`; wire the new subpath export into `packages/ipc-contracts/package.json` `"exports"`
 - [x] 1.3 RED: `packages/ipc-contracts/src/sync-service-desktop/events.test-d.ts` — the renderer-observable `SyncEvent` union includes `sync-state-seed`, all nine service lifecycle events (`job-enqueued`, `job-started`, `job-progress`, `job-completed`, `job-failed`, `job-cancelled`, `job-recovered`, `sync-completed`, `source-unavailable`, `network-available`), and `service-disconnected` / `service-reconnected` synthetic events emitted by the desktop supervisor
 - [x] 1.4 GREEN: implement `sync-service-desktop/events.ts`; re-use payload shapes from `@ft5/ipc-contracts/sync-service` via `export type { ... } from` so event payload definitions are NOT duplicated
-- [ ] 1.5 RED: `packages/ipc-contracts/src/sync-service-desktop/channels.test-d.ts` — declare `SYNC_CHANNELS = { listJobs, getJob, enqueueUpload, enqueueMirror, cancelJob, authenticate, getStatus, getRetryPolicy, setRetryPolicy, event } as const`; assert each value is a stable string literal (e.g., `"sync:list-jobs"`)
-- [ ] 1.6 GREEN: implement `sync-service-desktop/channels.ts`; re-export from the subpath barrel and from the top-level `@ft5/ipc-contracts` index
+- [x] 1.5 RED: `packages/ipc-contracts/src/sync-service-desktop/channels.test-d.ts` — declare `SYNC_CHANNELS = { listJobs, getJob, enqueueUpload, enqueueMirror, cancelJob, authenticate, getStatus, getRetryPolicy, setRetryPolicy, event } as const`; assert each value is a stable string literal (e.g., `"sync:list-jobs"`)
+- [x] 1.6 GREEN: implement `sync-service-desktop/channels.ts`; re-export from the subpath barrel and from the top-level `@ft5/ipc-contracts` index
 - [ ] 1.7 Build `pnpm --filter @ft5/ipc-contracts build` cold (no Vitest cache); confirm the emitted `.d.ts` includes the new subpath; request code review before proceeding to consuming tasks
 
 ## 2. Service bootstrap composition (intra-service wiring — Problem A)

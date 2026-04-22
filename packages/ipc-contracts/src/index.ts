@@ -87,3 +87,11 @@ export {
 // Clients reach this via the `@ft5/ipc-contracts/sync-service` subpath
 // (see package.json `exports`).
 export * as SyncService from "./sync-service/index.js";
+
+// Renderer-facing sync-service IPC surface. Shipped by
+// `wire-fs-sync-service`. Re-exports the channel constants at the top
+// level for convenience (the preload and main process are the primary
+// consumers; the full subpath `@ft5/ipc-contracts/sync-service-desktop`
+// is the canonical import for the type surface).
+export type { SyncChannelName } from "./sync-service-desktop/channels.js";
+export { SYNC_CHANNELS } from "./sync-service-desktop/channels.js";
