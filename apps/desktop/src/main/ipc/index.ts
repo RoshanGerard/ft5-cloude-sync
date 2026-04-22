@@ -18,6 +18,8 @@ import type {
   FilesStatRequest,
 } from "@ft5/ipc-contracts";
 import type {
+  SyncAuthenticateCompleteRequest,
+  SyncAuthenticateStartRequest,
   SyncCancelJobRequest,
   SyncEnqueueMirrorRequest,
   SyncEnqueueUploadRequest,
@@ -39,6 +41,8 @@ import { handleFilesRename } from "./files/rename.js";
 import { handleFilesSearch } from "./files/search.js";
 import { handleFilesStat } from "./files/stat.js";
 import { handlePing } from "./ping.js";
+import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js";
+import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
 import { handleSyncCancelJob } from "./sync/cancel-job.js";
 import { handleSyncEnqueueMirror } from "./sync/enqueue-mirror.js";
 import { handleSyncEnqueueUpload } from "./sync/enqueue-upload.js";
@@ -149,6 +153,16 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
   ipcMain.handle(
     SYNC_CHANNELS.cancelJob,
     async (_event, req: SyncCancelJobRequest) => handleSyncCancelJob(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.authenticateStart,
+    async (_event, req: SyncAuthenticateStartRequest) =>
+      handleSyncAuthenticateStart(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.authenticateComplete,
+    async (_event, req: SyncAuthenticateCompleteRequest) =>
+      handleSyncAuthenticateComplete(req),
   );
   ipcMain.handle(SYNC_CHANNELS.getStatus, () => handleSyncGetStatus());
   ipcMain.handle(
