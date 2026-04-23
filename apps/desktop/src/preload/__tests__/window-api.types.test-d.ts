@@ -7,9 +7,14 @@ import type {
 
 // Type-level test for the window.api.sync branch declared in window-api.d.ts.
 //
-// These assertions run as part of Vitest's typecheck pass (`tsc`-backed).
-// They do not import `window` at runtime — `Window["api"]["sync"]` is a
-// pure type-space access on the DOM global augmentation.
+// These assertions run as part of Vitest's typecheck pass (`tsc`-backed) using
+// apps/desktop/tsconfig.test.json which includes window-api.d.ts directly —
+// that fires the `declare global { interface Window { api: ... } }` augmentation
+// into the tsc program without needing an import.
+//
+// The tsconfig.test.json is referenced from vitest.config.ts typecheck.tsconfig
+// so that the apps/desktop/tsconfig.json `exclude: ["src/**/__tests__/**"]`
+// rule does not silently exclude this file and make all assertions vacuous.
 //
 // Reference: packages/ipc-contracts/src/sync-service-desktop/channels.test-d.ts
 // for the established `expectTypeOf` / `toEqualTypeOf` pattern in this repo.
@@ -17,6 +22,15 @@ import type {
 type SyncSurface = Window["api"]["sync"];
 
 describe("window.api.sync type declarations", () => {
+  it("window.api.sync is NOT any (guard: catches missing sync declaration)", () => {
+    // When the `sync` block is absent from window-api.d.ts, Window["api"]["sync"]
+    // resolves to `any` (TypeScript's fallback for missing property access on an
+    // augmented interface). All subsequent toEqualTypeOf assertions would then
+    // pass vacuously. This guard test FAILS in that case, making the missing
+    // declaration detectable.
+    expectTypeOf<SyncSurface>().not.toBeAny();
+  });
+
   it("window.api.sync.listJobs has return type Promise<SyncListJobsResponse>", () => {
     expectTypeOf<SyncSurface["listJobs"]>().returns.toEqualTypeOf<
       Promise<SyncListJobsResponse>

@@ -62,6 +62,12 @@ export default defineConfig({
         "packages/**/src/**/*.test-d.ts",
         "apps/**/src/**/*.test-d.ts",
       ],
+      // apps/desktop/tsconfig.json excludes __tests__ directories, so vitest's
+      // default tsconfig discovery silently excludes window-api.types.test-d.ts
+      // from the tsc program — type assertions pass vacuously. Point at a
+      // dedicated test tsconfig that includes the preload __tests__ together
+      // with window-api.d.ts and lib:["DOM"] so Window is in scope.
+      tsconfig: "./apps/desktop/tsconfig.test.json",
     },
   },
 });
