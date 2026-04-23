@@ -217,6 +217,9 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       result: { unsubscribed: true },
     }),
 
+    // Stubs per Decision 11 (see openspec/changes/wire-fs-sync-service/design.md).
+    // The real handlers in the follow-up change will need the AuthCorrelationStore
+    // + engine factory threaded through HandlersDeps.
     "sync:authenticate-start": handleAuthenticateStart,
 
     "sync:authenticate-complete": handleAuthenticateComplete,

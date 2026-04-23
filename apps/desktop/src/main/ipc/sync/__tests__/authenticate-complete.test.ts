@@ -78,7 +78,10 @@ describe("handleSyncAuthenticateComplete", () => {
       correlationId: "corr-form",
       completion: {
         kind: "credentials-form",
-        values: { accessKeyId: "AKIA...", secretAccessKey: "secret..." },
+        values: {
+          accessKeyId: "FIXTURE-access-key-id",
+          secretAccessKey: "FIXTURE-secret-access-key",
+        },
       },
     };
     const { client, authenticateComplete } = makeFakeClient(
@@ -92,7 +95,10 @@ describe("handleSyncAuthenticateComplete", () => {
       correlationId: "corr-form",
       completion: {
         kind: "credentials-form",
-        values: { accessKeyId: "AKIA...", secretAccessKey: "secret..." },
+        values: {
+          accessKeyId: "FIXTURE-access-key-id",
+          secretAccessKey: "FIXTURE-secret-access-key",
+        },
       },
     });
     expect(res).toEqual(wireResponse);
@@ -109,7 +115,10 @@ describe("handleSyncAuthenticateComplete", () => {
       correlationId: "corr-ref",
       completion: {
         kind: "credentials-form",
-        values: { accessKeyId: "AKIA...", secretAccessKey: "secret..." },
+        values: {
+          accessKeyId: "FIXTURE-access-key-id",
+          secretAccessKey: "FIXTURE-secret-access-key",
+        },
       },
     };
     const { client, authenticateComplete } = makeFakeClient(async () => ({

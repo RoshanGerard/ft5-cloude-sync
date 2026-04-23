@@ -95,7 +95,12 @@ Section 5.A service handlers (5.A.7–5.A.10) therefore ship as **stubs** return
 - [x] 5.A.14 GREEN: atomic replacement — new handlers created, old `authenticate.ts` + `__tests__/authenticate.test.ts` DELETED, old `SyncClient.authenticate` wrapper removed, old row removed from typed-methods test, old import + registration dropped from `ipc/index.ts` — commit 400042b. Grep invariant: 0 matches on `writeFileSync|credentials\.json|encryptString|safeStorage|keytar|fs\.writeFile|fs\.` for both new handler modules.
 - [x] 5.A.15 Update `ipc/index.ts` — add two new `ipcMain.handle` calls for `SYNC_CHANNELS.authenticateStart` + `authenticateComplete` with matching type-only imports — commit d95bf55. (Subagent split the old-removal side into 5.A.14 to avoid a broken-intermediate commit; every commit in the 5-commit sequence typechecks clean at HEAD.)
 - [x] 5.A.16 Amend tasks 5.11/5.12 note to point at 5.A.13/5.A.14 as the active implementation; keep the old handler's commits in git history as the record of the superseded shape — done inline above.
-- [ ] 5.A.17 Request code review on the flow redesign — same two-stage review as 5.15; approval is the gate for section 6
+- [x] 5.A.17 Request code review on the flow redesign — same two-stage review as 5.15; approval is the gate for section 6 — superpowers:code-reviewer approved 2026-04-23. Range 14c8e9b..841e5c6 (21 commits, 29 files, +1447 / −253). Verdict: 0 Critical, 3 Important, 5 Minor. Two Important fixes applied pre-section-6:
+  - Renamed credential-looking fixtures `"AKIA..."` / `"secret..."` → `"FIXTURE-access-key-id"` / `"FIXTURE-secret-access-key"` in `authenticate-complete.test.ts` (3 occurrences).
+  - Added Decision-11 comment above the stub-handler registrations in `services/fs-sync/src/commands/handlers.ts` flagging the future `authCorrelationStore` + engine-factory deps for the follow-up.
+  Third Important deferred as a follow-up tracked alongside section-5's I-1 / I-2:
+  - **I-3** `SerializableAuthCompletion.credentials-form.values: Record<string, unknown>` is not actually JSON-safe at the type level. Fix in the follow-up `implement-datasource-onboarding` change: introduce a `JsonValue` helper in `@ft5/ipc-contracts` and replace `Record<string, unknown>` wire payloads (starts with `values`; consider also `SetRetryPolicyCommand.params`). Non-blocking for section 6 because the preload surface passes the payload through unchanged.
+  Minor notes (not tracked; documented here for the follow-up author): mark `AuthCorrelationStore.peek` as `@internal` once the real handler lands; either drop unused `createdAt` or plan a debug-log use; tighten the stub-message regex in service tests once final wording is locked in the follow-up.
 
 ## 6. Preload `window.api.sync.*`
 
