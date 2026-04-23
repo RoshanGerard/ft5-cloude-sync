@@ -197,10 +197,10 @@ Section 5.A service handlers (5.A.7–5.A.10) therefore ship as **stubs** return
 
 ## 12. Stale docs cleanup
 
-- [ ] 12.1 Edit `packages/fs-datasource-engine/src/index.ts:52-53` — rewrite the comment block describing the factory to reflect that three real strategies ship (S3: 780 LOC, OneDrive: 1054 LOC, Google Drive: 1334 LOC) with contract tests, and that the factory's integrity validation still applies on any new registration
-- [ ] 12.2 Add (if absent) a short paragraph to `services/fs-sync/README.md`'s "Known limitations" noting that the supervisor in desktop is now the canonical startup path; installer registration is still supported (phase-22) but not required for local development
-- [ ] 12.3 Grep the repo for any other comments / docs referencing "Phase 5 scaffold", "phase-5 stub", or "placeholder strategy stubs" — fix or remove
-- [ ] 12.4 Request code review (may be bundled with section 13 if scope is small)
+- [x] 12.1 Rewrote `packages/fs-datasource-engine/src/index.ts:36` and `:49-57` — line 36 ("Concrete strategies … land in Phases 6-8") now points at `./strategies/`; lines 49-57 drop the "three placeholder strategy stubs" claim and describe the shipped state (three real strategies passing the shared `strategy-contract` suite). Also rewrote `factory.ts:203-211` JSDoc on `createDefaultProviderRegistry` — dropped the misleading "each entry carries a `TODO(phase-N)` comment" line (verified zero `TODO(phase-` matches across `packages/fs-datasource-engine/src`) and replaced with concrete add-a-fourth-provider guidance.
+- [x] 12.2 Updated `services/fs-sync/README.md`: (a) "Dev mode" section now documents both `pnpm dev:sync-service` (service alone) and `pnpm dev` (root, parallel desktop+service — the canonical loop), with a pointer to the cross-platform smoke at `scripts/smoke/dev-orchestration.mjs`; (b) extended the "Installer execution coverage" bullet in "Known limitations" to note the desktop supervisor is the canonical startup path and installer registration is the production-only story (not required for local dev).
+- [x] 12.3 Grep complete — only stale matches were the three production-source comments addressed in 12.1. All other `Phase \d` references in the engine codebase are accurate historical pointers (test-file headers tagging which phase first added the test, code-review-finding comments referring to specific past reviews) — left unchanged.
+- [x] 12.4 Bundled into section 13's review per the task wording's permission ("may be bundled with section 13 if scope is small"). Section-12 diff is 4 doc edits across 3 files, no code-behavior change; the section-13 review will sweep both.
 
 ## 13. Integration verification + release prep
 
