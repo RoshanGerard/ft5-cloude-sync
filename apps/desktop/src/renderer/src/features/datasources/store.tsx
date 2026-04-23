@@ -40,6 +40,18 @@ import type {
   DatasourcesUploadResponse,
   DatasourceSummary,
 } from "@ft5/ipc-contracts";
+import type {
+  JobCancelledPayload,
+  JobCompletedPayload,
+  JobEnqueuedPayload,
+  JobFailedPayload,
+  JobProgressPayload,
+  JobRecoveredPayload,
+  JobStartedPayload,
+  JobSummary,
+  SyncEvent,
+  SyncStateSeedPayload,
+} from "@ft5/ipc-contracts/sync-service-desktop";
 
 export type DatasourcesState =
   | { phase: "loading" }
@@ -98,6 +110,265 @@ function reducer(state: DatasourcesState, action: Action): DatasourcesState {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Jobs slice (Decision 13 — Renderer card sync-state derivation).
+//
+// Fed by `window.api.sync.onEvent`. Seeded on mount by the `sync-state-seed`
+// event (snapshot of in-progress jobs from the supervisor handshake) and
+// maintained by per-job lifecycle events. The card's display state is
+// derived from the union of this slice and the engine-bus `summary.status`
+// with the precedence rule spelled out in design.md Decision 13.
+//
+// Shape mirrors Decision 13 verbatim. `uploadProgressByJob` is declared so
+// task 10.4's progress-bar wiring has a landing spot, but task 10.2 does not
+// dispatch to it — upload-progress frames are the DATASOURCES_CHANNELS
+// `uploadProgress` channel, a separate subscription task 10.4 adds alongside
+// the Progress primitive.
+// ---------------------------------------------------------------------------
+
+export interface JobsState {
+  readonly jobsByDatasource: Map<string, JobSummary[]>;
+  readonly uploadProgressByJob: Map<
+    string,
+    { readonly bytesUploaded: number; readonly bytesTotal: number }
+  >;
+}
+
+type JobsAction =
+  | { type: "sync/state-seed"; payload: SyncStateSeedPayload }
+  | { type: "sync/job-enqueued"; payload: JobEnqueuedPayload }
+  | { type: "sync/job-started"; payload: JobStartedPayload }
+  | { type: "sync/job-progress"; payload: JobProgressPayload }
+  | { type: "sync/job-completed"; payload: JobCompletedPayload }
+  | { type: "sync/job-failed"; payload: JobFailedPayload }
+  | { type: "sync/job-cancelled"; payload: JobCancelledPayload }
+  | { type: "sync/job-recovered"; payload: JobRecoveredPayload };
+
+const EMPTY_JOBS_STATE: JobsState = {
+  jobsByDatasource: new Map(),
+  uploadProgressByJob: new Map(),
+};
+
+// Helper: find the bucket + index for a jobId. O(buckets * jobs_per_bucket)
+// which, in practice, is at most a handful per datasource.
+function findJobLocation(
+  byDs: Map<string, JobSummary[]>,
+  jobId: string,
+): { datasourceId: string; index: number } | null {
+  for (const [datasourceId, jobs] of byDs) {
+    const index = jobs.findIndex((j) => j.id === jobId);
+    if (index >= 0) return { datasourceId, index };
+  }
+  return null;
+}
+
+// Upsert a job into the datasource's bucket. Returns a NEW Map (reducer
+// immutability). `getUpdated` is called with the current row if one exists
+// so callers can produce a merged JobSummary from a partial event payload;
+// otherwise it's called with `null` and must construct the full row.
+function upsertJob(
+  byDs: Map<string, JobSummary[]>,
+  datasourceId: string,
+  jobId: string,
+  getUpdated: (existing: JobSummary | null) => JobSummary | null,
+): Map<string, JobSummary[]> {
+  const loc = findJobLocation(byDs, jobId);
+  // If the job lives in a different bucket, we treat it as a move by
+  // evicting from the old bucket first. In practice the datasourceId doesn't
+  // change mid-lifecycle — this is defensive.
+  const working = new Map(byDs);
+  if (loc && loc.datasourceId !== datasourceId) {
+    const oldBucket = working.get(loc.datasourceId)!;
+    const next = oldBucket.filter((_, i) => i !== loc.index);
+    if (next.length === 0) working.delete(loc.datasourceId);
+    else working.set(loc.datasourceId, next);
+  }
+  const existing =
+    loc && loc.datasourceId === datasourceId
+      ? working.get(datasourceId)![loc.index] ?? null
+      : null;
+  const updated = getUpdated(existing);
+  if (updated === null) return working;
+  const bucket = working.get(datasourceId) ?? [];
+  if (existing) {
+    const next = bucket.slice();
+    const idx = next.findIndex((j) => j.id === jobId);
+    next[idx] = updated;
+    working.set(datasourceId, next);
+  } else {
+    working.set(datasourceId, [...bucket, updated]);
+  }
+  return working;
+}
+
+// Remove a job by jobId across all buckets. Returns a new Map. If the bucket
+// goes empty, the datasourceId key is deleted to bound memory.
+function removeJob(
+  byDs: Map<string, JobSummary[]>,
+  jobId: string,
+): Map<string, JobSummary[]> {
+  const loc = findJobLocation(byDs, jobId);
+  if (!loc) return byDs;
+  const working = new Map(byDs);
+  const bucket = working.get(loc.datasourceId)!;
+  const next = bucket.filter((j) => j.id !== jobId);
+  if (next.length === 0) working.delete(loc.datasourceId);
+  else working.set(loc.datasourceId, next);
+  return working;
+}
+
+function jobsReducer(state: JobsState, action: JobsAction): JobsState {
+  switch (action.type) {
+    case "sync/state-seed": {
+      // Replace the whole map. Jobs may be empty — seed still wins.
+      const next = new Map<string, JobSummary[]>();
+      for (const job of action.payload.jobs) {
+        const bucket = next.get(job.datasourceId);
+        if (bucket) bucket.push(job);
+        else next.set(job.datasourceId, [job]);
+      }
+      // Evict `uploadProgressByJob` entries that reference jobs not in the
+      // seed — the authoritative cross-process truth just overwrote ours.
+      const liveJobIds = new Set(action.payload.jobs.map((j) => j.id));
+      const nextProgress = new Map<
+        string,
+        { bytesUploaded: number; bytesTotal: number }
+      >();
+      for (const [jobId, progress] of state.uploadProgressByJob) {
+        if (liveJobIds.has(jobId)) nextProgress.set(jobId, progress);
+      }
+      return {
+        jobsByDatasource: next,
+        uploadProgressByJob: nextProgress,
+      };
+    }
+    case "sync/job-enqueued": {
+      const p = action.payload;
+      return {
+        ...state,
+        jobsByDatasource: upsertJob(
+          state.jobsByDatasource,
+          p.datasourceId,
+          p.jobId,
+          (existing) => {
+            if (existing) return { ...existing, status: "queued" };
+            return {
+              id: p.jobId,
+              kind: p.kind,
+              datasourceId: p.datasourceId,
+              sourcePath: p.sourcePath,
+              targetPath: p.targetPath,
+              conflictPolicy: p.conflictPolicy,
+              status: "queued",
+              attempt: 0,
+              lastErrorTag: null,
+              lastErrorMessage: null,
+              createdAt: p.enqueuedAt,
+              updatedAt: p.enqueuedAt,
+            };
+          },
+        ),
+      };
+    }
+    case "sync/job-started": {
+      const p = action.payload;
+      // We don't know the datasourceId from the payload, so only update if
+      // the job already exists in some bucket. If it doesn't, the seed or an
+      // earlier `job-enqueued` will have placed it — dropping an orphaned
+      // `job-started` is correct.
+      const loc = findJobLocation(state.jobsByDatasource, p.jobId);
+      if (!loc) return state;
+      return {
+        ...state,
+        jobsByDatasource: upsertJob(
+          state.jobsByDatasource,
+          loc.datasourceId,
+          p.jobId,
+          (existing) =>
+            existing
+              ? {
+                  ...existing,
+                  status: "running",
+                  attempt: p.attempt,
+                  updatedAt: p.startedAt,
+                }
+              : null,
+        ),
+      };
+    }
+    case "sync/job-progress": {
+      // `job-progress` does not carry status; it's a running-state tick. We
+      // refresh `updatedAt` so sort/tiebreak consumers can see freshness,
+      // but leave status alone. Only touch the entry if it exists.
+      const p = action.payload;
+      const loc = findJobLocation(state.jobsByDatasource, p.jobId);
+      if (!loc) return state;
+      return {
+        ...state,
+        jobsByDatasource: upsertJob(
+          state.jobsByDatasource,
+          loc.datasourceId,
+          p.jobId,
+          (existing) =>
+            existing ? { ...existing, updatedAt: Date.now() } : null,
+        ),
+      };
+    }
+    case "sync/job-completed":
+    case "sync/job-failed":
+    case "sync/job-cancelled": {
+      const jobId = action.payload.jobId;
+      const nextByDs = removeJob(state.jobsByDatasource, jobId);
+      if (nextByDs === state.jobsByDatasource) return state;
+      // Also evict upload-progress entry so long-running renderers don't
+      // accumulate completed upload metadata.
+      const nextProgress = state.uploadProgressByJob.has(jobId)
+        ? (() => {
+            const m = new Map(state.uploadProgressByJob);
+            m.delete(jobId);
+            return m;
+          })()
+        : state.uploadProgressByJob;
+      return {
+        jobsByDatasource: nextByDs,
+        uploadProgressByJob: nextProgress,
+      };
+    }
+    case "sync/job-recovered": {
+      const p = action.payload;
+      const loc = findJobLocation(state.jobsByDatasource, p.jobId);
+      if (!loc) return state;
+      return {
+        ...state,
+        jobsByDatasource: upsertJob(
+          state.jobsByDatasource,
+          loc.datasourceId,
+          p.jobId,
+          (existing) =>
+            existing
+              ? {
+                  ...existing,
+                  status: p.priorStatus, // "running"
+                  attempt: p.attempt,
+                  lastErrorTag: p.lastErrorTag,
+                  updatedAt: Date.now(),
+                }
+              : null,
+        ),
+      };
+    }
+    default:
+      return state;
+  }
+}
+
+// `sync-completed` / `source-unavailable` / `network-available` /
+// `service-disconnected` / `service-reconnected` are intentionally NOT
+// wired into the reducer above. Per Decision 13, the card's display-state
+// derivation does not depend on them; they are observed only by ancillary
+// surfaces (network banner, toasts) that can subscribe to
+// `window.api.sync.onEvent` independently when they ship.
+
 export interface DatasourceActions {
   refresh: () => Promise<void>;
   add: (req: DatasourcesAddRequest) => Promise<DatasourcesAddResponse>;
@@ -112,6 +383,7 @@ export interface DatasourceActions {
 
 interface DatasourcesContextValue {
   state: DatasourcesState;
+  jobs: JobsState;
   actions: DatasourceActions;
 }
 
@@ -125,6 +397,9 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
   const [state, dispatch] = useReducer(reducer, {
     phase: "loading",
   } as DatasourcesState);
+
+  // Decision-13 jobs slice. Driven exclusively by `window.api.sync.onEvent`.
+  const [jobs, dispatchJobs] = useReducer(jobsReducer, EMPTY_JOBS_STATE);
 
   // Mount sentinel: gates every post-await dispatch so we do not call
   // `setState` on an unmounted provider (React 19 strict-mode double-mount
@@ -218,14 +493,68 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
     void refresh();
   }, [refresh]);
 
+  // Sync-event subscription (Decision 13). Subscribes EXACTLY ONCE per
+  // provider instance via `useEffect` with empty deps; the cleanup detaches
+  // the listener so React 19 strict-mode double-mount stays safe (the
+  // intervening cleanup runs between mounts).
+  //
+  // Defensive guard: legacy renderer test harnesses install only the
+  // `datasources` corner of `window.api`. If `sync` is absent we silently
+  // skip the subscription so those tests stay green; production preload
+  // (apps/desktop/src/preload/index.ts task 6.2) always exposes `sync`.
+  useEffect(() => {
+    const syncApi = window.api?.sync;
+    if (!syncApi) return;
+    const unsubscribe = syncApi.onEvent((event: SyncEvent) => {
+      if (!mountedRef.current) return;
+      switch (event.kind) {
+        case "sync-state-seed":
+          dispatchJobs({ type: "sync/state-seed", payload: event.payload });
+          return;
+        case "job-enqueued":
+          dispatchJobs({ type: "sync/job-enqueued", payload: event.payload });
+          return;
+        case "job-started":
+          dispatchJobs({ type: "sync/job-started", payload: event.payload });
+          return;
+        case "job-progress":
+          dispatchJobs({ type: "sync/job-progress", payload: event.payload });
+          return;
+        case "job-completed":
+          dispatchJobs({ type: "sync/job-completed", payload: event.payload });
+          return;
+        case "job-failed":
+          dispatchJobs({ type: "sync/job-failed", payload: event.payload });
+          return;
+        case "job-cancelled":
+          dispatchJobs({ type: "sync/job-cancelled", payload: event.payload });
+          return;
+        case "job-recovered":
+          dispatchJobs({ type: "sync/job-recovered", payload: event.payload });
+          return;
+        // Per Decision 13, the card derivation does NOT depend on these.
+        // Ancillary surfaces (toasts, banners) can subscribe independently.
+        case "sync-completed":
+        case "source-unavailable":
+        case "network-available":
+        case "service-disconnected":
+        case "service-reconnected":
+          return;
+        default:
+          return;
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   const actions = useMemo<DatasourceActions>(
     () => ({ refresh, add, remove, action, upload }),
     [refresh, add, remove, action, upload],
   );
 
   const value = useMemo<DatasourcesContextValue>(
-    () => ({ state, actions }),
-    [state, actions],
+    () => ({ state, jobs, actions }),
+    [state, jobs, actions],
   );
 
   return (
@@ -253,4 +582,23 @@ export function useDatasourceActions(): DatasourceActions {
     );
   }
   return ctx.actions;
+}
+
+const EMPTY_JOBS: ReadonlyArray<JobSummary> = [];
+
+/**
+ * Read-only access to the in-flight job list for one datasource. Used by
+ * `DatasourceCard` to derive the live display status per Decision 13.
+ *
+ * Returns a stable empty array reference when no jobs are tracked, so
+ * callers can safely use `.length` / `.some(...)` without optional checks.
+ */
+export function useDatasourceJobs(datasourceId: string): ReadonlyArray<JobSummary> {
+  const ctx = useContext(DatasourcesContext);
+  if (ctx === null) {
+    throw new Error(
+      "useDatasourceJobs must be used within a <DatasourcesProvider>.",
+    );
+  }
+  return ctx.jobs.jobsByDatasource.get(datasourceId) ?? EMPTY_JOBS;
 }

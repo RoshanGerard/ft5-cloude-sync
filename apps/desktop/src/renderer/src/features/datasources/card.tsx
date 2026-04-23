@@ -51,16 +51,48 @@ import {
 import { Icon, isIconName, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
-import { useDatasourceActions } from "./store";
+import { useDatasourceActions, useDatasourceJobs } from "./store";
 
 export interface DatasourceCardProps {
   summary: DatasourceSummary;
+}
+
+// Decision 13 — Renderer card sync-state derivation. Sync-event state wins
+// over `summary.status` ONLY when an in-flight `kind === "sync"` job exists
+// for this datasource; otherwise the engine-bus `summary.status` is the
+// fallback. Upload-kind jobs do NOT change the status badge — they will
+// show as a separate Progress bar (task 10.3/10.4).
+//
+// `waiting-network` is its own value in Decision 13's precedence rule, but
+// the visual variant (zinc dot + wifi-off glyph) is task 10.7/10.8's
+// deliverable. Until that lands, waiting-network maps to the "syncing"
+// badge value so the card still renders the active-work cue. The mapping
+// stays inside this helper so 10.7 only has to widen one place.
+function deriveDisplayStatus(
+  summary: DatasourceSummary,
+  jobs: ReadonlyArray<{ readonly kind: string; readonly status: string }>,
+): DatasourceStatus {
+  const hasRunningSync = jobs.some(
+    (j) => j.kind === "sync" && j.status === "running",
+  );
+  if (hasRunningSync) return "syncing";
+  const hasWaitingNetwork = jobs.some(
+    (j) => j.kind === "sync" && j.status === "waiting-network",
+  );
+  if (hasWaitingNetwork) return "syncing";
+  const hasQueuedSync = jobs.some(
+    (j) => j.kind === "sync" && j.status === "queued",
+  );
+  if (hasQueuedSync) return "syncing";
+  return summary.status;
 }
 
 export function DatasourceCard({ summary }: DatasourceCardProps) {
   const descriptor = getDescriptor(summary.providerId);
   const actions = useDatasourceActions();
   const router = useRouter();
+  const jobs = useDatasourceJobs(summary.id);
+  const displayStatus = deriveDisplayStatus(summary, jobs);
 
   const quotaEnabled = descriptor?.capabilities.quota === true;
   const providerIconName = iconNameFromDescriptor(descriptor);
@@ -118,7 +150,7 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
           <p className="text-muted-foreground text-xs">{providerDisplayName}</p>
         </div>
         <StatusBadge
-          status={summary.status}
+          status={displayStatus}
           errorReason={summary.errorReason}
         />
         <QuickActionsMenu

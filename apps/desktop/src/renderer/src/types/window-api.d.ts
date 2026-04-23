@@ -29,6 +29,7 @@ import type {
   FilesStatResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
+import type { SyncEvent } from "@ft5/ipc-contracts/sync-service-desktop";
 
 declare global {
   interface Window {
@@ -64,6 +65,14 @@ declare global {
       };
       clipboard: {
         writeText(text: string): Promise<void>;
+      };
+      // Task 10.2 — only the surface the renderer's jobs slice consumes.
+      // The rest of `SYNC_CHANNELS` (listJobs/enqueueUpload/etc.) is the
+      // preload's section-6 deliverable and is intentionally NOT surfaced
+      // here so later task pairs follow the appropriate RED-first protocol
+      // when they start consuming it.
+      sync: {
+        onEvent(callback: (event: SyncEvent) => void): () => void;
       };
     };
   }
