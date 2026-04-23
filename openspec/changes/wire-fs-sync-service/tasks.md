@@ -128,8 +128,8 @@ Section 5.A service handlers (5.A.7–5.A.10) therefore ship as **stubs** return
 - [x] 7.4 GREEN: implement per-window registration / deregistration (mirror the existing `createEventBridge` pattern at `apps/desktop/src/main/ipc/datasources/event-bridge.ts`)
 - [x] 7.5 RED: `sync/event-bridge.reconnect.test.ts` — simulate a service disconnect / reconnect; the bridge re-issues subscribe + list-jobs and emits a second `sync-state-seed`; in-flight renderer IPC calls see `service-disconnected` rejections — commit a5ca3ee
 - [x] 7.6 GREEN: implement the reconnect loop; expose an `on('reconnect', ...)` hook from the supervisor for the bridge to consume
-- [ ] 7.7 RED: `sync/event-bridge.upload-progress-translation.test.ts` — a service `job-progress { kind: 'upload', jobId, sentBytes, totalBytes }` is translated to a `DatasourcesUploadProgressEvent { transactionId: jobId, sentBytes, totalBytes, percent: floor(sent/total*100) }` and emitted on the existing `DATASOURCES_CHANNELS.uploadProgress` channel
-- [ ] 7.8 GREEN: implement the translation in the event bridge
+- [x] 7.7 RED: `sync/event-bridge.upload-progress-translation.test.ts` — a service `job-progress` for upload jobs is translated to `DatasourcesUploadProgressEvent` (actual fields: bytesSent→bytesUploaded, totalBytes→bytesTotal; task description had wrong field names) — commit 8ec8ddc
+- [x] 7.8 GREEN: implement the translation in the event bridge (already in 7.6 GREEN; jobKinds map + uploadProgress emit)
 - [ ] 7.9 Wire `createSyncEventBridge(syncClient, windowRegistry)` into `apps/desktop/src/main/index.ts` after supervisor start; pair it with the existing engine-bus event bridge (both feed the renderer; see design Decision 8)
 - [ ] 7.10 Request code review
 
