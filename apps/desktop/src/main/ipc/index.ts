@@ -51,6 +51,7 @@ import { handleSyncGetRetryPolicy } from "./sync/get-retry-policy.js";
 import { handleSyncGetStatus } from "./sync/get-status.js";
 import { handleSyncListJobs } from "./sync/list-jobs.js";
 import { handleSyncSetRetryPolicy } from "./sync/set-retry-policy.js";
+import { getSyncClient } from "../sync/sync-client-holder.js";
 
 // Central IPC handler registration. Called once from `main/index.ts` after
 // `app.whenReady()`. Keeping the `ipcMain.handle` calls here (rather than
@@ -78,7 +79,15 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
       handleDatasourcesAction(req),
   );
 
-  let uploadCounter = 0;
+  // Datasources upload — proxies to the fs-sync-service via the
+  // sync-client-holder. `getSyncClient()` resolves lazily at invoke
+  // time (not at registration time), matching the structural
+  // availability gate used by the SYNC_CHANNELS handlers below:
+  // the handler rejects cleanly if a file-picker attempt races
+  // supervisor startup. Progress events flow through the
+  // section-7 event-bridge → `DATASOURCES_CHANNELS.uploadProgress`;
+  // this handler no longer emits progress itself (I-B pre-condition
+  // from section 7 review — see tasks.md section 8).
   ipcMain.handle(
     DATASOURCES_CHANNELS.upload,
     (_event, req: DatasourcesUploadRequest) =>
@@ -93,13 +102,7 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
               });
           return { canceled: result.canceled, filePaths: result.filePaths };
         },
-        sendProgress: (event) => {
-          targetWindow?.webContents.send(
-            DATASOURCES_CHANNELS.uploadProgress,
-            event,
-          );
-        },
-        nextTransactionId: () => `tx-${Date.now()}-${String(++uploadCounter)}`,
+        syncClient: getSyncClient(),
       }),
   );
 
