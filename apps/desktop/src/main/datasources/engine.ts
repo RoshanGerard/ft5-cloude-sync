@@ -2,9 +2,13 @@
 //
 // Holds the long-lived per-process state that IPC handlers need:
 //   - the shared EventBus (all strategy events flow through this bus),
-//   - the SqliteCredentialStore (encrypted credential persistence),
 //   - the DatasourceRegistry (persistent datasource table),
 //   - the ClientFactory (provider-id → DatasourceClient constructor).
+//
+// Credentials are NOT part of the engine: the fs-sync service owns them
+// end-to-end (wire-fs-sync-service section 9). The desktop main process
+// neither reads nor writes credentials; every provider call that needs
+// them goes through the service over the sync IPC channel.
 //
 // Lazy init — `main/index.ts` calls `initEngine(db)` exactly once after DB
 // migrations run and before IPC handler registration. IPC handlers then call
@@ -25,6 +29,7 @@
 // Design refs:
 //   - openspec/changes/add-fs-datasource-engine/design.md Phase 9 scoping.
 //   - openspec/changes/add-fs-datasource-engine/tasks.md 9.9.
+//   - openspec/changes/wire-fs-sync-service/tasks.md 9.1-9.5.
 
 import {
   createClientFactory,
@@ -36,11 +41,9 @@ import {
 
 import type { SqliteDatabase } from "../db/database.js";
 import { DatasourceRegistry } from "./registry.js";
-import { SqliteCredentialStore } from "./sqlite-credential-store.js";
 
 export interface Engine {
   readonly bus: EventBus;
-  readonly credentialStore: SqliteCredentialStore;
   readonly registry: DatasourceRegistry;
   readonly factory: ClientFactory;
 }
@@ -50,9 +53,8 @@ let engineInstance: Engine | null = null;
 /**
  * Initialize the main-process engine with a shared DB handle. Must be
  * called exactly once per process — a second call throws. Construct an
- * `Engine` by opening a `SqliteCredentialStore` over the given DB, wiring
- * a `DatasourceRegistry` with the same credential store, creating a fresh
- * `EventBus`, and constructing the default provider `ClientFactory`.
+ * `Engine` by wiring a `DatasourceRegistry` over the given DB, creating a
+ * fresh `EventBus`, and constructing the default provider `ClientFactory`.
  *
  * Call order at bootstrap (enforced by `main/index.ts`):
  *   openDatabase → runMigrations → initEngine → registerIpcHandlers
@@ -63,11 +65,10 @@ export function initEngine(db: SqliteDatabase): void {
       "Engine already initialized — call resetEngineForTests() first in tests, or do not call initEngine twice in production",
     );
   }
-  const credentialStore = new SqliteCredentialStore(db);
-  const registry = new DatasourceRegistry(db, credentialStore);
+  const registry = new DatasourceRegistry(db);
   const bus = createEventBus();
   const factory = createClientFactory(createDefaultProviderRegistry());
-  engineInstance = { bus, credentialStore, registry, factory };
+  engineInstance = { bus, registry, factory };
 }
 
 /**

@@ -9,7 +9,7 @@ export async function handleDatasourcesRemove(
   req: DatasourcesRemoveRequest,
 ): Promise<DatasourcesRemoveResponse> {
   const { registry } = getEngine();
-  const removed = await registry.remove(req.datasourceId);
+  const removed = registry.remove(req.datasourceId);
   if (!removed) {
     throw new Error(`datasource not found: ${req.datasourceId}`);
   }

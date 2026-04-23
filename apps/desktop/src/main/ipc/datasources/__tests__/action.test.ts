@@ -1,41 +1,15 @@
 // Phase 9d — `handleDatasourcesAction` runs pause / resume / sync-now via
 // the DB-backed registry.
-//   * pause / resume flip `registry.setPaused` regardless of the flag.
-//   * sync-now fixture path (flag OFF): mirror the old behaviour — flip
-//     the row's status to "syncing" and bump `last_sync_at`.
-//   * sync-now live path (flag ON): resolve creds via CredentialStore,
-//     construct a client via factory.create, call client.status(), then
-//     mirror that back into the registry.
+//   * pause / resume flip `registry.setPaused`.
+//   * sync-now updates the local bookkeeping row (status=syncing,
+//     last_sync_at bumped). The former DATASOURCE_ENGINE_LIVE branch that
+//     resolved credentials + constructed a client was removed in
+//     wire-fs-sync-service section 9 — the fs-sync service now owns all
+//     credential-bearing provider calls.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DatasourceClient } from "@ft5/fs-datasource-engine";
-import type { ProviderId } from "@ft5/ipc-contracts";
-
-// See add.test.ts for the rationale — `vi.mock` is hoisted above all
-// imports, so the factory must be self-contained via `vi.hoisted`.
-const { electronMockFactory } = vi.hoisted(() => {
-  function xor(bytes: Buffer): Buffer {
-    const out = Buffer.alloc(bytes.length);
-    for (let i = 0; i < bytes.length; i += 1) {
-      out[i] = (bytes[i] ?? 0) ^ 0x42;
-    }
-    return out;
-  }
-  return {
-    electronMockFactory: () => ({
-      safeStorage: {
-        isEncryptionAvailable: (): boolean => true,
-        encryptString: (p: string): Buffer => xor(Buffer.from(p, "utf8")),
-        decryptString: (b: Buffer): string => xor(b).toString("utf8"),
-      },
-    }),
-  };
-});
-
-vi.mock("electron", electronMockFactory);
-
-import { FIXTURE_SUMMARIES, makeCreds } from "./helpers.js";
+import { FIXTURE_SUMMARIES } from "./helpers.js";
 
 import { openDatabase, runMigrations } from "../../../db/database.js";
 import { DEFAULT_MIGRATIONS } from "../../../db/migrations.js";
@@ -56,7 +30,7 @@ function findByStatus(status: string) {
 describe("handleDatasourcesAction", () => {
   let db: SqliteDatabase;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     resetEngineForTests();
     db = openDatabase(":memory:");
     runMigrations(db, DEFAULT_MIGRATIONS);
@@ -67,7 +41,7 @@ describe("handleDatasourcesAction", () => {
         summary.status === "paused"
           ? { ...summary, status: "connected" as const }
           : summary;
-      await registry.add(seed, makeCreds(summary.providerId));
+      registry.add(seed);
       if (summary.status === "paused") {
         registry.setPaused(summary.id, true);
       }
@@ -75,13 +49,12 @@ describe("handleDatasourcesAction", () => {
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
     resetEngineForTests();
     db.close();
   });
 
   // ---------------------------------------------------------------------
-  // pause / resume — flag-independent.
+  // pause / resume.
   // ---------------------------------------------------------------------
 
   it("pause: sets status to paused", async () => {
@@ -114,11 +87,10 @@ describe("handleDatasourcesAction", () => {
   });
 
   // ---------------------------------------------------------------------
-  // sync-now — fixture path (flag OFF).
+  // sync-now — registry-only bookkeeping.
   // ---------------------------------------------------------------------
 
-  it("sync-now (fixture): sets status to syncing and updates lastSyncAt forward", async () => {
-    vi.stubEnv("DATASOURCE_ENGINE_LIVE", "");
+  it("sync-now: sets status to syncing and updates lastSyncAt forward", async () => {
     const target = findByStatus("connected")!;
     const before = Date.now();
     const { datasource } = await handleDatasourcesAction({
@@ -130,56 +102,12 @@ describe("handleDatasourcesAction", () => {
     expect(datasource.lastSyncAt!).toBeGreaterThanOrEqual(before - 100);
   });
 
-  it("sync-now (fixture): does not touch the factory", async () => {
-    vi.stubEnv("DATASOURCE_ENGINE_LIVE", "");
+  it("sync-now: does not touch the factory", async () => {
     const { factory } = getEngine();
     const spy = vi.spyOn(factory, "create");
     const target = findByStatus("connected")!;
     await handleDatasourcesAction({ datasourceId: target.id, action: "sync-now" });
     expect(spy).not.toHaveBeenCalled();
-  });
-
-  // ---------------------------------------------------------------------
-  // sync-now — live path (flag ON).
-  // ---------------------------------------------------------------------
-
-  it("sync-now (live): constructs a client and mirrors client.status() back into the registry", async () => {
-    vi.stubEnv("DATASOURCE_ENGINE_LIVE", "1");
-    const status = vi.fn().mockResolvedValue("connected");
-    const fakeClient = { status } as unknown as DatasourceClient<ProviderId>;
-    const { factory } = getEngine();
-    const factorySpy = vi.spyOn(factory, "create").mockReturnValue(fakeClient);
-
-    const target = findByStatus("connected")!;
-    const { datasource } = await handleDatasourcesAction({
-      datasourceId: target.id,
-      action: "sync-now",
-    });
-
-    expect(factorySpy).toHaveBeenCalledOnce();
-    const [providerId, datasourceId] = factorySpy.mock.calls[0]!;
-    expect(providerId).toBe(target.providerId);
-    expect(datasourceId).toBe(target.id);
-    expect(status).toHaveBeenCalledOnce();
-    expect(datasource.status).toBe("connected");
-    expect(datasource.lastSyncAt).not.toBeNull();
-  });
-
-  it("sync-now (live): client failure lands as status=error with an errorReason", async () => {
-    vi.stubEnv("DATASOURCE_ENGINE_LIVE", "1");
-    const status = vi.fn().mockRejectedValue(new Error("network down"));
-    const fakeClient = { status } as unknown as DatasourceClient<ProviderId>;
-    const { factory } = getEngine();
-    vi.spyOn(factory, "create").mockReturnValue(fakeClient);
-
-    const target = findByStatus("connected")!;
-    const { datasource } = await handleDatasourcesAction({
-      datasourceId: target.id,
-      action: "sync-now",
-    });
-    expect(datasource.status).toBe("error");
-    expect(typeof datasource.errorReason).toBe("string");
-    expect(datasource.errorReason).toMatch(/network down/i);
   });
 
   // ---------------------------------------------------------------------

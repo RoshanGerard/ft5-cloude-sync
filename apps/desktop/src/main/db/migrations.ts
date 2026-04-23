@@ -1,4 +1,4 @@
-// Main-process SQLite migrations — Phase 9a + wire-fs-sync-service 9.4.
+// Main-process SQLite migrations — Phase 9a + wire-fs-sync-service 9.4/9.5.
 //
 // Order matters: the runner applies entries in array order and records each
 // id in the `_migrations` bookkeeping table. Appending is the only safe
@@ -7,21 +7,21 @@
 // compensates.
 //
 // Current migrations:
-//   - 0001_datasource_credentials: owns the `datasource_credentials` table
-//     used by the legacy `SqliteCredentialStore`. The store no longer creates
-//     the table itself — callers MUST run
-//     `runMigrations(db, DEFAULT_MIGRATIONS)` before constructing the store,
-//     including in tests. This is the single source of truth for the schema
-//     so later `ALTER TABLE` migrations cannot be silently shadowed by
-//     defense-in-depth table creation. Slated for removal from
-//     `DEFAULT_MIGRATIONS` once the store is deleted (wire-fs-sync-service
-//     tasks 9.1/9.2/9.5 — atomic change).
+//   - 0001_datasource_credentials: retired. Historically created the
+//     `datasource_credentials` table used by the now-deleted desktop-side
+//     credential store. The export is preserved so existing installs that
+//     already recorded this id in `_migrations` retain their bookkeeping;
+//     fresh installs skip it entirely because it is no longer in
+//     `DEFAULT_MIGRATIONS`. Never add it back to the array — 0003 drops
+//     the table it used to create.
 //   - 0002_datasources: the datasource-registry table used by the new
-//     `DatasourceRegistry` (Phase 9b).
+//     `DatasourceRegistry` (Phase 9b). The canonical first migration for
+//     fresh installs.
 //   - 0003_drop_datasource_credentials: drops the `datasource_credentials`
-//     table. Added in wire-fs-sync-service as the first half of retiring
-//     the desktop-side credential store. Exported but NOT yet appended to
-//     `DEFAULT_MIGRATIONS` — see the note below for why.
+//     table. Part of retiring the desktop-side credential store — the
+//     fs-sync service now owns credentials end-to-end. Idempotent
+//     (`DROP TABLE IF EXISTS`) so fresh installs that never created the
+//     table simply no-op.
 //
 // Naming note: this migration's id is 0003, not 0002 as the
 // wire-fs-sync-service tasks.md originally wrote. The tasks doc was
@@ -33,7 +33,7 @@
 import type { Migration } from "./database.js";
 
 // ---------------------------------------------------------------------------
-// 0001 — datasource_credentials
+// 0001 — datasource_credentials (retired — no longer in DEFAULT_MIGRATIONS)
 // ---------------------------------------------------------------------------
 
 const CREATE_DATASOURCE_CREDENTIALS_SQL = `
@@ -99,27 +99,25 @@ export const migration_0003_drop_datasource_credentials: Migration = {
 /**
  * The canonical migration list. Append-only.
  *
- * NOTE: `migration_0003_drop_datasource_credentials` is deliberately NOT in
- * this array yet, even though the migration itself is defined and exported.
- * The reason is ordering: `SqliteCredentialStore` is still constructed at
- * bootstrap (`main/index.ts` -> `initEngine(db)`) and every test that
- * exercises the engine / registry / IPC handlers runs
- * `runMigrations(db, DEFAULT_MIGRATIONS)` and then instantiates the store.
- * If 0003 ran in that sequence, the store would find the table missing and
- * the very next credential operation would blow up. The store does NOT have
- * a defensive `CREATE TABLE IF NOT EXISTS` — the schema is owned by the
- * migration runner by design (see `sqlite-credential-store.ts` header).
+ * Composition as of wire-fs-sync-service 9.5:
+ *   - `migration_0002_datasources` — the registry table.
+ *   - `migration_0003_drop_datasource_credentials` — drops the retired
+ *     credential table.
  *
- * The flip of `DEFAULT_MIGRATIONS` to
- *   `[migration_0002_datasources, migration_0003_drop_datasource_credentials]`
- * happens atomically with the deletion of `SqliteCredentialStore` and its
- * wiring in `datasources/engine.ts`, in the commit that closes
- * wire-fs-sync-service tasks 9.1, 9.2, and 9.5. Old installs retain their
- * `0001_datasource_credentials` bookkeeping row and will run 0003 to drop
- * the table on next start; fresh installs see an empty array-entry of 0001
- * and skip it entirely (the runner is forward-only and id-tracked).
+ * `migration_0001_datasource_credentials` is deliberately NOT here anymore:
+ *   - Existing installs already recorded the 0001 id in `_migrations` when
+ *     they first booted, and the runner is forward-only, so removing 0001
+ *     from the array does not re-run or rewrite the bookkeeping. On their
+ *     next start they will apply 0003 and drop the table.
+ *   - Fresh installs see only 0002 + 0003 and never materialize the
+ *     credential table; 0003's `DROP TABLE IF EXISTS` is a safe no-op there.
+ *
+ * The export of `migration_0001_datasource_credentials` is kept so tests can
+ * reproduce the "legacy install had the table" scenario (see
+ * `db/database.test.ts`'s 0003 cases). Production code paths no longer
+ * reference it.
  */
 export const DEFAULT_MIGRATIONS = [
-  migration_0001_datasource_credentials,
   migration_0002_datasources,
+  migration_0003_drop_datasource_credentials,
 ] as const;

@@ -156,8 +156,10 @@ async function bootstrap(): Promise<void> {
 
   // Open the main-process SQLite database + run migrations BEFORE handler
   // registration. `initEngine(db)` then constructs the process-wide
-  // singleton (bus + credential store + registry + factory) that every IPC
-  // handler reads via `getEngine()`. Initialized once per process lifetime.
+  // singleton (bus + registry + factory) that every IPC handler reads via
+  // `getEngine()`. Initialized once per process lifetime. Credentials are
+  // the fs-sync service's concern and are NOT part of the desktop engine
+  // (wire-fs-sync-service section 9).
   const dbPath = path.join(app.getPath("userData"), "ft5.db");
   const db = openDatabase(dbPath);
   runMigrations(db, DEFAULT_MIGRATIONS);

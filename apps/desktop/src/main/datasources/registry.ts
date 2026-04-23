@@ -1,15 +1,14 @@
-// DatasourceRegistry — Phase 9b.
+// DatasourceRegistry — Phase 9b (credential-free).
 //
 // The persistent, DB-backed replacement for the in-memory fixture at
 // `apps/desktop/src/main/ipc/datasources/store.ts`. Wraps the `datasources`
-// SQLite table plus a `CredentialStore` so add / remove are atomic across
-// both stores.
+// SQLite table.
 //
 // Semantics highlights:
-//   * `add(summary, creds)` runs inside a better-sqlite3 transaction; if
-//     credential encryption/persistence throws, the row insert rolls back.
-//   * `remove(id)` likewise deletes the row AND the credential blob inside
-//     one transaction.
+//   * `add(summary)` inserts a single row inside a better-sqlite3
+//     transaction. Credentials are NOT persisted here — the fs-sync service
+//     owns them (wire-fs-sync-service section 9).
+//   * `remove(id)` deletes the row.
 //   * `paused` is a distinct boolean column — `pause` / `resume` flip it
 //     WITHOUT clobbering the underlying `status` column. `list()` projects
 //     `status="paused"` when `paused=1`, so the UI sees the effective state
@@ -21,15 +20,14 @@
 // Design refs:
 //   - openspec/changes/add-fs-datasource-engine/design.md Phase 9 scoping.
 //   - openspec/changes/add-fs-datasource-engine/tasks.md 9.6-9.8.
+//   - openspec/changes/wire-fs-sync-service/tasks.md 9.1-9.5.
 
 import type {
   DatasourceStatus,
   DatasourceSummary,
-  StoredCredentials,
 } from "@ft5/ipc-contracts";
 
 import type { SqliteDatabase } from "../db/database.js";
-import type { SqliteCredentialStore } from "./sqlite-credential-store.js";
 
 // On-disk row shape. `paused` is INTEGER because SQLite lacks a native
 // BOOLEAN; we coerce to / from number at the boundary.
@@ -68,10 +66,6 @@ function rowToSummary(row: DatasourceRow): DatasourceSummary {
 
 export class DatasourceRegistry {
   private readonly db: SqliteDatabase;
-  private readonly credentialStore: Pick<
-    SqliteCredentialStore,
-    "put" | "delete" | "get"
-  >;
 
   private readonly listStmt;
   private readonly insertStmt;
@@ -81,12 +75,8 @@ export class DatasourceRegistry {
   private readonly touchLastSyncStmt;
   private readonly getProviderStmt;
 
-  constructor(
-    db: SqliteDatabase,
-    credentialStore: Pick<SqliteCredentialStore, "put" | "delete" | "get">,
-  ) {
+  constructor(db: SqliteDatabase) {
     this.db = db;
-    this.credentialStore = credentialStore;
 
     this.listStmt = db.prepare(
       "SELECT id, provider_id, display_name, item_count, last_sync_at, status, error_reason, paused, created_at, updated_at FROM datasources ORDER BY created_at ASC, id ASC",
@@ -117,76 +107,42 @@ export class DatasourceRegistry {
   }
 
   /**
-   * Insert a datasource row AND persist its credentials atomically.
+   * Insert a datasource row.
    *
    * `summary.id` must already be assigned by the caller (handlers mint IDs
    * before calling — keeps this module free of id-generation concerns).
    * `lastSyncAt` and `itemCount` are persisted verbatim from the summary.
    *
-   * Atomicity: credentials are stored FIRST, then the row insert runs
-   * inside a transaction. If credential storage throws (corrupt object,
-   * safeStorage unavailable), no row insert runs. If the row insert
-   * throws after a successful credential put, the credential is rolled
-   * back via `credentialStore.delete(id)`. Either path leaves the DB
-   * consistent.
-   *
-   * `credentialStore.put` is declared `async` for port symmetry, but its
-   * underlying `SqliteCredentialStore` implementation is synchronous
-   * (prepared-statement + safeStorage calls, no I/O awaiting). We use
-   * `.then` chaining here for correctness against the declared port
-   * signature rather than relying on that implementation detail.
+   * The row insert runs inside a transaction so a mid-insert crash leaves
+   * the table untouched. Credentials are not the registry's concern —
+   * the fs-sync service stores them independently (wire-fs-sync-service
+   * section 9).
    */
-  async add(
-    summary: DatasourceSummary,
-    credentials: StoredCredentials,
-  ): Promise<DatasourceSummary> {
-    // Step 1: persist credentials. If this throws (bad cred object,
-    // encryption unavailable), we abort before any DB row is written.
-    await this.credentialStore.put(summary.id, credentials);
-
-    // Step 2: row insert inside a transaction. If it throws (PK conflict,
-    // corrupt schema), roll back the credential write we just made.
+  add(summary: DatasourceSummary): DatasourceSummary {
     const now = Date.now();
-    try {
-      const runTx = this.db.transaction(() => {
-        this.insertStmt.run(
-          summary.id,
-          summary.providerId,
-          summary.displayName,
-          summary.itemCount,
-          summary.lastSyncAt,
-          summary.status,
-          summary.errorReason ?? null,
-          now,
-          now,
-        );
-      });
-      runTx();
-    } catch (err) {
-      // Best-effort rollback — swallow errors inside delete so the
-      // primary failure is the one surfaced.
-      try {
-        await this.credentialStore.delete(summary.id);
-      } catch {
-        /* intentional */
-      }
-      throw err;
-    }
+    const runTx = this.db.transaction(() => {
+      this.insertStmt.run(
+        summary.id,
+        summary.providerId,
+        summary.displayName,
+        summary.itemCount,
+        summary.lastSyncAt,
+        summary.status,
+        summary.errorReason ?? null,
+        now,
+        now,
+      );
+    });
+    runTx();
     return summary;
   }
 
   /**
-   * Delete the datasource row AND its credential blob. Returns `true` when
-   * a row was actually removed (i.e., the id existed).
-   *
-   * Credential delete is idempotent (SqliteCredentialStore treats missing
-   * rows as no-ops per its contract), so we delete the credential blob
-   * even when the row did not exist — keeps the registry consistent if a
-   * prior `add` half-committed.
+   * Delete the datasource row. Returns `true` when a row was actually
+   * removed (i.e., the id existed).
    */
-  async remove(id: string): Promise<boolean> {
+  remove(id: string): boolean {
     const info = this.removeRowStmt.run(id);
-    await this.credentialStore.delete(id);
     return info.changes > 0;
   }
 
