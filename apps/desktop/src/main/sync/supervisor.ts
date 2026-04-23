@@ -2,11 +2,17 @@
 //
 // Design: `openspec/changes/wire-fs-sync-service/design.md:68-81`
 // (Decision 2 — connect-or-spawn-detached, Option 3).
+// Decision 12 — supervisor lifecycle: reconnect policy + handle shape.
+//
+// This module owns TWO loops:
+//   1. Initial connect (or spawn + retry) loop — started at bootstrap.
+//   2. Reconnect loop — started on each disconnect after initial connect.
 //
 // Scope of THIS module today (tasks.md 4.3 — connect-first; 4.5 — spawn;
-// 4.7 — dev-mode connect-only branch):
+// 4.7 — dev-mode connect-only branch; 7.6 — reconnect loop + handle):
 //   - attempt `net.connect(pipePath)` with a bounded timeout
-//   - on success, hand the socket to a new `SyncClient` and resolve
+//   - on success, hand the socket to a new `SyncClient` and resolve with
+//     a `SupervisorHandle`
 //   - mode='prod', on ENOENT/ECONNREFUSED, if `nodeBinary`+`servicePath`
 //     were given:
 //       * `child_process.spawn(nodeBinary, [servicePath],
@@ -60,11 +66,39 @@
 //      decision #3 above — the loop is connect-driven, not
 //      child-lifecycle-driven — so no additional code was required for
 //      tasks 4.8/4.9 beyond the test that locks the invariant.
+//   6. (Decision 12) `startSupervisor` now returns `Promise<SupervisorHandle>`
+//      instead of `Promise<SyncClient>`. On disconnect, the reconnect loop
+//      retries with the same 5-item schedule, then geometric backoff capped
+//      at 30 s (indefinitely). Dev mode NEVER re-spawns.
 
 import * as net from "node:net";
 import { spawn } from "node:child_process";
 
 import { SyncClient, type SyncClientOptions } from "./client.js";
+
+// ---- SupervisorHandle -------------------------------------------------------
+//
+// Returned by `startSupervisor`. Wraps the current live `SyncClient` and
+// notifies subscribers on reconnect/disconnect. Callers read the current
+// client via `getClient()` at handler invocation time rather than storing
+// a stale reference — this is the "sync-client-holder" pattern.
+//
+// Decision 12:
+//   getClient()  — returns the current connected client; mutates on reconnect
+//   on("reconnect", cb)  — cb receives the fresh client
+//   on("disconnect", cb) — cb receives no payload
+//   dispose()  — stop reconnecting, idempotent
+
+export interface SupervisorHandle {
+  /** The current connected client. Mutates across reconnects. */
+  getClient(): SyncClient;
+  /** Subscribe to reconnect events. Returns an unsubscribe function. */
+  on(event: "reconnect", cb: (newClient: SyncClient) => void): () => void;
+  /** Subscribe to disconnect events. Returns an unsubscribe function. */
+  on(event: "disconnect", cb: () => void): () => void;
+  /** Stop reconnecting; idempotent. */
+  dispose(): void;
+}
 
 export interface StartSupervisorOptions {
   readonly mode: "prod" | "dev";
@@ -80,23 +114,44 @@ export interface StartSupervisorOptions {
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 2000;
-const RETRY_DELAYS_MS: readonly number[] = [25, 50, 100, 200, 400];
 
 /**
- * Connect to a running service at `pipePath` and return a wrapped
- * `SyncClient`. If the initial connect fails with ENOENT/ECONNREFUSED
- * and the caller supplied `nodeBinary`+`servicePath`, spawn a detached
- * service and retry on a geometric-backoff schedule. On unrecoverable
- * failure, reject with a descriptive error.
+ * Initial 5-step retry schedule (shared by first-connect and reconnect).
+ * D12-3: 25/50/100/200/400 ms, then geometric backoff capped at 30000 ms.
+ */
+export const RETRY_DELAYS_MS: readonly number[] = [25, 50, 100, 200, 400];
+
+/**
+ * D12-3: after the initial 5-step schedule, compute the next geometric
+ * backoff from the Nth attempt. Attempt 0 = first retry after the 5-step
+ * schedule has been exhausted.
+ *
+ * Formula: min(400 * 2^attempt, 30000)
+ */
+export function nextBackoff(attempt: number): number {
+  return Math.min(400 * Math.pow(2, attempt + 1), 30_000);
+}
+
+/**
+ * Connect to a running service at `pipePath` and return a `SupervisorHandle`
+ * wrapping the `SyncClient`. If the initial connect fails with
+ * ENOENT/ECONNREFUSED and the caller supplied `nodeBinary`+`servicePath`,
+ * spawn a detached service and retry on a geometric-backoff schedule. On
+ * unrecoverable failure, reject with a descriptive error.
+ *
+ * After the initial connect, the handle runs a reconnect loop (Decision 12)
+ * that retries `net.connect(pipePath)` on disconnect with the same schedule,
+ * then indefinite geometric backoff capped at 30 s.
  */
 export async function startSupervisor(
   opts: StartSupervisorOptions,
-): Promise<SyncClient> {
+): Promise<SupervisorHandle> {
   const timeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
 
   try {
     const socket = await connectWithTimeout(opts.pipePath, timeoutMs);
-    return new SyncClient(socket, opts.clientOptions ?? {});
+    const client = new SyncClient(socket, opts.clientOptions ?? {});
+    return createHandle(client, opts, timeoutMs);
   } catch (err) {
     if (!isNoListenerError(err)) throw err;
     // Initial connect failed because nothing was listening. In dev, we
@@ -123,8 +178,135 @@ export async function startSupervisor(
   child.unref();
 
   const socket = await retryConnect(opts.pipePath, timeoutMs);
-  return new SyncClient(socket, opts.clientOptions ?? {});
+  const client = new SyncClient(socket, opts.clientOptions ?? {});
+  return createHandle(client, opts, timeoutMs);
 }
+
+// ---------------------------------------------------------------------------
+// SupervisorHandle factory — wraps a SyncClient with reconnect loop
+// ---------------------------------------------------------------------------
+
+type ReconnectListener = (newClient: SyncClient) => void;
+type DisconnectListener = () => void;
+
+function createHandle(
+  initialClient: SyncClient,
+  opts: StartSupervisorOptions,
+  timeoutMs: number,
+): SupervisorHandle {
+  let current = initialClient;
+  let disposed = false;
+  let reconnectAttempt = 0;
+
+  const reconnectListeners = new Set<ReconnectListener>();
+  const disconnectListeners = new Set<DisconnectListener>();
+
+  // Inner function: subscribe to the current client's disconnect event.
+  // Extracted so the reconnect loop can re-subscribe after each reconnect.
+  function subscribeToDisconnect(client: SyncClient): void {
+    client.on("disconnect", () => {
+      if (disposed) return;
+
+      // Notify disconnect listeners
+      const dSnapshot = Array.from(disconnectListeners);
+      for (const cb of dSnapshot) {
+        try {
+          cb();
+        } catch {
+          // misbehaving listener must not break the reconnect flow
+        }
+      }
+
+      // Start the reconnect loop
+      void reconnectLoop();
+    });
+  }
+
+  // Reconnect loop: retry with RETRY_DELAYS_MS first, then geometric backoff.
+  // D12-3: same schedule as initial connect. No re-spawn in dev mode.
+  async function reconnectLoop(): Promise<void> {
+    if (disposed) return;
+
+    let attempt = 0;
+    while (!disposed) {
+      const delay =
+        attempt < RETRY_DELAYS_MS.length
+          ? RETRY_DELAYS_MS[attempt]!
+          : nextBackoff(attempt - RETRY_DELAYS_MS.length);
+      await sleep(delay);
+      if (disposed) return;
+
+      try {
+        const socket = await connectWithTimeout(opts.pipePath, timeoutMs);
+        if (disposed) {
+          socket.destroy();
+          return;
+        }
+        const newClient = new SyncClient(socket, opts.clientOptions ?? {});
+        current = newClient;
+        reconnectAttempt++;
+        subscribeToDisconnect(newClient);
+
+        // Notify reconnect listeners with the fresh client
+        const rSnapshot = Array.from(reconnectListeners);
+        for (const cb of rSnapshot) {
+          try {
+            cb(newClient);
+          } catch {
+            // misbehaving listener must not break siblings
+          }
+        }
+        return; // reconnect succeeded, loop exits
+      } catch {
+        // connect failed — continue backoff loop
+        attempt++;
+        console.warn(
+          `supervisor: reconnect attempt ${attempt} to ${opts.pipePath} failed`,
+        );
+      }
+    }
+  }
+
+  // Subscribe the initial client to the disconnect event
+  subscribeToDisconnect(initialClient);
+
+  const handle: SupervisorHandle = {
+    getClient(): SyncClient {
+      return current;
+    },
+    on(event: "reconnect" | "disconnect", cb: (newClient?: SyncClient) => void): () => void {
+      if (event === "reconnect") {
+        reconnectListeners.add(cb as ReconnectListener);
+        return () => {
+          reconnectListeners.delete(cb as ReconnectListener);
+        };
+      } else {
+        disconnectListeners.add(cb as DisconnectListener);
+        return () => {
+          disconnectListeners.delete(cb as DisconnectListener);
+        };
+      }
+    },
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      reconnectListeners.clear();
+      disconnectListeners.clear();
+      // Destroy the current socket to clean up
+      try {
+        (current as unknown as { socket: net.Socket }).socket.destroy();
+      } catch {
+        // ignore
+      }
+    },
+  };
+
+  return handle;
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Retry `net.connect(pipePath)` on the geometric schedule. Resolves on

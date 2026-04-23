@@ -17,7 +17,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SyncClient } from "./client.js";
-import { startSupervisor } from "./supervisor.js";
+import { startSupervisor, type SupervisorHandle } from "./supervisor.js";
 
 // Partial mock of `node:child_process`: replace `spawn` with a spy so the
 // test can assert zero invocations. We use `vi.mock` with an
@@ -70,20 +70,19 @@ async function startFakeService(pipePath: string): Promise<net.Server> {
 }
 
 let servers: net.Server[] = [];
-let clients: SyncClient[] = [];
+let handles: SupervisorHandle[] = [];
 
 beforeEach(() => {
   servers = [];
-  clients = [];
+  handles = [];
   spawnSpy.mockClear();
 });
 
 afterEach(async () => {
-  for (const c of clients) {
-    // SyncClient owns the socket; destroying it is enough for teardown.
-    (c as unknown as { socket: net.Socket }).socket.destroy();
+  for (const h of handles) {
+    h.dispose();
   }
-  clients = [];
+  handles = [];
   for (const s of servers) {
     await new Promise<void>((resolve) => s.close(() => resolve()));
   }
@@ -92,14 +91,17 @@ afterEach(async () => {
 });
 
 describe("startSupervisor in prod mode connects to a running service without spawning", () => {
-  it("returns a SyncClient and does NOT invoke child_process.spawn", async () => {
+  it("returns a SupervisorHandle with a connected SyncClient and does NOT invoke child_process.spawn", async () => {
     const pipePath = pipeFor("prod-connect");
     const server = await startFakeService(pipePath);
     servers.push(server);
 
-    const client = await startSupervisor({ mode: "prod", pipePath });
-    clients.push(client);
+    const handle = await startSupervisor({ mode: "prod", pipePath });
+    handles.push(handle);
 
+    // Decision 12: startSupervisor now returns SupervisorHandle.
+    // getClient() returns the current SyncClient.
+    const client = handle.getClient();
     expect(client).toBeInstanceOf(SyncClient);
     expect(client.isConnected).toBe(true);
     // The connect-first path must not touch `child_process.spawn`.

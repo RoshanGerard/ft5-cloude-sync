@@ -11,9 +11,11 @@
 // benefit (handlers are already unit-tested with a mocked `SyncClient`
 // directly, not via this holder). The holder keeps the wiring ergonomic
 // while preserving a clear, testable contract:
-//   - `setSyncClient` is once-only: a second call indicates bootstrap
-//     was invoked twice, which is a programmer mistake worth failing
-//     loudly.
+//   - `setSyncClient` may be called multiple times across reconnects:
+//     the first call sets the initial client (bootstrap); subsequent
+//     calls replace the current client (reconnect swap — Decision 12,
+//     F-5). Callers should only call this when they have a fresh live
+//     client in hand.
 //   - `getSyncClient` throws a descriptive error if called before set.
 //     If supervisor bring-up fails and bootstrap chooses to continue
 //     booting (see task 4.10 wiring), handler invocations will surface
@@ -25,9 +27,6 @@ import type { SyncClient } from "./client.js";
 let current: SyncClient | null = null;
 
 export function setSyncClient(client: SyncClient): void {
-  if (current) {
-    throw new Error("sync client already set — bootstrap called twice?");
-  }
   current = client;
 }
 

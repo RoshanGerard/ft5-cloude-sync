@@ -25,7 +25,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SyncClient } from "./client.js";
-import { startSupervisor } from "./supervisor.js";
+import { startSupervisor, type SupervisorHandle } from "./supervisor.js";
 
 interface FakeChild {
   pid: number;
@@ -96,20 +96,20 @@ async function startFakeService(pipePath: string): Promise<net.Server> {
 }
 
 let servers: net.Server[] = [];
-let clients: SyncClient[] = [];
+let handles: SupervisorHandle[] = [];
 
 beforeEach(() => {
   servers = [];
-  clients = [];
+  handles = [];
   spawnedChildren.length = 0;
   spawnMock.mockClear();
 });
 
 afterEach(async () => {
-  for (const c of clients) {
-    (c as unknown as { socket: net.Socket }).socket.destroy();
+  for (const h of handles) {
+    h.dispose();
   }
-  clients = [];
+  handles = [];
   for (const s of servers) {
     await new Promise<void>((resolve) => s.close(() => resolve()));
   }
@@ -133,14 +133,16 @@ describe("startSupervisor in prod mode spawns the service when no listener is pr
       void startFakeService(pipePath).then((s) => servers.push(s));
     }, 120);
 
-    const client = await startSupervisor({
+    // Decision 12: startSupervisor now returns SupervisorHandle.
+    const handle = await startSupervisor({
       mode: "prod",
       pipePath,
       nodeBinary,
       servicePath,
     });
-    clients.push(client);
+    handles.push(handle);
 
+    const client = handle.getClient();
     expect(client).toBeInstanceOf(SyncClient);
     expect(client.isConnected).toBe(true);
 

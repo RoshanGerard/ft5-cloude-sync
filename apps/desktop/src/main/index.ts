@@ -13,7 +13,6 @@ import { startSupervisor } from "./sync/supervisor.js";
 import { resolveSyncPipePath } from "./sync/pipe-paths.js";
 import { resolveServiceNodeBinary } from "./sync/node-binary-resolver.js";
 import { setSyncClient } from "./sync/sync-client-holder.js";
-import type { SyncClient } from "./sync/client.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -211,13 +210,15 @@ async function bootstrap(): Promise<void> {
       );
     }
 
-    const syncClient: SyncClient = await startSupervisor({
+    // Decision 12: startSupervisor now returns SupervisorHandle.
+    const syncHandle = await startSupervisor({
       mode: isDev ? "dev" : "prod",
       pipePath,
       ...(nodeBinary !== undefined ? { nodeBinary } : {}),
       ...(servicePath !== undefined ? { servicePath } : {}),
     });
-    setSyncClient(syncClient);
+    setSyncClient(syncHandle.getClient());
+    syncHandle.on("reconnect", (newClient) => setSyncClient(newClient));
   } catch (err) {
     console.error(
       "[desktop] fs-sync supervisor failed to start — sync IPC handlers will reject until the service is reachable.",

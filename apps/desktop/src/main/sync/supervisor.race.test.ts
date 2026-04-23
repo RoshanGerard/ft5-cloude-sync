@@ -39,7 +39,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SyncClient } from "./client.js";
-import { startSupervisor } from "./supervisor.js";
+import { startSupervisor, type SupervisorHandle } from "./supervisor.js";
 
 interface FakeChild extends EventEmitter {
   pid: number;
@@ -111,20 +111,20 @@ async function startFakeService(pipePath: string): Promise<net.Server> {
 }
 
 let servers: net.Server[] = [];
-let clients: SyncClient[] = [];
+let handles: SupervisorHandle[] = [];
 
 beforeEach(() => {
   servers = [];
-  clients = [];
+  handles = [];
   spawnedChildren.length = 0;
   spawnMock.mockClear();
 });
 
 afterEach(async () => {
-  for (const c of clients) {
-    (c as unknown as { socket: net.Socket }).socket.destroy();
+  for (const h of handles) {
+    h.dispose();
   }
-  clients = [];
+  handles = [];
   for (const s of servers) {
     await new Promise<void>((resolve) => s.close(() => resolve()));
   }
@@ -161,7 +161,8 @@ describe("startSupervisor race-tolerance at startup", () => {
         });
       }, 80);
 
-      const [clientA, clientB] = await Promise.all([
+      // Decision 12: startSupervisor now returns SupervisorHandle.
+      const [handleA, handleB] = await Promise.all([
         startSupervisor({
           mode: "prod",
           pipePath,
@@ -175,7 +176,10 @@ describe("startSupervisor race-tolerance at startup", () => {
           servicePath,
         }),
       ]);
-      clients.push(clientA, clientB);
+      handles.push(handleA, handleB);
+
+      const clientA = handleA.getClient();
+      const clientB = handleB.getClient();
 
       // Both supervisors resolved with working clients pointing at the
       // (single) winning listener. This is the core race invariant.
