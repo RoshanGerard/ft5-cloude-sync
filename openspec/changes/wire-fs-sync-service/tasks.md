@@ -106,8 +106,8 @@ Section 5.A service handlers (5.A.7–5.A.10) therefore ship as **stubs** return
 
 - [x] 6.1 RED: `apps/desktop/src/preload/__tests__/sync-surface.test.ts` — given a fake `ipcRenderer`, the preload exposes `window.api.sync` with exactly the method set declared in `SYNC_CHANNELS`, each calling `ipcRenderer.invoke(channel, args)` and returning the typed response — commit 828670c
 - [x] 6.2 GREEN: extend `apps/desktop/src/preload/index.ts` with the `sync: { ... }` block; add `onEvent(cb): () => void` wired to the renderer-facing event channel `SYNC_CHANNELS.event` — commit 39d6f0f
-- [x] 6.3 RED: `preload/__tests__/sync-surface.import-boundary.test.ts` — grep the preload source for imports from `@ft5/ipc-contracts/sync-service` (the wire subpath); the test fails if any such import exists — commit <sha-pending>. Boundary verified: temporarily added `import type {} from "@ft5/ipc-contracts/sync-service"` to preload/index.ts, confirmed 1 test failure, removed fake import, confirmed pass.
-- [ ] 6.4 GREEN: confirm the preload imports only from `@ft5/ipc-contracts/sync-service-desktop` + `electron`
+- [x] 6.3 RED: `preload/__tests__/sync-surface.import-boundary.test.ts` — grep the preload source for imports from `@ft5/ipc-contracts/sync-service` (the wire subpath); the test fails if any such import exists — commit d051439. Boundary verified: temporarily added `import type {} from "@ft5/ipc-contracts/sync-service"` to preload/index.ts, confirmed 1 test failure, removed fake import, confirmed pass.
+- [x] 6.4 GREEN: confirm the preload imports only from `@ft5/ipc-contracts/sync-service-desktop` + `electron` — commit <sha-pending> (no-op: 6.3 already passed; import-boundary confirmed clean)
 - [ ] 6.5 RED: `preload/__tests__/window-api.types.test-d.ts` — extend `apps/desktop/src/preload/window-api.d.ts` with the typed `sync` branch; type assertion that `window.api.sync.listJobs` has the expected return type
 - [ ] 6.6 GREEN: update `window-api.d.ts`
 - [ ] 6.7 Request code review
