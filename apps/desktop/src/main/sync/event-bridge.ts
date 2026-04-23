@@ -220,7 +220,10 @@ export function _createBridge(
   // Called at initial connect AND on every reconnect.
   // ---------------------------------------------------------------------------
 
-  async function doHandshake(client: SyncClient): Promise<void> {
+  async function doHandshake(
+    client: SyncClient,
+    opts: { isReconnect: boolean } = { isReconnect: false },
+  ): Promise<void> {
     if (disposed) return;
 
     try {
@@ -258,9 +261,29 @@ export function _createBridge(
       } else {
         bufferedSeed = seed;
       }
-    } catch {
-      // Handshake failures (client disconnected, service error) are silent.
-      // The reconnect path will retry on the next disconnect/reconnect cycle.
+
+      // Emit service-reconnected only AFTER a successful handshake — the
+      // renderer's "service is back, state is fresh" signal must follow the
+      // seed that makes the state fresh. On initial connect, isReconnect is
+      // false and this branch is skipped.
+      // Addresses code-review I-A; preserves Decision 5's zero-gap-seed
+      // invariant when the service returns a soft error to sync:list-jobs.
+      if (opts.isReconnect) {
+        broadcastSyncEvent({
+          kind: "service-reconnected",
+          payload: {
+            observedAt: Date.now(),
+            reconnectAttempts,
+          },
+        });
+      }
+    } catch (err) {
+      // Handshake failures (client disconnected, service error). A transport
+      // disconnect will re-trigger the reconnect loop and retry the handshake;
+      // a soft command error leaves the renderer without a service-reconnected
+      // (the old state-unreliable signal stays in force). Log so operators can
+      // see repeated handshake failures.
+      console.warn("[sync-event-bridge] handshake failed:", err);
     }
   }
 
@@ -293,18 +316,10 @@ export function _createBridge(
     // Reset buffered seed so the reconnect handshake can buffer if needed
     bufferedSeed = null;
 
-    // Emit service-reconnected before the seed so the renderer can
-    // invalidate its local state before the fresh snapshot arrives
-    broadcastSyncEvent({
-      kind: "service-reconnected",
-      payload: {
-        observedAt: Date.now(),
-        reconnectAttempts,
-      },
-    });
-
-    // Re-issue the handshake on the new connection
-    void doHandshake(newClient);
+    // Re-issue the handshake on the new connection; service-reconnected is
+    // emitted from inside doHandshake AFTER a successful seed broadcast/buffer
+    // (see doHandshake for rationale).
+    void doHandshake(newClient, { isReconnect: true });
   });
 
   // Attach to the initial client's event stream
