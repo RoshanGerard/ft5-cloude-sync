@@ -64,18 +64,17 @@ export interface DatasourceCardProps {
 // Decision 13 — Renderer card sync-state derivation. Sync-event state wins
 // over `summary.status` ONLY when an in-flight `kind === "sync"` job exists
 // for this datasource; otherwise the engine-bus `summary.status` is the
-// fallback. Upload-kind jobs do NOT change the status badge — they will
-// show as a separate Progress bar (task 10.3/10.4).
-//
-// `waiting-network` is its own value in Decision 13's precedence rule, but
-// the visual variant (zinc dot + wifi-off glyph) is task 10.7/10.8's
-// deliverable. Until that lands, waiting-network maps to the "syncing"
-// badge value so the card still renders the active-work cue. The mapping
-// stays inside this helper so 10.7 only has to widen one place.
+// fallback. Upload-kind jobs do NOT change the status badge — they show as
+// a separate Progress bar (task 10.3/10.4). `waiting-network` surfaces as
+// its own display state so `StatusBadge` can render the zinc-dot + wifi-off
+// visual variant; `running` and `queued` both collapse to `"syncing"`
+// (queued is visually identical to running per Decision 13).
+export type CardDisplayStatus = DatasourceStatus | "waiting-network";
+
 function deriveDisplayStatus(
   summary: DatasourceSummary,
   jobs: ReadonlyArray<{ readonly kind: string; readonly status: string }>,
-): DatasourceStatus {
+): CardDisplayStatus {
   const hasRunningSync = jobs.some(
     (j) => j.kind === "sync" && j.status === "running",
   );
@@ -83,7 +82,7 @@ function deriveDisplayStatus(
   const hasWaitingNetwork = jobs.some(
     (j) => j.kind === "sync" && j.status === "waiting-network",
   );
-  if (hasWaitingNetwork) return "syncing";
+  if (hasWaitingNetwork) return "waiting-network";
   const hasQueuedSync = jobs.some(
     (j) => j.kind === "sync" && j.status === "queued",
   );
@@ -228,7 +227,7 @@ function StatusBadge({
   status,
   errorReason,
 }: {
-  status: DatasourceStatus;
+  status: CardDisplayStatus;
   errorReason?: string;
 }) {
   const variant = statusBadgeVariant(status);
@@ -236,29 +235,59 @@ function StatusBadge({
     if (status === "error" && errorReason) {
       return `Status: error — ${errorReason}`;
     }
+    if (status === "waiting-network") {
+      return "Status: waiting for network";
+    }
     return `Status: ${status}`;
   }, [status, errorReason]);
+
+  // Decision 13 "Visual variant — waiting-network": the badge stays the
+  // syncing variant (default) but the dot's `currentColor` swaps from
+  // amber to zinc, and a `wifi-off` glyph sits left of the text. The
+  // zinc colour comes from `text-zinc-400` on the badge root so the
+  // SyncingDot's `fill-current` paints zinc; the badge gains
+  // `aria-live="polite"` so AT announces the status change (per Decision
+  // 13, no separate sibling region required).
+  const isWaitingNetwork = status === "waiting-network";
+  const isSyncingFamily = status === "syncing" || isWaitingNetwork;
+  const label = isWaitingNetwork ? "Waiting for network" : status;
 
   return (
     <Badge
       data-testid="datasource-status"
       variant={variant}
       aria-label={accessibleName}
-      className="shrink-0 gap-1.5"
+      aria-live="polite"
+      className={cn(
+        "shrink-0 gap-1.5",
+        isWaitingNetwork && "text-zinc-400",
+      )}
     >
-      {status === "syncing" ? <SyncingDot /> : null}
-      <span className="capitalize">{status}</span>
+      {isSyncingFamily ? <SyncingDot /> : null}
+      {isWaitingNetwork ? (
+        <Icon
+          name="wifi-off"
+          data-testid="datasource-waiting-network-icon"
+          data-icon="wifi-off"
+          aria-hidden
+          className="size-3 shrink-0"
+        />
+      ) : null}
+      <span className="capitalize">{label}</span>
     </Badge>
   );
 }
 
 function statusBadgeVariant(
-  status: DatasourceStatus,
+  status: CardDisplayStatus,
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "connected":
       return "secondary";
     case "syncing":
+      return "default";
+    case "waiting-network":
+      // Decision 13: status pill stays the syncing variant.
       return "default";
     case "paused":
       return "outline";
