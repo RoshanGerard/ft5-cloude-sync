@@ -21,18 +21,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
-import {
-  act,
-  cleanup,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 import type {
   JobCompletedPayload,
-  SyncEvent,
   SyncStateSeedPayload,
 } from "@ft5/ipc-contracts/sync-service-desktop";
 import type { JobSummary } from "@ft5/ipc-contracts/sync-service-desktop";
@@ -53,75 +46,13 @@ vi.mock("next/navigation", () => ({
 
 import { DatasourceCard } from "../card";
 import { DatasourcesProvider } from "../store";
-
-// ---------- harness for window.api.sync.onEvent ---------------------------
-
-type SyncListener = (event: SyncEvent) => void;
-
-interface SyncHarness {
-  onEvent: ReturnType<typeof vi.fn>;
-  listeners: SyncListener[];
-  /** Synthesise an event delivery to every registered listener. */
-  emit: (event: SyncEvent) => void;
-}
+import {
+  ensureResizeObserver,
+  installApiMock,
+  type SyncHarness,
+} from "./helpers/sync-harness";
 
 let syncHarness: SyncHarness;
-
-function installApiMock(): SyncHarness {
-  const listeners: SyncListener[] = [];
-  const onEvent = vi.fn((cb: SyncListener) => {
-    listeners.push(cb);
-    return () => {
-      const i = listeners.indexOf(cb);
-      if (i >= 0) listeners.splice(i, 1);
-    };
-  });
-  // Cast through `unknown` because the renderer's `window-api.d.ts` does not
-  // (yet) declare `window.api.sync` — see surprise note in the task report.
-  (window as unknown as { api: unknown }).api = {
-    ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
-    datasources: {
-      list: vi.fn().mockReturnValue(new Promise<never>(() => {})),
-      add: vi.fn(),
-      remove: vi.fn().mockResolvedValue({ ok: true }),
-      action: vi.fn(),
-      upload: vi.fn().mockResolvedValue({ transactionId: "tx-test" }),
-      onUploadProgress: vi.fn().mockReturnValue(() => {}),
-      onEvent: vi.fn().mockReturnValue(() => {}),
-    },
-    sync: {
-      // The store under test is expected to call `window.api.sync.onEvent`
-      // exactly once on mount. Other sync.* members are present as no-op
-      // stubs so an inadvertent call surfaces as a clear test failure rather
-      // than a TypeError.
-      onEvent,
-      listJobs: vi.fn(),
-      getJob: vi.fn(),
-      enqueueUpload: vi.fn(),
-      enqueueMirror: vi.fn(),
-      cancelJob: vi.fn(),
-      authenticateStart: vi.fn(),
-      authenticateComplete: vi.fn(),
-      getStatus: vi.fn(),
-      getRetryPolicy: vi.fn(),
-      setRetryPolicy: vi.fn(),
-    },
-  };
-  return {
-    onEvent,
-    listeners,
-    emit: (event) => {
-      // Wrap delivery in `act` so React state updates triggered by the
-      // store's reducer dispatch are flushed before the test assertion runs.
-      act(() => {
-        // Snapshot to allow listener-triggered unsubscribes during emit.
-        for (const l of [...listeners]) {
-          l(event);
-        }
-      });
-    },
-  };
-}
 
 function renderWithProvider(ui: ReactNode) {
   return render(<DatasourcesProvider>{ui}</DatasourcesProvider>);
@@ -161,14 +92,7 @@ function buildJobSummary(overrides: Partial<JobSummary> = {}): JobSummary {
 }
 
 beforeEach(() => {
-  if (!("ResizeObserver" in window)) {
-    (window as unknown as { ResizeObserver: unknown }).ResizeObserver =
-      class MockResizeObserver {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      };
-  }
+  ensureResizeObserver();
   syncHarness = installApiMock();
 });
 
