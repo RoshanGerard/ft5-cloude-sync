@@ -228,6 +228,47 @@ Fixing either gap properly requires touching the engine and adding a config sour
 
 **Contract impact of the stub.** The `authenticate-start` and `authenticate-complete` command error unions both gain a `{ tag: "not-implemented"; message: string }` variant. The follow-up change removes that variant when the real implementation ships; consumers should handle it defensively as "the service does not yet support this operation" rather than as a domain error.
 
+### Decision 12 — Supervisor lifecycle: reconnect policy + handle shape
+
+**Context.** The supervisor shipped in section 4 resolves once with a `SyncClient` and has no reconnect machinery. Section 7's event-bridge needs to survive service crashes / restarts: on disconnect it must surface a `service-disconnected` event to the renderer, then reconnect, re-issue the subscribe+list-jobs handshake, and emit a `service-reconnected` event plus a fresh `sync-state-seed`. That requires a supervisor that is *alive* for the lifetime of the desktop app, not one-shot.
+
+**What.** `startSupervisor(...)` changes its return shape from `Promise<SyncClient>` to `Promise<SupervisorHandle>`:
+
+```ts
+interface SupervisorHandle {
+  /** The current connected client. Mutates across reconnects. */
+  getClient(): SyncClient;
+  /** Subscribe to reconnect events. `cb` receives the fresh client. */
+  on(event: "reconnect", cb: (newClient: SyncClient) => void): () => void;
+  /** Subscribe to disconnect events. `cb` receives no payload — detach-only signal. */
+  on(event: "disconnect", cb: () => void): () => void;
+  /** Stop reconnecting; detach from underlying client. Idempotent. */
+  dispose(): void;
+}
+```
+
+The handle wraps the existing per-connect logic in a loop driven by the underlying `SyncClient.on("disconnect", ...)` event. Callers that previously wrote `const client = await startSupervisor(...)` now write:
+
+```ts
+const handle = await startSupervisor(...);
+setSyncClient(handle.getClient());
+handle.on("reconnect", (c) => setSyncClient(c));
+```
+
+This is a breaking change for the ~5 call sites in `main/index.ts` and the four `supervisor.*.test.ts` files. Authorized in section 7's scope; no other callers exist.
+
+**Why `(newClient) => void` and not `() => void`.** Pushing the client as the payload eliminates a whole bug class ("forgot to call `handle.getClient()` after the reconnect fired"). Two consumers care about reconnect today — the sync-client-holder and the event-bridge — and both want the new client in hand at callback time.
+
+**Reconnect schedule.** On disconnect, retry `net.connect(pipePath)` on the same schedule as the initial spawn — `25/50/100/200/400ms` — then if still failing, switch to geometric backoff capped at **30 seconds** and retry **indefinitely**. Rationale: the service may restart at any point (OS reboot, upgrade, crash), and the renderer already surfaces a "disconnected" state via `service-disconnected` events, so there is no user benefit to giving up. The cap at 30s prevents runaway backoff.
+
+In dev mode (service owned by pnpm), reconnect uses the SAME schedule — if the operator kills `pnpm dev` and restarts it, the supervisor reconnects automatically. We do NOT re-spawn the service in dev (same rule as initial connect).
+
+**In-flight request handling across disconnect.** Inherited from the existing `SyncClient.handleDisconnect` (commits 3.5/3.6): all in-flight `request()` promises reject with `SyncDisconnectedError`, and new requests issued between disconnect and reconnect also reject synchronously. This is NOT new behavior; section 7 relies on it, and the `supervisor.reconnect.test.ts` test asserts the rejection happens but does not implement it.
+
+**What the handle does NOT do.** The handle is a client-lifecycle manager, not a request router. It does not queue requests made during disconnect (design Decision 7 explicitly rules out an offline queue), does not retry failed requests, and does not proxy the `SyncClient` API. Callers read `handle.getClient()` at the site they need it — section 5's IPC handlers already do this via `sync-client-holder` — and live with the "rejected if disconnected" contract.
+
+**Sync-client-holder contract under reconnect.** Section 5's IPC handlers call `getSyncClient()` at handler-invocation time (not at registration). A `setSyncClient(newClient)` call from the main-process reconnect subscriber therefore transparently swaps the client seen by subsequent handler calls. Section 7 must include a test that proves this — a handler registered at t=0, invoked at t=1 (pre-disconnect), invoked again at t=3 (post-reconnect) must see two different `SyncClient` instances.
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
