@@ -366,6 +366,16 @@ export class SyncClient {
   }
 
   /**
+   * Close the underlying socket and trigger the disconnect lifecycle
+   * (rejects all in-flight requests, fires disconnect listeners).
+   * Idempotent: safe to call more than once — the `handleDisconnect`
+   * it indirectly triggers is itself idempotent.
+   */
+  dispose(): void {
+    this.socket.destroy();
+  }
+
+  /**
    * Idempotent disconnect handler. Both "end" and "close" feed into it
    * (close always fires last), so the first invocation does the work
    * and subsequent invocations are no-ops.

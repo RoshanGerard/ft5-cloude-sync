@@ -290,11 +290,12 @@ function createHandle(
       disposed = true;
       reconnectListeners.clear();
       disconnectListeners.clear();
-      // Destroy the current socket to clean up
+      // Destroy the current socket to clean up. Use the public dispose()
+      // method rather than reaching into a private field.
       try {
-        (current as unknown as { socket: net.Socket }).socket.destroy();
+        current.dispose();
       } catch {
-        // ignore
+        // ignore — client may already be disconnected
       }
     },
   };
