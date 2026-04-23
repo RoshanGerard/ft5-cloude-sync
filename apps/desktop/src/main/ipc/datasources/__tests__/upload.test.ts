@@ -158,6 +158,21 @@ describe("handleDatasourcesUpload — service proxy", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Code-review I-8A: the real dialog in ipc/index.ts must be single-select
+  // to match the handler's `filePaths[0]` contract. A multi-select picker
+  // would silently drop files N>1 from the selection.
+  // -------------------------------------------------------------------------
+
+  it("ipc/index.ts opens the upload picker as single-select (I-8A)", () => {
+    const ipcIndexPath = path.resolve(__dirname, "../../index.ts");
+    const src = readFileSync(ipcIndexPath, "utf8");
+    // No handler in ipc/index.ts should request multi-select — the upload
+    // handler is the only one that opens a picker today, and it consumes
+    // exactly one file. A file-level grep is sufficient.
+    expect(src).not.toMatch(/multiSelections/);
+  });
+
+  // -------------------------------------------------------------------------
   // Renderer contract — the `DatasourcesUpload*` types stay flat.
   // This test is compile-time; the runtime assertion is a formality.
   // -------------------------------------------------------------------------
