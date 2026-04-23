@@ -53,11 +53,15 @@ export default defineConfig({
       "packages/**/src/**/*.test.ts",
       "packages/**/src/**/*.test-d.ts",
       "apps/**/src/**/*.test.{ts,tsx}",
+      "apps/**/src/**/*.test-d.ts",
       "services/**/src/**/*.test.ts",
     ],
     typecheck: {
       enabled: true,
-      include: ["packages/**/src/**/*.test-d.ts"],
+      include: [
+        "packages/**/src/**/*.test-d.ts",
+        "apps/**/src/**/*.test-d.ts",
+      ],
     },
   },
 });
