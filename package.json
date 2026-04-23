@@ -14,6 +14,7 @@
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "package:current-os": "pnpm --filter @ft5/desktop package:win",
+    "dev": "pnpm -r --parallel --filter ./apps/desktop --filter ./services/fs-sync run dev",
     "dev:sync-service": "pnpm --filter @ft5/fs-sync-service build && node --enable-source-maps services/fs-sync/dist/main/index.js --dev",
     "build:sync-service": "pnpm --filter @ft5/fs-sync-service build",
     "abi:electron": "bash bin/abi-electron.sh",
