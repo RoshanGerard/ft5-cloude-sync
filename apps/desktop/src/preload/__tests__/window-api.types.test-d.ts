@@ -1,5 +1,3 @@
-/// <reference path="../window-api.d.ts" />
-
 import { describe, expectTypeOf, it } from "vitest";
 
 import type {

@@ -24,6 +24,28 @@ import type {
   FilesStatResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
+import type {
+  SyncAuthenticateCompleteRequest,
+  SyncAuthenticateCompleteResponse,
+  SyncAuthenticateStartRequest,
+  SyncAuthenticateStartResponse,
+  SyncCancelJobRequest,
+  SyncCancelJobResponse,
+  SyncEnqueueMirrorRequest,
+  SyncEnqueueMirrorResponse,
+  SyncEnqueueUploadRequest,
+  SyncEnqueueUploadResponse,
+  SyncEvent,
+  SyncGetJobRequest,
+  SyncGetJobResponse,
+  SyncGetRetryPolicyRequest,
+  SyncGetRetryPolicyResponse,
+  SyncGetStatusResponse,
+  SyncListJobsRequest,
+  SyncListJobsResponse,
+  SyncSetRetryPolicyRequest,
+  SyncSetRetryPolicyResponse,
+} from "@ft5/ipc-contracts/sync-service-desktop";
 
 // Ambient augmentation of the DOM `Window` interface so renderer code can
 // type-check calls to `window.api.*` without importing from this preload
@@ -67,6 +89,32 @@ declare global {
         rename(req: FilesRenameRequest): Promise<FilesRenameResponse>;
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
+      };
+      sync: {
+        listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
+        getJob(req: SyncGetJobRequest): Promise<SyncGetJobResponse>;
+        enqueueUpload(
+          req: SyncEnqueueUploadRequest,
+        ): Promise<SyncEnqueueUploadResponse>;
+        enqueueMirror(
+          req: SyncEnqueueMirrorRequest,
+        ): Promise<SyncEnqueueMirrorResponse>;
+        cancelJob(req: SyncCancelJobRequest): Promise<SyncCancelJobResponse>;
+        authenticateStart(
+          req: SyncAuthenticateStartRequest,
+        ): Promise<SyncAuthenticateStartResponse>;
+        authenticateComplete(
+          req: SyncAuthenticateCompleteRequest,
+        ): Promise<SyncAuthenticateCompleteResponse>;
+        // `getStatus` has a void request type — no argument, mirrors ping().
+        getStatus(): Promise<SyncGetStatusResponse>;
+        getRetryPolicy(
+          req: SyncGetRetryPolicyRequest,
+        ): Promise<SyncGetRetryPolicyResponse>;
+        setRetryPolicy(
+          req: SyncSetRetryPolicyRequest,
+        ): Promise<SyncSetRetryPolicyResponse>;
+        onEvent(callback: (event: SyncEvent) => void): () => void;
       };
     };
   }

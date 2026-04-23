@@ -30,7 +30,14 @@ export default defineConfig({
     // externalizeDepsPlugin) will fail with "module not found" inside the
     // sandbox and silently break `window.api` exposure. Regression guard
     // lives at `scripts/preload-bundle.test.ts`.
-    plugins: [externalizeDepsPlugin({ exclude: ["@ft5/ipc-contracts"] })],
+    plugins: [
+      externalizeDepsPlugin({
+        exclude: [
+          "@ft5/ipc-contracts",
+          "@ft5/ipc-contracts/sync-service-desktop",
+        ],
+      }),
+    ],
     build: {
       outDir: "dist/preload",
       lib: {
