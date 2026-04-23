@@ -122,8 +122,8 @@ Section 5.A service handlers (5.A.7–5.A.10) therefore ship as **stubs** return
 
 ## 7. Event relay and app-open reconciliation
 
-- [ ] 7.1 RED: `apps/desktop/src/main/sync/event-bridge.test.ts` — on supervisor start, the main process sends `sync:subscribe-events` followed by `sync:list-jobs` on the same connection, in that order (instrument outgoing frames); the list-jobs response is emitted to every `BrowserWindow` as a `SYNC_CHANNELS.event` payload with shape `{ kind: 'sync-state-seed', jobs }` filtered to `status ∈ ['running','queued','waiting-network']`
-- [ ] 7.2 GREEN: implement `apps/desktop/src/main/sync/event-bridge.ts` handling the subscribe-then-list handshake and the seed emission; register the bridge once per supervisor lifetime (singleton)
+- [x] 7.1 RED: `apps/desktop/src/main/sync/event-bridge.test.ts` — on supervisor start, the main process sends `sync:subscribe-events` followed by `sync:list-jobs` on the same connection, in that order (instrument outgoing frames); the list-jobs response is emitted to every `BrowserWindow` as a `SYNC_CHANNELS.event` payload with shape `{ kind: 'sync-state-seed', jobs }` filtered to `status ∈ ['running','queued','waiting-network']` — commit 0c11dcb
+- [x] 7.2 GREEN: implement `apps/desktop/src/main/sync/event-bridge.ts` handling the subscribe-then-list handshake and the seed emission; register the bridge once per supervisor lifetime (singleton)
 - [ ] 7.3 RED: `sync/event-bridge.fanout.test.ts` — three `BrowserWindow` instances receive the same event exactly once each; events for an already-closed window are not sent (no crash)
 - [ ] 7.4 GREEN: implement per-window registration / deregistration (mirror the existing `createEventBridge` pattern at `apps/desktop/src/main/ipc/datasources/event-bridge.ts`)
 - [ ] 7.5 RED: `sync/event-bridge.reconnect.test.ts` — simulate a service disconnect / reconnect; the bridge re-issues subscribe + list-jobs and emits a second `sync-state-seed`; in-flight renderer IPC calls see `service-disconnected` rejections
