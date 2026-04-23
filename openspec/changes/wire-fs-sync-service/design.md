@@ -269,6 +269,48 @@ In dev mode (service owned by pnpm), reconnect uses the SAME schedule — if the
 
 **Sync-client-holder contract under reconnect.** Section 5's IPC handlers call `getSyncClient()` at handler-invocation time (not at registration). A `setSyncClient(newClient)` call from the main-process reconnect subscriber therefore transparently swaps the client seen by subsequent handler calls. Section 7 must include a test that proves this — a handler registered at t=0, invoked at t=1 (pre-disconnect), invoked again at t=3 (post-reconnect) must see two different `SyncClient` instances.
 
+### Decision 13 — Renderer card sync-state derivation
+
+**Context.** Section 10 wires the datasource card to live job state from the service. The card already exposes a `summary.status` from `DatasourcesProvider` (engine-bus driven, `connected | syncing | paused | error`) and now needs to compose this with the sync-event stream from `window.api.sync.onEvent` (sync-state-seed + per-job lifecycle events). The task list says "union of engine-event state and sync-event state" without pinning precedence; subagents will diverge unless this is fixed in writing.
+
+**What — store shape.** A new slice on the existing `DatasourcesProvider` reducer (no new context, no new state library — Decision 5 of the archived `ui-ux-design`):
+
+```ts
+interface JobsByDatasourceSlice {
+  // datasourceId → list of in-flight jobs (running | queued | waiting-network)
+  jobsByDatasource: Map<string, JobSummary[]>;
+  // jobId → latest progress tick (for upload-kind jobs only)
+  uploadProgressByJob: Map<string, { bytesUploaded: number; bytesTotal: number }>;
+}
+```
+
+`jobsByDatasource` is fed by `window.api.sync.onEvent`:
+- `sync-state-seed` → replace map with `groupBy(payload.jobs, j => j.datasourceId)`.
+- `job-enqueued` / `job-started` / `job-progress` (status changes) → upsert into the datasource's bucket.
+- `job-completed` / `job-failed` / `job-cancelled` → remove from the bucket. Bucket goes empty → delete the key.
+
+`uploadProgressByJob` is fed by the existing `DATASOURCES_CHANNELS.uploadProgress` channel (already plumbed in section 8). On terminal job events (completed/failed/cancelled) the corresponding entry is also evicted to bound memory.
+
+**What — display-state precedence.** Card status display is computed per-render:
+
+```
+displayStatus(summary, jobs) =
+  if jobs.some(j => j.kind === "sync" && j.status === "running")     → "syncing"
+  else if jobs.some(j => j.kind === "sync" && j.status === "waiting-network") → "waiting-network"
+  else if jobs.some(j => j.kind === "sync" && j.status === "queued") → "syncing" (queued is visually identical)
+  else summary.status   // engine-bus fallback
+```
+
+The sync-event state **wins** when it has any in-flight sync-kind job for that datasource; the engine-bus `summary.status` is the fallback for the steady states (`connected`, `paused`, `error`). Rationale: per Decision 5, sync-event state is what seeds on startup and represents the authoritative cross-process truth; the engine-bus `summary.status` is the legacy in-process signal that does not survive restarts. Upload-kind jobs do NOT change the card's status badge — they show as a separate progress bar (see below).
+
+**What — progress bar visibility.** The Progress bar (10.3/10.4) renders if and only if `jobsByDatasource[id]` contains at least one `kind === "upload"` job whose status is `running | queued | waiting-network`. Bar value is `uploadProgressByJob[activeUploadJobId].bytesUploaded / bytesTotal * 100`. Active job tiebreak rule (10.6): `startedAt desc`, then `jobId` lex desc. The bar unmounts naturally when the job is removed from `jobsByDatasource` (no explicit unmount logic needed; React reconciliation does it).
+
+**Why the bar's terminal frame doesn't need a `status: "completed"` from the bridge.** The progress bar is conditionally rendered on the presence of an upload-kind job in `jobsByDatasource`. When `job-completed` arrives via the SyncEvent stream, the renderer removes the job from the map → the bar's `if (uploadJobs.length > 0)` guard becomes false → React unmounts. The `DATASOURCES_CHANNELS.uploadProgress` channel does NOT need to emit terminal `status` frames; the section-7 review's M-8A note (which proposed adding terminal frames) is therefore a no-op for section 10. M-8A stays a follow-up only if a future feature wants progress tracking *without* maintaining the jobs map (none today).
+
+**Visual variant — waiting-network.** Section 10.7 needs a distinguishing visual when a job's status is `waiting-network`. Adopting the established status-colour language from the archived `ui-ux-design` Visual direction (`amber=syncing`, `zinc=paused`, `green=connected`, `red=error`), waiting-network maps to: **status pill stays the syncing variant** (default badge with the SyncingDot) but swaps the dot's `currentColor` from amber to **zinc** AND adds a small lucide `wifi-off` icon left of the status text. Rationale: zinc reads as "paused-but-recoverable" without claiming a new colour token; the icon makes the cause legible at a glance without a tooltip. Accessible name updates to `Status: waiting for network`. ARIA-live polite region announces the transition. Reduce-motion: SyncingDot's existing `animate-sync-pulse` / `animate-sync-ripple` continue per the OS / Motion-Safe rule (the ripple is a "still working in the background" cue even when the network is gone — appropriate signal that the job is alive).
+
+**What is NOT in scope.** Per-job error-detail surfacing (10.7's `errorReason` already covers steady-state failure). Multi-datasource progress aggregation. Manual cancel-from-card (Decision 7 explicitly defers user cancel to a later UI change). All deferred follow-ups.
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
