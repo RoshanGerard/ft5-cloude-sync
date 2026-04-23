@@ -19,6 +19,10 @@ import os from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDatabase, runMigrations, type Migration } from "./database.js";
+import {
+  migration_0001_datasource_credentials,
+  migration_0003_drop_datasource_credentials,
+} from "./migrations.js";
 
 function mkTmpDir(): string {
   return mkdtempSync(path.join(os.tmpdir(), "ft5-db-test-"));
@@ -174,6 +178,120 @@ describe("openDatabase + runMigrations (Phase 9a)", () => {
         "0001_create_users",
         "0002_seed_users",
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // wire-fs-sync-service 9.3 RED — 0003_drop_datasource_credentials.
+  //
+  // The credential store is being retired. Old installs already ran
+  // `0001_datasource_credentials` and have the table on disk (possibly
+  // populated). A new forward-only migration `0003_drop_datasource_credentials`
+  // must execute `DROP TABLE IF EXISTS datasource_credentials` so:
+  //   a) existing DBs with the table (and rows) have it removed,
+  //   b) fresh DBs where the table was never created are unaffected
+  //      (the `IF EXISTS` clause keeps the statement idempotent),
+  //   c) applying the migration twice is a no-op (runner tracks the id).
+  //
+  // These tests pre-date the migration existing — the imports at the top
+  // of this file will not resolve and the `it(...)` blocks will fail until
+  // `migration_0003_drop_datasource_credentials` is added to migrations.ts.
+  // ---------------------------------------------------------------------
+
+  it("0003_drop_datasource_credentials drops a pre-existing populated table", () => {
+    const db = openDatabase(":memory:");
+    try {
+      // Simulate an old install: 0001 has already run and the table has at
+      // least one row. We run 0001 through the runner to exercise the exact
+      // production path, then insert directly (bypasses `safeStorage`, which
+      // is an Electron main-process API unavailable under vitest/node).
+      runMigrations(db, [migration_0001_datasource_credentials]);
+      db.prepare(
+        "INSERT INTO datasource_credentials (datasource_id, encrypted_blob, schema_version, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+      ).run("ds-legacy", Buffer.from([0x00, 0x01, 0x02]), 0, 0);
+      const before = db
+        .prepare("SELECT COUNT(*) AS n FROM datasource_credentials")
+        .get() as { n: number };
+      expect(before.n).toBe(1);
+
+      runMigrations(db, [
+        migration_0001_datasource_credentials,
+        migration_0003_drop_datasource_credentials,
+      ]);
+
+      // Table no longer exists — a SELECT against it throws.
+      expect(() =>
+        db.prepare("SELECT 1 FROM datasource_credentials").get(),
+      ).toThrow(/no such table/i);
+      // Bookkeeping records both ids.
+      const ids = db
+        .prepare("SELECT id FROM _migrations ORDER BY id")
+        .all() as { id: string }[];
+      expect(ids.map((r) => r.id)).toEqual([
+        "0001_datasource_credentials",
+        "0003_drop_datasource_credentials",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("0003_drop_datasource_credentials is a no-op on a DB that never had the table", () => {
+    // Simulate a fresh install where `0001_datasource_credentials` was never
+    // applied (the array no longer includes it by the time old installs
+    // upgrade past this point). Applying only 0003 must not throw — the
+    // `DROP TABLE IF EXISTS` clause makes it idempotent.
+    const db = openDatabase(":memory:");
+    try {
+      // Sanity: the table does not exist before.
+      const existsBefore = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='datasource_credentials'",
+        )
+        .get();
+      expect(existsBefore).toBeUndefined();
+
+      expect(() =>
+        runMigrations(db, [migration_0003_drop_datasource_credentials]),
+      ).not.toThrow();
+
+      // Still absent after.
+      const existsAfter = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='datasource_credentials'",
+        )
+        .get();
+      expect(existsAfter).toBeUndefined();
+      // And the id is recorded exactly once.
+      const ids = db
+        .prepare("SELECT id FROM _migrations ORDER BY id")
+        .all() as { id: string }[];
+      expect(ids.map((r) => r.id)).toEqual([
+        "0003_drop_datasource_credentials",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("0003_drop_datasource_credentials applied directly drops the table when the table was created outside the runner", () => {
+    // Narrower unit test: exercise the migration's `up(db)` callback directly
+    // (no runner), against a DB where the table was created manually. This
+    // documents the migration's SQL in isolation from the bookkeeping layer.
+    const db = openDatabase(":memory:");
+    try {
+      db.exec(
+        "CREATE TABLE datasource_credentials (datasource_id TEXT PRIMARY KEY, encrypted_blob BLOB NOT NULL, schema_version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
+      );
+      migration_0003_drop_datasource_credentials.up(db);
+      const exists = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='datasource_credentials'",
+        )
+        .get();
+      expect(exists).toBeUndefined();
     } finally {
       db.close();
     }
