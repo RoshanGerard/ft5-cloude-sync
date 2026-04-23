@@ -11,6 +11,7 @@ function Progress({
   return (
     <ProgressPrimitive.Root
       data-slot="progress"
+      value={value}
       className={cn(
         // Review-round-3, Task 3: swapped `bg-primary/20` → `bg-muted`. On
         // the dark theme `--primary` is near-white (oklch 0.929), so 20%

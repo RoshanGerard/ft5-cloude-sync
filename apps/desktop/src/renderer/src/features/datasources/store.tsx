@@ -300,18 +300,39 @@ function jobsReducer(state: JobsState, action: JobsAction): JobsState {
       // `job-progress` does not carry status; it's a running-state tick. We
       // refresh `updatedAt` so sort/tiebreak consumers can see freshness,
       // but leave status alone. Only touch the entry if it exists.
+      //
+      // Decision 13 amended (commit 45902d6): for `kind === "upload"` jobs,
+      // this same dispatch also populates `uploadProgressByJob` so the card
+      // progress bar reads from a single SyncEvent stream. Wire payload
+      // mapping per Decision 13: `bytesSent` → `bytesUploaded`,
+      // `totalBytes` → `bytesTotal` (defaulting to 0 when the wire payload
+      // says null — this is the "indeterminate" state that renders the bar
+      // at value 0 until the first sized tick arrives).
       const p = action.payload;
       const loc = findJobLocation(state.jobsByDatasource, p.jobId);
       if (!loc) return state;
+      const job = state.jobsByDatasource.get(loc.datasourceId)?.[loc.index];
+      const nextByDs = upsertJob(
+        state.jobsByDatasource,
+        loc.datasourceId,
+        p.jobId,
+        (existing) =>
+          existing ? { ...existing, updatedAt: Date.now() } : null,
+      );
+      // Defensive: if findJobLocation returned a stale loc the lookup above
+      // could yield undefined — fall back to the jobsByDatasource refresh
+      // only and skip the upload-progress branch.
+      if (!job || job.kind !== "upload") {
+        return { ...state, jobsByDatasource: nextByDs };
+      }
+      const nextProgress = new Map(state.uploadProgressByJob);
+      nextProgress.set(p.jobId, {
+        bytesUploaded: p.bytesSent,
+        bytesTotal: p.totalBytes ?? 0,
+      });
       return {
-        ...state,
-        jobsByDatasource: upsertJob(
-          state.jobsByDatasource,
-          loc.datasourceId,
-          p.jobId,
-          (existing) =>
-            existing ? { ...existing, updatedAt: Date.now() } : null,
-        ),
+        jobsByDatasource: nextByDs,
+        uploadProgressByJob: nextProgress,
       };
     }
     case "sync/job-completed":
@@ -601,4 +622,79 @@ export function useDatasourceJobs(datasourceId: string): ReadonlyArray<JobSummar
     );
   }
   return ctx.jobs.jobsByDatasource.get(datasourceId) ?? EMPTY_JOBS;
+}
+
+export interface UploadProgressView {
+  readonly jobId: string;
+  readonly bytesUploaded: number;
+  readonly bytesTotal: number;
+  /** Integer percent in [0, 100], rounded. 0 when bytesTotal === 0. */
+  readonly percent: number;
+}
+
+/**
+ * Returns the upload-progress view for the active upload job on this
+ * datasource, or null if no upload-kind job is in flight.
+ *
+ * "Active" tiebreak (Decision 13 / task 10.6): per the design doc the
+ * tiebreak is `startedAt desc, then jobId lex desc`. The wire `JobSummary`
+ * (packages/ipc-contracts/src/sync-service/commands.ts) carries `createdAt`
+ * + `updatedAt` only — `startedAt` from `job-started` lands in `updatedAt`
+ * but is then overwritten on every `job-progress` tick, so it isn't a
+ * stable sort key. Falling back to `createdAt desc` (the enqueue time) as
+ * the closest stable proxy; task 10.5/10.6 will revisit if the multi-
+ * upload test asserts a stricter order.
+ */
+export function useDatasourceUploadProgress(
+  datasourceId: string,
+): UploadProgressView | null {
+  const ctx = useContext(DatasourcesContext);
+  if (ctx === null) {
+    throw new Error(
+      "useDatasourceUploadProgress must be used within a <DatasourcesProvider>.",
+    );
+  }
+  const bucket = ctx.jobs.jobsByDatasource.get(datasourceId);
+  if (!bucket) return null;
+  const candidates = bucket.filter(
+    (j) =>
+      j.kind === "upload" &&
+      (j.status === "running" ||
+        j.status === "queued" ||
+        j.status === "waiting-network"),
+  );
+  if (candidates.length === 0) return null;
+  // Stable sort: createdAt desc (newest enqueued wins), then id lex desc.
+  // Linear scan over a small bucket — no need for a memoised selector.
+  const sorted = [...candidates].sort((a, b) => {
+    if (b.createdAt !== a.createdAt) return b.createdAt - a.createdAt;
+    if (b.id < a.id) return -1;
+    if (b.id > a.id) return 1;
+    return 0;
+  });
+  const picked = sorted[0];
+  // `candidates.length === 0` was checked above, so `picked` is defined.
+  // The non-null assertion satisfies noUncheckedIndexedAccess without
+  // forcing a runtime branch consumers don't need.
+  if (!picked) return null;
+  const progress = ctx.jobs.uploadProgressByJob.get(picked.id);
+  if (!progress) {
+    // No tick has arrived yet — render the indeterminate state at value 0.
+    return {
+      jobId: picked.id,
+      bytesUploaded: 0,
+      bytesTotal: 0,
+      percent: 0,
+    };
+  }
+  const percent =
+    progress.bytesTotal > 0
+      ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+      : 0;
+  return {
+    jobId: picked.id,
+    bytesUploaded: progress.bytesUploaded,
+    bytesTotal: progress.bytesTotal,
+    percent,
+  };
 }

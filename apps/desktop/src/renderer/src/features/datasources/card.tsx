@@ -51,7 +51,11 @@ import {
 import { Icon, isIconName, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
-import { useDatasourceActions, useDatasourceJobs } from "./store";
+import {
+  useDatasourceActions,
+  useDatasourceJobs,
+  useDatasourceUploadProgress,
+} from "./store";
 
 export interface DatasourceCardProps {
   summary: DatasourceSummary;
@@ -93,6 +97,7 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
   const router = useRouter();
   const jobs = useDatasourceJobs(summary.id);
   const displayStatus = deriveDisplayStatus(summary, jobs);
+  const uploadProgress = useDatasourceUploadProgress(summary.id);
 
   const quotaEnabled = descriptor?.capabilities.quota === true;
   const providerIconName = iconNameFromDescriptor(descriptor);
@@ -172,6 +177,23 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
           {formatItemCount(summary.itemCount)} items
         </span>
       </div>
+
+      {uploadProgress !== null ? (
+        // Decision 13 — upload-progress bar. Renders iff at least one
+        // upload-kind job for this datasource is in [running|queued|
+        // waiting-network]; the active-job tiebreak is in
+        // useDatasourceUploadProgress. Bar value comes from the same
+        // SyncEvent stream that drives `jobsByDatasource` (no separate
+        // uploadProgress channel consumer per the amended Decision 13).
+        // The testid + data-job-id live on the Radix Progress root so
+        // tests can read `aria-valuenow` directly off the element.
+        <Progress
+          data-testid="datasource-upload-progress"
+          data-job-id={uploadProgress.jobId}
+          value={uploadProgress.percent}
+          aria-label={`Upload progress: ${uploadProgress.percent}%`}
+        />
+      ) : null}
 
       {quotaEnabled && summary.usage ? (
         <UsageBar used={summary.usage.used} quota={summary.usage.quota} />
