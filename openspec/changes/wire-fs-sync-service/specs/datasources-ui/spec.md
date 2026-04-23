@@ -28,6 +28,27 @@ Uploads SHALL survive desktop app quit. Closing the desktop window (or even `app
 - **WHEN** a Vitest test grep-scans `apps/desktop/src/main/ipc/datasources/` for `uploadFile` invocations or `engine.uploadFile`
 - **THEN** no match is found; the only call the handler makes for upload is to the `SyncClient.enqueueUpload` helper (or the equivalent wrapper in the `sync/` subdirectory)
 
+### Requirement: Datasource IPC surface is the single data path
+
+All datasource reads and mutations from the renderer SHALL go through the `window.api.datasources.*` surface. The renderer SHALL NOT import any provider SDK, any `fs`/`child_process`/`electron`/`drizzle-orm` specifier, or any module under `apps/desktop/src/main/` or `apps/desktop/src/preload/`. The main-process handlers route all list/add/remove/action requests through the persistent `DatasourceRegistry`; there is no feature-flagged "engine-backed vs fixture" dichotomy — the registry is the single source of truth. Long-running sync and upload work is owned by the `fs-sync-service` (see its capability), not by the in-process engine.
+
+The surface SHALL expose: `list()`, `add(req)`, `remove(req)`, `action(req)` (unified pause / resume / sync-now), `upload(req)`, and `onEvent(cb)`. Each call SHALL have a typed request/response (or callback) pair in `packages/ipc-contracts/src/datasources.ts`. Each call SHALL have an `ipcMain.handle` or event-forwarder implementation under `apps/desktop/src/main/ipc/datasources/`. Each call SHALL be bound in the preload via `contextBridge.exposeInMainWorld`.
+
+#### Scenario: Renderer has no direct SDK import
+
+- **WHEN** `pnpm lint` runs
+- **THEN** ESLint reports an error for any file under `apps/desktop/src/renderer/` that imports from `googleapis`, `@microsoft/microsoft-graph-client`, `@aws-sdk/client-s3`, or any other provider SDK package; a dedicated CI grep step SHALL back the ESLint rule
+
+#### Scenario: Four-layer wiring per IPC method
+
+- **WHEN** a new datasources IPC method is added
+- **THEN** the build SHALL require all four layers (contract type, main handler, preload exposure, renderer call site) to be present; missing any one SHALL cause a TypeScript error or a failing contract test in `packages/ipc-contracts/src/__tests__/datasources.test-d.ts`
+
+#### Scenario: onEvent is bound in preload and typed at the consumer
+
+- **WHEN** a renderer module imports `window.api.datasources.onEvent` and passes a callback typed as `(e: DatasourceEvent) => void`
+- **THEN** the call site compiles under `strict` mode, the returned value is a function `() => void`, and invoking the returned function unsubscribes the callback from further deliveries
+
 ## ADDED Requirements
 
 ### Requirement: Datasource card reflects active sync and upload jobs
