@@ -208,7 +208,9 @@ export function _createBridge(
       }
 
       // Relay every service event to the renderer (name → kind translation).
-      broadcastSyncEvent({ kind: name, payload } as SyncEvent);
+      // Cast via unknown to satisfy the discriminated union; the wire
+      // contract guarantees name is a valid EventName.
+      broadcastSyncEvent({ kind: name, payload } as unknown as SyncEvent);
     });
   }
 
@@ -232,7 +234,10 @@ export function _createBridge(
 
       if (disposed) return;
 
-      const jobs = (result as { jobs: Array<{ id: string; kind: string; status: string; [k: string]: unknown }> }).jobs.filter(
+      // wire result is `{ jobs: readonly JobSummary[] }` — use type narrowing
+      // via `unknown` to avoid direct readonly→mutable cast conflicts.
+      const wireResult = result as unknown as { jobs: Array<{ id: string; kind: string; status: string; datasourceId: string; sourcePath: string; targetPath: string | null; conflictPolicy: string; attempt: number; lastErrorTag: string | null; lastErrorMessage: string | null; createdAt: number; updatedAt: number }> };
+      const jobs = wireResult.jobs.filter(
         (j) => ACTIVE_STATUSES.has(j.status),
       );
 
@@ -243,7 +248,7 @@ export function _createBridge(
         }
       }
 
-      const seed: SyncStateSeedPayload = { jobs: jobs as SyncStateSeedPayload["jobs"] };
+      const seed: SyncStateSeedPayload = { jobs: jobs as unknown as SyncStateSeedPayload["jobs"] };
 
       // F-2: if windows are already registered, broadcast immediately and
       // skip buffering. Otherwise buffer until registerWindow is called.

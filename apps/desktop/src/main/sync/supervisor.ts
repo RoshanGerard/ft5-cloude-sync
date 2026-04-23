@@ -196,7 +196,6 @@ function createHandle(
 ): SupervisorHandle {
   let current = initialClient;
   let disposed = false;
-  let reconnectAttempt = 0;
 
   const reconnectListeners = new Set<ReconnectListener>();
   const disconnectListeners = new Set<DisconnectListener>();
@@ -244,7 +243,6 @@ function createHandle(
         }
         const newClient = new SyncClient(socket, opts.clientOptions ?? {});
         current = newClient;
-        reconnectAttempt++;
         subscribeToDisconnect(newClient);
 
         // Notify reconnect listeners with the fresh client
@@ -274,7 +272,7 @@ function createHandle(
     getClient(): SyncClient {
       return current;
     },
-    on(event: "reconnect" | "disconnect", cb: (newClient?: SyncClient) => void): () => void {
+    on(event: "reconnect" | "disconnect", cb: ((newClient: SyncClient) => void) | (() => void)): () => void {
       if (event === "reconnect") {
         reconnectListeners.add(cb as ReconnectListener);
         return () => {

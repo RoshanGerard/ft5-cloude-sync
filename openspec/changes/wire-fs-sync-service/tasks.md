@@ -130,7 +130,7 @@ Section 5.A service handlers (5.A.7–5.A.10) therefore ship as **stubs** return
 - [x] 7.6 GREEN: implement the reconnect loop; expose an `on('reconnect', ...)` hook from the supervisor for the bridge to consume
 - [x] 7.7 RED: `sync/event-bridge.upload-progress-translation.test.ts` — a service `job-progress` for upload jobs is translated to `DatasourcesUploadProgressEvent` (actual fields: bytesSent→bytesUploaded, totalBytes→bytesTotal; task description had wrong field names) — commit 8ec8ddc
 - [x] 7.8 GREEN: implement the translation in the event bridge (already in 7.6 GREEN; jobKinds map + uploadProgress emit)
-- [ ] 7.9 Wire `createSyncEventBridge(syncClient, windowRegistry)` into `apps/desktop/src/main/index.ts` after supervisor start; pair it with the existing engine-bus event bridge (both feed the renderer; see design Decision 8)
+- [x] 7.9 Wire `createSyncEventBridge(syncClient, windowRegistry)` into `apps/desktop/src/main/index.ts` after supervisor start; pair it with the existing engine-bus event bridge (both feed the renderer; see design Decision 8)
 - [ ] 7.10 Request code review
 
 ## 8. Upload rerouting: replace the in-process path

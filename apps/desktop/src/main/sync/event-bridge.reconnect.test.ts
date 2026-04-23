@@ -24,7 +24,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { RequestFrame } from "@ft5/ipc-contracts/sync-service";
-import { SYNC_CHANNELS } from "@ft5/ipc-contracts/sync-service-desktop";
 import {
   afterEach,
   beforeEach,
@@ -268,23 +267,11 @@ describe("createSyncEventBridge — reconnect", () => {
     async () => {
       const pipePath = pipeFor("inflight-reject");
 
-      // A listener that does NOT respond to list-jobs (to create an in-flight request)
-      let hangingId: string | null = null;
+      // A listener that accepts connections but does NOT respond to any requests
+      // (so list-jobs hangs as an in-flight request)
       const listener = await startFakeListener(pipePath);
-      listener.onRequest = (command, id) => {
-        if (command === "sync:subscribe-events") {
-          listener.pushEvent !== null; // just ACK via side channel
-          // Use the stored clientSocket — need to write to it:
-          // The FakeListener's send method accesses clientSocket internally,
-          // but we need the frame format from encodeFrame.
-          // We need to route via listener directly. Let's ACK subscribe-events.
-          if (listener["_socket" as keyof typeof listener]) {
-            // typed fallback
-          }
-        }
-        if (command === "sync:list-jobs") {
-          hangingId = id; // intentionally don't respond → in-flight
-        }
+      listener.onRequest = () => {
+        // intentionally do nothing — simulate unresponsive service
       };
       servers.push(listener);
 
@@ -296,23 +283,23 @@ describe("createSyncEventBridge — reconnect", () => {
       });
       const client = new SyncClient(socket);
 
-      // Issue a request that will hang
+      // Issue a request that will hang in-flight (no response from server)
       const inflightPromise = client.listJobs({});
 
-      // Wait for the server to receive it
+      // Wait for the server to receive the connection
       await listener.whenConnected;
       await new Promise<void>((r) => setTimeout(r, 20));
 
       // Destroy the connection — simulate service crash
       socket.destroy();
 
-      // The in-flight request must reject with SyncDisconnectedError
+      // The in-flight request must reject with SyncDisconnectedError (F-4:
+      // inherited from SyncClient.handleDisconnect, not reimplemented here)
       await expect(inflightPromise).rejects.toBeInstanceOf(SyncDisconnectedError);
 
-      // New request after disconnect also rejects
+      // New request after disconnect also rejects immediately
       await expect(client.listJobs({})).rejects.toBeInstanceOf(SyncDisconnectedError);
-
-      client.isConnected; // just access to avoid unused var lint
+      expect(client.isConnected).toBe(false);
     },
     5000,
   );

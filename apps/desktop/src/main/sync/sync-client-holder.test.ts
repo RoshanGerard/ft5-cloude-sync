@@ -6,9 +6,11 @@
 // at call time — this avoids threading a reference through every
 // handler registration site.
 //
-// Invariants:
-//   1. `setSyncClient` once-only (double-set throws — guards against
-//      bootstrap being called twice in the same process).
+// Invariants (updated per Decision 12, task 7.6):
+//   1. `setSyncClient` may be called multiple times — first call is
+//      bootstrap; subsequent calls replace the current client (reconnect
+//      swap, F-5). The previous "once-only throws" behavior was relaxed
+//      to support the supervisor reconnect lifecycle.
 //   2. `getSyncClient` before set throws (guards against handler
 //      invocation before bootstrap completes or after a failed
 //      supervisor bring-up).
@@ -47,10 +49,17 @@ describe("sync-client-holder", () => {
     expect(() => getSyncClient()).toThrow(/not initialized/);
   });
 
-  it("throws when setSyncClient is called twice", () => {
+  it("allows setSyncClient to be called multiple times (reconnect swap, Decision 12 F-5)", () => {
     setSyncClient(fakeClient);
-    const otherClient = { __tag: "other" } as unknown as SyncClient;
-    expect(() => setSyncClient(otherClient)).toThrow(/already set/);
+    expect(getSyncClient()).toBe(fakeClient);
+    const reconnectedClient = { __tag: "reconnected" } as unknown as SyncClient;
+    // Second call replaces the current client — does NOT throw
+    setSyncClient(reconnectedClient);
+    expect(getSyncClient()).toBe(reconnectedClient);
+    // Third call also works (further reconnects)
+    const thirdClient = { __tag: "third" } as unknown as SyncClient;
+    setSyncClient(thirdClient);
+    expect(getSyncClient()).toBe(thirdClient);
   });
 
   it("__resetSyncClientForTesting clears the state so set/get work again", () => {

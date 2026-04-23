@@ -77,14 +77,15 @@ function clientAsHandle(client: SyncClient): SupervisorHandle {
   const disconnectListeners = new Set<() => void>();
   return {
     getClient: () => client,
-    on(event: "reconnect" | "disconnect", cb: ((c?: SyncClient) => void)): () => void {
+    on: ((...args: unknown[]) => {
+      const [event, cb] = args as ["reconnect" | "disconnect", ((c?: SyncClient) => void)];
       if (event === "reconnect") {
         reconnectListeners.add(cb as (c: SyncClient) => void);
         return () => reconnectListeners.delete(cb as (c: SyncClient) => void);
       }
       disconnectListeners.add(cb as () => void);
       return () => disconnectListeners.delete(cb as () => void);
-    },
+    }) as SupervisorHandle["on"],
     dispose() { /* no-op */ },
   };
 }

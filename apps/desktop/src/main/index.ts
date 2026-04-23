@@ -10,9 +10,11 @@ import { DEFAULT_MIGRATIONS } from "./db/migrations.js";
 import { getEngine, initEngine } from "./datasources/engine.js";
 import { createEventBridge } from "./ipc/datasources/event-bridge.js";
 import { startSupervisor } from "./sync/supervisor.js";
+import { createSyncEventBridge } from "./sync/event-bridge.js";
 import { resolveSyncPipePath } from "./sync/pipe-paths.js";
 import { resolveServiceNodeBinary } from "./sync/node-binary-resolver.js";
 import { setSyncClient } from "./sync/sync-client-holder.js";
+import type { SyncEventBridgeHandle } from "./sync/event-bridge.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -181,6 +183,10 @@ async function bootstrap(): Promise<void> {
   // documented trade-off (task 4.10 wiring spec).
   const isDev = !app.isPackaged;
 
+  // Declared here so it's accessible both in the try block and outside
+  // (for registerWindow / dispose wiring after the try/catch).
+  let syncEventBridge: SyncEventBridgeHandle | null = null;
+
   try {
     const pipePath = resolveSyncPipePath({ dev: isDev });
 
@@ -219,6 +225,14 @@ async function bootstrap(): Promise<void> {
     });
     setSyncClient(syncHandle.getClient());
     syncHandle.on("reconnect", (newClient) => setSyncClient(newClient));
+
+    // Task 7.9 — wire the sync event bridge. The bridge subscribes to the
+    // supervisor handle's reconnect/disconnect events, issues the
+    // subscribe+list-jobs handshake, and fans sync events to the renderer
+    // over SYNC_CHANNELS.event. See design Decision 8: two bridges feed the
+    // same renderer — the engine bus bridge for datasource events, and the
+    // sync bridge for job lifecycle / upload-progress events.
+    syncEventBridge = createSyncEventBridge(syncHandle);
   } catch (err) {
     console.error(
       "[desktop] fs-sync supervisor failed to start — sync IPC handlers will reject until the service is reachable.",
@@ -234,8 +248,12 @@ async function bootstrap(): Promise<void> {
   // on each additional window without touching this wiring.
   const eventBridge = createEventBridge(getEngine().bus);
   eventBridge.registerWindow(window);
+  // Register window against the sync bridge too (Decision 8 — both bridges
+  // feed the renderer; Decision 12 — sync bridge is created after supervisor).
+  syncEventBridge?.registerWindow(window);
   window.on("closed", () => {
     eventBridge.dispose();
+    syncEventBridge?.dispose();
   });
 
   // Register IPC handlers AFTER window creation so upload progress events can
