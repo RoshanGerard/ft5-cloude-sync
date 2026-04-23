@@ -119,11 +119,14 @@ function reducer(state: DatasourcesState, action: Action): DatasourcesState {
 // derived from the union of this slice and the engine-bus `summary.status`
 // with the precedence rule spelled out in design.md Decision 13.
 //
-// Shape mirrors Decision 13 verbatim. `uploadProgressByJob` is declared so
-// task 10.4's progress-bar wiring has a landing spot, but task 10.2 does not
-// dispatch to it — upload-progress frames are the DATASOURCES_CHANNELS
-// `uploadProgress` channel, a separate subscription task 10.4 adds alongside
-// the Progress primitive.
+// Shape mirrors Decision 13 (amended in 45902d6). Both slices are fed by
+// the SAME `window.api.sync.onEvent` subscription: `jobsByDatasource` from
+// the seed + lifecycle events, `uploadProgressByJob` from `job-progress`
+// events whose jobId belongs to a kind=upload row in `jobsByDatasource`.
+// There is NO second `DATASOURCES_CHANNELS.uploadProgress` consumer —
+// the legacy channel still exists for `window.api.datasources.onUploadProgress`
+// callers, but section 10's bar consumes the upstream SyncEvent directly so
+// store-membership and per-job byte ticks share a single ordered stream.
 // ---------------------------------------------------------------------------
 
 export interface JobsState {
@@ -636,14 +639,11 @@ export interface UploadProgressView {
  * Returns the upload-progress view for the active upload job on this
  * datasource, or null if no upload-kind job is in flight.
  *
- * "Active" tiebreak (Decision 13 / task 10.6): per the design doc the
- * tiebreak is `startedAt desc, then jobId lex desc`. The wire `JobSummary`
- * (packages/ipc-contracts/src/sync-service/commands.ts) carries `createdAt`
- * + `updatedAt` only — `startedAt` from `job-started` lands in `updatedAt`
- * but is then overwritten on every `job-progress` tick, so it isn't a
- * stable sort key. Falling back to `createdAt desc` (the enqueue time) as
- * the closest stable proxy; task 10.5/10.6 will revisit if the multi-
- * upload test asserts a stricter order.
+ * "Active" tiebreak: `createdAt desc, then jobId lex desc` per Decision 13
+ * (amended in commit 2a23c63). The wire `JobSummary`
+ * (packages/ipc-contracts/src/sync-service/commands.ts) carries no
+ * `startedAt` field, and `updatedAt` is overwritten on every `job-progress`
+ * tick for freshness, so `createdAt` is the only stable per-job ordinal.
  */
 export function useDatasourceUploadProgress(
   datasourceId: string,

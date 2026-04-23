@@ -252,6 +252,12 @@ function StatusBadge({
   const isSyncingFamily = status === "syncing" || isWaitingNetwork;
   const label = isWaitingNetwork ? "Waiting for network" : status;
 
+  // `aria-live="polite"` is set unconditionally — Decision 13 requires the
+  // announcement on the waiting-network status change specifically, and the
+  // polite-region behaviour is a strict superset (announces on any
+  // text-content change, not just this one). Do NOT condition it on
+  // `isWaitingNetwork` — toggling `aria-live` across renders is a known AT
+  // footgun (the region must exist before the change to announce reliably).
   return (
     <Badge
       data-testid="datasource-status"
