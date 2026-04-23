@@ -35,8 +35,31 @@ import { FramingDecoder, encodeFrame } from "./framing.js";
 import { SyncClient } from "./client.js";
 import {
   createSyncEventBridge,
+  __resetSyncEventBridgeForTesting,
   type SyncEventBridgeHandle,
 } from "./event-bridge.js";
+import type { SupervisorHandle } from "./supervisor.js";
+
+// ---------------------------------------------------------------------------
+// Minimal SupervisorHandle stub wrapping a SyncClient
+// (for tests that control the client directly)
+// ---------------------------------------------------------------------------
+function clientAsHandle(client: SyncClient): SupervisorHandle {
+  const reconnectListeners = new Set<(c: SyncClient) => void>();
+  const disconnectListeners = new Set<() => void>();
+  return {
+    getClient: () => client,
+    on(event: "reconnect" | "disconnect", cb: ((c?: SyncClient) => void)): () => void {
+      if (event === "reconnect") {
+        reconnectListeners.add(cb as (c: SyncClient) => void);
+        return () => reconnectListeners.delete(cb as (c: SyncClient) => void);
+      }
+      disconnectListeners.add(cb as () => void);
+      return () => disconnectListeners.delete(cb as () => void);
+    },
+    dispose() { /* no-op in tests */ },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fake BrowserWindow
@@ -156,6 +179,7 @@ beforeEach(() => {
   stubs = [];
   bridges = [];
   clientSockets = [];
+  __resetSyncEventBridgeForTesting();
 });
 
 afterEach(async () => {
@@ -165,6 +189,7 @@ afterEach(async () => {
   clientSockets = [];
   for (const s of stubs) await s.close();
   stubs = [];
+  __resetSyncEventBridgeForTesting();
 });
 
 // ---------------------------------------------------------------------------
@@ -239,7 +264,7 @@ describe("createSyncEventBridge — handshake ordering and seed emission", () =>
       clientSockets.push(socket);
       const client = new SyncClient(socket);
 
-      const bridge = createSyncEventBridge(client);
+      const bridge = createSyncEventBridge(clientAsHandle(client));
       bridges.push(bridge);
 
       await handshakeDone;
@@ -295,7 +320,7 @@ describe("createSyncEventBridge — handshake ordering and seed emission", () =>
       });
       clientSockets.push(socket);
       const client = new SyncClient(socket);
-      const bridge = createSyncEventBridge(client);
+      const bridge = createSyncEventBridge(clientAsHandle(client));
       bridges.push(bridge);
 
       const win = makeFakeWindow();
@@ -357,7 +382,7 @@ describe("createSyncEventBridge — handshake ordering and seed emission", () =>
       });
       clientSockets.push(socket);
       const client = new SyncClient(socket);
-      const bridge = createSyncEventBridge(client);
+      const bridge = createSyncEventBridge(clientAsHandle(client));
       bridges.push(bridge);
 
       // Wait for handshake to complete BEFORE registering any window

@@ -29,6 +29,25 @@ import {
   __resetSyncEventBridgeForTesting,
   type SyncEventBridgeHandle,
 } from "./event-bridge.js";
+import type { SupervisorHandle } from "./supervisor.js";
+
+// Minimal SupervisorHandle stub that wraps a SyncClient for tests
+function clientAsHandle(client: SyncClient): SupervisorHandle {
+  const reconnectListeners = new Set<(c: SyncClient) => void>();
+  const disconnectListeners = new Set<() => void>();
+  return {
+    getClient: () => client,
+    on(event: "reconnect" | "disconnect", cb: ((c?: SyncClient) => void)): () => void {
+      if (event === "reconnect") {
+        reconnectListeners.add(cb as (c: SyncClient) => void);
+        return () => reconnectListeners.delete(cb as (c: SyncClient) => void);
+      }
+      disconnectListeners.add(cb as () => void);
+      return () => disconnectListeners.delete(cb as () => void);
+    },
+    dispose() { /* no-op in tests */ },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fake BrowserWindow
@@ -199,7 +218,7 @@ describe("createSyncEventBridge — fan-out", () => {
 
       const { client, socket } = await connectClient(pipePath);
       clientSockets.push(socket);
-      const bridge = createSyncEventBridge(client);
+      const bridge = createSyncEventBridge(clientAsHandle(client));
       bridges.push(bridge);
 
       const winA = makeFakeWindow();
@@ -257,7 +276,7 @@ describe("createSyncEventBridge — fan-out", () => {
 
       const { client, socket } = await connectClient(pipePath);
       clientSockets.push(socket);
-      const bridge = createSyncEventBridge(client);
+      const bridge = createSyncEventBridge(clientAsHandle(client));
       bridges.push(bridge);
 
       const liveWin = makeFakeWindow();
@@ -304,7 +323,7 @@ describe("createSyncEventBridge — fan-out", () => {
 
       const { client, socket } = await connectClient(pipePath);
       clientSockets.push(socket);
-      const bridge = createSyncEventBridge(client);
+      const bridge = createSyncEventBridge(clientAsHandle(client));
       bridges.push(bridge);
 
       const winA = makeFakeWindow();
@@ -355,7 +374,7 @@ describe("createSyncEventBridge — fan-out", () => {
 
       const { client, socket } = await connectClient(pipePath);
       clientSockets.push(socket);
-      const bridge = createSyncEventBridge(client);
+      const bridge = createSyncEventBridge(clientAsHandle(client));
       // NOTE: don't push to bridges[] so afterEach doesn't double-dispose
       // We'll dispose explicitly in the test
 
