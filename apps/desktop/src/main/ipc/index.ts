@@ -93,12 +93,15 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
     (_event, req: DatasourcesUploadRequest) =>
       handleDatasourcesUpload(req, {
         showOpenDialog: async () => {
+          // Single-select: the handler consumes `filePaths[0]` and would
+          // silently drop any further selections. Multi-file upload is
+          // deferred to a follow-up change.
           const result = targetWindow
             ? await dialog.showOpenDialog(targetWindow, {
-                properties: ["openFile", "multiSelections"],
+                properties: ["openFile"],
               })
             : await dialog.showOpenDialog({
-                properties: ["openFile", "multiSelections"],
+                properties: ["openFile"],
               });
           return { canceled: result.canceled, filePaths: result.filePaths };
         },

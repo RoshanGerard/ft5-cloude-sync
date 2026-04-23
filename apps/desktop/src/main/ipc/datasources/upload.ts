@@ -35,8 +35,10 @@ export async function handleDatasourcesUpload(
     throw new Error("upload cancelled by user");
   }
 
-  // Single-file selection only — multi-file is out of scope for this
-  // change. The renderer call site already hands one file at a time.
+  // Single-file selection — the main-process picker is opened with
+  // `properties: ["openFile"]` (no `"multiSelections"`), so `filePaths`
+  // is always a single-element array. Multi-file upload is deferred to
+  // a follow-up change.
   const sourcePath = selection.filePaths[0]!;
   const targetPath = "/" + path.basename(sourcePath);
 
