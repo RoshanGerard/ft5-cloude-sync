@@ -28,7 +28,6 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
 
 import type { FileEntry, FilesRemoveTarget } from "@ft5/ipc-contracts";
 
@@ -59,6 +58,8 @@ import { SyncingState } from "./states/syncing";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
+import { UploadDialog } from "./upload-dialog";
+import { STUB_CONFLICT_RESOLVER, STUB_TOASTER } from "./upload-stubs";
 import { useExplorerData } from "./use-explorer-data";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { ViewModeSwitcher } from "./view-mode-switcher";
@@ -128,25 +129,10 @@ function DashboardHomeButton() {
   );
 }
 
-// Temporary stubs for the drop-zone's upload-orchestrator ports. Tasks 7
-// (conflict resolver dialog) and 9 (per-job Sonner toasts) replace these
-// with real implementations. Kept module-level so every mount shares one
-// identity; a prop override takes precedence when callers pass one in.
-const STUB_CONFLICT_RESOLVER: ConflictResolver = {
-  async resolve() {
-    toast.error("Conflict resolution coming soon");
-    // Abort the batch so we don't silently overwrite until Task 7 lands.
-    return { aborted: true };
-  },
-};
-const STUB_TOASTER: UploadToaster = {
-  onJobDispatched(args) {
-    toast.info(`Upload queued: ${args.basename}`);
-  },
-  onBatchError(message) {
-    toast.error(message);
-  },
-};
+// Task-6 refactor: the temporary conflict-resolver + toaster stubs now
+// live in `./upload-stubs.ts` so BOTH the drop-zone (explorer) and the
+// Upload-dialog entry points (toolbar + datasource card) share identical
+// placeholder behaviour. Tasks 7 / 9 replace the stubs in one place.
 
 export function FileExplorer({
   datasourceId,
@@ -170,6 +156,13 @@ export function FileExplorer({
   // Kick off the data-loading effect. Re-fires whenever `currentPath`
   // on the store changes; stale-response guard lives in the hook.
   useExplorerData(store, datasourceId);
+
+  // Upload dialog state — opened by the toolbar Upload button (Task 6.4).
+  // Dialog is controlled (not Radix-trigger-managed) so the file-explorer
+  // owns both open/close AND the `initialDestination` handoff to the
+  // dialog's destination tree. Reset happens inside the dialog on each
+  // false → true transition (see upload-dialog.tsx).
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
 
   // Confirm-delete dialog state — targets captured at click-time. Each
   // target carries the authoritative engine `handle` so the downstream
@@ -386,6 +379,23 @@ export function FileExplorer({
     return "usable";
   }, [state.errorTag, providerStatus]);
 
+  // Upload-button gate: the toolbar Upload button mirrors the drop-zone
+  // blocked rule (spec line 73). Non-null string = aria-disabled + tooltip;
+  // null = enabled. Keep the reasons short — they surface via `title` (OS
+  // tooltip) and are read by AT.
+  const uploadBlockedReason: string | null = useMemo(() => {
+    switch (dropZoneStatus) {
+      case "disconnected":
+        return "This datasource is disconnected";
+      case "auth-revoked":
+        return "Sign in again to upload";
+      case "syncing":
+        return "This datasource is still indexing — try again in a moment";
+      default:
+        return null;
+    }
+  }, [dropZoneStatus]);
+
   return (
     <ProviderKindContext.Provider value={providerKind}>
     <DropZone
@@ -406,7 +416,12 @@ export function FileExplorer({
         <div className="min-w-0 flex-1">
           <Breadcrumb store={store} />
         </div>
-        <Toolbar store={store} onDeleteSelection={handleToolbarDelete} />
+        <Toolbar
+          store={store}
+          onDeleteSelection={handleToolbarDelete}
+          onUploadClick={() => setUploadDialogOpen(true)}
+          uploadBlockedReason={uploadBlockedReason}
+        />
       </div>
 
       {/* overflow-auto on the main column so scrolling entries does not scroll the Details pane. */}
@@ -505,6 +520,19 @@ export function FileExplorer({
         count={pendingDeleteRef.current.length}
         onConfirm={handleConfirmDelete}
         onCancel={handleCancelDelete}
+      />
+      {/* Upload dialog, opened by the toolbar's Upload button. Default
+          destination = file-explorer's currentPath (spec line 30). The
+          dialog internally resets its Files list + navigation state on
+          each false → true transition so reopening starts fresh. */}
+      <UploadDialog
+        open={uploadDialogOpen}
+        onOpenChange={setUploadDialogOpen}
+        datasourceId={datasourceId}
+        datasourceName={datasourceId}
+        initialDestination={state.currentPath}
+        conflictResolver={conflictResolver}
+        toaster={toaster}
       />
     </div>
     </DropZone>

@@ -28,7 +28,7 @@
 //     renders as an SVG <circle> rather than an equivalent radius class on a
 //     <span>.
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { providers } from "@ft5/ipc-contracts";
 import type {
@@ -56,6 +56,11 @@ import {
   useDatasourceJobs,
   useDatasourceUploadProgress,
 } from "./store";
+import { UploadDialog } from "@/features/file-explorer/upload-dialog";
+import {
+  STUB_CONFLICT_RESOLVER,
+  STUB_TOASTER,
+} from "@/features/file-explorer/upload-stubs";
 
 export interface DatasourceCardProps {
   summary: DatasourceSummary;
@@ -118,9 +123,15 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
     void actions.action({ datasourceId: summary.id, action: next });
   }, [actions, summary.id, summary.status]);
 
+  // Task 6.3 rewire — instead of calling the retired `datasources.upload`
+  // IPC (which opened a native picker and hard-coded `targetPath = "/" +
+  // basename`), the quick-action now opens the in-app Upload dialog with
+  // the destination defaulted to the datasource root. The user picks both
+  // the files AND the destination folder inside the dialog.
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const onUpload = useCallback(() => {
-    void actions.upload({ datasourceId: summary.id });
-  }, [actions, summary.id]);
+    setUploadDialogOpen(true);
+  }, []);
 
   const onRemove = useCallback(() => {
     void actions.remove({ datasourceId: summary.id });
@@ -201,6 +212,24 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
       {summary.status === "error" && summary.errorReason ? (
         <p className="text-destructive text-xs">{summary.errorReason}</p>
       ) : null}
+      {/* Upload dialog — portalled by shadcn <Dialog>, so visual placement
+          inside <Card> is immaterial; keeping it here keeps the surface
+          co-located with the quick-action handler that opens it. The
+          dialog defaults its destination to `/` (root) per spec when
+          opened from the dashboard card; the toolbar Upload button
+          (Task 6.4) opens the same component with the file-explorer's
+          currentPath instead. STUB_* ports come from upload-stubs.ts —
+          Tasks 7 / 9 will replace them with the real shadcn / Sonner
+          wirings without touching this call-site. */}
+      <UploadDialog
+        open={uploadDialogOpen}
+        onOpenChange={setUploadDialogOpen}
+        datasourceId={summary.id}
+        datasourceName={summary.displayName}
+        initialDestination="/"
+        conflictResolver={STUB_CONFLICT_RESOLVER}
+        toaster={STUB_TOASTER}
+      />
     </Card>
   );
 }

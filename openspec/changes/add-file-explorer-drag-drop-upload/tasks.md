@@ -42,11 +42,11 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 6. Renderer — Upload dialog
 
-- [ ] 6.1 Write failing tests in `upload-dialog.test.tsx`: (a) opens with destination = `currentPath` when opened from explorer; (b) opens with destination = `/` when opened from card; (c) "+ Add files…" calls `pickFilesToUpload`, appends to list; (d) directory tree shows only `kind === "directory"` entries from `files.list`; (e) single-click on a directory row navigates into it and updates the destination path + breadcrumb + footer + primary button label; (f) click on the `..` parent row navigates up; (g) click on a breadcrumb segment jumps to that segment; (h) primary button disabled when Files list empty; (i) submit dispatches orchestrator with correct `targetDir` (= the current displayed folder) and closes dialog.
-- [ ] 6.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/upload-dialog.tsx` using shadcn `<Dialog>`, `<Button>`, `<ScrollArea>`. Call `files.list` on destination navigation.
-- [ ] 6.3 Rewire the datasource card's "Upload from local…" quick-action handler to open the dialog with `initialDestination: "/"` instead of calling `window.api.datasources.upload`.
-- [ ] 6.4 Add an "Upload" button to the file-explorer `toolbar.tsx` (Lucide `Upload` icon + label, placed first in the toolbar). Opens the dialog with `initialDestination: currentPath`. Disabled with tooltip when datasource is non-browsable.
-- [ ] 6.5 Update existing `toolbar.test.tsx` expectations to include the Upload button in the toolbar-controls assertion list.
+- [x] 6.1 Write failing tests in `upload-dialog.test.tsx`: (a) opens with destination = `currentPath` when opened from explorer; (b) opens with destination = `/` when opened from card; (c) "+ Add files…" calls `pickFilesToUpload`, appends to list; (d) directory tree shows only `kind === "directory"` entries from `files.list`; (e) single-click on a directory row navigates into it and updates the destination path + breadcrumb + footer + primary button label; (f) click on the `..` parent row navigates up; (g) click on a breadcrumb segment jumps to that segment; (h) primary button disabled when Files list empty; (i) submit dispatches orchestrator with correct `targetDir` (= the current displayed folder) and closes dialog.
+- [x] 6.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/upload-dialog.tsx` using shadcn `<Dialog>`, `<Button>`, `<ScrollArea>`. Call `files.list` on destination navigation.
+- [x] 6.3 Rewire the datasource card's "Upload from local…" quick-action handler to open the dialog with `initialDestination: "/"` instead of calling `window.api.datasources.upload`.
+- [x] 6.4 Add an "Upload" button to the file-explorer `toolbar.tsx` (Lucide `Upload` icon + label, placed first in the toolbar). Opens the dialog with `initialDestination: currentPath`. Disabled with tooltip when datasource is non-browsable.
+- [x] 6.5 Update existing `toolbar.test.tsx` expectations to include the Upload button in the toolbar-controls assertion list.
 
 ## 7. Renderer — conflict resolution dialog
 

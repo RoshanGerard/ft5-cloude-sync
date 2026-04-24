@@ -44,6 +44,16 @@ export interface ToolbarProps {
   // Fires when the Delete toolbar button is activated; composite wiring
   // opens the confirm-delete dialog with `store.selection` as the target.
   onDeleteSelection?: () => void;
+  // Fires when the Upload toolbar button is activated. `file-explorer.tsx`
+  // owns the `uploadDialogOpen` state + derives the blocked reason from
+  // `dropZoneStatus`; the toolbar is intentionally unaware of datasource
+  // context so it stays composable in non-composite tests.
+  onUploadClick?: () => void;
+  // When non-null, the Upload button renders with `aria-disabled="true"`
+  // (not the HTML `disabled` attribute — per spec line 73 so the button
+  // stays keyboard-focusable and the tooltip stays readable). The string
+  // becomes both the accessible hint and a native `title` tooltip.
+  uploadBlockedReason?: string | null;
 }
 
 interface ViewOption {
@@ -66,7 +76,12 @@ function isViewMode(value: string): value is ViewMode {
   return (VIEW_MODE_VALUES as readonly string[]).includes(value);
 }
 
-export function Toolbar({ store, onDeleteSelection }: ToolbarProps) {
+export function Toolbar({
+  store,
+  onDeleteSelection,
+  onUploadClick,
+  uploadBlockedReason,
+}: ToolbarProps) {
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
@@ -78,6 +93,13 @@ export function Toolbar({ store, onDeleteSelection }: ToolbarProps) {
       aria-label="Explorer toolbar"
       className="flex items-center gap-1"
     >
+      {/* Upload leads the toolbar per tasks.md §6.4 ("placed first"). The
+          spec's toolbar-controls list (Upload, Delete, Sort, Search, View,
+          Details) also reads it first. */}
+      <UploadButton
+        onClick={onUploadClick}
+        blockedReason={uploadBlockedReason ?? null}
+      />
       {state.search.active ? (
         <SearchInput store={store} />
       ) : (
@@ -88,6 +110,36 @@ export function Toolbar({ store, onDeleteSelection }: ToolbarProps) {
       <DetailsToggle store={store} />
       {/* Sort control is a later phase. */}
     </div>
+  );
+}
+
+interface UploadButtonProps {
+  onClick?: () => void;
+  blockedReason: string | null;
+}
+
+function UploadButton({ onClick, blockedReason }: UploadButtonProps) {
+  const isBlocked = blockedReason !== null;
+  // Spec line 73: when the datasource cannot accept uploads the button
+  // renders with `aria-disabled="true"` (NOT the HTML `disabled`) so it
+  // stays keyboard-focusable and screen readers can announce the tooltip.
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label="Upload"
+      aria-disabled={isBlocked || undefined}
+      title={blockedReason ?? undefined}
+      data-testid="file-explorer-upload-trigger"
+      onClick={() => {
+        if (isBlocked) return;
+        onClick?.();
+      }}
+    >
+      <Icon name="upload" aria-hidden="true" />
+      Upload
+    </Button>
   );
 }
 
