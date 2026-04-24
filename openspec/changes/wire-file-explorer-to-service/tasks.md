@@ -16,10 +16,10 @@
 
 ## 3. Main process — IPC handler rewire
 
-- [ ] 3.1 Write failing tests for `apps/desktop/src/main/ipc/files/list.test.ts` asserting the handler issues `SyncClient.request("files:list", { datasourceId, path })` and maps the tagged envelope into the main-IPC response unchanged; no `mock-fs` import.
-- [ ] 3.2 Rewrite `apps/desktop/src/main/ipc/files/list.ts` against a `SyncClient` holder; remove the `mock-fs` import from this file only.
-- [ ] 3.3 Repeat TDD loop for `stat.ts`, `search.ts`, `remove.ts`. Keep `rename.ts` and `download.ts` on `mock-fs`.
-- [ ] 3.4 Update `apps/desktop/src/main/ipc/__tests__/no-provider-sdk-imports.test.ts` expectations if scope changed; confirm main-process code still imports zero provider SDKs.
+- [x] 3.1 Write failing tests for `apps/desktop/src/main/ipc/files/list.test.ts` asserting the handler issues `SyncClient.request("files:list", { datasourceId, path })` and maps the tagged envelope into the main-IPC response unchanged; no `mock-fs` import.
+- [x] 3.2 Rewrite `apps/desktop/src/main/ipc/files/list.ts` against a `SyncClient` holder; remove the `mock-fs` import from this file only.
+- [x] 3.3 Repeat TDD loop for `stat.ts`, `search.ts`, `remove.ts`. Keep `rename.ts` and `download.ts` on `mock-fs`.
+- [x] 3.4 Update `apps/desktop/src/main/ipc/__tests__/no-provider-sdk-imports.test.ts` expectations if scope changed; confirm main-process code still imports zero provider SDKs.
 
 ## 4. Renderer — state components and skeleton
 

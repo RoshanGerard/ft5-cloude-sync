@@ -109,7 +109,9 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
       }),
   );
 
-  // Files IPC surface — handlers delegate to the in-memory mock file system.
+  // Files IPC surface. list/stat/search/remove delegate to the fs-sync
+  // service via SyncClient.request("files:*"); rename and download still
+  // delegate to the in-memory mock (`add-engine-rename-download` follow-up).
   ipcMain.handle(FILES_CHANNELS.list, (_event, req: FilesListRequest) =>
     handleFilesList(req),
   );

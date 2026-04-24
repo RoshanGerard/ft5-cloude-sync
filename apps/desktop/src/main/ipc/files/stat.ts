@@ -1,22 +1,25 @@
 import type { FilesStatRequest, FilesStatResponse } from "@ft5/ipc-contracts";
 
-import { stat } from "./mock-fs.js";
+import type { SyncClient } from "../../sync/client.js";
+import { getSyncClient } from "../../sync/sync-client-holder.js";
 
-export function handleFilesStat(req: FilesStatRequest): FilesStatResponse {
+import { toFilesErrorEnvelope } from "./error-envelope.js";
+
+export interface FilesStatDeps {
+  readonly syncClient: Pick<SyncClient, "request">;
+}
+
+export async function handleFilesStat(
+  req: FilesStatRequest,
+  deps: FilesStatDeps = { syncClient: getSyncClient() },
+): Promise<FilesStatResponse> {
   try {
-    const entry = stat(req);
-    return { ok: true, value: { entry } };
+    const result = await deps.syncClient.request("files:stat", {
+      datasourceId: req.datasourceId,
+      path: req.path,
+    });
+    return { ok: true, value: { entry: result.entry } };
   } catch (err) {
-    // The mock-fs `stat` helper throws when the datasource or path is
-    // missing; widen the raw throw into the tagged envelope so the renderer
-    // can surface a targeted error instead of an `ipcRenderer.invoke` reject.
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: err instanceof Error ? err.message : String(err),
-        retryable: false,
-      },
-    };
+    return { ok: false, error: toFilesErrorEnvelope(err) };
   }
 }
