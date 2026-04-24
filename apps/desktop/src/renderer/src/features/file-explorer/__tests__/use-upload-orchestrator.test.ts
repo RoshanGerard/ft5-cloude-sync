@@ -12,7 +12,7 @@ import type {
   UploadFileItem,
   UploadToaster,
 } from "../use-upload-orchestrator.js";
-import { useUploadOrchestrator } from "../use-upload-orchestrator.js";
+import { createUploadOrchestrator } from "../use-upload-orchestrator.js";
 
 // Orchestrator unit tests. The hook is stateless — it returns an
 // imperative `start()` — so we call it as a plain function here.
@@ -89,7 +89,7 @@ function statExists(path: string): FilesStatResponse {
   };
 }
 
-describe("useUploadOrchestrator", () => {
+describe("createUploadOrchestrator", () => {
   it("dispatches one upload per file in parallel when no conflicts exist", async () => {
     const files = [makeFile("a.txt"), makeFile("b.txt"), makeFile("c.txt")];
     const stat: StatFn = vi.fn(async () => statNotFound());
@@ -101,7 +101,7 @@ describe("useUploadOrchestrator", () => {
     const toaster = makeToaster();
     const resolver = makeResolver();
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -146,7 +146,7 @@ describe("useUploadOrchestrator", () => {
       value: { jobId: "job-1" },
     }));
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026/",
       files,
@@ -178,7 +178,7 @@ describe("useUploadOrchestrator", () => {
       choices: [{ kind: "overwrite" }],
     }));
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -225,7 +225,7 @@ describe("useUploadOrchestrator", () => {
       choices: [{ kind: "skip" }],
     }));
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -254,7 +254,7 @@ describe("useUploadOrchestrator", () => {
       choices: [{ kind: "duplicate" }],
     }));
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -287,7 +287,7 @@ describe("useUploadOrchestrator", () => {
     const upload: UploadFn = vi.fn();
     const toaster = makeToaster();
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -317,7 +317,7 @@ describe("useUploadOrchestrator", () => {
     const upload: UploadFn = vi.fn();
     const toaster = makeToaster();
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -347,7 +347,7 @@ describe("useUploadOrchestrator", () => {
     const upload: UploadFn = vi.fn();
     const toaster = makeToaster();
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -369,7 +369,7 @@ describe("useUploadOrchestrator", () => {
     const upload: UploadFn = vi.fn();
     const toaster = makeToaster();
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -392,7 +392,7 @@ describe("useUploadOrchestrator", () => {
     const toaster = makeToaster();
     const resolver = makeResolver(async () => ({ aborted: true }));
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -425,7 +425,7 @@ describe("useUploadOrchestrator", () => {
     });
     const toaster = makeToaster();
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,
@@ -452,7 +452,7 @@ describe("useUploadOrchestrator", () => {
     });
     const toaster = makeToaster();
 
-    const orchestrator = useUploadOrchestrator({
+    const orchestrator = createUploadOrchestrator({
       datasourceId: "ds-1",
       targetDir: "/projects/2026",
       files,

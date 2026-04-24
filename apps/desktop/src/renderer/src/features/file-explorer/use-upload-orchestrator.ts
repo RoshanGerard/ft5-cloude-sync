@@ -128,7 +128,7 @@ function resolveApi(injected: UploadOrchestratorApi | undefined): UploadOrchestr
   ).window?.api?.files;
   if (!api) {
     throw new Error(
-      "useUploadOrchestrator: no api provided and window.api.files is unavailable",
+      "createUploadOrchestrator: no api provided and window.api.files is unavailable",
     );
   }
   return api;
@@ -228,7 +228,17 @@ interface DispatchPlan {
   readonly conflictPolicy: ConflictPolicy;
 }
 
-export function useUploadOrchestrator(
+/**
+ * Create an upload orchestrator instance. NOT a React hook — pure factory
+ * returning an imperative `{ start }` surface. Callable from event handlers,
+ * effects, or plain functions. Renamed from `useUploadOrchestrator` after
+ * Task 5 code review flagged the `use*` prefix as a latent hook-rule trap
+ * (the react-hooks ESLint plugin is not configured in this project, so the
+ * misleading name would silently lure future authors into adding real
+ * hooks inside a non-render callsite). See spec/design for the full
+ * orchestration contract.
+ */
+export function createUploadOrchestrator(
   args: UploadOrchestratorArgs,
 ): UploadOrchestratorResult {
   const api = resolveApi(args.api);

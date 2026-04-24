@@ -22,7 +22,7 @@
 // with `.path` explicitly so the behaviour is reproducible in JSDOM.
 //
 // The orchestrator hook is instantiated INSIDE this component (not in the
-// route layer) so the call to `useUploadOrchestrator` happens once per
+// route layer) so the call to `createUploadOrchestrator` happens once per
 // drop with the correct file list. Task 9 will wire the toaster surface;
 // Task 7 will wire the conflict resolver.
 
@@ -31,7 +31,7 @@ import { toast } from "sonner";
 
 import { DropOverlay, type DropOverlayBlockedReason } from "./drop-overlay.js";
 import {
-  useUploadOrchestrator,
+  createUploadOrchestrator,
   type ConflictResolver,
   type UploadFileItem,
   type UploadOrchestratorApi,
@@ -54,7 +54,7 @@ export interface DropZoneProps {
   readonly toaster: UploadToaster;
   /**
    * Injected API for tests; production falls back to `window.api.files`
-   * via `useUploadOrchestrator`'s own resolver.
+   * via `createUploadOrchestrator`'s own resolver.
    */
   readonly api?: UploadOrchestratorApi;
   readonly children: React.ReactNode;
@@ -213,7 +213,7 @@ export function DropZone(props: DropZoneProps): ReactElement {
 
       if (files.length === 0) return;
 
-      const orchestrator = useUploadOrchestrator({
+      const orchestrator = createUploadOrchestrator({
         datasourceId,
         targetDir: currentPath,
         files,

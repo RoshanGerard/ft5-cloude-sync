@@ -37,11 +37,11 @@ vi.mock("sonner", () => ({
 }));
 
 const startMock = vi.fn(async () => {});
-const useUploadOrchestratorMock = vi.fn(() => ({ start: startMock }));
+const createUploadOrchestratorMock = vi.fn(() => ({ start: startMock }));
 
 vi.mock("../use-upload-orchestrator.js", () => ({
-  useUploadOrchestrator: (...args: unknown[]) =>
-    useUploadOrchestratorMock(...(args as [])),
+  createUploadOrchestrator: (...args: unknown[]) =>
+    createUploadOrchestratorMock(...(args as [])),
 }));
 
 import { toast } from "sonner";
@@ -137,7 +137,7 @@ function renderDropZone(
 
 beforeEach(() => {
   startMock.mockClear();
-  useUploadOrchestratorMock.mockClear();
+  createUploadOrchestratorMock.mockClear();
   (toast.info as Mock).mockClear();
 });
 
@@ -201,8 +201,8 @@ describe("DropZone — drop dispatching", () => {
     fireEvent.dragEnter(zone, { dataTransfer: dt });
     fireEvent.drop(zone, { dataTransfer: dt });
 
-    expect(useUploadOrchestratorMock).toHaveBeenCalledTimes(1);
-    const arg = useUploadOrchestratorMock.mock.calls[0]?.[0] as {
+    expect(createUploadOrchestratorMock).toHaveBeenCalledTimes(1);
+    const arg = createUploadOrchestratorMock.mock.calls[0]?.[0] as {
       datasourceId: string;
       targetDir: string;
       files: Array<{ sourcePath: string; basename: string; sizeBytes: number }>;
@@ -242,7 +242,7 @@ describe("DropZone — drop dispatching", () => {
     expect(toast.info).toHaveBeenCalledWith(
       "Folder upload is coming soon — drop individual files for now",
     );
-    expect(useUploadOrchestratorMock).not.toHaveBeenCalled();
+    expect(createUploadOrchestratorMock).not.toHaveBeenCalled();
     expect(startMock).not.toHaveBeenCalled();
   });
 
@@ -265,8 +265,8 @@ describe("DropZone — drop dispatching", () => {
     fireEvent.drop(zone, { dataTransfer: dt });
 
     expect(toast.info).toHaveBeenCalledTimes(1);
-    expect(useUploadOrchestratorMock).toHaveBeenCalledTimes(1);
-    const arg = useUploadOrchestratorMock.mock.calls[0]?.[0] as {
+    expect(createUploadOrchestratorMock).toHaveBeenCalledTimes(1);
+    const arg = createUploadOrchestratorMock.mock.calls[0]?.[0] as {
       targetDir: string;
       files: Array<{ sourcePath: string; basename: string; sizeBytes: number }>;
     };
@@ -288,24 +288,6 @@ describe("DropZone — blocked states", () => {
     expect(screen.queryByTestId("drop-overlay-active")).toBeNull();
   });
 
-  it("drop on disconnected datasource is a no-op: no toast, no orchestrator dispatch", () => {
-    renderDropZone({ status: "disconnected" });
-    const zone = screen.getByTestId("drop-zone");
-    const dt = fakeDataTransfer([
-      {
-        kind: "file",
-        file: fakeFile({ name: "a.txt", size: 1, path: "C:/a.txt" }),
-        isDirectory: false,
-      },
-    ]);
-    fireEvent.dragEnter(zone, { dataTransfer: dt });
-    fireEvent.drop(zone, { dataTransfer: dt });
-
-    expect(useUploadOrchestratorMock).not.toHaveBeenCalled();
-    expect(startMock).not.toHaveBeenCalled();
-    expect(toast.info).not.toHaveBeenCalled();
-  });
-
   it("renders the blocked overlay for auth-revoked", () => {
     renderDropZone({ status: "auth-revoked" });
     const zone = screen.getByTestId("drop-zone");
@@ -321,4 +303,25 @@ describe("DropZone — blocked states", () => {
     const overlay = screen.getByTestId("drop-overlay-blocked");
     expect(overlay).toHaveAttribute("data-blocked-reason", "syncing");
   });
+
+  it.each(["disconnected", "auth-revoked", "syncing"] as const)(
+    "drop on %s datasource is a no-op: no toast, no orchestrator dispatch",
+    (status) => {
+      renderDropZone({ status });
+      const zone = screen.getByTestId("drop-zone");
+      const dt = fakeDataTransfer([
+        {
+          kind: "file",
+          file: fakeFile({ name: "a.txt", size: 1, path: "C:/a.txt" }),
+          isDirectory: false,
+        },
+      ]);
+      fireEvent.dragEnter(zone, { dataTransfer: dt });
+      fireEvent.drop(zone, { dataTransfer: dt });
+
+      expect(createUploadOrchestratorMock).not.toHaveBeenCalled();
+      expect(startMock).not.toHaveBeenCalled();
+      expect(toast.info).not.toHaveBeenCalled();
+    },
+  );
 });
