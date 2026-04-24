@@ -1,44 +1,55 @@
-# Proposal: Drag-and-drop file upload into the file explorer
-
-**Status**: Stub. Discovered during smoke-testing of `wire-file-explorer-to-service` on 2026-04-24.
+# Proposal: Drag-and-drop file upload + in-app Upload dialog for the file explorer
 
 ## Why
 
-Dragging files from the OS file manager into the file explorer window does nothing today. The expected behavior — drop files onto the explorer, watch them upload to the currently-viewed folder — is not wired. Codebase audit confirms:
+Dragging files from the OS file manager into the file-explorer window does nothing today — modern desktop file apps (Google Drive, Dropbox, OneDrive) all make drag-and-drop the primary upload affordance. The existing `Upload from local…` quick action on the datasource card is also minimal: it opens an OS-native picker and dumps every uploaded file at the datasource root (`/<basename>`), regardless of where the user is browsing. Users who navigate into `/projects/2026` and want to upload a file there have no way to do so from the UI.
 
-- No `onDrop` / `DataTransfer` / `dragover` handlers anywhere in the renderer.
-- The only upload entry point is the datasource card's `Upload` button (`actions.upload({ datasourceId })`), which calls `window.api.datasources.upload` with no file-list parameter — the main process must be opening a native picker.
-- `sync:enqueue-upload` command already exists on the sync-service side (added in `add-fs-sync-service`).
-- Drag-and-drop was never implemented; not a regression from `wire-file-explorer-to-service`.
+This change adds two connected upload affordances:
+1. **Drag-and-drop** onto the file-explorer — drop files anywhere in the pane, they upload to the currently-viewed folder.
+2. **A reworked in-app Upload dialog** — reachable from the datasource card's quick-action menu AND from a new Upload button in the file-explorer toolbar — that lets the user pick files (native OS picker) AND browse the datasource's folder tree to pick a destination folder. Conflict-per-file prompting (Overwrite / Keep both / Skip) before dispatch.
 
-Modern desktop file apps (Google Drive, Dropbox, OneDrive) all support drag-and-drop as the primary upload affordance. The click-to-pick Upload button is fine as a fallback but shouldn't be the only path.
+Raised by dev2@forti5.tech on 2026-04-24 during smoke-testing of `wire-file-explorer-to-service`. Not a regression — a never-implemented feature surfaced by exploration.
 
-## Out of scope
+## What Changes
 
-- Changing the existing `datasources.upload` → `sync:enqueue-upload` plumbing — the command and event surface are already correct; this change is purely renderer-side drag-drop plus a file-path→upload-request bridge.
-- File-system picker UI changes.
-- Progress UI — `datasources.onUploadProgress` event channel already exists; consume it unchanged.
+- **NEW** — Drag-and-drop handler on the file-explorer pane (`drop-zone.tsx` + `drop-overlay.tsx`). Dragover shows amber full-pane overlay with "Drop to upload here → /currentPath"; drop dispatches N parallel `files.upload` calls for multi-file drops.
+- **NEW** — Drop target rejects folder drops (toast: "Folder upload is coming soon — drop individual files for now"). Detected via `DataTransferItem.webkitGetAsEntry()`.
+- **NEW** — Blocked-state drop overlay (grey, no action) when datasource is `disconnected` / `auth-revoked` / `syncing`. Drop is a no-op.
+- **NEW** — In-app Upload dialog (`upload-dialog.tsx`) with (a) files-to-upload list fed by a native OS picker and (b) destination-folder tree driven by `window.api.files.list`. Submit dispatches N `files.upload` calls. Destination defaults: current folder when opened from the explorer, root when opened from the dashboard card.
+- **NEW** — Conflict-resolution dialog (`conflict-resolution-dialog.tsx`) — preflight `files.stat` on each target path; any collisions trigger a serial per-file Overwrite / Keep both / Skip prompt with "Apply to remaining" checkbox.
+- **NEW** — Upload button in the file-explorer toolbar (Lucide `Upload` icon). Keyboard-reachable; opens the same dialog as the dashboard card's Upload quick-action.
+- **NEW** — `window.api.files.upload({datasourceId, sourcePath, targetPath, conflictPolicy})` IPC surface — single-file, thin proxy over `syncClient.enqueueUpload`. Full four-layer wiring (contract, main handler, preload, renderer call site).
+- **NEW** — `window.api.datasources.pickFilesToUpload()` IPC surface — opens native OS dialog with `properties: ["openFile", "multiSelections"]`, returns `{filePaths, canceled}`. Pure picker, no enqueue.
+- **NEW** — Sonner toast per enqueued upload job; subscribes to `DATASOURCES_CHANNELS.uploadProgress` for that jobId; shows progress, turns green on complete, red with Retry on failure.
+- **BREAKING** — `window.api.datasources.upload({datasourceId})` IPC is **REMOVED**. The old path-unaware, root-only upload flow is retired. The quick-action menu item "Upload from local…" still exists; it now opens the new dialog instead.
+- **BREAKING** — Main-process `datasources.upload` handler and its tests (`upload.ts`, `upload.test.ts`, `upload.existing-renderer-compat.test.ts`) are removed. Renderer's existing `actions.upload({datasourceId})` call site is rewired to open the new dialog.
 
-## Open questions (resolve during `/opsx:propose`)
+## Capabilities
 
-1. **Drop target scope.** The whole file-explorer pane, or only the entries area (leaving toolbar / breadcrumb / details pane as non-drop zones)? Recommend: whole pane with a visible overlay when dragover is active, so accidentally dropping on the toolbar still triggers an upload.
-2. **Multi-file drop.** Chrome/Electron's `DataTransfer.files` is a `FileList`. Upload request shape: does `sync:enqueue-upload` accept N paths in one call, or does the renderer dispatch N separate calls? Audit the existing command surface.
-3. **Engine-backed vs mock datasources.** The file explorer supports both. Engine-backed upload needs the engine's `uploadFile` path; mock-fs needs its in-memory write path. Is the main-process routing already in place, or does this change need to touch `apps/desktop/src/main/ipc/` too?
-4. **Drag-drop FROM the explorer OUT (to OS).** Out of scope for this change; tracked separately if desired.
-5. **Visual feedback.** Dragover overlay style — follow the visual direction approved for `wire-file-explorer-to-service` (amber/blue/neutral semantics, Lucide iconography, Pattern-A full-replace)? Or a lighter-weight dashed-border overlay that doesn't replace the entries?
-6. **Folder drop.** Chromium exposes folders via `DataTransferItem.webkitGetAsEntry()`. Recursive folder upload is a substantial engineering undertaking — defer or include?
-7. **Disable rules.** Disabled states today: `disconnected`, `auth-revoked`, `syncing` (before first list resolves). Should the drop target also be disabled in these states? Probably yes — dropping files on a disconnected datasource can't queue to the sync-service.
-8. **Engine-backed datasource provider path.** Where does the file land? The explorer's `currentPath`? The datasource's default upload folder? Ambiguity resolution.
+### New Capabilities
+<!-- None — this change extends existing capabilities. -->
 
-## Acceptance criteria (once promoted)
+### Modified Capabilities
+- `file-explorer`: adds drag-and-drop upload, Upload toolbar button, in-app Upload dialog, conflict-resolution dialog, and the `files.upload` IPC surface.
+- `datasources-ui`: replaces the main-process-picker Upload flow with an in-app dialog opened by the "Upload from local…" quick action; removes `datasources.upload` IPC in favor of `datasources.pickFilesToUpload` + `files.upload`.
 
-- Dragging a file from OS over the file explorer shows a visible drop overlay.
-- Dropping a file triggers `window.api.datasources.upload` (or equivalent path-bearing command) for the currently-viewed datasource; progress surfaces via the existing `onUploadProgress` channel.
-- Multi-file drop uploads each file in parallel respecting the sync-service's existing concurrency policy.
-- Drop is disabled when the datasource is in `disconnected` / `auth-revoked` / `syncing` states (mirror the delete-affordance gating).
-- Vitest composite covers: dragover overlay appears; drop dispatches upload; drop on disabled state is a no-op.
+## Impact
 
-## Provenance
+**Code:**
+- `apps/desktop/src/renderer/src/features/file-explorer/` — new `drop-zone.tsx`, `drop-overlay.tsx`, `upload-dialog.tsx`, `conflict-resolution-dialog.tsx`, `use-upload-orchestrator.ts`; modifications to `file-explorer.tsx` (wrap in drop-zone), `toolbar.tsx` (add Upload button).
+- `apps/desktop/src/renderer/src/features/datasources/` — modify the Upload quick-action handler to open the new dialog instead of calling `datasources.upload`.
+- `apps/desktop/src/main/ipc/files/` — new `upload.ts` (thin proxy over `syncClient.enqueueUpload`).
+- `apps/desktop/src/main/ipc/datasources/` — remove `upload.ts`; add `pick-files-to-upload.ts`.
+- `apps/desktop/src/preload/` — expose new `window.api.files.upload` and `window.api.datasources.pickFilesToUpload`; remove `window.api.datasources.upload`.
+- `packages/ipc-contracts/src/files.ts` — new `FilesUploadRequest` / `FilesUploadResponse` types.
+- `packages/ipc-contracts/src/datasources.ts` — new `DatasourcesPickFilesRequest` / `DatasourcesPickFilesResponse`; remove `DatasourcesUploadRequest` / `DatasourcesUploadResponse`.
 
-- Raised by user dev2@forti5.tech on 2026-04-24 during smoke-testing of `wire-file-explorer-to-service`.
-- Not a regression from that change; a never-implemented feature surfaced by smoke exploration.
+**APIs:**
+- Renderer-facing: `window.api.datasources.upload` REMOVED; `window.api.files.upload` and `window.api.datasources.pickFilesToUpload` ADDED.
+- Sync service: no changes — reuses the existing `sync:enqueue-upload` command.
+
+**Dependencies:** None added. Uses shadcn `<Dialog>`, `<Checkbox>`, `<Button>` already in the tree.
+
+**Follow-ups not included here:**
+- `add-file-explorer-folder-drop-upload` — recursive folder-drop with directory-structure preservation.
+- `add-file-explorer-drag-out` — dragging from the explorer out to the OS.
