@@ -40,11 +40,11 @@
 
 ## 6. Renderer — disable Rename / Download for engine-backed datasources
 
-- [ ] 6.1 Write failing test `toolbar.engine-backed-disable.test.tsx`: render toolbar with `providerKind="google-drive"`; expect Download button to carry `aria-disabled="true"` and the tooltip text from the spec.
-- [ ] 6.2 Write failing test `context-menu.engine-backed-disable.test.tsx`: open context menu on a file entry with `providerKind="google-drive"`; expect Rename and Download items to carry `aria-disabled="true"` and the spec tooltip copy; activating them is a no-op (no IPC, no state change).
-- [ ] 6.3 Write failing test asserting mock datasources (`providerKind="mock"`) retain enabled Rename and Download.
-- [ ] 6.4 Thread `providerKind` through the toolbar and context-menu props (already present on `<SearchResults>` — extend to the rest of the chrome). Implement the `aria-disabled` + tooltip behavior; green the tests.
-- [ ] 6.5 Assert in a guardrail test that on any engine-backed entry, `store.startEdit(entryId)` SHALL NOT be called from keyboard (F2), context menu, or inline rename cell.
+- [x] 6.1 N/A — the file-explorer toolbar has no Download button (Sort / Search / View / Delete / Details). The Download affordance lives only in the per-entry context menu; its disable rule is covered by 6.2.
+- [x] 6.2 Write failing test `context-menu.engine-backed-disable.test.tsx`: open context menu on a file entry with `providerKind="google-drive"`; expect Rename and Download items to carry `aria-disabled="true"` and the spec tooltip copy; activating them is a no-op (no IPC, no state change).
+- [x] 6.3 Write failing test asserting mock datasources (`providerKind="mock"`) retain enabled Rename and Download.
+- [x] 6.4 Thread `providerKind` through the toolbar and context-menu props via a `ProviderKindContext` so the 6+ view-mode components don't need to re-plumb an extra prop. Implement the `aria-disabled` + tooltip behavior in `FileContextMenu`; widen `ProviderKind` with a `"mock"` sentinel for test datasources.
+- [x] 6.5 Assert in a guardrail test that on any engine-backed entry, `store.startEdit(entryId)` SHALL NOT be called from keyboard (F2), context menu, or inline rename cell.
 
 ## 7. Spec cleanup — existing tests that assumed mocks
 

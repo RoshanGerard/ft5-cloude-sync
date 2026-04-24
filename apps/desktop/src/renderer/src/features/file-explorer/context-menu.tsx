@@ -11,6 +11,9 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 
+import { useProviderKind } from "./provider-kind-context";
+import { isEngineBacked } from "./search-results";
+
 /**
  * FileContextMenu — the right-click / Shift+F10 menu for a file-explorer
  * entry, per the "Right-click context menu offers Open, Download,
@@ -75,13 +78,22 @@ export function FileContextMenu(props: FileContextMenuProps): JSX.Element {
     onProperties,
   } = props;
 
-  const renameDisabled = entry.kind === "directory";
-  // Directory download is a v1 silent no-op in the store (design.md
-  // Decision 7 — downloads operate per-file, folder download would
-  // imply a zip-ish bundle we don't own yet). Disable the item here so
-  // the no-op is honest at the menu level rather than silently
-  // swallowed when selected.
-  const downloadDisabled = entry.kind === "directory";
+  // Engine-backed datasources disable Rename and Download until
+  // `add-engine-rename-download` wires the real operations (see
+  // wire-file-explorer-to-service spec § Rename and Download
+  // affordances). The legacy directory disable still applies on
+  // mock datasources.
+  const engineBacked = isEngineBacked(useProviderKind());
+  const renameDisabled = engineBacked || entry.kind === "directory";
+  const downloadDisabled = engineBacked || entry.kind === "directory";
+  const renameTooltip = engineBacked
+    ? "Rename is coming in a future release (see change add-engine-rename-download)"
+    : entry.kind === "directory"
+      ? "Folder rename is not supported in this version"
+      : undefined;
+  const downloadTooltip = engineBacked
+    ? "Download is coming in a future release (see change add-engine-rename-download)"
+    : undefined;
 
   const handleCopyPath = (): void => {
     // Use window.api.clipboard (main-process bridge) rather than
@@ -113,13 +125,17 @@ export function FileContextMenu(props: FileContextMenuProps): JSX.Element {
       <ContextMenuContent data-testid="file-context-menu">
         <ContextMenuItem onSelect={() => onOpen?.(entry)}>Open</ContextMenuItem>
         <ContextMenuItem
+          data-testid="file-context-menu-download"
           disabled={downloadDisabled}
+          title={downloadTooltip}
           onSelect={() => onDownload?.(entry)}
         >
           Download
         </ContextMenuItem>
         <ContextMenuItem
+          data-testid="file-context-menu-rename"
           disabled={renameDisabled}
+          title={renameTooltip}
           onSelect={() => onRename?.(entry)}
         >
           Rename

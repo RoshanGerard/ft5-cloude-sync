@@ -44,12 +44,30 @@ import type { ExplorerStore } from "./store";
  * display purposes and future providers can be added without touching
  * the contract package.
  */
-export type ProviderKind = "google-drive" | "onedrive" | "s3";
+/**
+ * Provider kind surfaced to the file-explorer feature. The three engine-
+ * backed providers plus a `"mock"` sentinel for synthetic / in-memory
+ * test datasources. Production callers never pass `"mock"`; it exists so
+ * composite tests that mount `<FileExplorer>` against fake `window.api`
+ * implementations can opt into the pre-engine behavior of every affordance
+ * (e.g. Rename / Download stay enabled for mock datasources; see
+ * wire-file-explorer-to-service spec § Rename and Download affordances
+ * are disabled for engine-backed datasources).
+ */
+export type ProviderKind = "google-drive" | "onedrive" | "s3" | "mock";
+
+/** True when the provider requires the engine for file operations. Used
+ * to gate Rename / Download affordances in the toolbar and context menu
+ * per wire-file-explorer-to-service Decision 5. */
+export function isEngineBacked(kind: ProviderKind): boolean {
+  return kind !== "mock";
+}
 
 const PROVIDER_HUMAN_NAME: Record<ProviderKind, string> = {
   "google-drive": "Google Drive",
   onedrive: "OneDrive",
   s3: "Amazon S3",
+  mock: "Mock",
 };
 
 /**

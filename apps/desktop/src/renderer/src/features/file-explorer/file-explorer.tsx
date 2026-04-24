@@ -39,7 +39,12 @@ import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
 import { DetailsPane } from "./details-pane";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
-import { SearchResults, type ProviderKind } from "./search-results";
+import { ProviderKindContext } from "./provider-kind-context";
+import {
+  SearchResults,
+  isEngineBacked,
+  type ProviderKind,
+} from "./search-results";
 import { AuthRevokedState } from "./states/auth-revoked";
 import { DisconnectedState } from "./states/disconnected";
 import { EmptyState } from "./states/empty";
@@ -173,8 +178,13 @@ export function FileExplorer({
       // on a file open Properties".
     },
     // F2 on a file flips the name cell to an inline input; the store's
-    // editingId + EntryNameCell do the rest.
-    onRenameRequested: (entry) => store.startEdit(entry.id),
+    // editingId + EntryNameCell do the rest. Engine-backed datasources
+    // gate this — Rename is disabled for them until
+    // `add-engine-rename-download` lands.
+    onRenameRequested: (entry) => {
+      if (isEngineBacked(providerKind)) return;
+      store.startEdit(entry.id);
+    },
     onDeleteRequested: (entries) => {
       openConfirmDelete(entries.map((e) => e.path));
     },
@@ -309,6 +319,7 @@ export function FileExplorer({
   }, [state.currentPath, state.entries, state.loading, keyboardNav]);
 
   return (
+    <ProviderKindContext.Provider value={providerKind}>
     <div
       data-testid="file-explorer-root"
       className="bg-background flex flex-1 min-h-0 flex-col"
@@ -393,7 +404,14 @@ export function FileExplorer({
                 keyboardNav={keyboardNav}
                 onOpen={handleOpen}
                 onDownload={handleDownload}
-                onRename={(entry) => store.startEdit(entry.id)}
+                onRename={(entry) => {
+                  // Mirror the F2 keyboard guard — engine-backed
+                  // datasources disable rename at the menu level, but
+                  // a guard here prevents any direct caller from
+                  // bypassing the UI disable.
+                  if (isEngineBacked(providerKind)) return;
+                  store.startEdit(entry.id);
+                }}
                 onDelete={handleContextDelete}
                 onCopyPath={handleCopyPath}
                 onProperties={(entry) => store.openProperties(entry)}
@@ -414,5 +432,6 @@ export function FileExplorer({
         onCancel={handleCancelDelete}
       />
     </div>
+    </ProviderKindContext.Provider>
   );
 }
