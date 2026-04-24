@@ -1,10 +1,7 @@
-import {
-  DatasourceError,
-  type DatasourcesActionRequest,
-  type DatasourcesActionResponse,
-  type DatasourceStatus,
-  type DatasourceSummary,
-  type ProviderId,
+import type {
+  DatasourcesActionRequest,
+  DatasourcesActionResponse,
+  DatasourceSummary,
 } from "@ft5/ipc-contracts";
 
 import { getEngine } from "../../datasources/engine.js";
@@ -25,7 +22,7 @@ function ensureFound(id: string): DatasourceSummary {
 export async function handleDatasourcesAction(
   req: DatasourcesActionRequest,
 ): Promise<DatasourcesActionResponse> {
-  const { registry, factory, credentialStore, bus } = getEngine();
+  const { registry } = getEngine();
 
   switch (req.action) {
     case "pause": {
@@ -39,60 +36,13 @@ export async function handleDatasourcesAction(
       return { datasource: ensureFound(req.datasourceId) };
     }
     case "sync-now": {
+      // The live engine branch was removed in wire-fs-sync-service section 9
+      // together with the desktop-side credential store. Actual sync work is
+      // the fs-sync service's responsibility; this handler now only updates
+      // the local bookkeeping row so the UI surfaces the syncing indicator.
       ensureFound(req.datasourceId);
-      // Fixture path — flag OFF. Mirrors the previous in-memory behaviour:
-      // flip status to "syncing" and bump last_sync_at. Kept verbatim so
-      // existing UI flows keep working during the engine-live rollout
-      // (Migration Plan step 3 in design.md).
-      if (!process.env.DATASOURCE_ENGINE_LIVE) {
-        registry.setStatus(req.datasourceId, "syncing");
-        registry.touchLastSyncAt(req.datasourceId);
-        return { datasource: ensureFound(req.datasourceId) };
-      }
-
-      // Live path — actually ask the provider for its status via the
-      // engine. `client.status()` returns a string union
-      // (`DatasourceStatus`); failures land as `DatasourceError`.
-      const providerId = registry.getProviderId(req.datasourceId);
-      if (!providerId) {
-        throw new Error(`datasource not found: ${req.datasourceId}`);
-      }
-      const creds = await credentialStore.get(req.datasourceId);
-      if (!creds) {
-        // Keyed error shape — status becomes "error" + errorReason so the
-        // UI can surface a reconnect button.
-        registry.setStatus(
-          req.datasourceId,
-          "error",
-          "Credentials not found — reconnect required",
-        );
-        return { datasource: ensureFound(req.datasourceId) };
-      }
-
-      try {
-        const client = factory.create(
-          providerId as ProviderId,
-          req.datasourceId,
-          creds,
-          { bus, credentialStore },
-        );
-        const state: DatasourceStatus = await client.status();
-        // TODO(12.4): Runtime-validate `status.state ∈ DatasourceStatus` before
-        // writing to the registry. Today all three concrete clients conform by
-        // TypeScript; a future refactor could corrupt rows with an out-of-union
-        // value. Pin this when the `authentication-failed` payload shape is
-        // finalized (Phase 12 open question 12.4).
-        registry.setStatus(req.datasourceId, state);
-        registry.touchLastSyncAt(req.datasourceId);
-      } catch (err) {
-        const reason =
-          err instanceof DatasourceError
-            ? `${err.tag}: ${err.message}`
-            : err instanceof Error
-              ? err.message
-              : String(err);
-        registry.setStatus(req.datasourceId, "error", reason);
-      }
+      registry.setStatus(req.datasourceId, "syncing");
+      registry.touchLastSyncAt(req.datasourceId);
       return { datasource: ensureFound(req.datasourceId) };
     }
   }

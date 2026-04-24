@@ -1,39 +1,17 @@
 // Phase 9d — `handleDatasourcesAdd` persists via the DB-backed registry
-// (`getEngine().registry`) and stores credentials via the
-// `SqliteCredentialStore`. The test boots a fresh in-memory engine each
+// (`getEngine().registry`). The test boots a fresh in-memory engine each
 // run so additions are isolated.
+//
+// As of wire-fs-sync-service section 9 the handler silently ignores
+// `req.credentials` — the fs-sync service owns credentials end-to-end.
+// The IPC contract still carries the field so renderer code keeps
+// compiling, but nothing is persisted on the desktop side.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-// `vi.mock` is hoisted above all imports, so the factory cannot close
-// over a module-scoped import. Inline the factory via `vi.hoisted` so it
-// is fully self-contained (the XOR body here matches the credential-store
-// test's mock — it genuinely obscures plaintext).
-const { electronMockFactory } = vi.hoisted(() => {
-  function xor(bytes: Buffer): Buffer {
-    const out = Buffer.alloc(bytes.length);
-    for (let i = 0; i < bytes.length; i += 1) {
-      out[i] = (bytes[i] ?? 0) ^ 0x42;
-    }
-    return out;
-  }
-  return {
-    electronMockFactory: () => ({
-      safeStorage: {
-        isEncryptionAvailable: (): boolean => true,
-        encryptString: (p: string): Buffer => xor(Buffer.from(p, "utf8")),
-        decryptString: (b: Buffer): string => xor(b).toString("utf8"),
-      },
-    }),
-  };
-});
-
-vi.mock("electron", electronMockFactory);
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDatabase, runMigrations } from "../../../db/database.js";
 import { DEFAULT_MIGRATIONS } from "../../../db/migrations.js";
 import {
-  getEngine,
   initEngine,
   resetEngineForTests,
 } from "../../../datasources/engine.js";
@@ -89,25 +67,6 @@ describe("handleDatasourcesAdd", () => {
     const after = handleDatasourcesList().datasources;
     expect(after.length).toBe(before + 1);
     expect(after.some((ds) => ds.id === datasource.id)).toBe(true);
-  });
-
-  it("persists credentials alongside the datasource row", async () => {
-    const { datasource } = await handleDatasourcesAdd({
-      providerId: "amazon-s3",
-      credentials: {
-        accessKeyId: "AKIA-TEST",
-        secretAccessKey: "secret-shh",
-      },
-    });
-    const { credentialStore } = getEngine();
-    const creds = await credentialStore.get(datasource.id);
-    expect(creds).not.toBeNull();
-    expect(creds!.providerId).toBe("amazon-s3");
-    // Raw credentials blob is preserved under authResult.meta so the
-    // engine's ClientFactory can consume provider-specific fields.
-    expect(
-      (creds!.authResult.meta as Record<string, unknown>).accessKeyId,
-    ).toBe("AKIA-TEST");
   });
 
   it("throws for an unknown providerId", async () => {

@@ -4,24 +4,12 @@
 // the shared EngineContext + ClientFactory + DatasourceRegistry. Tests
 // must be able to reset the singleton between runs via
 // `resetEngineForTests()`.
+//
+// As of wire-fs-sync-service section 9 the engine no longer owns a
+// credential store (the fs-sync service owns credentials end-to-end), so no
+// electron mock is needed here.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const isEncryptionAvailable = vi.fn<() => boolean>(() => true);
-function xor(bytes: Buffer): Buffer {
-  const out = Buffer.alloc(bytes.length);
-  for (let i = 0; i < bytes.length; i += 1) {
-    out[i] = (bytes[i] ?? 0) ^ 0x42;
-  }
-  return out;
-}
-vi.mock("electron", () => ({
-  safeStorage: {
-    isEncryptionAvailable: (): boolean => isEncryptionAvailable(),
-    encryptString: (p: string): Buffer => xor(Buffer.from(p, "utf8")),
-    decryptString: (b: Buffer): string => xor(b).toString("utf8"),
-  },
-}));
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDatabase, runMigrations } from "../db/database.js";
 import { DEFAULT_MIGRATIONS } from "../db/migrations.js";
@@ -33,7 +21,6 @@ import {
 
 describe("engine singleton (Phase 9c)", () => {
   beforeEach(() => {
-    isEncryptionAvailable.mockReturnValue(true);
     resetEngineForTests();
   });
 
@@ -45,13 +32,12 @@ describe("engine singleton (Phase 9c)", () => {
     expect(() => getEngine()).toThrow(/initEngine/i);
   });
 
-  it("initEngine(db) then getEngine() returns an engine with bus, credentialStore, registry, factory", () => {
+  it("initEngine(db) then getEngine() returns an engine with bus, registry, factory", () => {
     const db = openDatabase(":memory:");
     runMigrations(db, DEFAULT_MIGRATIONS);
     initEngine(db);
     const engine = getEngine();
     expect(engine.bus).toBeDefined();
-    expect(engine.credentialStore).toBeDefined();
     expect(engine.registry).toBeDefined();
     expect(engine.factory).toBeDefined();
   });

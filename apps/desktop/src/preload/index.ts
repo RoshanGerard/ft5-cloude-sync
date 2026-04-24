@@ -27,6 +27,29 @@ import type {
   FilesStatResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
+import { SYNC_CHANNELS } from "@ft5/ipc-contracts/sync-service-desktop";
+import type {
+  SyncAuthenticateCompleteRequest,
+  SyncAuthenticateCompleteResponse,
+  SyncAuthenticateStartRequest,
+  SyncAuthenticateStartResponse,
+  SyncCancelJobRequest,
+  SyncCancelJobResponse,
+  SyncEnqueueMirrorRequest,
+  SyncEnqueueMirrorResponse,
+  SyncEnqueueUploadRequest,
+  SyncEnqueueUploadResponse,
+  SyncEvent,
+  SyncGetJobRequest,
+  SyncGetJobResponse,
+  SyncGetRetryPolicyRequest,
+  SyncGetRetryPolicyResponse,
+  SyncGetStatusResponse,
+  SyncListJobsRequest,
+  SyncListJobsResponse,
+  SyncSetRetryPolicyRequest,
+  SyncSetRetryPolicyResponse,
+} from "@ft5/ipc-contracts/sync-service-desktop";
 
 // The preload runs in the sandboxed, isolated world between Electron's main
 // process and the renderer. It is the ONLY place the renderer can reach the
@@ -127,6 +150,66 @@ const api = {
     // activation requirement.
     writeText: (text: string): Promise<void> =>
       ipcRenderer.invoke("clipboard:writeText", text),
+  },
+  sync: {
+    listJobs: (
+      req: SyncListJobsRequest,
+    ): Promise<SyncListJobsResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.listJobs, req),
+    getJob: (
+      req: SyncGetJobRequest,
+    ): Promise<SyncGetJobResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.getJob, req),
+    enqueueUpload: (
+      req: SyncEnqueueUploadRequest,
+    ): Promise<SyncEnqueueUploadResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.enqueueUpload, req),
+    enqueueMirror: (
+      req: SyncEnqueueMirrorRequest,
+    ): Promise<SyncEnqueueMirrorResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.enqueueMirror, req),
+    cancelJob: (
+      req: SyncCancelJobRequest,
+    ): Promise<SyncCancelJobResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.cancelJob, req),
+    authenticateStart: (
+      req: SyncAuthenticateStartRequest,
+    ): Promise<SyncAuthenticateStartResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.authenticateStart, req),
+    authenticateComplete: (
+      req: SyncAuthenticateCompleteRequest,
+    ): Promise<SyncAuthenticateCompleteResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.authenticateComplete, req),
+    // `getStatus` has a void request type — invoke with channel only,
+    // mirroring the `ping()` pattern above.
+    getStatus: (): Promise<SyncGetStatusResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.getStatus),
+    getRetryPolicy: (
+      req: SyncGetRetryPolicyRequest,
+    ): Promise<SyncGetRetryPolicyResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.getRetryPolicy, req),
+    setRetryPolicy: (
+      req: SyncSetRetryPolicyRequest,
+    ): Promise<SyncSetRetryPolicyResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.setRetryPolicy, req),
+    // One-way main → renderer event stream. Mirrors the `datasources.onEvent`
+    // pattern: each invocation registers its own listener, so multiple
+    // subscribers can coexist independently; the returned dispose function
+    // removes that specific listener (not all listeners on the channel).
+    onEvent: (
+      callback: (event: SyncEvent) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: IpcRendererEvent,
+        payload: SyncEvent,
+      ): void => {
+        callback(payload);
+      };
+      ipcRenderer.on(SYNC_CHANNELS.event, listener);
+      return () => {
+        ipcRenderer.removeListener(SYNC_CHANNELS.event, listener);
+      };
+    },
   },
 };
 

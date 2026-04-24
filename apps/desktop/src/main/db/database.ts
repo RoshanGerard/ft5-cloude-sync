@@ -1,8 +1,8 @@
 // Main-process SQLite open + migration runner — Phase 9a.
 //
-// The app previously had no centralised DB init: `SqliteCredentialStore`
-// opened the table inline on construction (see its MIGRATION_SQL), but no
-// caller ever opened a persistent handle. Phase 9 introduces the first real
+// The app previously had no centralised DB init: the retired desktop-side
+// credential store opened its table inline on construction, but no caller
+// ever opened a persistent handle. Phase 9 introduces the first real
 // main-process DB + a tiny migration runner that records applied migration
 // ids in a `_migrations` bookkeeping table so re-opening the same file does
 // not re-run migrations.

@@ -6,31 +6,12 @@
 // existing UI assertions (paused / connected / syncing / error variants,
 // quota=true/false mix) keep covering the same ground.
 //
-// NOTE ON `vi.mock("electron", ...)`:
-// Each test file inlines its own `electron` mock factory via
-// `vi.hoisted(...)` because `vi.mock` is hoisted above all imports and so
-// cannot close over a module-scoped import from this helper module. The
-// XOR-based safeStorage body is identical across callers.
+// NOTE: credentials are no longer the desktop's concern as of
+// wire-fs-sync-service section 9 — the fs-sync service owns them.
+// Consequently this helper module ships only `FIXTURE_SUMMARIES`; the
+// former `makeCreds()` helper and the electron mock are gone.
 
-import type {
-  DatasourceSummary,
-  StoredCredentials,
-} from "@ft5/ipc-contracts";
-
-export function makeCreds(providerId: string): StoredCredentials {
-  const now = 1_700_000_000_000;
-  return {
-    providerId,
-    authResult: {
-      accessToken: "mock-token",
-      refreshToken: "mock-refresh",
-      expiresAt: now + 3600_000,
-      meta: {},
-    },
-    createdAt: now,
-    updatedAt: now,
-  };
-}
+import type { DatasourceSummary } from "@ft5/ipc-contracts";
 
 export const FIXTURE_SUMMARIES: ReadonlyArray<DatasourceSummary> = [
   {

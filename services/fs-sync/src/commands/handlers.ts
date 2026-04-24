@@ -16,6 +16,9 @@ import type { EventBus } from "../events/event-bus.js";
 import { PolicyStore } from "../retry/policy-store.js";
 import type Database from "better-sqlite3";
 
+import { handleAuthenticateStart } from "./authenticate-start.js";
+import { handleAuthenticateComplete } from "./authenticate-complete.js";
+
 export interface HandlersDeps {
   readonly db: Database.Database;
   readonly bus: EventBus;
@@ -213,6 +216,13 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       ok: true,
       result: { unsubscribed: true },
     }),
+
+    // Stubs per Decision 11 (see openspec/changes/wire-fs-sync-service/design.md).
+    // The real handlers in the follow-up change will need the AuthCorrelationStore
+    // + engine factory threaded through HandlersDeps.
+    "sync:authenticate-start": handleAuthenticateStart,
+
+    "sync:authenticate-complete": handleAuthenticateComplete,
   };
 }
 

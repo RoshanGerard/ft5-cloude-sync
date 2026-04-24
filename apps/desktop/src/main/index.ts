@@ -9,6 +9,12 @@ import { openDatabase, runMigrations } from "./db/database.js";
 import { DEFAULT_MIGRATIONS } from "./db/migrations.js";
 import { getEngine, initEngine } from "./datasources/engine.js";
 import { createEventBridge } from "./ipc/datasources/event-bridge.js";
+import { startSupervisor } from "./sync/supervisor.js";
+import { createSyncEventBridge } from "./sync/event-bridge.js";
+import { resolveSyncPipePath } from "./sync/pipe-paths.js";
+import { resolveServiceNodeBinary } from "./sync/node-binary-resolver.js";
+import { setSyncClient } from "./sync/sync-client-holder.js";
+import type { SyncEventBridgeHandle } from "./sync/event-bridge.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -150,12 +156,91 @@ async function bootstrap(): Promise<void> {
 
   // Open the main-process SQLite database + run migrations BEFORE handler
   // registration. `initEngine(db)` then constructs the process-wide
-  // singleton (bus + credential store + registry + factory) that every IPC
-  // handler reads via `getEngine()`. Initialized once per process lifetime.
+  // singleton (bus + registry + factory) that every IPC handler reads via
+  // `getEngine()`. Initialized once per process lifetime. Credentials are
+  // the fs-sync service's concern and are NOT part of the desktop engine
+  // (wire-fs-sync-service section 9).
   const dbPath = path.join(app.getPath("userData"), "ft5.db");
   const db = openDatabase(dbPath);
   runMigrations(db, DEFAULT_MIGRATIONS);
   initEngine(db);
+
+  // Bring up the fs-sync-service transport BEFORE IPC handler
+  // registration so section-5 sync handlers can rely on
+  // `getSyncClient()` returning a live client at call time.
+  //
+  // Mode is `dev` when running unpackaged (from `electron-vite dev` /
+  // `pnpm dev`), `prod` when packaged. See design.md Decision 6.
+  // In dev, the service is owned by pnpm's parallel supervisor — we
+  // ONLY connect, never spawn. In prod, we connect-first and fall
+  // through to detached spawn on ENOENT/ECONNREFUSED.
+  //
+  // If supervisor bring-up fails (expected when `pnpm dev` is not
+  // running in dev), we continue booting with an uninitialized holder.
+  // Subsequent sync IPC calls will throw a clear "sync client not
+  // initialized" error via `getSyncClient()`, which the renderer
+  // surfaces as a structured IPC failure. Crashing bootstrap here
+  // would hide unrelated failures (renderer, datasources) behind a
+  // single missing-service black screen; logging and degrading is the
+  // documented trade-off (task 4.10 wiring spec).
+  const isDev = !app.isPackaged;
+
+  // Declared here so it's accessible both in the try block and outside
+  // (for registerWindow / dispose wiring after the try/catch).
+  let syncEventBridge: SyncEventBridgeHandle | null = null;
+
+  try {
+    const pipePath = resolveSyncPipePath({ dev: isDev });
+
+    let nodeBinary: string | undefined;
+    let servicePath: string | undefined;
+    if (!isDev) {
+      // `resolveServiceNodeBinary` can throw on unsupported arch/platform.
+      // Keeping the call inside the try block so a bad packaged target
+      // degrades the same as a supervisor failure — logged, skipped, and
+      // bootstrap continues rather than leaving a blank BrowserWindow.
+      nodeBinary = resolveServiceNodeBinary({
+        isPackaged: true,
+        appPath: app.getAppPath(),
+      });
+      // electron-builder copies services/fs-sync/dist → resources/fs-sync
+      // (see node-binary-resolver.spike.md §4). fs-sync's entry is
+      // dist/main/index.js per its package.json `main`, so the packaged
+      // layout is resources/fs-sync/main/index.js. app.getAppPath() ends
+      // in resources/app.asar (or resources/app), so `..` strips that
+      // off and we land in resources/.
+      servicePath = path.join(
+        app.getAppPath(),
+        "..",
+        "fs-sync",
+        "main",
+        "index.js",
+      );
+    }
+
+    // Decision 12: startSupervisor now returns SupervisorHandle.
+    const syncHandle = await startSupervisor({
+      mode: isDev ? "dev" : "prod",
+      pipePath,
+      ...(nodeBinary !== undefined ? { nodeBinary } : {}),
+      ...(servicePath !== undefined ? { servicePath } : {}),
+    });
+    setSyncClient(syncHandle.getClient());
+    syncHandle.on("reconnect", (newClient) => setSyncClient(newClient));
+
+    // Task 7.9 — wire the sync event bridge. The bridge subscribes to the
+    // supervisor handle's reconnect/disconnect events, issues the
+    // subscribe+list-jobs handshake, and fans sync events to the renderer
+    // over SYNC_CHANNELS.event. See design Decision 8: two bridges feed the
+    // same renderer — the engine bus bridge for datasource events, and the
+    // sync bridge for job lifecycle / upload-progress events.
+    syncEventBridge = createSyncEventBridge(syncHandle);
+  } catch (err) {
+    console.error(
+      "[desktop] fs-sync supervisor failed to start — sync IPC handlers will reject until the service is reachable.",
+      err,
+    );
+  }
 
   // Phase 10.3 — wire the engine's EventBus to the renderer. The bridge
   // subscribes to `getEngine().bus` once and fans every delivered
@@ -165,8 +250,12 @@ async function bootstrap(): Promise<void> {
   // on each additional window without touching this wiring.
   const eventBridge = createEventBridge(getEngine().bus);
   eventBridge.registerWindow(window);
+  // Register window against the sync bridge too (Decision 8 — both bridges
+  // feed the renderer; Decision 12 — sync bridge is created after supervisor).
+  syncEventBridge?.registerWindow(window);
   window.on("closed", () => {
     eventBridge.dispose();
+    syncEventBridge?.dispose();
   });
 
   // Register IPC handlers AFTER window creation so upload progress events can

@@ -76,7 +76,7 @@ function makeCtx(opts: {
 }
 
 describe("UploadJobExecutor — happy path", () => {
-  it("calls client.uploadFile once with Target{kind:'path'} and {path: sourcePath}", async () => {
+  it("calls client.uploadFile once, splitting targetPath into (parent, name)", async () => {
     const { client, uploadFileCalls } = fakeClient();
     const executor = buildUploadExecutor({
       factory: {} as never,
@@ -85,9 +85,12 @@ describe("UploadJobExecutor — happy path", () => {
     const result: ExecutorResult = await executor(makeCtx({}));
     expect(result.outcome).toBe("completed");
     expect(uploadFileCalls).toHaveLength(1);
+    // targetPath "/remote/a.txt" splits to parent "/remote" + name "a.txt".
+    // The parent is passed as a path-kind Target; the name goes in the
+    // file object so the engine uses it verbatim (not basename(sourcePath)).
     expect(uploadFileCalls[0]).toEqual([
-      { kind: "path", path: "/remote/a.txt" },
-      { path: "/local/a.txt" },
+      { kind: "path", path: "/remote" },
+      { path: "/local/a.txt", name: "a.txt" },
     ]);
   });
 

@@ -57,14 +57,27 @@ Events (per `EVENT_NAMES`): `job-enqueued`, `job-started`,
 ## Dev mode
 
 Run the service against a distinct pipe + data dir so it doesn't
-collide with an installed production service:
+collide with an installed production service. Two entry points:
 
 ```bash
+# Run the service alone (e.g., to drive it from a custom client).
 pnpm dev:sync-service
+
+# Run the desktop app + service in parallel — the canonical dev loop.
+pnpm dev
 ```
 
-Equivalent to `node --enable-source-maps services/fs-sync/dist/main/
-index.js --dev`.
+`pnpm dev:sync-service` is equivalent to `node --enable-source-maps
+services/fs-sync/dist/main/index.js --dev`. `pnpm dev` (top-level)
+expands to `pnpm -r --parallel --filter ./apps/desktop --filter
+./services/fs-sync run dev`, which starts both packages with their
+intrinsic dev-mode detection (Electron sees `!app.isPackaged`; the
+service sees `--dev` from this package's `dev` script).
+
+A cross-platform smoke for the orchestration lives at
+`scripts/smoke/dev-orchestration.mjs` — run `node scripts/smoke/
+dev-orchestration.mjs` to verify the full spawn → connect →
+get-status → teardown loop.
 
 ## Known limitations (v1)
 
@@ -91,7 +104,12 @@ index.js --dev`.
 - **Installer execution coverage.** Per-OS install scripts ship with
   standing content tests; a full CI matrix exercising actual
   `schtasks` / `launchctl` / `systemctl --user` invocations is a
-  phase-22 follow-up.
+  phase-22 follow-up. Note: the installer-registered service is **not
+  required for local development** — the desktop's supervisor
+  (`apps/desktop/src/main/sync/supervisor.ts`) is the canonical startup
+  path and either connects to a running service or spawns one detached
+  from the desktop process. Installer registration is the production
+  story for keeping the service running when the desktop quits.
 
 ## Build and test
 

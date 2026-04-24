@@ -1,11 +1,8 @@
 import {
   providers,
-  type AuthResult,
   type DatasourcesAddRequest,
   type DatasourcesAddResponse,
   type DatasourceSummary,
-  type ProviderId,
-  type StoredCredentials,
 } from "@ft5/ipc-contracts";
 
 import { getEngine } from "../../datasources/engine.js";
@@ -18,41 +15,6 @@ const DEFAULT_QUOTA_BY_PROVIDER: Record<string, number> = {
 let addCounter = 0;
 function mintId(providerId: string): string {
   return `ds-${providerId}-${Date.now()}-${String(++addCounter)}`;
-}
-
-// The IPC request carries a `credentials: Record<string, unknown>` blob —
-// provider-specific fields collected by the renderer's auth form. Wrap that
-// opaque blob into the engine's `StoredCredentials` shape so the credential
-// store's future `get(id)` returns something the engine's
-// `ClientFactory.create(providerId, id, creds, ctx)` can consume.
-// The real credential shape is strategy-specific; `authResult.meta` is the
-// container for provider-specific extras (e.g., S3's region / bucket).
-function wrapCredentials(
-  providerId: ProviderId,
-  raw: Record<string, unknown>,
-): StoredCredentials {
-  const now = Date.now();
-  const accessToken =
-    typeof raw.accessToken === "string" ? raw.accessToken : "";
-  // Under exactOptionalPropertyTypes, optional fields must be OMITTED when
-  // unavailable rather than set to `undefined`. Build the authResult
-  // object incrementally so unset fields never appear.
-  const authResult: AuthResult = {
-    accessToken,
-    meta: raw,
-  };
-  if (typeof raw.refreshToken === "string") {
-    authResult.refreshToken = raw.refreshToken;
-  }
-  if (typeof raw.expiresAt === "number") {
-    authResult.expiresAt = raw.expiresAt;
-  }
-  return {
-    providerId,
-    authResult,
-    createdAt: now,
-    updatedAt: now,
-  };
 }
 
 export async function handleDatasourcesAdd(
@@ -84,7 +46,12 @@ export async function handleDatasourcesAdd(
     : base;
 
   const { registry } = getEngine();
-  const credentials = wrapCredentials(descriptor.id, req.credentials);
-  const persisted = await registry.add(summary, credentials);
+  // Intentional: `req.credentials` is ignored here. The fs-sync service
+  // owns credentials end-to-end (wire-fs-sync-service section 9); the
+  // desktop main process no longer persists them. The IPC contract still
+  // accepts the field on the wire so existing renderer code continues to
+  // compile, but a follow-up change will wire `add` to the service's
+  // `sync:authenticate-*` flow and drop it from the contract.
+  const persisted = registry.add(summary);
   return { datasource: persisted };
 }

@@ -51,16 +51,52 @@ import {
 import { Icon, isIconName, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
-import { useDatasourceActions } from "./store";
+import {
+  useDatasourceActions,
+  useDatasourceJobs,
+  useDatasourceUploadProgress,
+} from "./store";
 
 export interface DatasourceCardProps {
   summary: DatasourceSummary;
+}
+
+// Decision 13 — Renderer card sync-state derivation. Sync-event state wins
+// over `summary.status` ONLY when an in-flight `kind === "sync"` job exists
+// for this datasource; otherwise the engine-bus `summary.status` is the
+// fallback. Upload-kind jobs do NOT change the status badge — they show as
+// a separate Progress bar (task 10.3/10.4). `waiting-network` surfaces as
+// its own display state so `StatusBadge` can render the zinc-dot + wifi-off
+// visual variant; `running` and `queued` both collapse to `"syncing"`
+// (queued is visually identical to running per Decision 13).
+export type CardDisplayStatus = DatasourceStatus | "waiting-network";
+
+function deriveDisplayStatus(
+  summary: DatasourceSummary,
+  jobs: ReadonlyArray<{ readonly kind: string; readonly status: string }>,
+): CardDisplayStatus {
+  const hasRunningSync = jobs.some(
+    (j) => j.kind === "sync" && j.status === "running",
+  );
+  if (hasRunningSync) return "syncing";
+  const hasWaitingNetwork = jobs.some(
+    (j) => j.kind === "sync" && j.status === "waiting-network",
+  );
+  if (hasWaitingNetwork) return "waiting-network";
+  const hasQueuedSync = jobs.some(
+    (j) => j.kind === "sync" && j.status === "queued",
+  );
+  if (hasQueuedSync) return "syncing";
+  return summary.status;
 }
 
 export function DatasourceCard({ summary }: DatasourceCardProps) {
   const descriptor = getDescriptor(summary.providerId);
   const actions = useDatasourceActions();
   const router = useRouter();
+  const jobs = useDatasourceJobs(summary.id);
+  const displayStatus = deriveDisplayStatus(summary, jobs);
+  const uploadProgress = useDatasourceUploadProgress(summary.id);
 
   const quotaEnabled = descriptor?.capabilities.quota === true;
   const providerIconName = iconNameFromDescriptor(descriptor);
@@ -118,7 +154,7 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
           <p className="text-muted-foreground text-xs">{providerDisplayName}</p>
         </div>
         <StatusBadge
-          status={summary.status}
+          status={displayStatus}
           errorReason={summary.errorReason}
         />
         <QuickActionsMenu
@@ -140,6 +176,23 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
           {formatItemCount(summary.itemCount)} items
         </span>
       </div>
+
+      {uploadProgress !== null ? (
+        // Decision 13 — upload-progress bar. Renders iff at least one
+        // upload-kind job for this datasource is in [running|queued|
+        // waiting-network]; the active-job tiebreak is in
+        // useDatasourceUploadProgress. Bar value comes from the same
+        // SyncEvent stream that drives `jobsByDatasource` (no separate
+        // uploadProgress channel consumer per the amended Decision 13).
+        // The testid + data-job-id live on the Radix Progress root so
+        // tests can read `aria-valuenow` directly off the element.
+        <Progress
+          data-testid="datasource-upload-progress"
+          data-job-id={uploadProgress.jobId}
+          value={uploadProgress.percent}
+          aria-label={`Upload progress: ${uploadProgress.percent}%`}
+        />
+      ) : null}
 
       {quotaEnabled && summary.usage ? (
         <UsageBar used={summary.usage.used} quota={summary.usage.quota} />
@@ -174,7 +227,7 @@ function StatusBadge({
   status,
   errorReason,
 }: {
-  status: DatasourceStatus;
+  status: CardDisplayStatus;
   errorReason?: string;
 }) {
   const variant = statusBadgeVariant(status);
@@ -182,29 +235,65 @@ function StatusBadge({
     if (status === "error" && errorReason) {
       return `Status: error — ${errorReason}`;
     }
+    if (status === "waiting-network") {
+      return "Status: waiting for network";
+    }
     return `Status: ${status}`;
   }, [status, errorReason]);
 
+  // Decision 13 "Visual variant — waiting-network": the badge stays the
+  // syncing variant (default) but the dot's `currentColor` swaps from
+  // amber to zinc, and a `wifi-off` glyph sits left of the text. The
+  // zinc colour comes from `text-zinc-400` on the badge root so the
+  // SyncingDot's `fill-current` paints zinc; the badge gains
+  // `aria-live="polite"` so AT announces the status change (per Decision
+  // 13, no separate sibling region required).
+  const isWaitingNetwork = status === "waiting-network";
+  const isSyncingFamily = status === "syncing" || isWaitingNetwork;
+  const label = isWaitingNetwork ? "Waiting for network" : status;
+
+  // `aria-live="polite"` is set unconditionally — Decision 13 requires the
+  // announcement on the waiting-network status change specifically, and the
+  // polite-region behaviour is a strict superset (announces on any
+  // text-content change, not just this one). Do NOT condition it on
+  // `isWaitingNetwork` — toggling `aria-live` across renders is a known AT
+  // footgun (the region must exist before the change to announce reliably).
   return (
     <Badge
       data-testid="datasource-status"
       variant={variant}
       aria-label={accessibleName}
-      className="shrink-0 gap-1.5"
+      aria-live="polite"
+      className={cn(
+        "shrink-0 gap-1.5",
+        isWaitingNetwork && "text-zinc-400",
+      )}
     >
-      {status === "syncing" ? <SyncingDot /> : null}
-      <span className="capitalize">{status}</span>
+      {isSyncingFamily ? <SyncingDot /> : null}
+      {isWaitingNetwork ? (
+        <Icon
+          name="wifi-off"
+          data-testid="datasource-waiting-network-icon"
+          data-icon="wifi-off"
+          aria-hidden
+          className="size-3 shrink-0"
+        />
+      ) : null}
+      <span className="capitalize">{label}</span>
     </Badge>
   );
 }
 
 function statusBadgeVariant(
-  status: DatasourceStatus,
+  status: CardDisplayStatus,
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "connected":
       return "secondary";
     case "syncing":
+      return "default";
+    case "waiting-network":
+      // Decision 13: status pill stays the syncing variant.
       return "default";
     case "paused":
       return "outline";

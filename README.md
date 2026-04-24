@@ -106,15 +106,210 @@ rather than a fix for this setup.
 
 ## Build and package
 
-### Local development build
+### Local development
 
-For iterative work, use electron-vite's dev server. The command builds the
-Next.js renderer once via a `predev` hook, then launches Electron with file
-watchers on the main and preload processes:
+**Recommended — one command starts both processes:**
 
 ```bash
-pnpm --filter @ft5/desktop run dev
+./bin/dev.sh start    # build + ABI flip + launch service and desktop
+./bin/dev.sh status   # are they running?
+./bin/dev.sh logs     # tail -F both log files (Ctrl+C to detach)
+./bin/dev.sh stop     # kill both process trees
+./bin/dev.sh restart  # stop + start
 ```
+
+The script lives in the repo, runs under Git Bash on Windows (or any POSIX
+shell), and handles the ABI dance for you — see "How `dev.sh` works" below
+for the details. PIDs and logs go under `node_modules/.cache/ft5-dev/` so
+they're auto-gitignored.
+
+**Hard constraint while dev is running:** do not run any `pnpm` command
+against this repo while `dev.sh` is up. pnpm's `verify-deps-before-run`
+re-runs the `better-sqlite3` install script and silently flips the binary
+back to the Node ABI, which breaks the service on its next restart.
+`./bin/dev.sh stop` first if you need to install, test, or build. To
+disable the auto-verify behaviour permanently, add
+`verify-deps-before-run=false` to `.npmrc`.
+
+### How `dev.sh` works
+
+The fs-sync service runs on Node (ABI 137 by default), the desktop runs
+under Electron (ABI 145), and pnpm keeps one compiled copy of
+`better-sqlite3` per version — so only one ABI can be satisfied on disk at
+a time (see "ABI flip" below). Two options to reconcile:
+
+1. **Run both with the same ABI** by launching the service under Electron's
+   bundled Node via `ELECTRON_RUN_AS_NODE=1`. Both sides want 145. One
+   rebuild. What `dev.sh` does.
+2. **Run each with its own ABI** by flipping the binary between sides. This
+   works on Linux/macOS (dlopen + unlink doesn't block), but on Windows the
+   loaded `.node` is file-locked so you can't re-rebuild while anything has
+   it open.
+
+`dev.sh` uses approach 1. Its sequence:
+
+1. `pnpm --filter @ft5/fs-sync-service build` — builds the service (may flip
+   the on-disk binary; that's fine, step 2 un-flips it).
+2. `pnpm abi:electron` — rebuilds `better-sqlite3` for ABI 145. Must be the
+   last command that touches the binary before launch.
+3. Finds `node_modules/.pnpm/electron@*/node_modules/electron/dist/electron.exe`
+   and starts the service with `ELECTRON_RUN_AS_NODE=1`, pointing it at
+   `services/fs-sync/dist/main/index.js --dev`. Service now runs under
+   Electron's Node (ABI 145) and happily loads the just-rebuilt binary.
+4. Waits 3s for the named pipe (`\\.\pipe\ft5-sync-dev`) to bind, then
+   launches the desktop via `pnpm --filter @ft5/desktop run dev`.
+5. Writes both PIDs to `node_modules/.cache/ft5-dev/` so `stop` can kill
+   the whole process tree (`taskkill //F //T //PID <pid>` on Windows —
+   plain `kill` doesn't walk Electron's renderer/GPU/utility children).
+
+### Manual / granular commands
+
+If you need to run one side without the other, or `dev.sh` isn't an option
+on your host:
+
+- `pnpm dev:sync-service` — runs the fs-sync service standalone under plain
+  Node (`node --enable-source-maps services/fs-sync/dist/main/index.js --dev`).
+  Uses a dev-only pipe (`\\.\pipe\ft5-sync-dev` on Windows) and data dir
+  (`$HOME/ft5/sync_app/dev/`) so it doesn't collide with an installed prod
+  service. Requires the Node ABI (`pnpm abi:node`).
+- `pnpm --filter @ft5/desktop run dev` — runs the desktop under
+  electron-vite. Requires the Electron ABI (`pnpm abi:electron`). In dev
+  mode the desktop process does **not** spawn the service — it expects one
+  to be already running on the dev pipe. If you start the desktop alone and
+  click Upload you will get `sync client not initialized — IPC handler
+  invoked before supervisor started` from
+  `apps/desktop/src/main/sync/sync-client-holder.ts`.
+- `pnpm dev` (root) — runs both in parallel via `pnpm -r --parallel`. Works
+  only if the single on-disk `better-sqlite3` binary happens to satisfy both
+  sides, which by default it does not. Prefer `./bin/dev.sh start`.
+
+### Google Drive datasource setup (dev only)
+
+> **Consumers don't need to do any of this.** The packaged app will ship with
+> bundled OAuth app credentials and a real in-app consent flow. Today, both
+> are deferred to the `implement-datasource-onboarding` change (see
+> `openspec/changes/wire-fs-sync-service/design.md` Decision 11). Until that
+> lands, smoke-testing Google Drive locally requires manual OAuth setup —
+> the steps below.
+
+The dev build's "Add Google Drive" dialog does **not** open a browser
+(`apps/desktop/src/renderer/src/features/datasources/credential-forms/oauth-form.tsx`
+is mocked; the service's `authenticate-start` returns `not-implemented`).
+The datasource row is created in the desktop registry, but the fs-sync
+service needs credentials supplied out-of-band to actually upload.
+
+#### 1. Create a Google Cloud OAuth client
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create or
+   select a project.
+2. **APIs & Services → Library → Google Drive API → Enable.** (Without
+   this, every upload fails with `provider-error: Google Drive API has not
+   been used in project …`.)
+3. **APIs & Services → OAuth consent screen → External.** Fill in the
+   required fields; add your own email under "Test users" so you can sign
+   in without app verification.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID
+   → Desktop app.** Download the JSON. Note the `client_id`,
+   `client_secret`, and the `redirect_uris` entry (typically
+   `http://localhost`).
+
+#### 2. Get access + refresh tokens
+
+The Desktop-app OAuth type uses the loopback flow — Google accepts any
+port on `localhost` at request time. Run the helper script (lives outside
+the repo; don't commit it):
+
+```powershell
+# get-gdrive-tokens.ps1 — see commit history for the full script
+$clientId     = "<from step 1>"
+$clientSecret = "<from step 1>"
+$scope        = "https://www.googleapis.com/auth/drive.file"
+$port         = 8765
+$redirectUri  = "http://localhost:$port/"
+
+$qs = @(
+  "client_id=$([uri]::EscapeDataString($clientId))"
+  "redirect_uri=$([uri]::EscapeDataString($redirectUri))"
+  "response_type=code"
+  "scope=$([uri]::EscapeDataString($scope))"
+  "access_type=offline"
+  "prompt=consent"
+) -join "&"
+
+$listener = [System.Net.HttpListener]::new()
+$listener.Prefixes.Add($redirectUri); $listener.Start()
+Start-Process "https://accounts.google.com/o/oauth2/v2/auth?$qs"
+$ctx  = $listener.GetContext()
+$code = $ctx.Request.QueryString["code"]
+$bytes = [Text.Encoding]::UTF8.GetBytes("Done. Close this tab.")
+$ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length); $ctx.Response.Close(); $listener.Stop()
+
+$tokens = Invoke-RestMethod -Method Post -Uri "https://oauth2.googleapis.com/token" -Body @{
+  code          = $code
+  client_id     = $clientId
+  client_secret = $clientSecret
+  redirect_uri  = $redirectUri
+  grant_type    = "authorization_code"
+}
+Write-Host "accessToken:  $($tokens.access_token)"
+Write-Host "refreshToken: $($tokens.refresh_token)"
+```
+
+`access_type=offline` + `prompt=consent` guarantees Google returns a fresh
+`refresh_token` on every run — it'll remain valid indefinitely (the
+`access_token` is short-lived and the strategy auto-refreshes on 401).
+
+#### 3. Seed `credentials.json`
+
+In the desktop app, open DevTools (`Ctrl+Shift+I`) → Console and run:
+
+```js
+await window.api.datasources.list()
+```
+
+Copy the `id` of the Google Drive row. Then write
+`$HOME\ft5\sync_app\dev\credentials.json` (created automatically on first
+run — or you can create it yourself):
+
+```json
+{
+  "schemaVersion": 1,
+  "credentials": {
+    "<paste-datasource-id-from-devtools>": {
+      "providerId": "google-drive",
+      "authResult": {
+        "accessToken":  "<from step 2>",
+        "refreshToken": "<from step 2>",
+        "meta": {
+          "clientId":     "<from step 1>",
+          "clientSecret": "<from step 1>",
+          "redirectUri":  "http://localhost:8765/"
+        }
+      },
+      "createdAt": 1714000000000,
+      "updatedAt": 1714000000000
+    }
+  }
+}
+```
+
+**Critical:** the `redirectUri` must exactly match the one used in step 2
+(including the trailing slash) or Google rejects the refresh flow with
+`redirect_uri_mismatch`.
+
+The credential store reads this file fresh on every lookup — no service
+restart required. Trigger an upload and it should run.
+
+#### Troubleshooting
+
+| Error (DevTools `sync event: job-failed`)                  | Cause                                                                                                  |
+|---                                                         |---                                                                                                     |
+| `auth-revoked: Google Drive credentials must include meta.*` | `meta` block missing or a field isn't a string. Re-check the JSON schema above.                        |
+| `provider-error: require is not defined`                    | Out-of-date engine build. `./bin/dev.sh restart` to rebuild.                                           |
+| `provider-error: Google Drive API has not been used…`       | Drive API not enabled in your GCP project. See step 1.2.                                               |
+| `no credentials registered for datasourceId=…`              | The datasource ID in `credentials.json` doesn't match the one in the registry. Re-fetch via DevTools. |
+
+### Hot-reload behaviour (desktop)
 
 - **Main / preload changes** reload automatically on save.
 - **Renderer changes** require restarting `dev` (the renderer ships as a
@@ -122,6 +317,8 @@ pnpm --filter @ft5/desktop run dev
   does not watch). Live-reload for the renderer is a known-limitation
   follow-up — it needs the Next dev server running in parallel plus an
   `ELECTRON_RENDERER_URL` branch in the main process.
+
+### Production build without packaging
 
 For a one-shot production build (without packaging), run:
 

@@ -15,6 +15,11 @@
       "types": "./src/sync-service/index.ts",
       "import": "./dist/sync-service/index.js",
       "default": "./dist/sync-service/index.js"
+    },
+    "./sync-service-desktop": {
+      "types": "./src/sync-service-desktop/index.ts",
+      "import": "./dist/sync-service-desktop/index.js",
+      "default": "./dist/sync-service-desktop/index.js"
     }
   },
   "scripts": {

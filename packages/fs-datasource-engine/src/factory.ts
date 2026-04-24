@@ -205,9 +205,9 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
  * concrete strategy factory. Consumers typically pass the result to
  * `createClientFactory` at main-process bootstrap.
  *
- * Individual strategies are introduced incrementally across Phases 6–8;
- * each entry carries a `TODO(phase-N)` comment documenting when its stub
- * is replaced by a real implementation.
+ * All three strategies are real implementations that pass the shared
+ * `strategy-contract` suite. Adding a fourth provider: implement a
+ * `ProviderFactoryFn`, register it here, and add it to the contract suite.
  */
 export function createDefaultProviderRegistry(): ProviderRegistry {
   return {

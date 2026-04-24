@@ -1,37 +1,33 @@
-// fs-sync-service entry point. Resolves the data dir, ensures it exists
-// with user-only permissions, acquires the single-instance PID guard, then
-// (in this phase) exits. Later phases wire the IPC listener and scheduler.
+// fs-sync-service entry point. Parses --dev, hands off to `bootstrap()`,
+// and installs SIGINT / SIGTERM handlers that gracefully stop the Runtime.
+// All composition lives in `bootstrap.ts` so tests can drive the same
+// wiring against a scratch data dir; signal handling lives in `signals.ts`
+// so the grace-period contract has its own unit test.
 //
 // Exit codes:
-//   0 — normal
-//   3 — another live instance holds the PID guard
-//   4 — database integrity check failed (wired in Phase 5)
+//   0 — normal (signal-driven shutdown)
+//   1 — uncaught fatal error during startup
+//   3 — another live instance holds the PID guard (AlreadyRunningError)
+//   4 — database integrity check failed (DatabaseIntegrityError)
+//   5 — IPC listener failed to bind its socket / named pipe (IpcBindError)
 
-import { applyMigrations } from "../db/migrations.js";
-import { DatabaseIntegrityError, openDatabase } from "../db/open.js";
-import { ensureDataDir } from "../env/ensure-dir.js";
-import {
-  resolveDataDir,
-  resolveDbPath,
-  resolvePidPath,
-} from "../env/paths.js";
 import {
   AlreadyRunningError,
-  acquirePidGuardSync,
-} from "../single-instance/pid-guard.js";
+  bootstrap,
+  IpcBindError,
+  type Runtime,
+} from "./bootstrap.js";
+import { DatabaseIntegrityError } from "../db/open.js";
+import { resolvePidPath } from "../env/paths.js";
+import { installSignalHandlers } from "./signals.js";
 
 async function main(argv: ReadonlyArray<string>): Promise<number> {
   const dev = argv.includes("--dev");
   const mode = dev ? "dev" : "prod";
-  const dataDir = resolveDataDir({ dev });
-  const pidPath = resolvePidPath({ dev });
-  const dbPath = resolveDbPath({ dev });
 
-  await ensureDataDir(dataDir);
-
-  let release: (() => void) | null = null;
+  let runtime: Runtime;
   try {
-    release = acquirePidGuardSync(pidPath);
+    runtime = await bootstrap({ dev });
   } catch (err) {
     if (err instanceof AlreadyRunningError) {
       console.error(
@@ -39,39 +35,32 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
       );
       return 3;
     }
+    if (err instanceof DatabaseIntegrityError) {
+      console.error(
+        `fs-sync-service integrity-check-failed: ${err.observed}; exiting`,
+      );
+      return 4;
+    }
+    if (err instanceof IpcBindError) {
+      console.error(
+        `fs-sync-service ipc-bind-failed (mode=${mode}): ${err.message}; exiting`,
+      );
+      return 5;
+    }
     throw err;
   }
 
-  try {
-    // Integrity-gated DB open: any failure here is a hard-stop (exit 4),
-    // before the IPC listener is bound. Applying migrations afterward is
-    // forward-only and idempotent.
-    let db;
-    try {
-      db = openDatabase(dbPath);
-      applyMigrations(db);
-    } catch (err) {
-      if (err instanceof DatabaseIntegrityError) {
-        console.error(
-          `fs-sync-service integrity-check-failed: ${err.observed}; exiting`,
-        );
-        return 4;
-      }
-      throw err;
-    }
+  console.log(
+    `fs-sync-service started (pid=${process.pid}, mode=${mode}, pipe=${runtime.socketPath})`,
+  );
 
-    console.log(`fs-sync-service starting (pid=${process.pid}, mode=${mode})`);
-
-    try {
-      // Phase 5 scaffold: DB is open and migrated. Later phases insert the
-      // scheduler start, IPC server bind, and signal-driven shutdown here.
-      return 0;
-    } finally {
-      db.close();
-    }
-  } finally {
-    release();
-  }
+  // Delegate signal wiring to signals.ts — it registers SIGINT/SIGTERM on
+  // `process`, runs runtime.stop() against a 5 s grace budget, and cleans
+  // up the PID file. The returned `shutdown` promise resolves with the
+  // exit code.
+  const pidPath = resolvePidPath({ dev }, process.env);
+  const installed = installSignalHandlers(runtime, { pidPath });
+  return installed.shutdown;
 }
 
 main(process.argv.slice(2)).then(

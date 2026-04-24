@@ -126,11 +126,25 @@ export function createLogger(options: LoggerOptions): Logger {
 /**
  * Redact secret-bearing param blocks on an IPC command. Called by the
  * audit middleware before logging `sync:authenticate` params.
+ *
+ * The split `sync:authenticate-start` / `sync:authenticate-complete`
+ * channels are also redacted: the stubbed handlers never see real
+ * tokens today, but the defensive rule must land with the channel
+ * names so the follow-up `implement-datasource-onboarding` change
+ * cannot accidentally log credentials (see design.md Decision 11).
+ * The old `sync:authenticate` channel stays redacted until it is
+ * removed in 5.A.14.
  */
 export function redactCommandParams(
   command: string,
   params: unknown,
 ): unknown {
-  if (command === "sync:authenticate") return "[redacted]";
+  if (
+    command === "sync:authenticate" ||
+    command === "sync:authenticate-start" ||
+    command === "sync:authenticate-complete"
+  ) {
+    return "[redacted]";
+  }
   return params;
 }

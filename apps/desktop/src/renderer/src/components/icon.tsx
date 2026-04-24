@@ -51,6 +51,7 @@ import {
   SunIcon,
   Trash2Icon,
   UploadIcon,
+  WifiOffIcon,
   type LucideProps,
 } from "lucide-react"
 import type { ComponentType } from "react"
@@ -112,6 +113,10 @@ export type IconName =
   | "alert-triangle"
   // ui-file-explorer Phase 7.2 — toolbar Search trigger glyph.
   | "search"
+  // wire-fs-sync-service Phase 10.8 — waiting-network badge variant uses
+  // `wifi-off` left of the status text to make the cause legible at a
+  // glance (Decision 13's "Visual variant — waiting-network").
+  | "wifi-off"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -148,6 +153,7 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   copy: CopyIcon,
   "alert-triangle": AlertTriangleIcon,
   search: SearchIcon,
+  "wifi-off": WifiOffIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a

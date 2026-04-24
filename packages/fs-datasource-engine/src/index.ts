@@ -32,8 +32,9 @@ export type {
   EventBusOptions,
 } from "./event-bus.js";
 
-// Phase 3: Template base class + Strategy interface.
-// Concrete strategies (S3, OneDrive, Google Drive) land in Phases 6-8.
+// Phase 3: Template base class + Strategy interface. The three concrete
+// strategies (S3, OneDrive, Google Drive) live under `./strategies/` and
+// are wired by `createDefaultProviderRegistry` below.
 export { BaseDatasourceClient } from "./base-client.js";
 export type {
   BaseClientContext,
@@ -46,11 +47,13 @@ export type {
 // depends on Electron; the engine package stays framework-agnostic.
 export type { CredentialStore } from "./credential-store.js";
 
-// Phase 5: ProviderRegistry + ClientFactory. The factory is stateless — each
+// ProviderRegistry + ClientFactory. The factory is stateless — each
 // `create` call returns a fresh DatasourceClient — and validates registry
 // integrity eagerly at construction. `createDefaultProviderRegistry` wires
-// the three placeholder strategy stubs; Phases 6–8 replace them one-by-one
-// with real provider strategies.
+// three real provider strategies that pass the shared `strategy-contract`
+// suite: `strategies/s3-client.ts`, `strategies/onedrive-client.ts`, and
+// `strategies/googledrive-client.ts`. The integrity validation still
+// applies to any future registration.
 export {
   createClientFactory,
   createDefaultProviderRegistry,

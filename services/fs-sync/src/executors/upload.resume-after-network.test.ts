@@ -87,9 +87,11 @@ describe("upload resume-after-network policy", () => {
     expect(calls).toHaveLength(2);
     // Same Target + file params on both invocations.
     expect(calls[0]).toEqual(calls[1]);
-    // The file descriptor passed to uploadFile has ONLY `path` — no
-    // `startOffset` / `uploadId` / resume-session keys.
+    // The file descriptor passed to uploadFile has only `path` + `name` —
+    // no `startOffset` / `uploadId` / resume-session keys. `name` is the
+    // basename of targetPath (added when the executor was fixed to split
+    // targetPath into parent + filename per the appendix in design.md).
     const filePart = (calls[1] as [unknown, Record<string, unknown>])[1];
-    expect(Object.keys(filePart).sort()).toEqual(["path"]);
+    expect(Object.keys(filePart).sort()).toEqual(["name", "path"]);
   });
 });

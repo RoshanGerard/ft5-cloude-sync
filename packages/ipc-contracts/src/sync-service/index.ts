@@ -26,6 +26,8 @@ export type {
   NotFoundErrorShape,
   RetryPolicy,
   RetryPolicyScope,
+  SerializableAuthCompletion,
+  SerializableAuthIntent,
   SyncAlreadyRunningErrorShape,
   UnknownCommandErrorShape,
   ValidationErrorShape,

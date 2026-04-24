@@ -1,0 +1,17 @@
+{
+  "//": "Dedicated tsconfig for preload type-level tests (*.test-d.ts). The main desktop tsconfig excludes __tests__ directories; this config includes the window-api type tests together with the global augmentation they verify. Requires lib: [\"DOM\"] so Window is available in the tsc program; all other settings inherit from the base. Pointed to by vitest.config.ts typecheck.tsconfig so tsc actually checks these files.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "types": [],
+    "verbatimModuleSyntax": false,
+    "noEmit": true
+  },
+  "include": [
+    "src/preload/window-api.d.ts",
+    "src/preload/__tests__/window-api.types.test-d.ts"
+  ],
+  "references": [
+    { "path": "../../packages/ipc-contracts" }
+  ]
+}
