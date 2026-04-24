@@ -6,7 +6,9 @@ import { toast } from "sonner";
 import type {
   FileEntry,
   FilesDownloadResponse,
+  FilesErrorTag,
   FilesRemoveResponse,
+  FilesRemoveTarget,
   FilesRenameResponse,
 } from "@ft5/ipc-contracts";
 
@@ -81,6 +83,19 @@ export interface ExplorerState {
   entries: FileEntry[];
   loading: boolean;
   error: string | null;
+  /**
+   * Tag carried alongside `error` when the list response was a tagged
+   * envelope rejection. Drives the renderer's state-component selection
+   * in `file-explorer.tsx` so the renderer picks the right full-replace
+   * pattern (disconnected / auth-revoked / rate-limited / other) without
+   * string-matching `error`.
+   */
+  errorTag: FilesErrorTag | null;
+  /**
+   * Monotonic counter bumped by `retryLoad()` to trigger a re-fetch in
+   * `useExplorerData` without changing `currentPath`. Starts at 0.
+   */
+  refetchToken: number;
   selection: Set<string>;
   lastSelectedId: string | null;
   sortBy: SortBy;
@@ -136,6 +151,14 @@ export interface ExplorerStore {
   setEntries(entries: FileEntry[]): void;
   setLoading(loading: boolean): void;
   setError(error: string | null): void;
+  setErrorTag(tag: FilesErrorTag | null): void;
+  /**
+   * Bump `refetchToken` to re-dispatch the list IPC for the current
+   * folder. Used by the disconnected-state's Retry button; does NOT
+   * clear existing state (`useExplorerData` sets loading / error
+   * before the new dispatch per normal effect sequencing).
+   */
+  retryLoad(): void;
 
   // Details pane
   toggleDetailsPane(): void;
@@ -155,7 +178,7 @@ export interface ExplorerStore {
   rename(entryId: string, newName: string): Promise<void>;
 
   // Remove (delete) — accepts one or more paths; issues a single IPC call.
-  remove(paths: string[]): Promise<void>;
+  remove(targets: FilesRemoveTarget[]): Promise<void>;
 
   // Download — one-shot IPC for a file entry; does NOT use pendingOps
   // (the entry stays in the list; the op is user-facing via toast only).
@@ -273,6 +296,8 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     entries: [],
     loading: false,
     error: null,
+    errorTag: null,
+    refetchToken: 0,
     selection: new Set<string>(),
     lastSelectedId: null,
     sortBy: prefs.sortBy,
@@ -550,6 +575,14 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     set({ ...state, error }, false);
   }
 
+  function setErrorTag(errorTag: FilesErrorTag | null): void {
+    set({ ...state, errorTag }, false);
+  }
+
+  function retryLoad(): void {
+    set({ ...state, refetchToken: state.refetchToken + 1 }, false);
+  }
+
   // --- Details pane ------------------------------------------------------
 
   function toggleDetailsPane(): void {
@@ -731,15 +764,17 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
 
   // --- Remove (delete) --------------------------------------------------
 
-  async function remove(paths: string[]): Promise<void> {
-    if (paths.length === 0) return;
+  async function remove(targets: FilesRemoveTarget[]): Promise<void> {
+    if (targets.length === 0) return;
 
-    const total = paths.length;
-    // Seed one pendingOp per path (keyed by path — matches the IPC
-    // contract's `paths` payload and the handler's `failed[].path` field).
+    const total = targets.length;
+    // Seed one pendingOp per target, keyed by handle (entry id). Keying
+    // by path would collapse two duplicates at the same path into a
+    // single pendingOp — the same bug that motivated handle-based
+    // addressing in the first place.
     const now = Date.now();
     const nextOps: Record<string, PendingOp> = { ...state.pendingOps };
-    for (const p of paths) nextOps[p] = { kind: "remove", startedAt: now };
+    for (const t of targets) nextOps[t.handle] = { kind: "remove", startedAt: now };
     set({ ...state, pendingOps: nextOps, lastError: null }, false);
 
     try {
@@ -749,7 +784,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
             files?: {
               remove?: (req: {
                 datasourceId: string;
-                paths: string[];
+                targets: FilesRemoveTarget[];
               }) => Promise<FilesRemoveResponse>;
             };
           };
@@ -758,16 +793,47 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       if (api === undefined) {
         throw new Error("window.api.files.remove is unavailable");
       }
-      const response = await api({ datasourceId, paths });
+      const response = await api({ datasourceId, targets });
 
-      const removedSet = new Set(response.removed);
       const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
-      for (const p of paths) delete clearedOps[p];
+      for (const t of targets) delete clearedOps[t.handle];
 
-      const nextEntries = state.entries.filter((e) => !removedSet.has(e.path));
+      if (!response.ok) {
+        // Whole-operation failure: nothing removed; revert all pending and
+        // surface the envelope error to the user.
+        const firstHandle = targets[0]?.handle;
+        const entryId = firstHandle ?? "";
+        set(
+          {
+            ...state,
+            pendingOps: clearedOps,
+            lastError: { entryId, reason: response.error.message },
+          },
+          false,
+        );
+        toast.error(response.error.message);
+        return;
+      }
 
-      const failedCount = response.failed.length;
-      const removedCount = response.removed.length;
+      const removedHandles: string[] = [];
+      const failedResults: { handle: string; message: string }[] = [];
+      for (const result of response.value.results) {
+        if (result.ok) {
+          removedHandles.push(result.handle);
+        } else {
+          failedResults.push({
+            handle: result.handle,
+            message: result.error.message,
+          });
+        }
+      }
+
+      // Correlate by handle (entry id) so two rows with the same path but
+      // distinct handles don't both disappear when only one was deleted.
+      const removedSet = new Set(removedHandles);
+      const nextEntries = state.entries.filter((e) => !removedSet.has(e.id));
+      const removedCount = removedHandles.length;
+      const failedCount = failedResults.length;
 
       if (failedCount === 0) {
         const noun = removedCount === 1 ? "item" : "items";
@@ -786,16 +852,10 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
 
       // Partial failure — pin lastError on the first failure (matches
       // rename's per-entry lastError model; the toast summarises the rest).
-      const first = response.failed[0];
-      const pathToEntryId = new Map(
-        state.entries.map((e) => [e.path, e.id] as const),
-      );
+      const first = failedResults[0];
       const lastError: ExplorerLastError | null =
         first !== undefined
-          ? {
-              entryId: pathToEntryId.get(first.path) ?? first.path,
-              reason: first.reason,
-            }
+          ? { entryId: first.handle, reason: first.message }
           : null;
 
       set(
@@ -813,15 +873,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
-      for (const p of paths) delete clearedOps[p];
-      const pathToEntryId = new Map(
-        state.entries.map((e) => [e.path, e.id] as const),
-      );
-      const firstPath = paths[0];
-      const entryId =
-        firstPath !== undefined
-          ? (pathToEntryId.get(firstPath) ?? firstPath)
-          : firstPath ?? "";
+      for (const t of targets) delete clearedOps[t.handle];
+      const firstHandle = targets[0]?.handle;
+      const entryId = firstHandle ?? "";
       set(
         {
           ...state,
@@ -888,6 +942,8 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     setEntries,
     setLoading,
     setError,
+    setErrorTag,
+    retryLoad,
     toggleDetailsPane,
     startPendingOp,
     clearPendingOp,

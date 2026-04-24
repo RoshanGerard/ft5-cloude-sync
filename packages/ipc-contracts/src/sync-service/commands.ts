@@ -8,6 +8,12 @@
 
 import type { CredentialsSchema } from "../datasources.js";
 import type {
+  EntryKind,
+  FileEntry,
+  FilesErrorTag,
+  FilesRemoveEntryResult,
+} from "../files.js";
+import type {
   AuthIntent,
   AuthResult,
   DatasourceType,
@@ -304,6 +310,108 @@ interface GetStatusCommand {
   readonly error: ErrorShape;
 }
 
+// ---- files:* commands (wire-file-explorer-to-service design Decision 1) ---
+//
+// The renderer's file-explorer reads/writes provider content through these
+// four commands on `services/fs-sync`. Every command's `error` is the same
+// tagged shape so the renderer can branch on `.error.tag` for auth / network
+// / rate-limit recovery UX without string-matching message bodies. Per-path
+// failures on bulk operations (remove) travel inside `result.results`, not
+// `error`; the command-level `error` fires only when the whole request was
+// rejected (e.g. unknown `datasourceId`, auth revoked before any path was
+// attempted).
+
+// Canonical `FilesErrorTag` lives in `../files.ts` (the renderer-facing
+// envelope file). Re-exported here so command authors keep a single import
+// path for the tag set; the union is declared once and used in both
+// layers.
+export type { FilesErrorTag };
+
+/**
+ * Command-level error shape shared by every `files:*` command. `retryable`
+ * lets the caller distinguish a transient failure (network hiccup, rate
+ * limit) from a terminal one (auth revoked). `retryAfterMs` is populated
+ * only when the provider surfaced a concrete backoff (typically paired
+ * with `tag: "rate-limited"`); callers MUST treat its absence as
+ * "unknown — use your own policy", not as "retry immediately".
+ */
+export interface FilesCommandErrorShape extends ErrorShape {
+  readonly tag: FilesErrorTag;
+  readonly message: string;
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number;
+}
+
+// Canonical `FilesRemoveEntryResult` lives in `../files.ts`. Re-exported
+// here so callers working against the sync-service surface keep a single
+// import path; the union is declared once and shared across layers.
+export type { FilesRemoveEntryResult };
+
+interface FilesListCommand {
+  readonly command: "files:list";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly path: string;
+  };
+  readonly result: {
+    readonly entries: readonly FileEntry[];
+    readonly truncated: boolean;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+interface FilesStatCommand {
+  readonly command: "files:stat";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly path: string;
+  };
+  readonly result: {
+    readonly entry: FileEntry;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+interface FilesSearchCommand {
+  readonly command: "files:search";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly query: string;
+    readonly path: string;
+  };
+  readonly result: {
+    readonly entries: readonly FileEntry[];
+    readonly truncated: boolean;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `files:remove` addresses each entry by `handle` (the authoritative,
+// unambiguous engine ID) while preserving `path` for the response's
+// per-path result matching. `kind` lets the handler skip a second
+// `getMetadata` round-trip when dispatching to deleteFile vs
+// deleteDirectory — and skipping that round-trip is the whole point of
+// this shape, since `getMetadata({ kind: "path", ... })` is itself
+// ambiguity-vulnerable on providers that allow multiple entries with
+// the same path (Google Drive).
+interface FilesRemoveTargetShape {
+  readonly path: string;
+  readonly handle: string;
+  readonly kind: EntryKind;
+}
+
+interface FilesRemoveCommand {
+  readonly command: "files:remove";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly targets: readonly FilesRemoveTargetShape[];
+  };
+  readonly result: {
+    readonly results: readonly FilesRemoveEntryResult[];
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
 // ---- Command map + derived helpers ---------------------------------------
 
 export interface CommandMap {
@@ -320,6 +428,10 @@ export interface CommandMap {
   "sync:authenticate-start": AuthenticateStartCommand;
   "sync:authenticate-complete": AuthenticateCompleteCommand;
   "sync:get-status": GetStatusCommand;
+  "files:list": FilesListCommand;
+  "files:stat": FilesStatCommand;
+  "files:search": FilesSearchCommand;
+  "files:remove": FilesRemoveCommand;
 }
 
 export type CommandName = keyof CommandMap;
@@ -345,4 +457,8 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "sync:authenticate-start",
   "sync:authenticate-complete",
   "sync:get-status",
+  "files:list",
+  "files:stat",
+  "files:search",
+  "files:remove",
 ] as const;

@@ -15,6 +15,7 @@ import type {
   FilesStatRequest,
   FilesStatResponse,
 } from "@ft5/ipc-contracts";
+import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
 
 // Renderer-side round-trip test for every `window.api.files.*` method.
 //
@@ -81,10 +82,13 @@ describe("window.api.files round-trip", () => {
     };
   });
 
-  it("list(req) returns { entries, nextCursor } and round-trips cleanly", async () => {
+  it("list(req) returns envelope with { entries, truncated } on success and round-trips cleanly", async () => {
     const response: FilesListResponse = {
-      entries: [makeEntry(), makeEntry({ id: "entry-2", name: "notes.txt" })],
-      nextCursor: null,
+      ok: true,
+      value: {
+        entries: [makeEntry(), makeEntry({ id: "entry-2", name: "notes.txt" })],
+        truncated: false,
+      },
     };
     vi.mocked(filesApi.list).mockResolvedValue(response);
 
@@ -93,13 +97,19 @@ describe("window.api.files round-trip", () => {
 
     expect(filesApi.list).toHaveBeenCalledTimes(1);
     expect(vi.mocked(filesApi.list).mock.calls[0]).toEqual([req]);
-    expect(Array.isArray(result.entries)).toBe(true);
-    expect(result.nextCursor === null || typeof result.nextCursor === "string").toBe(true);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(Array.isArray(result.value.entries)).toBe(true);
+      expect(typeof result.value.truncated).toBe("boolean");
+    }
     assertStructuredCloneSafe(result);
   });
 
-  it("stat(req) returns { entry } and round-trips cleanly", async () => {
-    const response: FilesStatResponse = { entry: makeEntry() };
+  it("stat(req) returns envelope with { entry } on success and round-trips cleanly", async () => {
+    const response: FilesStatResponse = {
+      ok: true,
+      value: { entry: makeEntry() },
+    };
     vi.mocked(filesApi.stat).mockResolvedValue(response);
 
     const req: FilesStatRequest = {
@@ -110,15 +120,21 @@ describe("window.api.files round-trip", () => {
 
     expect(filesApi.stat).toHaveBeenCalledTimes(1);
     expect(vi.mocked(filesApi.stat).mock.calls[0]).toEqual([req]);
-    expect(result.entry.id).toBe("entry-1");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.entry.id).toBe("entry-1");
+    }
     assertStructuredCloneSafe(result);
   });
 
-  it("search(req) returns { entries, truncated } — truncated is a boolean on both branches", async () => {
+  it("search(req) returns envelope with { entries, truncated } on success; deferred cases surface as ok:false with tag:other", async () => {
     // Branch 1: S3 scan, truncated true.
     const truncatedResponse: FilesSearchResponse = {
-      entries: [makeEntry({ name: "match.pdf" })],
-      truncated: true,
+      ok: true,
+      value: {
+        entries: [makeEntry({ name: "match.pdf" })],
+        truncated: true,
+      },
     };
     vi.mocked(filesApi.search).mockResolvedValueOnce(truncatedResponse);
 
@@ -128,15 +144,22 @@ describe("window.api.files round-trip", () => {
       path: "/",
     };
     const res1 = await filesApi.search(req1);
-    expect(typeof res1.truncated).toBe("boolean");
-    expect(res1.truncated).toBe(true);
+    expect(res1.ok).toBe(true);
+    if (res1.ok) {
+      expect(typeof res1.value.truncated).toBe("boolean");
+      expect(res1.value.truncated).toBe(true);
+    }
     assertStructuredCloneSafe(res1);
 
-    // Branch 2: Drive or OneDrive deferred stub — entries empty, truncated
-    // still a boolean (value mirrors the deferred-work semantic).
+    // Branch 2: Drive or OneDrive provider-search-not-wired. Now encoded as
+    // ok:false with tag:"other" and a canonical message.
     const deferredResponse: FilesSearchResponse = {
-      entries: [],
-      truncated: true,
+      ok: false,
+      error: {
+        tag: "other",
+        message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+        retryable: false,
+      },
     };
     vi.mocked(filesApi.search).mockResolvedValueOnce(deferredResponse);
 
@@ -146,8 +169,11 @@ describe("window.api.files round-trip", () => {
       path: "/",
     };
     const res2 = await filesApi.search(req2);
-    expect(typeof res2.truncated).toBe("boolean");
-    expect(res2.entries).toEqual([]);
+    expect(res2.ok).toBe(false);
+    if (!res2.ok) {
+      expect(res2.error.tag).toBe("other");
+      expect(res2.error.message).toContain("provider native search");
+    }
     assertStructuredCloneSafe(res2);
   });
 
@@ -170,27 +196,50 @@ describe("window.api.files round-trip", () => {
     assertStructuredCloneSafe(result);
   });
 
-  it("remove(req) returns { removed, failed } with per-failure reasons", async () => {
+  it("remove(req) returns envelope with per-path results; failures carry tag + message", async () => {
     const response: FilesRemoveResponse = {
-      removed: ["/projects/a.txt", "/projects/b.txt"],
-      failed: [{ path: "/projects/c.txt", reason: "provider locked the file" }],
+      ok: true,
+      value: {
+        results: [
+          { path: "/projects/a.txt", handle: "h-a", ok: true },
+          { path: "/projects/b.txt", handle: "h-b", ok: true },
+          {
+            path: "/projects/c.txt",
+            handle: "h-c",
+            ok: false,
+            error: { tag: "other", message: "provider locked the file" },
+          },
+        ],
+      },
     };
     vi.mocked(filesApi.remove).mockResolvedValue(response);
 
     const req: FilesRemoveRequest = {
       datasourceId: "ds-s3-archive",
-      paths: ["/projects/a.txt", "/projects/b.txt", "/projects/c.txt"],
+      targets: [
+        { path: "/projects/a.txt", handle: "h-a", kind: "file" },
+        { path: "/projects/b.txt", handle: "h-b", kind: "file" },
+        { path: "/projects/c.txt", handle: "h-c", kind: "file" },
+      ],
     };
     const result = await filesApi.remove(req);
 
     expect(filesApi.remove).toHaveBeenCalledTimes(1);
     expect(vi.mocked(filesApi.remove).mock.calls[0]).toEqual([req]);
-    expect(result.removed.every((p) => typeof p === "string")).toBe(true);
-    expect(
-      result.failed.every(
-        (f) => typeof f.path === "string" && typeof f.reason === "string",
-      ),
-    ).toBe(true);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const successes = result.value.results.filter((r) => r.ok);
+      const failures = result.value.results.filter((r) => !r.ok);
+      expect(successes.every((r) => typeof r.path === "string")).toBe(true);
+      expect(
+        failures.every(
+          (r) =>
+            !r.ok &&
+            typeof r.error.tag === "string" &&
+            typeof r.error.message === "string",
+        ),
+      ).toBe(true);
+    }
     assertStructuredCloneSafe(result);
   });
 

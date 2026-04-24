@@ -1040,12 +1040,28 @@ describe("remove action", () => {
     );
   }
 
+  // Build FilesRemoveTarget[] from the test seed. In seedEntries we use
+  // `id === path` for simplicity; real entries have id=handle which is
+  // distinct (Drive's fileId) — the shape is the same.
+  function targetsFor(
+    paths: string[],
+    kind: "file" | "directory" = "file",
+  ): Array<{ path: string; handle: string; kind: "file" | "directory" }> {
+    return paths.map((p) => ({ path: p, handle: p, kind }));
+  }
+
   it("single-entry happy path: one pendingOp, single IPC call, removes entry, toast.success", async () => {
     const entries = seedEntries(["file-1"]);
-    let resolveRemove: (value: { removed: string[]; failed: [] }) => void = () => {};
+    type RemoveEnvelope = {
+      ok: true;
+      value: {
+        results: Array<{ path: string; handle: string; ok: true }>;
+      };
+    };
+    let resolveRemove: (value: RemoveEnvelope) => void = () => {};
     const removeFn = vi.fn(
       () =>
-        new Promise<{ removed: string[]; failed: [] }>((res) => {
+        new Promise<RemoveEnvelope>((res) => {
           resolveRemove = res;
         }),
     );
@@ -1054,17 +1070,20 @@ describe("remove action", () => {
     const store = makeStore("ds-1");
     store.setEntries(entries);
 
-    const promise = store.remove(["file-1"]);
+    const promise = store.remove(targetsFor(["file-1"]));
     // Mid-flight
     const mid = snap(store);
     expect(mid.pendingOps["file-1"]).toBeDefined();
     expect(mid.pendingOps["file-1"]?.kind).toBe("remove");
     expect(removeFn).toHaveBeenCalledTimes(1);
     expect(removeFn).toHaveBeenCalledWith(
-      expect.objectContaining({ paths: ["file-1"] }),
+      expect.objectContaining({ targets: targetsFor(["file-1"]) }),
     );
 
-    resolveRemove({ removed: ["file-1"], failed: [] });
+    resolveRemove({
+      ok: true,
+      value: { results: [{ path: "file-1", handle: "file-1", ok: true }] },
+    });
     await promise;
 
     const after = snap(store);
@@ -1077,7 +1096,16 @@ describe("remove action", () => {
   it("multi-entry happy path: one IPC call with all paths, removes all, toast 'Deleted 3 items'", async () => {
     const entries = seedEntries(["a", "b", "c"]);
     const removeFn = vi.fn(() =>
-      Promise.resolve({ removed: ["a", "b", "c"], failed: [] }),
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          results: [
+            { path: "a", handle: "a", ok: true as const },
+            { path: "b", handle: "b", ok: true as const },
+            { path: "c", handle: "c", ok: true as const },
+          ],
+        },
+      }),
     );
     installFilesRemoveApi(removeFn);
 
@@ -1086,7 +1114,7 @@ describe("remove action", () => {
 
     // Prime pendingOps synchronously BEFORE the await so the test observes
     // the "three ops all present" invariant.
-    const promise = store.remove(["a", "b", "c"]);
+    const promise = store.remove(targetsFor(["a", "b", "c"]));
     const mid = snap(store);
     expect(mid.pendingOps["a"]).toBeDefined();
     expect(mid.pendingOps["b"]).toBeDefined();
@@ -1096,7 +1124,7 @@ describe("remove action", () => {
 
     expect(removeFn).toHaveBeenCalledTimes(1);
     expect(removeFn).toHaveBeenCalledWith(
-      expect.objectContaining({ paths: ["a", "b", "c"] }),
+      expect.objectContaining({ targets: targetsFor(["a", "b", "c"]) }),
     );
 
     const after = snap(store);
@@ -1110,8 +1138,19 @@ describe("remove action", () => {
     const entries = seedEntries(["a", "b", "c"]);
     const removeFn = vi.fn(() =>
       Promise.resolve({
-        removed: ["a", "b"],
-        failed: [{ path: "c", reason: "provider locked the file" }],
+        ok: true as const,
+        value: {
+          results: [
+            { path: "a", handle: "a", ok: true as const },
+            { path: "b", handle: "b", ok: true as const },
+            {
+              path: "c",
+              handle: "c",
+              ok: false as const,
+              error: { tag: "other" as const, message: "provider locked the file" },
+            },
+          ],
+        },
       }),
     );
     installFilesRemoveApi(removeFn);
@@ -1119,7 +1158,7 @@ describe("remove action", () => {
     const store = makeStore("ds-1");
     store.setEntries(entries);
 
-    await store.remove(["a", "b", "c"]);
+    await store.remove(targetsFor(["a", "b", "c"]));
 
     const after = snap(store);
     expect(after.pendingOps).toEqual({});
@@ -1133,6 +1172,32 @@ describe("remove action", () => {
     );
   });
 
+  it("envelope-level failure (ok:false): no removals, all pending ops cleared, lastError set, toast.error", async () => {
+    const entries = seedEntries(["a", "b"]);
+    const removeFn = vi.fn(() =>
+      Promise.resolve({
+        ok: false as const,
+        error: {
+          tag: "auth-revoked" as const,
+          message: "Refresh token expired",
+          retryable: false,
+        },
+      }),
+    );
+    installFilesRemoveApi(removeFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries(entries);
+
+    await store.remove(targetsFor(["a", "b"]));
+
+    const after = snap(store);
+    expect(after.pendingOps).toEqual({});
+    expect(after.entries).toEqual(entries);
+    expect(after.lastError?.reason).toBe("Refresh token expired");
+    expect(toast.error).toHaveBeenCalledWith("Refresh token expired");
+  });
+
   it("full failure: IPC throws — all pending ops cleared, entries unchanged, lastError set, toast.error", async () => {
     const entries = seedEntries(["a", "b"]);
     const removeFn = vi.fn(() => Promise.reject(new Error("network down")));
@@ -1141,7 +1206,7 @@ describe("remove action", () => {
     const store = makeStore("ds-1");
     store.setEntries(entries);
 
-    await store.remove(["a", "b"]);
+    await store.remove(targetsFor(["a", "b"]));
 
     const after = snap(store);
     expect(after.pendingOps).toEqual({});

@@ -23,6 +23,7 @@ import {
   ChevronRightIcon,
   ChevronUpIcon,
   CloudIcon,
+  CloudOffIcon,
   CopyIcon,
   AlertTriangleIcon,
   DatabaseIcon,
@@ -39,6 +40,7 @@ import {
   FolderSyncIcon,
   HardDriveIcon,
   HomeIcon,
+  KeyRoundIcon,
   LaptopIcon,
   MonitorIcon,
   MoonIcon,
@@ -117,6 +119,11 @@ export type IconName =
   // `wifi-off` left of the status text to make the cause legible at a
   // glance (Decision 13's "Visual variant — waiting-network").
   | "wifi-off"
+  // wire-file-explorer-to-service — file-explorer non-usable state glyphs.
+  // `cloud-off` = disconnected, `key-round` = auth-revoked. The syncing
+  // state reuses `refresh-cw`; empty reuses `folder-open`.
+  | "cloud-off"
+  | "key-round"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -154,6 +161,8 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "alert-triangle": AlertTriangleIcon,
   search: SearchIcon,
   "wifi-off": WifiOffIcon,
+  "cloud-off": CloudOffIcon,
+  "key-round": KeyRoundIcon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a

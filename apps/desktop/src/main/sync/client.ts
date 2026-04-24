@@ -52,6 +52,14 @@ export class SyncCommandError<
   readonly command: N;
   readonly tag: string;
   readonly details?: unknown;
+  /**
+   * The full `ErrorShape` the service sent over the wire. Kept so callers
+   * that need per-command fields beyond `tag` / `details` (e.g. the
+   * `files:*` commands' `retryable` / `retryAfterMs`) can read them
+   * without a second round-trip. Widened to `ErrorShape` so consumers
+   * narrow via their command's specific error type.
+   */
+  readonly raw: ErrorShape;
 
   constructor(command: N, error: ErrorShape) {
     super(`${command} failed: ${error.tag} — ${error.message}`);
@@ -59,6 +67,7 @@ export class SyncCommandError<
     this.command = command;
     this.tag = error.tag;
     this.details = error.details;
+    this.raw = error;
   }
 }
 

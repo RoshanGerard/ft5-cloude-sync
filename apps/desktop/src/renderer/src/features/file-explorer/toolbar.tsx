@@ -3,6 +3,7 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import type { FilesSearchResponse } from "@ft5/ipc-contracts";
+import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -142,11 +143,22 @@ function SearchInput({ store }: SearchInputProps) {
       query: trimmed,
       path: "/",
     });
-    store.setSearchResults(
-      response.entries,
-      response.truncated,
-      response.providerSearchDeferred,
-    );
+    if (response.ok) {
+      store.setSearchResults(
+        response.value.entries,
+        response.value.truncated,
+        false,
+      );
+      return;
+    }
+    // Provider-native-search-not-wired is encoded as tag:"other" with the
+    // canonical FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE. Any other error
+    // surfaces an empty result with truncated=true so the UI shows the
+    // provider-honest empty state.
+    const deferred =
+      response.error.tag === "other" &&
+      response.error.message === FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE;
+    store.setSearchResults([], true, deferred);
   };
 
   return (

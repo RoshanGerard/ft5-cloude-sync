@@ -87,32 +87,67 @@ describe("ipc-contracts files entry shape", () => {
 });
 
 describe("ipc-contracts files request/response pairs", () => {
-  it("list: { datasourceId, path } request, { entries, nextCursor } response", () => {
+  // Response envelope notes (wire-file-explorer-to-service Decision 1):
+  //
+  // `Files*Response` is what the renderer reads through `window.api.files.*`.
+  // The main IPC handler forwards the `fs-sync-service` envelope verbatim so
+  // the renderer can branch on `.error.tag` for auth / network / rate-limit
+  // recovery UX. Per-path failures on `files:remove` travel inside
+  // `value.results`, not at the envelope level.
+
+  it("list: { datasourceId, path } request, ok envelope with { entries, truncated }", () => {
     const req: FilesListRequest = { datasourceId: "ds-1", path: "/" };
     const res: FilesListResponse = {
-      entries: [],
-      nextCursor: null,
+      ok: true,
+      value: { entries: [], truncated: false },
     };
     expect(req.datasourceId).toBe("ds-1");
-    expect(res.nextCursor).toBeNull();
+    if (res.ok) {
+      expect(res.value.truncated).toBe(false);
+    }
 
-    const page: FilesListResponse = {
-      entries: [],
-      nextCursor: "cursor-token",
+    const truncated: FilesListResponse = {
+      ok: true,
+      value: { entries: [], truncated: true },
     };
-    expect(page.nextCursor).toBe("cursor-token");
+    if (truncated.ok) {
+      expect(truncated.value.truncated).toBe(true);
+    }
+
+    const err: FilesListResponse = {
+      ok: false,
+      error: {
+        tag: "auth-revoked",
+        message: "Session expired; please reconnect.",
+        retryable: false,
+      },
+    };
+    if (!err.ok) {
+      expect(err.error.tag).toBe("auth-revoked");
+    }
 
     expectTypeOf<FilesListRequest>().toEqualTypeOf<{
       datasourceId: string;
       path: string;
     }>();
-    expectTypeOf<FilesListResponse["nextCursor"]>().toEqualTypeOf<
-      string | null
+    expectTypeOf<FilesListResponse>().toEqualTypeOf<
+      | {
+          ok: true;
+          value: { entries: FileEntry[]; truncated: boolean };
+        }
+      | {
+          ok: false;
+          error: {
+            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            message: string;
+            retryable: boolean;
+            retryAfterMs?: number;
+          };
+        }
     >();
-    expectTypeOf<FilesListResponse["entries"]>().toEqualTypeOf<FileEntry[]>();
   });
 
-  it("stat: { datasourceId, path } request, { entry } response", () => {
+  it("stat: { datasourceId, path } request, ok envelope with { entry }", () => {
     const req: FilesStatRequest = { datasourceId: "ds-1", path: "/report.pdf" };
     expect(req.path).toBe("/report.pdf");
 
@@ -120,39 +155,75 @@ describe("ipc-contracts files request/response pairs", () => {
       datasourceId: string;
       path: string;
     }>();
-    expectTypeOf<FilesStatResponse>().toEqualTypeOf<{ entry: FileEntry }>();
+    expectTypeOf<FilesStatResponse>().toEqualTypeOf<
+      | { ok: true; value: { entry: FileEntry } }
+      | {
+          ok: false;
+          error: {
+            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            message: string;
+            retryable: boolean;
+            retryAfterMs?: number;
+          };
+        }
+    >();
   });
 
-  it("search: { datasourceId, query, path } request, { entries, truncated, providerSearchDeferred? } response", () => {
+  it("search: { datasourceId, query, path } request, ok envelope with { entries, truncated }", () => {
     const req: FilesSearchRequest = {
       datasourceId: "ds-1",
       query: "budget",
       path: "/",
     };
-    const res: FilesSearchResponse = { entries: [], truncated: false };
-    expect(req.query).toBe("budget");
-    expect(res.truncated).toBe(false);
-
-    const deferred: FilesSearchResponse = {
-      entries: [],
-      truncated: true,
-      providerSearchDeferred: true,
+    const res: FilesSearchResponse = {
+      ok: true,
+      value: { entries: [], truncated: false },
     };
-    expect(deferred.providerSearchDeferred).toBe(true);
+    expect(req.query).toBe("budget");
+    if (res.ok) {
+      expect(res.value.truncated).toBe(false);
+    }
+
+    const rate: FilesSearchResponse = {
+      ok: false,
+      error: {
+        tag: "rate-limited",
+        message: "Provider throttled the search request.",
+        retryable: true,
+        retryAfterMs: 4000,
+      },
+    };
+    if (!rate.ok) {
+      expect(rate.error.retryAfterMs).toBe(4000);
+    }
 
     expectTypeOf<FilesSearchRequest>().toEqualTypeOf<{
       datasourceId: string;
       query: string;
       path: string;
     }>();
-    expectTypeOf<FilesSearchResponse>().toEqualTypeOf<{
-      entries: FileEntry[];
-      truncated: boolean;
-      providerSearchDeferred?: boolean;
-    }>();
+    expectTypeOf<FilesSearchResponse>().toEqualTypeOf<
+      | {
+          ok: true;
+          value: { entries: FileEntry[]; truncated: boolean };
+        }
+      | {
+          ok: false;
+          error: {
+            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            message: string;
+            retryable: boolean;
+            retryAfterMs?: number;
+          };
+        }
+    >();
   });
 
-  it("rename: { datasourceId, path, newName } request, { entry } response", () => {
+  it("rename: { datasourceId, path, newName } request, { entry } response (unchanged)", () => {
+    // `files:rename` is NOT part of the tagged-envelope rollout in Section 1
+    // of wire-file-explorer-to-service; it stays on the legacy shape until a
+    // follow-up change widens it. This assertion guards against accidental
+    // drift while the shape is still the old one.
     const req: FilesRenameRequest = {
       datasourceId: "ds-1",
       path: "/old.txt",
@@ -168,27 +239,80 @@ describe("ipc-contracts files request/response pairs", () => {
     expectTypeOf<FilesRenameResponse>().toEqualTypeOf<{ entry: FileEntry }>();
   });
 
-  it("remove: { datasourceId, paths } request, { removed, failed } response", () => {
+  it("remove: { datasourceId, targets } request, ok envelope with per-path results", () => {
     const req: FilesRemoveRequest = {
       datasourceId: "ds-1",
-      paths: ["/a", "/b", "/c"],
+      targets: [
+        { path: "/a", handle: "h-a", kind: "file" },
+        { path: "/b", handle: "h-b", kind: "file" },
+        { path: "/c", handle: "h-c", kind: "file" },
+      ],
     };
     const res: FilesRemoveResponse = {
-      removed: ["/a", "/b"],
-      failed: [{ path: "/c", reason: "provider locked the file" }],
+      ok: true,
+      value: {
+        results: [
+          { path: "/a", handle: "h-a", ok: true },
+          { path: "/b", handle: "h-b", ok: true },
+          {
+            path: "/c",
+            handle: "h-c",
+            ok: false,
+            error: { tag: "other", message: "provider locked the file" },
+          },
+        ],
+      },
     };
-    expect(req.paths).toHaveLength(3);
-    expect(res.removed).toEqual(["/a", "/b"]);
-    expect(res.failed[0]?.reason).toBe("provider locked the file");
+    expect(req.targets).toHaveLength(3);
+    if (res.ok) {
+      expect(res.value.results).toHaveLength(3);
+      const third = res.value.results[2]!;
+      expect(third.ok).toBe(false);
+      if (!third.ok) {
+        expect(third.error.tag).toBe("other");
+      }
+    }
 
     expectTypeOf<FilesRemoveRequest>().toEqualTypeOf<{
       datasourceId: string;
-      paths: string[];
+      targets: Array<{
+        path: string;
+        handle: string;
+        kind: "directory" | "file";
+      }>;
     }>();
-    expectTypeOf<FilesRemoveResponse>().toEqualTypeOf<{
-      removed: string[];
-      failed: { path: string; reason: string }[];
-    }>();
+    expectTypeOf<FilesRemoveResponse>().toEqualTypeOf<
+      | {
+          ok: true;
+          value: {
+            results: Array<
+              | { path: string; handle: string; ok: true }
+              | {
+                  path: string;
+                  handle: string;
+                  ok: false;
+                  error: {
+                    tag:
+                      | "auth-revoked"
+                      | "disconnected"
+                      | "rate-limited"
+                      | "other";
+                    message: string;
+                  };
+                }
+            >;
+          };
+        }
+      | {
+          ok: false;
+          error: {
+            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            message: string;
+            retryable: boolean;
+            retryAfterMs?: number;
+          };
+        }
+    >();
   });
 
   it("download: { datasourceId, path, toPath? } request, { savedPath } response", () => {

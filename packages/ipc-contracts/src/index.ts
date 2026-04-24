@@ -36,20 +36,31 @@ export type {
   FileEntry,
   FilesDownloadRequest,
   FilesDownloadResponse,
+  FilesEnvelope,
+  FilesErrorEnvelope,
+  FilesErrorTag,
   FilesListRequest,
   FilesListResponse,
-  FilesRemoveFailure,
+  FilesListValue,
+  FilesRemoveEntryResult,
   FilesRemoveRequest,
   FilesRemoveResponse,
+  FilesRemoveTarget,
+  FilesRemoveValue,
   FilesRenameRequest,
   FilesRenameResponse,
   FilesSearchRequest,
   FilesSearchResponse,
+  FilesSearchValue,
   FilesStatRequest,
   FilesStatResponse,
+  FilesStatValue,
   MimeFamily,
 } from "./files.js";
-export { FILES_CHANNELS } from "./files.js";
+export {
+  FILES_CHANNELS,
+  FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+} from "./files.js";
 
 // Engine-facing file primitives (generic over `DatasourceType`). These live
 // alongside the UI's `FileEntry` / `MimeFamily` rather than replacing them;

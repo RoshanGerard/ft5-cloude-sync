@@ -1,0 +1,88 @@
+## 1. Contracts — `files:*` commands and response envelopes
+
+- [x] 1.1 Write failing type-test fixtures under `packages/ipc-contracts/src/sync-service/__tests__/files-commands.test-d.ts` asserting that `CommandMap` contains `files:list`, `files:stat`, `files:search`, `files:remove` with the exact param and result shapes from `design.md` Decision 1 / Decision 2 (tagged envelope, per-path remove results).
+- [x] 1.2 Extend `CommandMap` and `COMMAND_NAMES` in `packages/ipc-contracts/src/sync-service/commands.ts` with the four `files:*` commands and their param/result/error shapes; green the type-tests.
+- [x] 1.3 Widen `FilesListResponse`, `FilesStatResponse`, `FilesSearchResponse`, `FilesRemoveResponse` in `packages/ipc-contracts/src/files.ts` to carry the discriminated error envelope (`{ ok: true, value } | { ok: false, error: { tag, message, retryable, retryAfterMs? } }`); update tests in `packages/ipc-contracts/src/__tests__/` that pinned the old shapes.
+- [x] 1.4 Run `pnpm -r build` and fix any type errors surfaced in consumers.
+
+## 2. Service — `files:*` command handlers in `fs-sync`
+
+- [x] 2.1 Write failing unit tests for `files:list` under `services/fs-sync/src/commands/files-list.test.ts` covering: happy path returns `{ ok: true, value: { entries, truncated: false } }`; `auth-revoked` engine error returns `{ ok: false, error: { tag: "auth-revoked", retryable: false } }`; unknown `datasourceId` returns `{ ok: false, error: { tag: "other" } }`.
+- [x] 2.2 Implement `files:list` handler in `services/fs-sync/src/commands/files-list.ts` delegating to `client.listDirectory({ kind: "path", path })` via the service's `ClientFactory`; wire into the command dispatcher.
+- [x] 2.3 Repeat TDD loop for `files:stat` (delegates to `client.getMetadata`).
+- [x] 2.4 Repeat TDD loop for `files:search` (delegates to `client.search(query, { kind: "path", path })`; `truncated` flag derives from the engine's envelope).
+- [x] 2.5 Write failing tests for `files:remove` covering: single-path success; single-path failure (engine throws `rate-limited`); multi-path partial failure using `Promise.allSettled`; directory entry dispatches to `deleteDirectory` (resolved by `getMetadata` before delete). Implement handler in `services/fs-sync/src/commands/files-remove.ts`.
+- [x] 2.6 Add a command-dispatcher integration test that exercises all four commands end-to-end against an in-memory fake engine fixture.
+
+## 3. Main process — IPC handler rewire
+
+- [x] 3.1 Write failing tests for `apps/desktop/src/main/ipc/files/list.test.ts` asserting the handler issues `SyncClient.request("files:list", { datasourceId, path })` and maps the tagged envelope into the main-IPC response unchanged; no `mock-fs` import.
+- [x] 3.2 Rewrite `apps/desktop/src/main/ipc/files/list.ts` against a `SyncClient` holder; remove the `mock-fs` import from this file only.
+- [x] 3.3 Repeat TDD loop for `stat.ts`, `search.ts`, `remove.ts`. Keep `rename.ts` and `download.ts` on `mock-fs`.
+- [x] 3.4 Update `apps/desktop/src/main/ipc/__tests__/no-provider-sdk-imports.test.ts` expectations if scope changed; confirm main-process code still imports zero provider SDKs.
+
+## 4. Renderer — state components and skeleton
+
+- [x] 4.1 Write failing `__tests__/disconnected.test.tsx` asserting: renders `CloudOff` icon, headline "Can't reach this datasource", body text, amber `Retry` button; `Retry` click dispatches the passed `onRetry` callback; `role="alert"` and `aria-live="polite"` present.
+- [x] 4.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/states/disconnected.tsx`.
+- [x] 4.3 Repeat TDD for `states/auth-revoked.tsx` (icon `KeyRound`, button `Reconnect` → `onReconnect` callback).
+- [x] 4.4 Repeat TDD for `states/syncing.tsx` (icon `RefreshCw` with `animate-spin`, progress label via prop, `role="status"`, no action button).
+- [x] 4.5 Repeat TDD for `states/empty.tsx` (icon `FolderOpen`, neutral color, no button).
+- [x] 4.6 Repeat TDD for `states/skeleton.tsx` — parameterized by active view mode; exports `<Skeleton mode="list" />` / `"details"` / `"small"` / `"tiles"` / `"medium"` / `"large"` and renders 6 rows matching the silhouette per mode; `data-testid="file-explorer-skeleton"`.
+
+## 5. Renderer — wiring states into the explorer
+
+- [x] 5.1 Write a failing composite test `file-explorer.states-integration.test.tsx`: mount the explorer against a mock `window.api.files.list` that rejects with `{ error: { tag: "auth-revoked" } }`; assert the `AuthRevoked` state renders; assert no file rows; assert `Reconnect` routes to the reconnect action.
+- [x] 5.2 Modify `use-explorer-data.ts` to route rejection envelopes into store state (`errorTag: "auth-revoked" | "disconnected" | "rate-limited" | "other" | null` plus keep existing `error: string | null` for display); preserve the `requestIdRef` stale-response guard verbatim.
+- [x] 5.3 Modify `file-explorer.tsx` branching so: `state.loading && !state.entries.length` → `<Skeleton mode={viewMode} />`; `state.errorTag === "disconnected"` → `<Disconnected onRetry={…} />`; `state.errorTag === "auth-revoked"` → `<AuthRevoked onReconnect={…} />`; datasource-store status `"syncing"` with no prior list resolved → `<Syncing progressLabel={…} />`; resolved with empty entries → `<Empty />`; else ViewModeSwitcher. Remove the old plaintext `Loading…` branch; rate-limited / other falls through to an inline "Failed to load" surface so the user sees why the pane is empty.
+- [x] 5.4 Add composite tests for each of the five state transitions (5 new tests, one per state), using the canonical mocked `window.api.files.list` fixtures.
+- [x] 5.5 Add a test asserting **engine response wins over store**: mount with store status `"connected"` but list rejecting with `auth-revoked`; expect `AuthRevoked` rendered, not file rows.
+
+## 6. Renderer — disable Rename / Download for engine-backed datasources
+
+- [x] 6.1 N/A — the file-explorer toolbar has no Download button (Sort / Search / View / Delete / Details). The Download affordance lives only in the per-entry context menu; its disable rule is covered by 6.2.
+- [x] 6.2 Write failing test `context-menu.engine-backed-disable.test.tsx`: open context menu on a file entry with `providerKind="google-drive"`; expect Rename and Download items to carry `aria-disabled="true"` and the spec tooltip copy; activating them is a no-op (no IPC, no state change).
+- [x] 6.3 Write failing test asserting mock datasources (`providerKind="mock"`) retain enabled Rename and Download.
+- [x] 6.4 Thread `providerKind` through the toolbar and context-menu props via a `ProviderKindContext` so the 6+ view-mode components don't need to re-plumb an extra prop. Implement the `aria-disabled` + tooltip behavior in `FileContextMenu`; widen `ProviderKind` with a `"mock"` sentinel for test datasources.
+- [x] 6.5 Assert in a guardrail test that on any engine-backed entry, `store.startEdit(entryId)` SHALL NOT be called from keyboard (F2), context menu, or inline rename cell.
+
+## 7. Spec cleanup — existing tests that assumed mocks
+
+- [x] 7.1 Remove the Vitest test that enforces the 300-entry mock-fs ceiling; delete it and any fixture it gates; verify no other test depends on the fixture.
+- [x] 7.2 Update `store.test.ts` scenarios that expected the old `{ removed, failed }` bulk-delete shape to the new per-path `results` envelope. (Done in Section 1 fix-gap; re-verified here.)
+- [x] 7.3 Update `search-ui.test.tsx` scenarios that asserted the Drive/OneDrive "Native search not available" message to expect engine-backed results (or the tagged error). (Done in Section 1 fix-gap; re-verified here.)
+- [x] 7.4 Run `pnpm -r test --silent` and `pnpm -r typecheck` from the repo root; zero failures before moving on. — **1601 tests pass / 7 skipped / 0 type errors across all packages.**
+
+## 8. Smoke in worktree (real providers)
+
+- [x] 8.1 Start the desktop app via `./bin/dev.sh start` against the user's real Google Drive datasource; navigate into the connected datasource; observe the initial render shows either skeleton → entries (fast) or the syncing state (first-connect) → entries. — **VERIFIED 2026-04-24**: entries render via the new `files:list` path.
+- [ ] 8.2 Kill the network (airplane mode or `Disable-NetAdapter`); re-navigate; assert the `Disconnected` state renders with `Retry`. Click `Retry` after restoring network; assert entries render. — **DEFERRED**: user chose to archive with primary-path smoke only; automated states-integration and state-component tests cover the render path.
+- [ ] 8.3 Revoke the Drive OAuth token (Google → Security → Third-party apps → Revoke for the app); re-navigate; assert the `AuthRevoked` state renders with `Reconnect`; click `Reconnect` and confirm routing (the reconnect flow itself is out of scope — just verify routing). — **BLOCKED / DEFERRED**: the desktop OAuth browser consent flow is not wired (tracked in sibling change `add-drive-oauth-browser-consent`); can't cleanly re-consent until that lands. Automated tests cover the rendered state; routing is covered by the `AuthRevoked` unit test.
+- [ ] 8.4 Navigate into a known-empty folder; assert `Empty` state renders. — **DEFERRED** along with 8.2/8.6; unit test in `states/__tests__/empty.test.tsx` covers the render.
+- [x] 8.5 Select 5 files (mix of success-bound and a lock-expected one if feasible); Delete; confirm the aggregate toast matches "Deleted N of 5; M failed" and per-path error tooltips surface. — **PARTIALLY VERIFIED 2026-04-24** in a different shape than originally written: single-file delete works, **and the duplicate-name regression (two files with the same name at the same Drive path) was smoked end-to-end** — the right Drive file is deleted, the local UI drops only the row whose handle was deleted, the surviving duplicate remains visible. The "5 files with lock-expected" multi-delete aggregate-toast shape was not exercised against real Drive because reliably inducing a lock requires fixture setup; the toast path is covered by `store.test.ts`.
+- [ ] 8.6 Right-click a file; assert Rename and Download menu items are disabled with the spec tooltip copy; press Enter on each; confirm no IPC call is issued (check sync-service logs). — **DEFERRED**: `context-menu-engine-backed-disable.test.tsx` (4 cases) and `rename-guard.test.tsx` (3 cases) cover aria-disabled state, tooltip copy, and the "activating is a no-op" guarantee.
+- [ ] 8.7 Capture screenshots of each state (skeleton, disconnected, auth-revoked, syncing, empty, engine-backed-disabled context menu); save under `openspec/changes/wire-file-explorer-to-service/screenshots/`. — **DEFERRED**: the visual direction is committed in `design.md` §§ "Visual direction" and the scenarios are covered by unit tests; screenshots can be captured if and when `finishing-a-development-branch` asks for them.
+
+### 8.X Findings surfaced during smoke → tracked as sibling changes
+
+The smoke surfaced three issues that are **out of scope** for this change and tracked as separate proposals in `openspec/changes/`:
+
+- `add-invalid-datasource-state` — UX requirement for a fifth Pattern-A state (misconfigured / orphaned datasources). Not a regression.
+- `add-drive-oauth-browser-consent` — the interactive OAuth consent flow is not wired; the dev build falls back to a file-based credential at `$HOME/ft5/sync_app/dev/credentials.json`. Blocks clean re-consent and blocks 8.3 diagnosis.
+- `fix-drive-listdirectory-scope-drift` — against the dev credential, Drive `listDirectory` returns only files uploaded through the app; static code review shows no `appProperties` filter and `OAUTH_SCOPE` is full `auth/drive`, so sticky OAuth scope is the likely cause — gated on the OAuth-consent change above.
+- `add-file-explorer-drag-drop-upload` — drag-and-drop upload into the file explorer is never wired. Not a regression (no prior implementation); a gap surfaced by smoke exploration.
+
+### 8.Y In-scope smoke findings that WERE fixed in this branch
+
+- **Ambiguous-path delete on duplicate Drive entries** (2026-04-24). Original `files:remove` addressed via `{ kind: "path", path }` for both `getMetadata` and `deleteFile`, rejected with "Ambiguous path - multiple files at this path" on duplicates. Rewrote the contract to `targets: Array<{ path, handle, kind }>`; handler addresses by `handle` and skips `getMetadata` entirely. See commit `08c3eea`.
+- **Optimistic-update wipe on duplicate-name delete** (2026-04-24). The renderer's optimistic filter was keyed by path; deleting one duplicate dropped both rows locally. Added `handle` to each `FilesRemoveEntryResult`; the renderer now correlates by entry id. See commit `cf29e16`. Re-smoke confirmed only the deleted row disappears.
+
+## 9. Verification and finish
+
+- [x] 9.1 Full test suite green: `pnpm -r test`. **VERIFIED 2026-04-24** after final handle-echo fix: 262 passing in fs-sync alone, all other packages green, 0 failures.
+- [x] 9.2 Full typecheck green: vitest's inline typecheck reports "no errors" across every package; `pnpm -r build` (which runs `tsc -b` throughout) also green.
+- [x] 9.3 Full lint green: `pnpm -r lint` exit 0, no new errors or warnings introduced by this branch.
+- [x] 9.4 Request code review on the worktree branch via `requesting-code-review` skill; resolve critical issues. **VERIFIED**: full-branch review task `ac3ac0b7b5e4feed3` returned "Not blocking archive"; three Important items (skeleton a11y / deleteDirectory test / ProviderKindContext default) were fixed inline (commit `cecbc53`). Minor items M1–M5 deferred.
+- [ ] 9.5 Sync delta specs to base specs (`openspec/specs/file-explorer/spec.md` and `openspec/specs/fs-sync-service/spec.md`) during `/opsx:archive`.
+- [ ] 9.6 Archive the change in the worktree branch via `/opsx:archive wire-file-explorer-to-service` before merging.
+- [ ] 9.7 Merge worktree → master locally using `finishing-a-development-branch`; push to `origin/master`.

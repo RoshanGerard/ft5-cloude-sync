@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import type { FileEntry, MimeFamily } from "@ft5/ipc-contracts";
+import type {
+  FileEntry,
+  FilesListRequest,
+  FilesListValue,
+  FilesRemoveRequest,
+  FilesRemoveValue,
+  FilesSearchRequest,
+  FilesSearchValue,
+  MimeFamily,
+} from "@ft5/ipc-contracts";
 
 import {
   enumerateSeededDirectorySizes,
@@ -21,6 +30,43 @@ const SEEDED_DATASOURCE_IDS = [
   "ds-s3-archive",
   "ds-gdrive-team",
 ] as const;
+
+// Envelope-unwrap helpers. The mock-fs functions now return the tagged
+// `{ ok: true; value } | { ok: false; error }` envelope introduced by the
+// `wire-file-explorer-to-service` change (see ipc-contracts Decision 1).
+// Pre-existing assertions in this file read the underlying value shape
+// directly; these helpers unwrap it once so the rest of the test bodies
+// stay legible. A false envelope throws so the failing test pinpoints
+// where the unexpected error originated.
+function expectListOk(req: FilesListRequest): FilesListValue {
+  const r = list(req);
+  if (!r.ok) {
+    throw new Error(
+      `list() returned error envelope: ${r.error.tag} ${r.error.message}`,
+    );
+  }
+  return r.value;
+}
+
+function expectSearchOk(req: FilesSearchRequest): FilesSearchValue {
+  const r = search(req);
+  if (!r.ok) {
+    throw new Error(
+      `search() returned error envelope: ${r.error.tag} ${r.error.message}`,
+    );
+  }
+  return r.value;
+}
+
+function expectRemoveOk(req: FilesRemoveRequest): FilesRemoveValue {
+  const r = remove(req);
+  if (!r.ok) {
+    throw new Error(
+      `remove() returned error envelope: ${r.error.tag} ${r.error.message}`,
+    );
+  }
+  return r.value;
+}
 
 describe("mock-fs: getFileTree", () => {
   it("returns a seeded tree for every seeded datasource id", () => {
@@ -48,18 +94,21 @@ describe("mock-fs: getFileTree", () => {
 describe("mock-fs: list", () => {
   it("returns entries directly under the requested path", () => {
     resetMockFs();
-    const response = list({ datasourceId: "ds-gdrive-personal", path: "/" });
-    expect(response).toHaveProperty("entries");
-    expect(response).toHaveProperty("nextCursor");
-    for (const entry of response.entries) {
+    const value = expectListOk({
+      datasourceId: "ds-gdrive-personal",
+      path: "/",
+    });
+    expect(value).toHaveProperty("entries");
+    expect(value).toHaveProperty("truncated");
+    for (const entry of value.entries) {
       expect(entry.parentPath).toBe("/");
     }
     // nested directory: /documents
-    const doc = response.entries.find(
+    const doc = value.entries.find(
       (e) => e.name === "documents" && e.kind === "directory",
     );
     expect(doc, "expected /documents directory under root").toBeTruthy();
-    const nested = list({
+    const nested = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/documents",
     });
@@ -69,26 +118,35 @@ describe("mock-fs: list", () => {
     }
   });
 
-  it("returns nextCursor: null for the small in-memory fixtures", () => {
+  it("returns truncated=false for the small in-memory fixtures", () => {
     resetMockFs();
     for (const id of SEEDED_DATASOURCE_IDS) {
-      const response = list({ datasourceId: id, path: "/" });
-      expect(response.nextCursor).toBeNull();
+      const value = expectListOk({ datasourceId: id, path: "/" });
+      expect(value.truncated).toBe(false);
     }
   });
 
-  it("returns an empty entries array for an unknown datasource", () => {
+  it("returns an error envelope for an unknown datasource", () => {
     resetMockFs();
     const response = list({ datasourceId: "ds-unknown", path: "/" });
-    expect(response.entries).toEqual([]);
-    expect(response.nextCursor).toBeNull();
+    // Unknown datasource collapses to a command-level error — the renderer
+    // can branch on `tag: "other"` and surface a targeted reconnect prompt.
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error.tag).toBe("other");
+      expect(response.error.message).toMatch(/datasource not found/i);
+      expect(response.error.retryable).toBe(false);
+    }
   });
 });
 
 describe("mock-fs: stat", () => {
   it("returns the matching FileEntry for a seeded path", () => {
     resetMockFs();
-    const { entries } = list({ datasourceId: "ds-gdrive-personal", path: "/" });
+    const { entries } = expectListOk({
+      datasourceId: "ds-gdrive-personal",
+      path: "/",
+    });
     const target = entries[0]!;
     const result = stat({
       datasourceId: "ds-gdrive-personal",
@@ -112,7 +170,7 @@ describe("mock-fs: stat", () => {
 describe("mock-fs: rename", () => {
   it("renames a file entry and returns the updated FileEntry", () => {
     resetMockFs();
-    const { entries } = list({
+    const { entries } = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/documents",
     });
@@ -127,7 +185,7 @@ describe("mock-fs: rename", () => {
     expect(result.entry.path.endsWith("/renamed-doc.pdf")).toBe(true);
 
     // state is mutated: the original path is gone, the new one is present
-    const refreshed = list({
+    const refreshed = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/documents",
     }).entries;
@@ -137,7 +195,10 @@ describe("mock-fs: rename", () => {
 
   it("rejects rename on a directory entry", () => {
     resetMockFs();
-    const { entries } = list({ datasourceId: "ds-gdrive-personal", path: "/" });
+    const { entries } = expectListOk({
+      datasourceId: "ds-gdrive-personal",
+      path: "/",
+    });
     const dir = entries.find((e) => e.kind === "directory")!;
     expect(dir).toBeTruthy();
     expect(() =>
@@ -162,7 +223,7 @@ describe("mock-fs: rename", () => {
 });
 
 describe("mock-fs: remove (partial failure)", () => {
-  it("returns { removed, failed } with partial-failure support for /_locked/ paths", () => {
+  it("returns per-path results with partial-failure support for /_locked/ paths", () => {
     resetMockFs();
     // Find a locked file somewhere in the seeded tree.
     const sizes = enumerateSeededDirectorySizes();
@@ -171,7 +232,7 @@ describe("mock-fs: remove (partial failure)", () => {
       lockedDir,
       "fixture must include at least one /_locked/* directory",
     ).toBeTruthy();
-    const lockedListing = list({
+    const lockedListing = expectListOk({
       datasourceId: lockedDir!.datasourceId,
       path: lockedDir!.path,
     });
@@ -179,7 +240,7 @@ describe("mock-fs: remove (partial failure)", () => {
     expect(lockedFile).toBeTruthy();
 
     // Find a regular file in the same datasource to successfully remove.
-    const rootEntries = list({
+    const rootEntries = expectListOk({
       datasourceId: lockedDir!.datasourceId,
       path: "/",
     }).entries;
@@ -188,49 +249,55 @@ describe("mock-fs: remove (partial failure)", () => {
     )!;
     expect(regularFile).toBeTruthy();
 
-    const result = remove({
+    const value = expectRemoveOk({
       datasourceId: lockedDir!.datasourceId,
       paths: [regularFile.path, lockedFile.path],
     });
 
-    expect(result.removed).toContain(regularFile.path);
-    expect(result.failed.length).toBe(1);
-    expect(result.failed[0]!.path).toBe(lockedFile.path);
-    expect(result.failed[0]!.reason).toMatch(/provider locked the file/i);
+    const regularResult = value.results.find(
+      (r) => r.path === regularFile.path,
+    )!;
+    const lockedResult = value.results.find((r) => r.path === lockedFile.path)!;
+    expect(regularResult.ok).toBe(true);
+    expect(lockedResult.ok).toBe(false);
+    if (!lockedResult.ok) {
+      expect(lockedResult.error.tag).toBe("other");
+      expect(lockedResult.error.message).toMatch(/provider locked the file/i);
+    }
   });
 
   it("removes multiple paths successfully when none are locked", () => {
     resetMockFs();
-    const rootEntries = list({
+    const rootEntries = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/",
     }).entries;
     const files = rootEntries.filter((e) => e.kind === "file").slice(0, 2);
     expect(files.length).toBe(2);
     const paths = files.map((f) => f.path);
-    const result = remove({
+    const value = expectRemoveOk({
       datasourceId: "ds-gdrive-personal",
       paths,
     });
-    expect(result.removed.sort()).toEqual([...paths].sort());
-    expect(result.failed).toEqual([]);
+    expect(value.results.map((r) => r.path).sort()).toEqual([...paths].sort());
+    expect(value.results.every((r) => r.ok)).toBe(true);
   });
 });
 
 describe("mock-fs: search", () => {
   it("S3: client-side substring match, truncated=false under ceiling", () => {
     resetMockFs();
-    const result = search({
+    const value = expectSearchOk({
       datasourceId: "ds-s3-archive",
       query: ".zip",
       path: "/",
     });
-    expect(result.entries.length).toBeGreaterThan(0);
-    for (const entry of result.entries) {
+    expect(value.entries.length).toBeGreaterThan(0);
+    for (const entry of value.entries) {
       expect(entry.name.toLowerCase().includes(".zip")).toBe(true);
     }
-    expect(result.entries.length).toBeLessThanOrEqual(SEARCH_RESULT_CEILING);
-    expect(typeof result.truncated).toBe("boolean");
+    expect(value.entries.length).toBeLessThanOrEqual(SEARCH_RESULT_CEILING);
+    expect(typeof value.truncated).toBe("boolean");
   });
 
   it("SEARCH_RESULT_CEILING is a finite number >= 10", () => {
@@ -242,7 +309,7 @@ describe("mock-fs: search", () => {
     resetMockFs();
     // Very permissive query — every seeded S3 entry has a '.' in its name or
     // lives under the archive bucket tree. Use empty string to match all.
-    const result = search({
+    const value = expectSearchOk({
       datasourceId: "ds-s3-archive",
       query: "",
       path: "/",
@@ -250,50 +317,66 @@ describe("mock-fs: search", () => {
     // If the bucket is huge enough to overflow, truncated must be true;
     // otherwise it is false. Both are valid — but the assertion below ties
     // these together honestly.
-    if (result.entries.length === SEARCH_RESULT_CEILING) {
-      expect(result.truncated).toBe(true);
+    if (value.entries.length === SEARCH_RESULT_CEILING) {
+      expect(value.truncated).toBe(true);
     }
   });
 
-  it("Drive: returns empty entries with truncated=true + providerSearchDeferred=true", () => {
+  it("Drive: returns an error envelope indicating provider search is not wired", () => {
     resetMockFs();
-    const result = search({
+    // The legacy `providerSearchDeferred: true` sentinel now travels as an
+    // `ok: false` envelope with `tag: "other"` — the mock cannot distinguish
+    // "deferred feature" from other service-side faults so the renderer
+    // pattern-matches on the message for now. Section 4 will ratify.
+    const response = search({
       datasourceId: "ds-gdrive-personal",
       query: "report",
       path: "/",
     });
-    expect(result.entries).toEqual([]);
-    expect(result.truncated).toBe(true);
-    expect(result.providerSearchDeferred).toBe(true);
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error.tag).toBe("other");
+      expect(response.error.message).toMatch(/provider native search/i);
+      expect(response.error.retryable).toBe(false);
+    }
   });
 
-  it("OneDrive: returns empty entries with truncated=true + providerSearchDeferred=true", () => {
+  it("OneDrive: returns an error envelope indicating provider search is not wired", () => {
     resetMockFs();
-    const result = search({
+    const response = search({
       datasourceId: "ds-onedrive-work",
       query: "report",
       path: "/",
     });
-    expect(result.entries).toEqual([]);
-    expect(result.truncated).toBe(true);
-    expect(result.providerSearchDeferred).toBe(true);
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error.tag).toBe("other");
+      expect(response.error.message).toMatch(/provider native search/i);
+    }
   });
 
-  it("S3: a non-deferred scan omits providerSearchDeferred", () => {
+  it("S3: a non-deferred scan returns an ok envelope with a value payload", () => {
     resetMockFs();
-    const result = search({
+    const response = search({
       datasourceId: "ds-s3-archive",
       query: "mp4",
       path: "/",
     });
-    expect(result.providerSearchDeferred).toBeUndefined();
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.value).toHaveProperty("entries");
+      expect(response.value).toHaveProperty("truncated");
+    }
   });
 });
 
 describe("mock-fs: download", () => {
   it("returns { savedPath } under the mock downloads directory", () => {
     resetMockFs();
-    const { entries } = list({ datasourceId: "ds-gdrive-personal", path: "/" });
+    const { entries } = expectListOk({
+      datasourceId: "ds-gdrive-personal",
+      path: "/",
+    });
     const file = entries.find((e) => e.kind === "file")!;
     const response = download({
       datasourceId: "ds-gdrive-personal",
@@ -314,7 +397,10 @@ describe("mock-fs: mimeFamily derivation via seeded entries", () => {
         if (entry.kind === "file") {
           seen.add(entry.mimeFamily);
         } else {
-          walk(list({ datasourceId: "ds-s3-archive", path: entry.path }).entries);
+          walk(
+            expectListOk({ datasourceId: "ds-s3-archive", path: entry.path })
+              .entries,
+          );
         }
       }
     };
@@ -329,7 +415,7 @@ describe("mock-fs: mimeFamily derivation via seeded entries", () => {
 describe("mock-fs: resetMockFs", () => {
   it("restores state after a rename", () => {
     resetMockFs();
-    const before = list({
+    const before = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/documents",
     }).entries;
@@ -340,7 +426,7 @@ describe("mock-fs: resetMockFs", () => {
       newName: "renamed.pdf",
     });
     resetMockFs();
-    const after = list({
+    const after = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/documents",
     }).entries;
@@ -349,22 +435,9 @@ describe("mock-fs: resetMockFs", () => {
   });
 });
 
-describe("mock-fs: enumerateSeededDirectorySizes", () => {
-  it("reports a size entry per seeded directory across all four datasources", () => {
-    resetMockFs();
-    const sizes = enumerateSeededDirectorySizes();
-    expect(sizes.length).toBeGreaterThan(4);
-    const datasourcesSeen = new Set(sizes.map((s) => s.datasourceId));
-    for (const id of SEEDED_DATASOURCE_IDS) {
-      expect(datasourcesSeen.has(id), `${id} must appear in the enumeration`).toBe(
-        true,
-      );
-    }
-    for (const s of sizes) {
-      expect(typeof s.datasourceId).toBe("string");
-      expect(typeof s.path).toBe("string");
-      expect(typeof s.size).toBe("number");
-      expect(s.size).toBeLessThanOrEqual(300);
-    }
-  });
-});
+// wire-file-explorer-to-service REMOVED the 300-entry ceiling
+// requirement from the file-explorer capability spec; the ceiling was a
+// property of the in-memory mock file system, not of the capability.
+// The private DIRECTORY_SIZE_CEILING in mock-fs.ts stays as a
+// defensive guard against accidentally seeding absurdly large
+// fixtures, but we no longer assert it at the test layer.

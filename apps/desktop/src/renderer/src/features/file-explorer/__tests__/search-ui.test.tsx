@@ -38,6 +38,7 @@ import {
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { FileEntry } from "@ft5/ipc-contracts";
+import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
 
 // FileExplorer now calls `useRouter()` for the back-to-dashboard button.
 // Mock `next/navigation` so the App Router invariant doesn't fire under
@@ -69,7 +70,18 @@ let filesListMock: Mock;
 let filesSearchMock: Mock;
 
 interface InstallOptions {
-  listResponses?: Map<string, { entries: FileEntry[]; nextCursor: string | null }>;
+  // Inner FilesListValue-shaped responses. The mock wraps each in the new
+  // `{ ok: true, value: ... }` envelope. Legacy `nextCursor: null` is
+  // retained on the inner type as a tolerated extra field so call-sites
+  // that haven't been updated yet still typecheck — it's dropped in the
+  // wrap step.
+  listResponses?: Map<
+    string,
+    { entries: FileEntry[]; truncated?: boolean; nextCursor?: string | null }
+  >;
+  // Inner search-response. `providerSearchDeferred: true` is translated to
+  // `{ ok: false, error: { tag: "other", message: <canonical> } }` at wrap
+  // time so call-sites remain concise.
   searchResponse?: {
     entries: FileEntry[];
     truncated: boolean;
@@ -82,16 +94,38 @@ function installApiMock(options: InstallOptions = {}): void {
   const listResponses = options.listResponses ?? new Map();
   filesListMock.mockImplementation(async (req: { path: string }) => {
     const canned = listResponses.get(req.path);
-    if (canned !== undefined) return canned;
-    return { entries: [], nextCursor: null };
+    const inner = canned ?? { entries: [], truncated: false };
+    return {
+      ok: true as const,
+      value: {
+        entries: inner.entries,
+        truncated: inner.truncated ?? false,
+      },
+    };
   });
 
   filesSearchMock = vi.fn();
-  const searchResponse = options.searchResponse ?? {
+  const searchInput = options.searchResponse ?? {
     entries: [],
     truncated: false,
   };
-  filesSearchMock.mockResolvedValue(searchResponse);
+  const searchEnvelope = searchInput.providerSearchDeferred
+    ? {
+        ok: false as const,
+        error: {
+          tag: "other" as const,
+          message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+          retryable: false,
+        },
+      }
+    : {
+        ok: true as const,
+        value: {
+          entries: searchInput.entries,
+          truncated: searchInput.truncated,
+        },
+      };
+  filesSearchMock.mockResolvedValue(searchEnvelope);
 
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),

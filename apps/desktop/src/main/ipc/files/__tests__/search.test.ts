@@ -1,148 +1,55 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import type { FilesSearchResponse } from "@ft5/ipc-contracts";
+import { SyncCommandError } from "../../../sync/client.js";
 
-import { resetMockFs, SEARCH_RESULT_CEILING } from "../mock-fs";
-import { handleFilesSearch } from "../search";
+import { handleFilesSearch } from "../search.js";
 
-// The S3 fixture in mock-fs.ts (`ds-s3-archive`) seeds:
-// - 6 files under "/"            (README.md, inventory.json, index.html,
-//                                  changelog.log, release-notes.txt,
-//                                  architecture.png)
-// - 14 files under "/backups"    (12 snapshot-*.tar.gz + full-bundle.zip +
-//                                  legacy-archive.7z)
-// - 22 files under "/raw-footage"
-// - 24 files under "/assets/2025"
-// - 28 files under "/assets/2026"
-// - 2 files under "/_locked"
-// Total ~96 files — naturally exceeds the SEARCH_RESULT_CEILING (shared with
-// other providers; semantics are generic), so tests that exercise truncation
-// don't need a large-seed helper.
-const S3_DATASOURCE_ID = "ds-s3-archive";
+function makeFakeClient(opts?: { resolve?: unknown; reject?: unknown }) {
+  const fn = vi.fn();
+  if (opts?.resolve !== undefined) fn.mockResolvedValue(opts.resolve);
+  else if (opts?.reject !== undefined) fn.mockRejectedValue(opts.reject);
+  return { request: fn };
+}
 
-describe("handleFilesSearch: S3 client-side scan", () => {
-  beforeEach(() => {
-    resetMockFs();
-  });
-
-  it("returns matching file entries from the S3 fixture (substring match)", () => {
-    const response: FilesSearchResponse = handleFilesSearch({
-      datasourceId: S3_DATASOURCE_ID,
-      query: "snapshot",
-      path: "/",
+describe("handleFilesSearch — delegates to SyncClient.request('files:search')", () => {
+  it("forwards { datasourceId, query, path } and maps ok result into the files envelope", async () => {
+    const entries: never[] = [];
+    const client = makeFakeClient({
+      resolve: { entries, truncated: false },
     });
 
-    // "snapshot" matches the 12 snapshot-2026-*.tar.gz files under /backups.
-    expect(response.entries.length).toBeGreaterThanOrEqual(2);
-    for (const entry of response.entries) {
-      expect(entry.kind).toBe("file");
-      expect(entry.name.toLowerCase().includes("snapshot")).toBe(true);
-    }
-    expect(response.truncated).toBe(false);
-  });
+    const result = await handleFilesSearch(
+      { datasourceId: "ds-1", query: "notes", path: "/projects" },
+      { syncClient: client as never },
+    );
 
-  it("matches case-insensitively on the S3 entry's name", () => {
-    // Mixed case. The fixture has README.md at the root and "raw-footage"
-    // related filenames. "ReADme" should still match README.md.
-    const response = handleFilesSearch({
-      datasourceId: S3_DATASOURCE_ID,
-      query: "ReADme",
-      path: "/",
+    expect(client.request).toHaveBeenCalledWith("files:search", {
+      datasourceId: "ds-1",
+      query: "notes",
+      path: "/projects",
     });
-
-    expect(response.entries.length).toBeGreaterThanOrEqual(1);
-    for (const entry of response.entries) {
-      expect(entry.kind).toBe("file");
-      expect(entry.name.toLowerCase().includes("readme")).toBe(true);
-    }
-  });
-
-  it("returns empty entries with truncated=false when nothing matches", () => {
-    const response = handleFilesSearch({
-      datasourceId: S3_DATASOURCE_ID,
-      query: "zzzzz-nomatch-xyz",
-      path: "/",
-    });
-
-    expect(response.entries).toEqual([]);
-    expect(response.truncated).toBe(false);
-  });
-
-  describe("scope-root (path) is honored", () => {
-    // ".png" matches /architecture.png at the root AND the 24 asset-*.png
-    // files under /assets/2025. The outside-scope witness is the root file.
-    const OUTSIDE_WITNESS_PATH = "/architecture.png";
-
-    it("includes entries across the whole datasource when path is '/'", () => {
-      const response = handleFilesSearch({
-        datasourceId: S3_DATASOURCE_ID,
-        query: ".png",
-        path: "/",
-      });
-
-      expect(
-        response.entries.some((e) => e.path === OUTSIDE_WITNESS_PATH),
-        "root-level /architecture.png must appear when scope is '/'",
-      ).toBe(true);
-    });
-
-    it("restricts results to entries under the scope path", () => {
-      const response = handleFilesSearch({
-        datasourceId: S3_DATASOURCE_ID,
-        query: ".png",
-        path: "/assets/2025",
-      });
-
-      // No entry from outside the /assets/2025 subtree.
-      expect(
-        response.entries.some((e) => e.path === OUTSIDE_WITNESS_PATH),
-        "/architecture.png must NOT appear when scope is /assets/2025",
-      ).toBe(false);
-
-      // Every returned entry lives under the scope path.
-      for (const entry of response.entries) {
-        expect(
-          entry.path.startsWith("/assets/2025/"),
-          `entry ${entry.path} must be under the scope /assets/2025`,
-        ).toBe(true);
-        expect(entry.kind).toBe("file");
-      }
-
-      // We know there are 24 asset-*.png files under /assets/2025.
-      expect(response.entries.length).toBeGreaterThanOrEqual(1);
+    expect(result).toEqual({
+      ok: true,
+      value: { entries: [], truncated: false },
     });
   });
 
-  describe("scan ceiling", () => {
-    it("reports truncated=true and caps entries at SEARCH_RESULT_CEILING when the scan hits the ceiling", () => {
-      // "." matches every seeded S3 file (they all have extensions). The
-      // fixture is ~96 files, well above any sane ceiling.
-      const response = handleFilesSearch({
-        datasourceId: S3_DATASOURCE_ID,
-        query: ".",
-        path: "/",
-      });
-
-      expect(response.entries.length).toBe(SEARCH_RESULT_CEILING);
-      expect(response.truncated).toBe(true);
-      for (const entry of response.entries) {
-        expect(entry.kind).toBe("file");
-        expect(entry.name.toLowerCase().includes(".")).toBe(true);
-      }
+  it("maps SyncCommandError(disconnected) into ok:false envelope with retryable:true", async () => {
+    const client = makeFakeClient({
+      reject: new SyncCommandError("files:search", {
+        tag: "disconnected",
+        message: "ECONNREFUSED",
+        retryable: true,
+      }),
     });
-  });
-
-  it("never returns directory entries (S3 returns files only)", () => {
-    // "." matches everything — if directories were ever returned, they'd
-    // appear here.
-    const response = handleFilesSearch({
-      datasourceId: S3_DATASOURCE_ID,
-      query: ".",
-      path: "/",
-    });
-
-    for (const entry of response.entries) {
-      expect(entry.kind).toBe("file");
+    const result = await handleFilesSearch(
+      { datasourceId: "ds-1", query: "x", path: "/" },
+      { syncClient: client as never },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("disconnected");
+      expect(result.error.retryable).toBe(true);
     }
   });
 });

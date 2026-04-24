@@ -29,7 +29,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 
-import type { FileEntry } from "@ft5/ipc-contracts";
+import type { FileEntry, FilesRemoveTarget } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/icon";
@@ -39,13 +39,25 @@ import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
 import { DetailsPane } from "./details-pane";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
-import { SearchResults, type ProviderKind } from "./search-results";
+import { ProviderKindContext } from "./provider-kind-context";
+import {
+  SearchResults,
+  isEngineBacked,
+  type ProviderKind,
+} from "./search-results";
+import { AuthRevokedState } from "./states/auth-revoked";
+import { DisconnectedState } from "./states/disconnected";
+import { EmptyState } from "./states/empty";
+import { Skeleton } from "./states/skeleton";
+import { SyncingState } from "./states/syncing";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
 import { useExplorerData } from "./use-explorer-data";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { ViewModeSwitcher } from "./view-mode-switcher";
+
+import type { DatasourceStatus } from "@ft5/ipc-contracts";
 
 export interface FileExplorerProps {
   datasourceId: string;
@@ -60,6 +72,14 @@ export interface FileExplorerProps {
    * that predate this prop keep working unchanged.
    */
   providerKind?: ProviderKind;
+  /**
+   * Optional sync-service status for the datasource, surfaced by the
+   * route layer. When `"syncing"` and the list response is either
+   * in-flight or resolved empty, the explorer renders the `<SyncingState>`
+   * instead of skeleton / empty. Once the list resolves with non-empty
+   * entries the engine response wins regardless of this status.
+   */
+  providerStatus?: DatasourceStatus;
 }
 
 /**
@@ -89,7 +109,9 @@ function DashboardHomeButton() {
 export function FileExplorer({
   datasourceId,
   providerKind = "s3",
+  providerStatus,
 }: FileExplorerProps) {
+  const router = useRouter();
   // Grab the per-datasource store directly — the module-level cache
   // ensures this is the same instance for every mount with the same id.
   // We subscribe to its state once here; child chrome components accept
@@ -105,9 +127,19 @@ export function FileExplorer({
   // on the store changes; stale-response guard lives in the hook.
   useExplorerData(store, datasourceId);
 
-  // Confirm-delete dialog state — target paths captured at click-time.
+  // Confirm-delete dialog state — targets captured at click-time. Each
+  // target carries the authoritative engine `handle` so the downstream
+  // files:remove call addresses unambiguously (critical for providers
+  // like Google Drive where multiple entries can share a path). `path`
+  // is preserved purely for the per-entry response-envelope match.
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const pendingDeleteRef = useRef<string[]>([]);
+  const pendingDeleteRef = useRef<FilesRemoveTarget[]>([]);
+
+  const entryToRemoveTarget = (e: FileEntry): FilesRemoveTarget => ({
+    path: e.path,
+    handle: e.id,
+    kind: e.kind,
+  });
 
   // Search → navigate handoff. When a search result is activated the
   // composite clears the search + navigates to the entry's parentPath.
@@ -130,18 +162,18 @@ export function FileExplorer({
   } | null>(null);
 
   const entriesById = new Map(state.entries.map((e) => [e.id, e] as const));
-  const pathsForSelection = (): string[] => {
-    const out: string[] = [];
+  const targetsForSelection = (): FilesRemoveTarget[] => {
+    const out: FilesRemoveTarget[] = [];
     for (const id of state.selection) {
       const entry = entriesById.get(id);
-      if (entry !== undefined) out.push(entry.path);
+      if (entry !== undefined) out.push(entryToRemoveTarget(entry));
     }
     return out;
   };
 
-  const openConfirmDelete = (paths: string[]): void => {
-    if (paths.length === 0) return;
-    pendingDeleteRef.current = paths;
+  const openConfirmDelete = (targets: FilesRemoveTarget[]): void => {
+    if (targets.length === 0) return;
+    pendingDeleteRef.current = targets;
     setConfirmOpen(true);
   };
 
@@ -156,10 +188,15 @@ export function FileExplorer({
       // on a file open Properties".
     },
     // F2 on a file flips the name cell to an inline input; the store's
-    // editingId + EntryNameCell do the rest.
-    onRenameRequested: (entry) => store.startEdit(entry.id),
+    // editingId + EntryNameCell do the rest. Engine-backed datasources
+    // gate this — Rename is disabled for them until
+    // `add-engine-rename-download` lands.
+    onRenameRequested: (entry) => {
+      if (isEngineBacked(providerKind)) return;
+      store.startEdit(entry.id);
+    },
     onDeleteRequested: (entries) => {
-      openConfirmDelete(entries.map((e) => e.path));
+      openConfirmDelete(entries.map(entryToRemoveTarget));
     },
     onContextMenuRequested: (entry) => {
       // Programmatic open: find the focused entry's DOM node by
@@ -198,21 +235,34 @@ export function FileExplorer({
   // delete the full selection; otherwise delete just that entry.
   const handleContextDelete = (entry: FileEntry) => {
     if (state.selection.has(entry.id)) {
-      openConfirmDelete(pathsForSelection());
+      openConfirmDelete(targetsForSelection());
     } else {
-      openConfirmDelete([entry.path]);
+      openConfirmDelete([entryToRemoveTarget(entry)]);
     }
   };
 
   const handleToolbarDelete = () => {
-    openConfirmDelete(pathsForSelection());
+    openConfirmDelete(targetsForSelection());
   };
 
   const handleConfirmDelete = () => {
-    const paths = pendingDeleteRef.current;
+    const targets = pendingDeleteRef.current;
     pendingDeleteRef.current = [];
     setConfirmOpen(false);
-    void store.remove(paths);
+    void store.remove(targets);
+  };
+
+  const handleRetry = () => {
+    store.retryLoad();
+  };
+
+  const handleReconnect = () => {
+    // The OAuth / reconnect flow itself is out of scope for
+    // wire-file-explorer-to-service — see proposal.md "Out of scope"
+    // and the follow-up `implement-datasource-onboarding`. Routing the
+    // user back to the dashboard puts them in front of the datasource
+    // card where the reconnect affordance will live.
+    router.push("/");
   };
 
   const handleCancelDelete = () => {
@@ -279,6 +329,7 @@ export function FileExplorer({
   }, [state.currentPath, state.entries, state.loading, keyboardNav]);
 
   return (
+    <ProviderKindContext.Provider value={providerKind}>
     <div
       data-testid="file-explorer-root"
       className="bg-background flex flex-1 min-h-0 flex-col"
@@ -296,39 +347,87 @@ export function FileExplorer({
       {/* overflow-auto on the main column so scrolling entries does not scroll the Details pane. */}
       <div className="flex min-h-0 flex-1 flex-row">
         <div className="flex min-w-0 flex-1 flex-col overflow-auto">
-          {state.loading ? (
-            <div
-              data-testid="file-explorer-loading"
-              className="text-muted-foreground p-4 text-sm"
-            >
-              Loading…
-            </div>
-          ) : state.error !== null ? (
-            <div
-              data-testid="file-explorer-error"
-              role="alert"
-              className="text-destructive p-4 text-sm"
-            >
-              Failed to load: {state.error}
-            </div>
-          ) : state.search.active ? (
-            <SearchResults
-              store={store}
-              providerKind={providerKind}
-              onResultActivate={handleSearchResultActivate}
-            />
-          ) : (
-            <ViewModeSwitcher
-              store={store}
-              keyboardNav={keyboardNav}
-              onOpen={handleOpen}
-              onDownload={handleDownload}
-              onRename={(entry) => store.startEdit(entry.id)}
-              onDelete={handleContextDelete}
-              onCopyPath={handleCopyPath}
-              onProperties={(entry) => store.openProperties(entry)}
-            />
-          )}
+          {(() => {
+            // Search surface preempts state rendering — once the user
+            // activates a search, the results surface is authoritative.
+            if (state.search.active) {
+              return (
+                <SearchResults
+                  store={store}
+                  providerKind={providerKind}
+                  onResultActivate={handleSearchResultActivate}
+                />
+              );
+            }
+            // Tagged-error envelope branches. Engine response wins over
+            // the optional `providerStatus` hint — once an errorTag is
+            // set we trust it for the current folder.
+            if (state.errorTag === "disconnected") {
+              return <DisconnectedState onRetry={handleRetry} />;
+            }
+            if (state.errorTag === "auth-revoked") {
+              return <AuthRevokedState onReconnect={handleReconnect} />;
+            }
+            // rate-limited / other: no dedicated full-replace state
+            // component; surface the error inline so the user sees
+            // *why* the main pane is empty rather than assuming the
+            // folder itself is empty.
+            if (state.errorTag !== null && state.error !== null) {
+              return (
+                <div
+                  data-testid="file-explorer-error"
+                  role="alert"
+                  className="text-destructive p-4 text-sm"
+                >
+                  Failed to load: {state.error}
+                </div>
+              );
+            }
+            // While loading: syncing preempts skeleton only if the
+            // provider is mid-initial-sync AND no prior entries are
+            // visible (otherwise flashing mid-navigation would feel
+            // jarring).
+            if (state.loading) {
+              if (
+                providerStatus === "syncing" &&
+                state.entries.length === 0
+              ) {
+                return <SyncingState />;
+              }
+              return <Skeleton mode={state.viewMode} />;
+            }
+            // Resolved: rate-limited / other errors surface via the
+            // existing lastError-driven inline surfaces; the main pane
+            // still routes through empty / entries. `errorTag` ==
+            // "rate-limited" | "other" intentionally falls through to
+            // empty/entries so the error surfaces as a toast rather
+            // than hiding the current folder.
+            if (state.entries.length === 0) {
+              if (providerStatus === "syncing") {
+                return <SyncingState />;
+              }
+              return <EmptyState />;
+            }
+            return (
+              <ViewModeSwitcher
+                store={store}
+                keyboardNav={keyboardNav}
+                onOpen={handleOpen}
+                onDownload={handleDownload}
+                onRename={(entry) => {
+                  // Mirror the F2 keyboard guard — engine-backed
+                  // datasources disable rename at the menu level, but
+                  // a guard here prevents any direct caller from
+                  // bypassing the UI disable.
+                  if (isEngineBacked(providerKind)) return;
+                  store.startEdit(entry.id);
+                }}
+                onDelete={handleContextDelete}
+                onCopyPath={handleCopyPath}
+                onProperties={(entry) => store.openProperties(entry)}
+              />
+            );
+          })()}
         </div>
         <DetailsPane store={store} />
       </div>
@@ -343,5 +442,6 @@ export function FileExplorer({
         onCancel={handleCancelDelete}
       />
     </div>
+    </ProviderKindContext.Provider>
   );
 }

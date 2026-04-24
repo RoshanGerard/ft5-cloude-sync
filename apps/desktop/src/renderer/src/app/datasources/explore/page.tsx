@@ -53,9 +53,16 @@ function providerKindFromId(providerId: string): ProviderKind {
   }
 }
 
+import type { DatasourceStatus } from "@ft5/ipc-contracts";
+
 type ResolutionState =
   | { phase: "resolving" }
-  | { phase: "found"; datasourceId: string; providerKind: ProviderKind }
+  | {
+      phase: "found";
+      datasourceId: string;
+      providerKind: ProviderKind;
+      providerStatus: DatasourceStatus;
+    }
   | { phase: "not-found" };
 
 function DatasourceNotFound() {
@@ -103,6 +110,7 @@ function ExplorePageContent() {
                 phase: "found",
                 datasourceId: idParam,
                 providerKind: providerKindFromId(match.providerId),
+                providerStatus: match.status,
               }
             : { phase: "not-found" },
         );
@@ -133,6 +141,7 @@ function ExplorePageContent() {
     <FileExplorer
       datasourceId={state.datasourceId}
       providerKind={state.providerKind}
+      providerStatus={state.providerStatus}
     />
   );
 }
