@@ -23,12 +23,12 @@
 
 ## 4. Renderer — state components and skeleton
 
-- [ ] 4.1 Write failing `__tests__/disconnected.test.tsx` asserting: renders `CloudOff` icon, headline "Can't reach this datasource", body text, amber `Retry` button; `Retry` click dispatches the passed `onRetry` callback; `role="alert"` and `aria-live="polite"` present.
-- [ ] 4.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/states/disconnected.tsx`.
-- [ ] 4.3 Repeat TDD for `states/auth-revoked.tsx` (icon `KeyRound`, button `Reconnect` → `onReconnect` callback).
-- [ ] 4.4 Repeat TDD for `states/syncing.tsx` (icon `RefreshCw` with `animate-spin`, progress label via prop, `role="status"`, no action button).
-- [ ] 4.5 Repeat TDD for `states/empty.tsx` (icon `FolderOpen`, neutral color, no button).
-- [ ] 4.6 Repeat TDD for `states/skeleton.tsx` — parameterized by active view mode; exports `<Skeleton mode="list" />` / `"details"` / `"small-icons"` / `"tiles"` / `"medium-icons"` / `"large-icons"` and renders 6 rows matching the silhouette per mode; `data-testid="file-explorer-skeleton"`.
+- [x] 4.1 Write failing `__tests__/disconnected.test.tsx` asserting: renders `CloudOff` icon, headline "Can't reach this datasource", body text, amber `Retry` button; `Retry` click dispatches the passed `onRetry` callback; `role="alert"` and `aria-live="polite"` present.
+- [x] 4.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/states/disconnected.tsx`.
+- [x] 4.3 Repeat TDD for `states/auth-revoked.tsx` (icon `KeyRound`, button `Reconnect` → `onReconnect` callback).
+- [x] 4.4 Repeat TDD for `states/syncing.tsx` (icon `RefreshCw` with `animate-spin`, progress label via prop, `role="status"`, no action button).
+- [x] 4.5 Repeat TDD for `states/empty.tsx` (icon `FolderOpen`, neutral color, no button).
+- [x] 4.6 Repeat TDD for `states/skeleton.tsx` — parameterized by active view mode; exports `<Skeleton mode="list" />` / `"details"` / `"small"` / `"tiles"` / `"medium"` / `"large"` and renders 6 rows matching the silhouette per mode; `data-testid="file-explorer-skeleton"`.
 
 ## 5. Renderer — wiring states into the explorer
 
