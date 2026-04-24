@@ -22,10 +22,10 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 3. Preload bindings (apps/desktop/src/preload)
 
-- [ ] 3.1 Write a failing test asserting `window.api.files.upload` is a function with the correct signature.
-- [ ] 3.2 Add `files.upload` to the preload's `contextBridge.exposeInMainWorld` surface.
-- [ ] 3.3 Write a failing test asserting `window.api.datasources.pickFilesToUpload` is a function with the correct signature AND `window.api.datasources.upload` is `undefined`.
-- [ ] 3.4 Add `datasources.pickFilesToUpload` and remove `datasources.upload` from the preload bridge.
+- [x] 3.1 Write a failing test asserting `window.api.files.upload` is a function with the correct signature.
+- [x] 3.2 Add `files.upload` to the preload's `contextBridge.exposeInMainWorld` surface.
+- [x] 3.3 Write a failing test asserting `window.api.datasources.pickFilesToUpload` is a function with the correct signature AND `window.api.datasources.upload` is `undefined`.
+- [x] 3.4 Add `datasources.pickFilesToUpload` and remove `datasources.upload` from the preload bridge.
 
 ## 4. Renderer upload orchestrator hook
 

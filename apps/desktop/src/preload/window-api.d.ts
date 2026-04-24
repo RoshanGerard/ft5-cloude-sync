@@ -5,11 +5,10 @@ import type {
   DatasourcesAddRequest,
   DatasourcesAddResponse,
   DatasourcesListResponse,
+  DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
   DatasourcesUploadProgressEvent,
-  DatasourcesUploadRequest,
-  DatasourcesUploadResponse,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -22,6 +21,8 @@ import type {
   FilesSearchResponse,
   FilesStatRequest,
   FilesStatResponse,
+  FilesUploadRequest,
+  FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
 import type {
@@ -71,9 +72,7 @@ declare global {
         action(
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
-        upload(
-          req: DatasourcesUploadRequest,
-        ): Promise<DatasourcesUploadResponse>;
+        pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
         onUploadProgress(
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,
@@ -89,6 +88,7 @@ declare global {
         rename(req: FilesRenameRequest): Promise<FilesRenameResponse>;
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
+        upload(req: FilesUploadRequest): Promise<FilesUploadResponse>;
       };
       sync: {
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
