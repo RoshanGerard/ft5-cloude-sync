@@ -48,7 +48,7 @@ describe("files:remove handler", () => {
 
     expect(result).toEqual({
       ok: true,
-      result: { results: [{ path: "/a.txt", ok: true }] },
+      result: { results: [{ path: "/a.txt", handle: "h-a-1", ok: true }] },
     });
     // Authoritative addressing: handle, not path. Skips getMetadata.
     expect(deleteFile).toHaveBeenCalledWith({ kind: "handle", handle: "h-a-1" });
@@ -131,8 +131,8 @@ describe("files:remove handler", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.result.results).toEqual([
-        { path: "/acme.txt", ok: true },
-        { path: "/acme.txt", ok: true },
+        { path: "/acme.txt", handle: "h-acme-1", ok: true },
+        { path: "/acme.txt", handle: "h-acme-2", ok: true },
       ]);
     }
   });
@@ -202,14 +202,14 @@ describe("files:remove handler", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.result.results).toHaveLength(3);
-      expect(result.result.results[0]).toEqual({ path: "/a", ok: true });
+      expect(result.result.results[0]).toEqual({ path: "/a", handle: "h-a", ok: true });
       const r1 = result.result.results[1];
       expect(r1.ok).toBe(false);
       if (!r1.ok) {
         expect(r1.error.tag).toBe("other");
         expect(r1.error.message).toBe("file locked");
       }
-      expect(result.result.results[2]).toEqual({ path: "/c", ok: true });
+      expect(result.result.results[2]).toEqual({ path: "/c", handle: "h-c", ok: true });
     }
   });
 

@@ -201,10 +201,11 @@ describe("window.api.files round-trip", () => {
       ok: true,
       value: {
         results: [
-          { path: "/projects/a.txt", ok: true },
-          { path: "/projects/b.txt", ok: true },
+          { path: "/projects/a.txt", handle: "h-a", ok: true },
+          { path: "/projects/b.txt", handle: "h-b", ok: true },
           {
             path: "/projects/c.txt",
+            handle: "h-c",
             ok: false,
             error: { tag: "other", message: "provider locked the file" },
           },

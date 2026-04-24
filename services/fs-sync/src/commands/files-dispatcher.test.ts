@@ -214,8 +214,8 @@ describe("files:* dispatcher integration", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.result.results).toEqual([
-        { path: "/a", ok: true },
-        { path: "/b", ok: true },
+        { path: "/a", handle: "h-a", ok: true },
+        { path: "/b", handle: "h-b", ok: true },
       ]);
     }
     expect(fakeClient.deleteFile).toHaveBeenCalledTimes(2);

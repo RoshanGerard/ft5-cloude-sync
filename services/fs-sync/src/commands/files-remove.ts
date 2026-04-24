@@ -62,11 +62,12 @@ export function makeFilesRemoveHandler(
           } else {
             await client.deleteFile({ kind: "handle", handle: target.handle });
           }
-          return { path: target.path, ok: true };
+          return { path: target.path, handle: target.handle, ok: true };
         } catch (err) {
           const normalized = normalizeFilesError(err);
           return {
             path: target.path,
+            handle: target.handle,
             ok: false,
             error: { tag: normalized.tag, message: normalized.message },
           };
@@ -80,6 +81,7 @@ export function makeFilesRemoveHandler(
         ? s.value
         : {
             path: params.targets[i]!.path,
+            handle: params.targets[i]!.handle,
             ok: false,
             error: {
               tag: "other",

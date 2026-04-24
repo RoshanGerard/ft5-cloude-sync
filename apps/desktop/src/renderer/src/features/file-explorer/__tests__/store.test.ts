@@ -1055,7 +1055,7 @@ describe("remove action", () => {
     type RemoveEnvelope = {
       ok: true;
       value: {
-        results: Array<{ path: string; ok: true }>;
+        results: Array<{ path: string; handle: string; ok: true }>;
       };
     };
     let resolveRemove: (value: RemoveEnvelope) => void = () => {};
@@ -1082,7 +1082,7 @@ describe("remove action", () => {
 
     resolveRemove({
       ok: true,
-      value: { results: [{ path: "file-1", ok: true }] },
+      value: { results: [{ path: "file-1", handle: "file-1", ok: true }] },
     });
     await promise;
 
@@ -1100,9 +1100,9 @@ describe("remove action", () => {
         ok: true as const,
         value: {
           results: [
-            { path: "a", ok: true as const },
-            { path: "b", ok: true as const },
-            { path: "c", ok: true as const },
+            { path: "a", handle: "a", ok: true as const },
+            { path: "b", handle: "b", ok: true as const },
+            { path: "c", handle: "c", ok: true as const },
           ],
         },
       }),
@@ -1141,10 +1141,11 @@ describe("remove action", () => {
         ok: true as const,
         value: {
           results: [
-            { path: "a", ok: true as const },
-            { path: "b", ok: true as const },
+            { path: "a", handle: "a", ok: true as const },
+            { path: "b", handle: "b", ok: true as const },
             {
               path: "c",
+              handle: "c",
               ok: false as const,
               error: { tag: "other" as const, message: "provider locked the file" },
             },

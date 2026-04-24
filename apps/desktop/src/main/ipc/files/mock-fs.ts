@@ -607,14 +607,18 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
 
   // Mock-fs is path-based (no handle ambiguity on an in-memory tree), so
   // the new `targets` shape is read by destructuring `.path` off each one.
-  // The per-entry `handle` and `kind` fields are accepted but not consulted.
+  // The caller-supplied `handle` is echoed back in each result so the
+  // renderer's optimistic update can correlate by entry id (same as the
+  // real engine-backed path).
   for (const reqTarget of req.targets) {
     const path = reqTarget.path;
+    const handle = reqTarget.handle;
     // Any path under /_locked/ fails with the fixed reason — partial-failure
     // code path.
     if (path.startsWith("/_locked/") || path === "/_locked") {
       results.push({
         path,
+        handle,
         ok: false,
         error: { tag: "other", message: "provider locked the file" },
       });
@@ -624,6 +628,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
     if (!target) {
       results.push({
         path,
+        handle,
         ok: false,
         error: { tag: "other", message: "not found" },
       });
@@ -632,6 +637,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
     if (target.kind === "directory") {
       results.push({
         path,
+        handle,
         ok: false,
         error: {
           tag: "other",
@@ -644,6 +650,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
     if (!siblings) {
       results.push({
         path,
+        handle,
         ok: false,
         error: { tag: "other", message: "not found" },
       });
@@ -653,13 +660,14 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
     if (idx === -1) {
       results.push({
         path,
+        handle,
         ok: false,
         error: { tag: "other", message: "not found" },
       });
       continue;
     }
     siblings.splice(idx, 1);
-    results.push({ path, ok: true });
+    results.push({ path, handle, ok: true });
   }
 
   return { ok: true, value: { results } };

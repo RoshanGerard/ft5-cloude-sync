@@ -252,10 +252,11 @@ describe("ipc-contracts files request/response pairs", () => {
       ok: true,
       value: {
         results: [
-          { path: "/a", ok: true },
-          { path: "/b", ok: true },
+          { path: "/a", handle: "h-a", ok: true },
+          { path: "/b", handle: "h-b", ok: true },
           {
             path: "/c",
+            handle: "h-c",
             ok: false,
             error: { tag: "other", message: "provider locked the file" },
           },
@@ -285,9 +286,10 @@ describe("ipc-contracts files request/response pairs", () => {
           ok: true;
           value: {
             results: Array<
-              | { path: string; ok: true }
+              | { path: string; handle: string; ok: true }
               | {
                   path: string;
+                  handle: string;
                   ok: false;
                   error: {
                     tag:

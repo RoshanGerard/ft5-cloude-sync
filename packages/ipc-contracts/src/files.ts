@@ -96,18 +96,27 @@ export interface FilesRenameResponse {
   entry: FileEntry;
 }
 
-// Per-path outcome inside a `files:remove` response. The outer envelope is
-// `ok: true` whenever the service successfully ATTEMPTED all paths; each
-// path's individual success/failure lives here. An `ok: false` envelope
-// means the batch itself was rejected before any path was tried.
+// Per-target outcome inside a `files:remove` response. The outer envelope
+// is `ok: true` whenever the service successfully ATTEMPTED all targets;
+// each target's individual success/failure lives here. An `ok: false`
+// envelope means the batch itself was rejected before any target was
+// tried.
+//
+// `handle` is the authoritative engine identifier of the removed entry —
+// the renderer correlates results back to its own entry rows by handle,
+// not by `path`. This matters on providers like Google Drive where two
+// entries can share a path but always have distinct handles; correlating
+// by path would let an optimistic-removal pass collapse both duplicates
+// when only one was actually deleted.
 //
 // Fields are `readonly` so the sync-service command contract and the
 // renderer-facing response contract can share one declaration (the
 // command layer already treats every shape as readonly).
 export type FilesRemoveEntryResult =
-  | { readonly path: string; readonly ok: true }
+  | { readonly path: string; readonly handle: string; readonly ok: true }
   | {
       readonly path: string;
+      readonly handle: string;
       readonly ok: false;
       readonly error: {
         readonly tag: FilesErrorTag;

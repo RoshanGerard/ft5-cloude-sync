@@ -94,7 +94,7 @@ Every rename and delete operation SHALL be represented in the store as a pending
 
 #### Scenario: Partial-failure bulk delete surfaces per-path result
 
-- **WHEN** the user deletes 5 engine-backed entries and the response is `{ ok: true, results: [{ path: "a", ok: true }, { path: "b", ok: true }, { path: "c", ok: true }, { path: "d", ok: false, error: { tag: "other", message: "provider locked the file" } }, { path: "e", ok: false, error: { tag: "rate-limited", message: "too many requests" } }] }`
+- **WHEN** the user deletes 5 engine-backed entries and the response is `{ ok: true, results: [{ path: "a", handle: "ha", ok: true }, { path: "b", handle: "hb", ok: true }, { path: "c", handle: "hc", ok: true }, { path: "d", handle: "hd", ok: false, error: { tag: "other", message: "provider locked the file" } }, { path: "e", handle: "he", ok: false, error: { tag: "rate-limited", message: "too many requests" } }] }`
 - **THEN** entries `a`, `b`, `c` are removed from the list; entries `d` and `e` are restored to their pre-operation state; `d` and `e` each show an inline error icon whose tooltip surfaces the per-path `message`; a single `sonner` toast announces "Deleted 3 of 5 items; 2 failed" and provides a "View details" affordance listing the failing paths and their reasons
 
 #### Scenario: Multi-selection delete issues a single IPC call

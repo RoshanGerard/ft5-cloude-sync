@@ -14,9 +14,10 @@ function makeFakeClient(opts?: { resolve?: unknown; reject?: unknown }) {
 describe("handleFilesRemove — delegates to SyncClient.request('files:remove')", () => {
   it("forwards { datasourceId, targets } and maps per-path results into the files envelope", async () => {
     const results = [
-      { path: "/a", ok: true as const },
+      { path: "/a", handle: "h-a", ok: true as const },
       {
         path: "/b",
+        handle: "h-b",
         ok: false as const,
         error: { tag: "other" as const, message: "locked" },
       },

@@ -768,12 +768,13 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     if (targets.length === 0) return;
 
     const total = targets.length;
-    // Seed one pendingOp per path (keyed by path — matches the IPC
-    // response envelope's `results[].path` field, which is the surface
-    // the optimistic UI reverts against on partial failure).
+    // Seed one pendingOp per target, keyed by handle (entry id). Keying
+    // by path would collapse two duplicates at the same path into a
+    // single pendingOp — the same bug that motivated handle-based
+    // addressing in the first place.
     const now = Date.now();
     const nextOps: Record<string, PendingOp> = { ...state.pendingOps };
-    for (const t of targets) nextOps[t.path] = { kind: "remove", startedAt: now };
+    for (const t of targets) nextOps[t.handle] = { kind: "remove", startedAt: now };
     set({ ...state, pendingOps: nextOps, lastError: null }, false);
 
     try {
@@ -795,19 +796,13 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       const response = await api({ datasourceId, targets });
 
       const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
-      for (const t of targets) delete clearedOps[t.path];
+      for (const t of targets) delete clearedOps[t.handle];
 
       if (!response.ok) {
         // Whole-operation failure: nothing removed; revert all pending and
         // surface the envelope error to the user.
-        const pathToEntryId = new Map(
-          state.entries.map((e) => [e.path, e.id] as const),
-        );
-        const firstPath = targets[0]?.path;
-        const entryId =
-          firstPath !== undefined
-            ? (pathToEntryId.get(firstPath) ?? firstPath)
-            : "";
+        const firstHandle = targets[0]?.handle;
+        const entryId = firstHandle ?? "";
         set(
           {
             ...state,
@@ -820,22 +815,24 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         return;
       }
 
-      const removedPaths: string[] = [];
-      const failedResults: { path: string; message: string }[] = [];
+      const removedHandles: string[] = [];
+      const failedResults: { handle: string; message: string }[] = [];
       for (const result of response.value.results) {
         if (result.ok) {
-          removedPaths.push(result.path);
+          removedHandles.push(result.handle);
         } else {
           failedResults.push({
-            path: result.path,
+            handle: result.handle,
             message: result.error.message,
           });
         }
       }
 
-      const removedSet = new Set(removedPaths);
-      const nextEntries = state.entries.filter((e) => !removedSet.has(e.path));
-      const removedCount = removedPaths.length;
+      // Correlate by handle (entry id) so two rows with the same path but
+      // distinct handles don't both disappear when only one was deleted.
+      const removedSet = new Set(removedHandles);
+      const nextEntries = state.entries.filter((e) => !removedSet.has(e.id));
+      const removedCount = removedHandles.length;
       const failedCount = failedResults.length;
 
       if (failedCount === 0) {
@@ -856,15 +853,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       // Partial failure — pin lastError on the first failure (matches
       // rename's per-entry lastError model; the toast summarises the rest).
       const first = failedResults[0];
-      const pathToEntryId = new Map(
-        state.entries.map((e) => [e.path, e.id] as const),
-      );
       const lastError: ExplorerLastError | null =
         first !== undefined
-          ? {
-              entryId: pathToEntryId.get(first.path) ?? first.path,
-              reason: first.message,
-            }
+          ? { entryId: first.handle, reason: first.message }
           : null;
 
       set(
@@ -882,15 +873,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
-      for (const t of targets) delete clearedOps[t.path];
-      const pathToEntryId = new Map(
-        state.entries.map((e) => [e.path, e.id] as const),
-      );
-      const firstPath = targets[0]?.path;
-      const entryId =
-        firstPath !== undefined
-          ? (pathToEntryId.get(firstPath) ?? firstPath)
-          : "";
+      for (const t of targets) delete clearedOps[t.handle];
+      const firstHandle = targets[0]?.handle;
+      const entryId = firstHandle ?? "";
       set(
         {
           ...state,

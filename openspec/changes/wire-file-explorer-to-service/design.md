@@ -52,9 +52,9 @@ Five visual states — loading, disconnected, auth-revoked, syncing, connected-b
 
 **Why:** The live response is ground truth; the store is an optimistic hint.
 
-### Decision 4: Best-effort bulk remove with per-path aggregation
+### Decision 4: Best-effort bulk remove with per-target aggregation, addressed by handle
 
-**Choice:** `files:remove` accepts `{ datasourceId, paths: string[] }` and returns `{ ok: true, results: Array<{ path: string; ok: true } | { path: string; ok: false; error: { tag: …, message: string } }> }` — the outer `ok` is `true` as long as the command itself executed; per-path status lives in `results`. The service processes each path in parallel via `Promise.allSettled` on `deleteFile` or `deleteDirectory` (chosen by entry kind resolved via `getMetadata`). The renderer surfaces an aggregate toast: "3 of 5 deleted; 2 failed — see details".
+**Choice:** `files:remove` accepts `{ datasourceId, targets: Array<{ path, handle, kind }> }` and returns `{ ok: true, results: Array<{ path: string; handle: string; ok: true } | { path: string; handle: string; ok: false; error: { tag: …, message: string } }> }` — the outer `ok` is `true` as long as the command itself executed; per-target status lives in `results`. The service processes each target in parallel via `Promise.allSettled` on `deleteFile` / `deleteDirectory`, dispatched from the caller-supplied `kind` and addressed via `{ kind: "handle", handle }` (no `getMetadata` round-trip — that call was itself ambiguity-vulnerable on providers that allow duplicate-name entries). Each result echoes the caller's `handle` so the renderer correlates optimistic updates by entry id, not by path. The renderer surfaces an aggregate toast: "3 of 5 deleted; 2 failed — see details".
 
 **Alternatives considered:**
 - **Transactional all-or-nothing.** Rejected: engine has no rollback primitive; deletes are destructive and cannot be undone by the service.
