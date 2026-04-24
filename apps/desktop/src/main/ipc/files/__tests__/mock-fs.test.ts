@@ -251,7 +251,10 @@ describe("mock-fs: remove (partial failure)", () => {
 
     const value = expectRemoveOk({
       datasourceId: lockedDir!.datasourceId,
-      paths: [regularFile.path, lockedFile.path],
+      targets: [
+        { path: regularFile.path, handle: regularFile.handle, kind: regularFile.kind },
+        { path: lockedFile.path, handle: lockedFile.handle, kind: lockedFile.kind },
+      ],
     });
 
     const regularResult = value.results.find(
@@ -277,7 +280,7 @@ describe("mock-fs: remove (partial failure)", () => {
     const paths = files.map((f) => f.path);
     const value = expectRemoveOk({
       datasourceId: "ds-gdrive-personal",
-      paths,
+      targets: files.map((f) => ({ path: f.path, handle: f.handle, kind: f.kind })),
     });
     expect(value.results.map((r) => r.path).sort()).toEqual([...paths].sort());
     expect(value.results.every((r) => r.ok)).toBe(true);
