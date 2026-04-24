@@ -1,6 +1,8 @@
 import { describe, expectTypeOf, it } from "vitest";
 
 import type {
+  AnyDatasourceEvent,
+  ConsentEvent,
   DatasourcesCancelConsentRequest,
   DatasourcesCancelConsentResponse,
   DatasourcesStartConsentRequest,
@@ -94,6 +96,15 @@ describe("window.api.datasources consent surface (task 2.1)", () => {
     // Explicit: the IPC-handler-wrapped response is Promise<void>.
     expectTypeOf<DatasourcesSurface["cancelConsent"]>().returns.toEqualTypeOf<
       Promise<void>
+    >();
+  });
+
+  // Spec: "Consent events flow through the existing onEvent stream"
+  // (datasources-ui delta). Callback's event parameter must accept every
+  // ConsentEvent variant, not just AnyDatasourceEvent.
+  it("window.api.datasources.onEvent accepts ConsentEvent variants", () => {
+    expectTypeOf<DatasourcesSurface["onEvent"]>().toEqualTypeOf<
+      (cb: (event: AnyDatasourceEvent | ConsentEvent) => void) => () => void
     >();
   });
 });

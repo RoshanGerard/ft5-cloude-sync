@@ -6,6 +6,7 @@ export interface PingResponse {
 }
 
 export type {
+  ConsentEvent,
   CredentialsSchema,
   DatasourceAction,
   DatasourceStatus,
@@ -26,6 +27,7 @@ export type {
   DatasourcesUploadProgressEvent,
   DatasourcesUploadRequest,
   DatasourcesUploadResponse,
+  ErroredDatasourceSummary,
   ProviderCapabilities,
   ProviderDescriptor,
   ProviderId,

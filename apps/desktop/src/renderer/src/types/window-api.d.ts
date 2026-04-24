@@ -5,6 +5,7 @@
 // types through the preload's `.d.ts`.
 import type {
   AnyDatasourceEvent,
+  ConsentEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -66,7 +67,7 @@ declare global {
           callback: (event: DatasourcesUploadProgressEvent) => void,
         ): () => void;
         onEvent(
-          callback: (event: AnyDatasourceEvent) => void,
+          callback: (event: AnyDatasourceEvent | ConsentEvent) => void,
         ): () => void;
       };
       files: {
