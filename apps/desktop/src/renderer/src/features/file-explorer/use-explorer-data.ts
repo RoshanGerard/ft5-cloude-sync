@@ -53,8 +53,16 @@ export function useExplorerData(
         // dispatch. If the user navigated mid-flight, requestIdRef.current
         // has already moved past `requestId`.
         if (requestIdRef.current !== requestId) return;
-        store.setEntries(response.entries);
-        store.setLoading(false);
+        if (response.ok) {
+          store.setEntries(response.value.entries);
+          store.setLoading(false);
+        } else {
+          // Section 5.2 wires tagged-state routing; for now surface the
+          // envelope's message as a string so the existing `lastError`
+          // branch continues to render.
+          store.setError(response.error.message);
+          store.setLoading(false);
+        }
       })
       .catch((error: unknown) => {
         if (cancelled) return;

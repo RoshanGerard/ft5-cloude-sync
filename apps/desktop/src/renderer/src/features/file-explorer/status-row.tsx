@@ -22,9 +22,11 @@ import type { ExplorerState, ExplorerStore } from "./store";
  *      status row is the single honest surface for that information.
  *   3. Search active with `providerSearchDeferred` (Google Drive / OneDrive
  *      in v1): surfaces a "not yet wired" message pointing at the
- *      deferred-work docs. Drive / OneDrive return
- *      `{ entries: [], truncated: true, providerSearchDeferred: true }`
- *      rather than a count — announcing "0 results" would be dishonest.
+ *      deferred-work docs. The store's `providerSearchDeferred` flag is set
+ *      by the search dispatcher when the `files:search` envelope returns
+ *      `{ ok: false, error: { tag: "other", message: "provider native
+ *      search is not wired yet; try a narrower path scope" } }` — it's a
+ *      derived UI flag, not a wire-format field.
  *
  * Root element carries `role="status"` + `aria-live="polite"` so screen
  * readers announce changes without interrupting. Numeric segments wrap in

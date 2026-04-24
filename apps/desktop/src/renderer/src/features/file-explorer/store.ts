@@ -760,14 +760,49 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       }
       const response = await api({ datasourceId, paths });
 
-      const removedSet = new Set(response.removed);
       const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
       for (const p of paths) delete clearedOps[p];
 
-      const nextEntries = state.entries.filter((e) => !removedSet.has(e.path));
+      if (!response.ok) {
+        // Whole-operation failure: no paths removed; revert all pending and
+        // surface the envelope error to the user.
+        const pathToEntryId = new Map(
+          state.entries.map((e) => [e.path, e.id] as const),
+        );
+        const firstPath = paths[0];
+        const entryId =
+          firstPath !== undefined
+            ? (pathToEntryId.get(firstPath) ?? firstPath)
+            : "";
+        set(
+          {
+            ...state,
+            pendingOps: clearedOps,
+            lastError: { entryId, reason: response.error.message },
+          },
+          false,
+        );
+        toast.error(response.error.message);
+        return;
+      }
 
-      const failedCount = response.failed.length;
-      const removedCount = response.removed.length;
+      const removedPaths: string[] = [];
+      const failedResults: { path: string; message: string }[] = [];
+      for (const result of response.value.results) {
+        if (result.ok) {
+          removedPaths.push(result.path);
+        } else {
+          failedResults.push({
+            path: result.path,
+            message: result.error.message,
+          });
+        }
+      }
+
+      const removedSet = new Set(removedPaths);
+      const nextEntries = state.entries.filter((e) => !removedSet.has(e.path));
+      const removedCount = removedPaths.length;
+      const failedCount = failedResults.length;
 
       if (failedCount === 0) {
         const noun = removedCount === 1 ? "item" : "items";
@@ -786,7 +821,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
 
       // Partial failure — pin lastError on the first failure (matches
       // rename's per-entry lastError model; the toast summarises the rest).
-      const first = response.failed[0];
+      const first = failedResults[0];
       const pathToEntryId = new Map(
         state.entries.map((e) => [e.path, e.id] as const),
       );
@@ -794,7 +829,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         first !== undefined
           ? {
               entryId: pathToEntryId.get(first.path) ?? first.path,
-              reason: first.reason,
+              reason: first.message,
             }
           : null;
 
