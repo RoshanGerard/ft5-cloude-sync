@@ -29,7 +29,11 @@ import type {
   FilesStatResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
-import type { SyncEvent } from "@ft5/ipc-contracts/sync-service-desktop";
+import type {
+  SyncEvent,
+  SyncListJobsRequest,
+  SyncListJobsResponse,
+} from "@ft5/ipc-contracts/sync-service-desktop";
 
 declare global {
   interface Window {
@@ -66,13 +70,14 @@ declare global {
       clipboard: {
         writeText(text: string): Promise<void>;
       };
-      // Task 10.2 — only the surface the renderer's jobs slice consumes.
-      // The rest of `SYNC_CHANNELS` (listJobs/enqueueUpload/etc.) is the
-      // preload's section-6 deliverable and is intentionally NOT surfaced
-      // here so later task pairs follow the appropriate RED-first protocol
-      // when they start consuming it.
+      // Task 10.2 narrowed this to just `onEvent`; the smoke of 10.9 then
+      // needed `listJobs` to pull the initial state on mount (the pushed
+      // sync-state-seed event races the renderer's subscription and gets
+      // dropped on a fast handshake — see design.md appendix defect #7).
+      // Widening further requires the corresponding RED-first coverage.
       sync: {
         onEvent(callback: (event: SyncEvent) => void): () => void;
+        listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
       };
     };
   }

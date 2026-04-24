@@ -61,11 +61,36 @@ import {
   type SyncStateSeedPayload,
 } from "@ft5/ipc-contracts/sync-service-desktop";
 
+import { getEngine } from "../datasources/engine.js";
+
 import type { SyncClient } from "./client.js";
 import type { SupervisorHandle } from "./supervisor.js";
 
 // Active-status filter for the state-seed query.
 const ACTIVE_STATUSES = new Set(["running", "queued", "waiting-network"]);
+
+/**
+ * Minimal registry surface used by the bridge. Narrowed to just
+ * `setStatus` so tests can inject a stub without mocking the whole
+ * `DatasourceRegistry` (which pulls in `better-sqlite3`).
+ */
+export interface BridgeRegistry {
+  setStatus(
+    id: string,
+    status: "connected" | "syncing" | "paused" | "error",
+    errorReason?: string | null,
+  ): void;
+}
+
+export interface SyncEventBridgeDeps {
+  /**
+   * Registry the bridge mutates on `job-completed` to clear any stale
+   * `error_reason` / `status='error'` on the datasource row. Optional for
+   * testability — production leaves this unset and the bridge falls back
+   * to `getEngine().registry`. See `event-bridge.error-healing.test.ts`.
+   */
+  registry?: BridgeRegistry;
+}
 
 export interface SyncEventBridgeHandle {
   /**
@@ -87,6 +112,7 @@ let _singletonCreated = false;
 
 export function createSyncEventBridge(
   handle: SupervisorHandle,
+  deps?: SyncEventBridgeDeps,
 ): SyncEventBridgeHandle {
   if (_singletonCreated) {
     throw new Error(
@@ -94,7 +120,7 @@ export function createSyncEventBridge(
     );
   }
   _singletonCreated = true;
-  return _createBridge(handle);
+  return _createBridge(handle, deps);
 }
 
 /**
@@ -106,10 +132,18 @@ export function createSyncEventBridge(
  */
 export function _createBridge(
   handle: SupervisorHandle,
+  deps?: SyncEventBridgeDeps,
 ): SyncEventBridgeHandle {
   const windows = new Set<BrowserWindow>();
   let disposed = false;
   let currentUnsubscribeEvents: (() => void) | null = null;
+
+  // Registry resolver — lazy so test invocations without `initEngine()`
+  // still succeed as long as the test never triggers `job-completed`.
+  // Production callers leave `deps.registry` unset and hit `getEngine()`.
+  function resolveRegistry(): BridgeRegistry {
+    return deps?.registry ?? getEngine().registry;
+  }
 
   // F-2: buffer the first sync-state-seed until a window registers.
   // Once delivered to ≥1 window, this is set to null and never replayed.
@@ -123,6 +157,11 @@ export function _createBridge(
   // Seeded from state-seed jobs; updated by job-enqueued; evicted on
   // terminal events to prevent unbounded growth.
   const jobKinds = new Map<string, "upload" | "sync">();
+
+  // Track jobId → datasourceId so `job-completed` (whose payload does NOT
+  // carry datasourceId) can heal that row's status back to "connected".
+  // Same lifecycle rules as `jobKinds`.
+  const jobDatasources = new Map<string, string>();
 
   // Reconnect attempt counter, used for service-reconnected payload.
   let reconnectAttempts = 0;
@@ -171,12 +210,36 @@ export function _createBridge(
       const name = frame.name as string;
       const payload = frame.payload as Record<string, unknown>;
 
-      // Track job kinds for upload-progress translation (task 7.8).
+      // Track job kinds + owning datasource on enqueue.
       if (name === "job-enqueued" && payload) {
         const jobId = payload["jobId"] as string | undefined;
         const kind = payload["kind"] as "upload" | "sync" | undefined;
+        const datasourceId = payload["datasourceId"] as string | undefined;
         if (jobId && kind) {
           jobKinds.set(jobId, kind);
+        }
+        if (jobId && datasourceId) {
+          jobDatasources.set(jobId, datasourceId);
+        }
+      }
+
+      // On job-completed: heal any stale error_reason / status='error' row.
+      // Only job-completed heals — job-failed and job-cancelled might
+      // represent a genuine failure we don't want to mask.
+      if (name === "job-completed" && payload) {
+        const jobId = payload["jobId"] as string | undefined;
+        if (jobId) {
+          const datasourceId = jobDatasources.get(jobId);
+          if (datasourceId) {
+            try {
+              resolveRegistry().setStatus(datasourceId, "connected");
+            } catch (err) {
+              console.warn(
+                "[sync-event-bridge] healing datasource status failed:",
+                err,
+              );
+            }
+          }
         }
       }
 
@@ -186,7 +249,10 @@ export function _createBridge(
         payload
       ) {
         const jobId = payload["jobId"] as string | undefined;
-        if (jobId) jobKinds.delete(jobId);
+        if (jobId) {
+          jobKinds.delete(jobId);
+          jobDatasources.delete(jobId);
+        }
       }
 
       // Upload-progress translation: job-progress for upload jobs →
@@ -244,10 +310,13 @@ export function _createBridge(
         (j) => ACTIVE_STATUSES.has(j.status),
       );
 
-      // Seed the job-kind map from the state snapshot.
+      // Seed the job-kind + owning-datasource maps from the state snapshot.
       for (const j of jobs) {
         if (j.kind === "upload" || j.kind === "sync") {
           jobKinds.set(j.id, j.kind as "upload" | "sync");
+        }
+        if (j.datasourceId) {
+          jobDatasources.set(j.id, j.datasourceId);
         }
       }
 

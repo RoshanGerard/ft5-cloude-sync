@@ -529,6 +529,32 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
   useEffect(() => {
     const syncApi = window.api?.sync;
     if (!syncApi) return;
+
+    // Pull the initial state via request-response in addition to
+    // subscribing to the pushed sync-state-seed event. The pushed event
+    // races the renderer's ipcRenderer.on() subscription — on a fresh
+    // desktop relaunch with an already-warm service, the main-process
+    // handshake can complete and broadcast the seed BEFORE React has
+    // mounted this effect, so the seed is silently dropped. The pull
+    // path below has guaranteed delivery (IPC request-response waits on
+    // the sender side) and lets the renderer recover on its own clock.
+    void (async () => {
+      try {
+        const res = await syncApi.listJobs({
+          filter: {
+            statuses: ["running", "queued", "waiting-network"],
+          },
+        });
+        if (!mountedRef.current) return;
+        dispatchJobs({
+          type: "sync/state-seed",
+          payload: { jobs: res.jobs },
+        });
+      } catch (err) {
+        console.warn("[sync] initial listJobs failed:", err);
+      }
+    })();
+
     const unsubscribe = syncApi.onEvent((event: SyncEvent) => {
       if (!mountedRef.current) return;
       switch (event.kind) {
@@ -546,6 +572,12 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
           return;
         case "job-completed":
           dispatchJobs({ type: "sync/job-completed", payload: event.payload });
+          // Re-fetch datasource summaries so status/errorReason healed by
+          // the main-process event-bridge (setStatus(id, "connected") on
+          // job-completed) appears on the card. Without this the card
+          // keeps showing stale `error_reason` from before the healing
+          // write landed.
+          void refresh();
           return;
         case "job-failed":
           dispatchJobs({ type: "sync/job-failed", payload: event.payload });
@@ -569,7 +601,9 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
       }
     });
     return unsubscribe;
-  }, []);
+    // refresh is reference-stable (useCallback with []), so including it
+    // here won't cause re-subscription.
+  }, [refresh]);
 
   const actions = useMemo<DatasourceActions>(
     () => ({ refresh, add, remove, action, upload }),
