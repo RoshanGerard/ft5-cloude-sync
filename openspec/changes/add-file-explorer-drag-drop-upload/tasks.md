@@ -4,11 +4,11 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 1. Contract extensions (@ft5/ipc-contracts)
 
-- [ ] 1.1 Add `FilesUploadRequest` / `FilesUploadResponse` to `packages/ipc-contracts/src/files.ts` with the discriminated envelope shape (`{ ok: true; value: { jobId: string } } | { ok: false; error: { tag, message, retryable } }`). Export via the package barrel.
-- [ ] 1.2 Add `DatasourcesPickFilesRequest` (empty object) / `DatasourcesPickFilesResponse` (`{ filePaths: readonly string[]; canceled: boolean }`) to `packages/ipc-contracts/src/datasources.ts`. Export via the package barrel.
-- [ ] 1.3 Remove `DatasourcesUploadRequest` / `DatasourcesUploadResponse` types and any re-exports. Update the `.test-d.ts` surface assertions.
-- [ ] 1.4 Add a test in `packages/ipc-contracts/src/__tests__/files.test-d.ts` that asserts `FilesUploadRequest` and `FilesUploadResponse` match the spec shape exactly (use `expectTypeOf`).
-- [ ] 1.5 Update `packages/ipc-contracts/src/__tests__/datasources.test-d.ts` to assert `upload` is NOT a member of the datasources surface and `pickFilesToUpload` IS, with the correct request/response shapes.
+- [x] 1.1 Add `FilesUploadRequest` / `FilesUploadResponse` to `packages/ipc-contracts/src/files.ts` with the discriminated envelope shape (`{ ok: true; value: { jobId: string } } | { ok: false; error: { tag, message, retryable } }`). Export via the package barrel.
+- [x] 1.2 Add `DatasourcesPickFilesRequest` (empty object) / `DatasourcesPickFilesResponse` (`{ filePaths: readonly string[]; canceled: boolean }`) to `packages/ipc-contracts/src/datasources.ts`. Export via the package barrel.
+- [x] 1.3 Remove `DatasourcesUploadRequest` / `DatasourcesUploadResponse` types and any re-exports. Update the `.test-d.ts` surface assertions.
+- [x] 1.4 Add a test in `packages/ipc-contracts/src/__tests__/files.test-d.ts` that asserts `FilesUploadRequest` and `FilesUploadResponse` match the spec shape exactly (use `expectTypeOf`).
+- [x] 1.5 Update `packages/ipc-contracts/src/__tests__/datasources.test-d.ts` to assert `upload` is NOT a member of the datasources surface and `pickFilesToUpload` IS, with the correct request/response shapes.
 
 ## 2. Main-process IPC handlers (apps/desktop/src/main/ipc)
 

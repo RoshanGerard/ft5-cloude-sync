@@ -12,11 +12,11 @@ import type {
   DatasourcesAddResponse,
   DatasourcesListRequest,
   DatasourcesListResponse,
+  DatasourcesPickFilesRequest,
+  DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
   DatasourcesUploadProgressEvent,
-  DatasourcesUploadRequest,
-  DatasourcesUploadResponse,
   ProviderCapabilities,
   ProviderDescriptor,
   ProviderId,
@@ -191,9 +191,12 @@ describe("ipc-contracts datasources request/response pairs", () => {
     expect(res.datasource.status).toBe("syncing");
   });
 
-  it("upload: { datasourceId } request, { transactionId } response, progress event shape", () => {
-    const req: DatasourcesUploadRequest = { datasourceId: "ds-1" };
-    const res: DatasourcesUploadResponse = { transactionId: "tx-1" };
+  it("uploadProgress event shape survives (channel stays for per-job progress streaming)", () => {
+    // Retired by `add-file-explorer-drag-drop-upload`: the request/response
+    // types `DatasourcesUploadRequest` / `DatasourcesUploadResponse`. The
+    // renderer now dispatches uploads through `files.upload` (→ sync-service
+    // `sync:enqueue-upload`). The `uploadProgress` channel, however, remains
+    // the transport for per-job progress notifications.
     const progressUploading: DatasourcesUploadProgressEvent = {
       transactionId: "tx-1",
       bytesUploaded: 5,
@@ -213,21 +216,54 @@ describe("ipc-contracts datasources request/response pairs", () => {
       status: "failed",
       error: "network error",
     };
-    expect(req.datasourceId).toBe("ds-1");
-    expect(res.transactionId).toBe("tx-1");
     expect(progressUploading.status).toBe("uploading");
     expect(progressDone.status).toBe("completed");
     expect(progressFailed.error).toBe("network error");
   });
+
+  it("pickFilesToUpload: empty-object request, { filePaths, canceled } response", () => {
+    // `datasources:pick-files-to-upload` is the new main-process dialog
+    // handler introduced by `add-file-explorer-drag-drop-upload`. The
+    // renderer calls it to open the native "Open File" multi-select dialog
+    // and receives back the absolute OS paths (or `canceled: true` when
+    // the user dismissed the dialog).
+    const req: DatasourcesPickFilesRequest = {};
+    const picked: DatasourcesPickFilesResponse = {
+      filePaths: ["C:/Users/me/a.pdf", "C:/Users/me/b.pdf"],
+      canceled: false,
+    };
+    const dismissed: DatasourcesPickFilesResponse = {
+      filePaths: [],
+      canceled: true,
+    };
+    expect(Object.keys(req)).toHaveLength(0);
+    expect(picked.filePaths).toHaveLength(2);
+    expect(dismissed.canceled).toBe(true);
+
+    expectTypeOf<DatasourcesPickFilesRequest>().toEqualTypeOf<
+      Record<string, never>
+    >();
+    expectTypeOf<DatasourcesPickFilesResponse>().toEqualTypeOf<{
+      filePaths: readonly string[];
+      canceled: boolean;
+    }>();
+  });
 });
 
 describe("ipc-contracts datasources channel names", () => {
-  it("DATASOURCES_CHANNELS exposes exactly the seven expected channels", () => {
+  it("DATASOURCES_CHANNELS exposes exactly the seven expected channels and excludes retired upload", () => {
+    // `upload: "datasources:upload"` was retired by
+    // `add-file-explorer-drag-drop-upload` — the renderer now dispatches
+    // uploads through `files.upload`. `uploadProgress` stays: it's still the
+    // transport for per-job progress events. The new dialog channel
+    // `pickFilesToUpload` takes the retired slot.
     expect(DATASOURCES_CHANNELS.list).toBe("datasources:list");
     expect(DATASOURCES_CHANNELS.add).toBe("datasources:add");
     expect(DATASOURCES_CHANNELS.remove).toBe("datasources:remove");
     expect(DATASOURCES_CHANNELS.action).toBe("datasources:action");
-    expect(DATASOURCES_CHANNELS.upload).toBe("datasources:upload");
+    expect(DATASOURCES_CHANNELS.pickFilesToUpload).toBe(
+      "datasources:pick-files-to-upload",
+    );
     expect(DATASOURCES_CHANNELS.uploadProgress).toBe(
       "datasources:upload:progress",
     );
@@ -238,10 +274,32 @@ describe("ipc-contracts datasources channel names", () => {
         "add",
         "event",
         "list",
+        "pickFilesToUpload",
         "remove",
-        "upload",
         "uploadProgress",
       ].sort(),
     );
+    // `upload` MUST NOT be a member of the channel surface.
+    expect(
+      Object.prototype.hasOwnProperty.call(DATASOURCES_CHANNELS, "upload"),
+    ).toBe(false);
+  });
+
+  it("DATASOURCES_CHANNELS key set (type-level) excludes 'upload'", () => {
+    // Type-level guard: `"upload"` must NOT be assignable to the key union.
+    // `extends` check: the expression below is `never` iff `"upload"` is
+    // absent from the keys (distributive conditional over a single literal
+    // reduces to the same `never` either way). `toEqualTypeOf<never>` is
+    // the canonical way to assert a conditional type collapsed to `never`.
+    type HasUpload = "upload" extends keyof typeof DATASOURCES_CHANNELS
+      ? true
+      : never;
+    expectTypeOf<HasUpload>().toEqualTypeOf<never>();
+
+    type HasPickFilesToUpload =
+      "pickFilesToUpload" extends keyof typeof DATASOURCES_CHANNELS
+        ? true
+        : never;
+    expectTypeOf<HasPickFilesToUpload>().toEqualTypeOf<true>();
   });
 });
