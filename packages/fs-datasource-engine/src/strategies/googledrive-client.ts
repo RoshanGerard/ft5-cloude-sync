@@ -96,6 +96,13 @@ import { DatasourceError } from "@ft5/ipc-contracts";
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
 import type { ProviderFactoryFn } from "../factory.js";
 
+// ESM shim. This package is "type": "module", so bare `require` is not in
+// scope. `createDefaultDriveFactory` below uses `require("googleapis")` to
+// lazy-load the SDK (keeps unit tests from pulling it in); that call needs
+// a `require` in module scope — hence this line.
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+
 // ---------------------------------------------------------------------------
 // Drive SDK duck-typing — `GoogleDriveClientLike`
 // ---------------------------------------------------------------------------
