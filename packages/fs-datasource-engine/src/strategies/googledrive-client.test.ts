@@ -22,6 +22,7 @@
 //   specific to Drive (ambiguous + ambiguousSiblings populated on the
 //   resolved entry's providerMetadata).
 
+import { createHash } from "node:crypto";
 import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1142,6 +1143,127 @@ describe("GoogleDriveClient — authenticate", () => {
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0]!;
     expect(String(call[0])).toMatch(/oauth2\.googleapis\.com\/token$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PKCE (RFC 7636, S256) — add-drive-oauth-browser-consent, Group 3
+// ---------------------------------------------------------------------------
+//
+// The authorize URL carries `code_challenge_method=S256` + a `code_challenge`
+// derived from a freshly-generated `code_verifier`. The verifier is captured
+// inside the `completeWith` closure and threaded into the token exchange as
+// a `code_verifier` form field. A test-only `codeVerifier` property on the
+// returned intent lets tests inspect the verifier that the implementation
+// generated; it must NEVER appear in any persisted or logged surface.
+
+describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
+  /** Helper — read the test-only `codeVerifier` property on the intent. */
+  function readVerifier(intent: OAuthIntent): string {
+    const v = (intent as OAuthIntent & { codeVerifier?: unknown }).codeVerifier;
+    if (typeof v !== "string") {
+      throw new Error(
+        "expected test-only `codeVerifier` string on OAuth intent",
+      );
+    }
+    return v;
+  }
+
+  function base64urlSha256(input: string): string {
+    return createHash("sha256").update(input).digest("base64url");
+  }
+
+  it("Authorize URL carries S256 challenge parameters", async () => {
+    const { client } = makeFakeDrive({});
+    const h = makeHarness({ drive: client });
+    const intent = (await h.client.authenticate()) as OAuthIntent;
+    const url = new URL(intent.authorizeUrl);
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    const challenge = url.searchParams.get("code_challenge");
+    expect(typeof challenge).toBe("string");
+    // Challenge is base64url-encoded SHA256 → 43 chars, no padding.
+    expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const verifier = readVerifier(intent);
+    // Verifier is 48 bytes base64url → 64 chars.
+    expect(verifier).toMatch(/^[A-Za-z0-9_-]{64}$/);
+    expect(challenge).toBe(base64urlSha256(verifier));
+  });
+
+  it("Verifier threads into the token exchange", async () => {
+    const { client } = makeFakeDrive({});
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "pkce-at",
+          refresh_token: "pkce-rt",
+          expires_in: 3600,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({ drive: client, fetchImpl });
+    const intent = (await h.client.authenticate()) as OAuthIntent;
+    const verifier = readVerifier(intent);
+    await intent.completeWith("auth-code-abc");
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0]!;
+    expect(String(call[0])).toMatch(/oauth2\.googleapis\.com\/token$/);
+    const body = String((call[1] as { body: string }).body);
+    const form = new URLSearchParams(body);
+    const codeVerifierValues = form.getAll("code_verifier");
+    expect(codeVerifierValues).toHaveLength(1);
+    expect(codeVerifierValues[0]).toBe(verifier);
+  });
+
+  it("Fresh verifier per call", async () => {
+    const { client } = makeFakeDrive({});
+    const h = makeHarness({ drive: client });
+    const intent1 = (await h.client.authenticate()) as OAuthIntent;
+    const intent2 = (await h.client.authenticate()) as OAuthIntent;
+    const challenge1 = new URL(intent1.authorizeUrl).searchParams.get(
+      "code_challenge",
+    );
+    const challenge2 = new URL(intent2.authorizeUrl).searchParams.get(
+      "code_challenge",
+    );
+    expect(challenge1).toBeTruthy();
+    expect(challenge2).toBeTruthy();
+    expect(challenge1).not.toBe(challenge2);
+    const verifier1 = readVerifier(intent1);
+    const verifier2 = readVerifier(intent2);
+    expect(verifier1).not.toBe(verifier2);
+  });
+
+  it("Verifier is never stored or logged", async () => {
+    const { client } = makeFakeDrive({});
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "pkce-at-2",
+          refresh_token: "pkce-rt-2",
+          expires_in: 3600,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({ drive: client, fetchImpl });
+    const intent = (await h.client.authenticate()) as OAuthIntent;
+    const verifier = readVerifier(intent);
+    const authResult = await intent.completeWith("auth-code-xyz");
+    // The AuthResult returned from the completeWith closure MUST NOT
+    // contain the verifier at any nesting depth.
+    expect(JSON.stringify(authResult)).not.toContain(verifier);
+    // A StoredCredentials built from that AuthResult (mirroring what
+    // CredentialStore.put would persist) MUST also not contain it.
+    const stored: StoredCredentials = {
+      providerId: "google-drive",
+      authResult,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    expect(JSON.stringify(stored)).not.toContain(verifier);
+    // authResult.meta round-trips only OAuth config, not secrets.
+    expect(JSON.stringify(authResult.meta ?? {})).not.toContain(verifier);
   });
 });
 
