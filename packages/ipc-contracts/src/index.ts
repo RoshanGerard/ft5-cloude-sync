@@ -45,6 +45,7 @@ export type {
   FilesRemoveEntryResult,
   FilesRemoveRequest,
   FilesRemoveResponse,
+  FilesRemoveTarget,
   FilesRemoveValue,
   FilesRenameRequest,
   FilesRenameResponse,
