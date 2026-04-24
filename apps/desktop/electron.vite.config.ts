@@ -9,7 +9,24 @@ import { resolve } from "node:path";
 // through electron-vite would duplicate work and fight the Next toolchain.
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [
+      // Externalize runtime deps EXCEPT the engine and its provider SDK
+      // chain. The engine pulls in `@aws-sdk/*` (which transitively pulls
+      // ~50 `@smithy/*` packages) and `googleapis` — pnpm's content-
+      // addressable store keeps these under `<repo>/node_modules/.pnpm/`,
+      // OUTSIDE this workspace's `node_modules/`. electron-builder's
+      // file walker only sees the desktop workspace tree, so externalized
+      // requires fail at packaged runtime with `Cannot find module
+      // '@smithy/util-buffer-from'` (and similar). Bundling the engine
+      // pulls all transitives into `dist/main/index.js` so there's no
+      // runtime resolution to miss. Native modules + electron itself
+      // remain externalized — those need to be loaded via host bindings.
+      externalizeDepsPlugin({
+        exclude: [
+          "@ft5/fs-datasource-engine",
+        ],
+      }),
+    ],
     build: {
       outDir: "dist/main",
       lib: {
