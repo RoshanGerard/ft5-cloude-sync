@@ -42,6 +42,7 @@ export function useExplorerData(
 
     store.setLoading(true);
     store.setError(null);
+    store.setErrorTag(null);
 
     let cancelled = false;
 
@@ -57,10 +58,8 @@ export function useExplorerData(
           store.setEntries(response.value.entries);
           store.setLoading(false);
         } else {
-          // Section 5.2 wires tagged-state routing; for now surface the
-          // envelope's message as a string so the existing `lastError`
-          // branch continues to render.
           store.setError(response.error.message);
+          store.setErrorTag(response.error.tag);
           store.setLoading(false);
         }
       })
@@ -70,11 +69,17 @@ export function useExplorerData(
         const message =
           error instanceof Error ? error.message : String(error);
         store.setError(message);
+        // Thrown errors (e.g. ipcRenderer reject) don't carry a tag; treat
+        // as "other" so the UI falls back to the generic error surface
+        // rather than one of the tagged state components.
+        store.setErrorTag("other");
         store.setLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [store, datasourceId, state.currentPath]);
+    // `refetchToken` is included so `store.retryLoad()` re-runs the effect
+    // even when `currentPath` has not changed.
+  }, [store, datasourceId, state.currentPath, state.refetchToken]);
 }

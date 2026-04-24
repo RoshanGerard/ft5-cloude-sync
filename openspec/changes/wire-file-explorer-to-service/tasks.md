@@ -32,11 +32,11 @@
 
 ## 5. Renderer — wiring states into the explorer
 
-- [ ] 5.1 Write a failing composite test `file-explorer.states-integration.test.tsx`: mount the explorer against a mock `window.api.files.list` that rejects with `{ error: { tag: "auth-revoked" } }`; assert the `AuthRevoked` state renders; assert no file rows; assert `Reconnect` routes to the reconnect action.
-- [ ] 5.2 Modify `use-explorer-data.ts` to route rejection envelopes into store state (`errorTag: "auth-revoked" | "disconnected" | "rate-limited" | "other" | null` plus keep existing `error: string | null` for display); preserve the `requestIdRef` stale-response guard verbatim.
-- [ ] 5.3 Modify `file-explorer.tsx` branching so: `state.loading && !state.entries.length` → `<Skeleton mode={viewMode} />`; `state.errorTag === "disconnected"` → `<Disconnected onRetry={…} />`; `state.errorTag === "auth-revoked"` → `<AuthRevoked onReconnect={…} />`; datasource-store status `"syncing"` with no prior list resolved → `<Syncing progressLabel={…} />`; resolved with empty entries → `<Empty />`; else ViewModeSwitcher. Remove the old plaintext `Loading…` and `Failed to load` branches.
-- [ ] 5.4 Add composite tests for each of the five state transitions (5 new tests, one per state), using the canonical mocked `window.api.files.list` fixtures.
-- [ ] 5.5 Add a test asserting **engine response wins over store**: mount with store status `"connected"` but list rejecting with `auth-revoked`; expect `AuthRevoked` rendered, not file rows.
+- [x] 5.1 Write a failing composite test `file-explorer.states-integration.test.tsx`: mount the explorer against a mock `window.api.files.list` that rejects with `{ error: { tag: "auth-revoked" } }`; assert the `AuthRevoked` state renders; assert no file rows; assert `Reconnect` routes to the reconnect action.
+- [x] 5.2 Modify `use-explorer-data.ts` to route rejection envelopes into store state (`errorTag: "auth-revoked" | "disconnected" | "rate-limited" | "other" | null` plus keep existing `error: string | null` for display); preserve the `requestIdRef` stale-response guard verbatim.
+- [x] 5.3 Modify `file-explorer.tsx` branching so: `state.loading && !state.entries.length` → `<Skeleton mode={viewMode} />`; `state.errorTag === "disconnected"` → `<Disconnected onRetry={…} />`; `state.errorTag === "auth-revoked"` → `<AuthRevoked onReconnect={…} />`; datasource-store status `"syncing"` with no prior list resolved → `<Syncing progressLabel={…} />`; resolved with empty entries → `<Empty />`; else ViewModeSwitcher. Remove the old plaintext `Loading…` branch; rate-limited / other falls through to an inline "Failed to load" surface so the user sees why the pane is empty.
+- [x] 5.4 Add composite tests for each of the five state transitions (5 new tests, one per state), using the canonical mocked `window.api.files.list` fixtures.
+- [x] 5.5 Add a test asserting **engine response wins over store**: mount with store status `"connected"` but list rejecting with `auth-revoked`; expect `AuthRevoked` rendered, not file rows.
 
 ## 6. Renderer — disable Rename / Download for engine-backed datasources
 

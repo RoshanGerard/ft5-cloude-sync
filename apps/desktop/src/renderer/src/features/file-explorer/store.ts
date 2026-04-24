@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import type {
   FileEntry,
   FilesDownloadResponse,
+  FilesErrorTag,
   FilesRemoveResponse,
   FilesRenameResponse,
 } from "@ft5/ipc-contracts";
@@ -81,6 +82,19 @@ export interface ExplorerState {
   entries: FileEntry[];
   loading: boolean;
   error: string | null;
+  /**
+   * Tag carried alongside `error` when the list response was a tagged
+   * envelope rejection. Drives the renderer's state-component selection
+   * in `file-explorer.tsx` so the renderer picks the right full-replace
+   * pattern (disconnected / auth-revoked / rate-limited / other) without
+   * string-matching `error`.
+   */
+  errorTag: FilesErrorTag | null;
+  /**
+   * Monotonic counter bumped by `retryLoad()` to trigger a re-fetch in
+   * `useExplorerData` without changing `currentPath`. Starts at 0.
+   */
+  refetchToken: number;
   selection: Set<string>;
   lastSelectedId: string | null;
   sortBy: SortBy;
@@ -136,6 +150,14 @@ export interface ExplorerStore {
   setEntries(entries: FileEntry[]): void;
   setLoading(loading: boolean): void;
   setError(error: string | null): void;
+  setErrorTag(tag: FilesErrorTag | null): void;
+  /**
+   * Bump `refetchToken` to re-dispatch the list IPC for the current
+   * folder. Used by the disconnected-state's Retry button; does NOT
+   * clear existing state (`useExplorerData` sets loading / error
+   * before the new dispatch per normal effect sequencing).
+   */
+  retryLoad(): void;
 
   // Details pane
   toggleDetailsPane(): void;
@@ -273,6 +295,8 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     entries: [],
     loading: false,
     error: null,
+    errorTag: null,
+    refetchToken: 0,
     selection: new Set<string>(),
     lastSelectedId: null,
     sortBy: prefs.sortBy,
@@ -548,6 +572,14 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
 
   function setError(error: string | null): void {
     set({ ...state, error }, false);
+  }
+
+  function setErrorTag(errorTag: FilesErrorTag | null): void {
+    set({ ...state, errorTag }, false);
+  }
+
+  function retryLoad(): void {
+    set({ ...state, refetchToken: state.refetchToken + 1 }, false);
   }
 
   // --- Details pane ------------------------------------------------------
@@ -923,6 +955,8 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     setEntries,
     setLoading,
     setError,
+    setErrorTag,
+    retryLoad,
     toggleDetailsPane,
     startPendingOp,
     clearPendingOp,
