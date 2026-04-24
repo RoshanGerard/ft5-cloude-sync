@@ -1,6 +1,8 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
+import type { DatasourceErrorTag } from "../fs-datasource-engine.js";
 import type {
+  ConsentEvent,
   CredentialsSchema,
   DatasourceAction,
   DatasourceStatus,
@@ -10,13 +12,18 @@ import type {
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
+  DatasourcesCancelConsentRequest,
+  DatasourcesCancelConsentResponse,
   DatasourcesListRequest,
   DatasourcesListResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
+  DatasourcesStartConsentRequest,
+  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   DatasourcesUploadRequest,
   DatasourcesUploadResponse,
+  ErroredDatasourceSummary,
   ProviderCapabilities,
   ProviderDescriptor,
   ProviderId,
@@ -45,6 +52,7 @@ describe("ipc-contracts datasources status and usage types", () => {
       status: "connected",
       lastSyncAt: Date.now(),
       itemCount: 42,
+      errorKind: null,
     };
     expect(sample.id).toBe("ds-1");
     expect(sample.status).toBe("connected");
@@ -58,6 +66,7 @@ describe("ipc-contracts datasources status and usage types", () => {
     const withError: DatasourceSummary = {
       ...sample,
       status: "error",
+      errorKind: "auth-revoked",
       errorReason: "Token expired",
     };
     expect(withError.errorReason).toBe("Token expired");
@@ -156,6 +165,7 @@ describe("ipc-contracts datasources request/response pairs", () => {
         status: "connected",
         lastSyncAt: null,
         itemCount: 0,
+        errorKind: null,
       },
     };
     expect(req.providerId).toBe("google-drive");
@@ -185,6 +195,7 @@ describe("ipc-contracts datasources request/response pairs", () => {
         status: "syncing",
         lastSyncAt: null,
         itemCount: 1,
+        errorKind: null,
       },
     };
     expect(req.action).toBe("sync-now");
@@ -222,7 +233,7 @@ describe("ipc-contracts datasources request/response pairs", () => {
 });
 
 describe("ipc-contracts datasources channel names", () => {
-  it("DATASOURCES_CHANNELS exposes exactly the seven expected channels", () => {
+  it("DATASOURCES_CHANNELS exposes the expected channels (incl. consent)", () => {
     expect(DATASOURCES_CHANNELS.list).toBe("datasources:list");
     expect(DATASOURCES_CHANNELS.add).toBe("datasources:add");
     expect(DATASOURCES_CHANNELS.remove).toBe("datasources:remove");
@@ -232,16 +243,168 @@ describe("ipc-contracts datasources channel names", () => {
       "datasources:upload:progress",
     );
     expect(DATASOURCES_CHANNELS.event).toBe("datasources:event");
+    expect(DATASOURCES_CHANNELS.startConsent).toBe("datasources:start-consent");
+    expect(DATASOURCES_CHANNELS.cancelConsent).toBe(
+      "datasources:cancel-consent",
+    );
     expect(Object.keys(DATASOURCES_CHANNELS).sort()).toEqual(
       [
         "action",
         "add",
+        "cancelConsent",
         "event",
         "list",
         "remove",
+        "startConsent",
         "upload",
         "uploadProgress",
       ].sort(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-drive-oauth-browser-consent — Group 2 (tasks 2.1–2.4)
+// ---------------------------------------------------------------------------
+
+describe("ipc-contracts datasources startConsent / cancelConsent request-response (task 2.1, 2.2)", () => {
+  it("DatasourcesStartConsentRequest is exactly { providerId: string; datasourceId?: string }", () => {
+    expectTypeOf<DatasourcesStartConsentRequest>().toEqualTypeOf<{
+      providerId: string;
+      datasourceId?: string;
+    }>();
+  });
+
+  it("DatasourcesStartConsentResponse is exactly { sessionId: string }", () => {
+    expectTypeOf<DatasourcesStartConsentResponse>().toEqualTypeOf<{
+      sessionId: string;
+    }>();
+  });
+
+  it("DatasourcesCancelConsentRequest is exactly { sessionId: string }", () => {
+    expectTypeOf<DatasourcesCancelConsentRequest>().toEqualTypeOf<{
+      sessionId: string;
+    }>();
+  });
+
+  it("DatasourcesCancelConsentResponse is void", () => {
+    expectTypeOf<DatasourcesCancelConsentResponse>().toEqualTypeOf<void>();
+  });
+});
+
+describe("ipc-contracts ConsentEvent union (task 2.3)", () => {
+  it("ConsentEvent includes consent-started with optional datasourceId", () => {
+    const e: ConsentEvent = {
+      event: "consent-started",
+      sessionId: "sess-1",
+    };
+    const withId: ConsentEvent = {
+      event: "consent-started",
+      sessionId: "sess-1",
+      datasourceId: "ds-1",
+    };
+    expect(e.event).toBe("consent-started");
+    expect(withId.datasourceId).toBe("ds-1");
+  });
+
+  it("ConsentEvent includes consent-completed with REQUIRED datasourceId", () => {
+    const e: ConsentEvent = {
+      event: "consent-completed",
+      sessionId: "sess-1",
+      datasourceId: "ds-1",
+    };
+    expect(e.datasourceId).toBe("ds-1");
+    // Narrowing: when event === "consent-completed", datasourceId is required (not optional).
+    type CompletedVariant = Extract<ConsentEvent, { event: "consent-completed" }>;
+    expectTypeOf<CompletedVariant["datasourceId"]>().toEqualTypeOf<string>();
+  });
+
+  it("ConsentEvent includes consent-cancelled with only sessionId", () => {
+    const e: ConsentEvent = { event: "consent-cancelled", sessionId: "sess-1" };
+    expect(e.event).toBe("consent-cancelled");
+  });
+
+  it("ConsentEvent includes consent-failed with tag and optional message", () => {
+    const e: ConsentEvent = {
+      event: "consent-failed",
+      sessionId: "sess-1",
+      tag: "auth-revoked",
+    };
+    const withMsg: ConsentEvent = {
+      event: "consent-failed",
+      sessionId: "sess-1",
+      tag: "provider-error",
+      message: "token endpoint 500",
+    };
+    type FailedVariant = Extract<ConsentEvent, { event: "consent-failed" }>;
+    expectTypeOf<FailedVariant["tag"]>().toEqualTypeOf<DatasourceErrorTag>();
+    expectTypeOf<FailedVariant["message"]>().toEqualTypeOf<string | undefined>();
+    expect(e.tag).toBe("auth-revoked");
+    expect(withMsg.message).toBe("token endpoint 500");
+  });
+
+  it("ConsentEvent includes consent-timeout with only sessionId", () => {
+    const e: ConsentEvent = { event: "consent-timeout", sessionId: "sess-1" };
+    expect(e.event).toBe("consent-timeout");
+  });
+
+  it("ConsentEvent discriminates on `event` across all five variants", () => {
+    type Events = ConsentEvent["event"];
+    expectTypeOf<Events>().toEqualTypeOf<
+      | "consent-started"
+      | "consent-completed"
+      | "consent-cancelled"
+      | "consent-failed"
+      | "consent-timeout"
+    >();
+  });
+});
+
+describe("ipc-contracts DatasourceSummary.errorKind (task 2.4)", () => {
+  it("errorKind is a required field typed as DatasourceErrorTag | null", () => {
+    expectTypeOf<DatasourceSummary["errorKind"]>().toEqualTypeOf<
+      DatasourceErrorTag | null
+    >();
+    // Required: key must be present in the resolved type.
+    type Keys = keyof DatasourceSummary;
+    expectTypeOf<"errorKind" extends Keys ? true : false>().toEqualTypeOf<true>();
+  });
+
+  it("ErroredDatasourceSummary narrows errorKind to non-null DatasourceErrorTag", () => {
+    expectTypeOf<ErroredDatasourceSummary["status"]>().toEqualTypeOf<"error">();
+    expectTypeOf<ErroredDatasourceSummary["errorKind"]>().toEqualTypeOf<
+      DatasourceErrorTag
+    >();
+    // Narrowed variant is assignable back to the base summary (structural
+    // compatibility is the whole point — the renderer can hand an
+    // `ErroredDatasourceSummary` to any code that expects `DatasourceSummary`).
+    expectTypeOf<ErroredDatasourceSummary>().toMatchTypeOf<DatasourceSummary>();
+  });
+
+  it("healthy summary has errorKind === null at the type level", () => {
+    const healthy: DatasourceSummary = {
+      id: "ds-1",
+      displayName: "Drive",
+      providerId: "google-drive",
+      status: "connected",
+      lastSyncAt: null,
+      itemCount: 0,
+      errorKind: null,
+    };
+    expect(healthy.errorKind).toBeNull();
+  });
+
+  it("errored summary carries one of the engine tag values on errorKind", () => {
+    const errored: DatasourceSummary = {
+      id: "ds-1",
+      displayName: "Drive",
+      providerId: "google-drive",
+      status: "error",
+      lastSyncAt: null,
+      itemCount: 0,
+      errorKind: "auth-revoked",
+      errorReason: "Token expired",
+    };
+    expect(errored.errorKind).toBe("auth-revoked");
   });
 });

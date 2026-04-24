@@ -4,9 +4,13 @@ import type {
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
+  DatasourcesCancelConsentRequest,
+  DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
+  DatasourcesStartConsentRequest,
+  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   DatasourcesUploadRequest,
   DatasourcesUploadResponse,
@@ -74,6 +78,12 @@ declare global {
         upload(
           req: DatasourcesUploadRequest,
         ): Promise<DatasourcesUploadResponse>;
+        startConsent(
+          req: DatasourcesStartConsentRequest,
+        ): Promise<DatasourcesStartConsentResponse>;
+        cancelConsent(
+          req: DatasourcesCancelConsentRequest,
+        ): Promise<DatasourcesCancelConsentResponse>;
         onUploadProgress(
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,

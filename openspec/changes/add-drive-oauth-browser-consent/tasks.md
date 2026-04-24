@@ -6,11 +6,11 @@
 
 ## 2. IPC contracts (`packages/ipc-contracts`)
 
-- [ ] 2.1 Write failing type test in `packages/ipc-contracts/src/__tests__/datasources.test-d.ts` asserting `DatasourcesStartConsentRequest === { providerId: string; datasourceId?: string }` and `DatasourcesStartConsentResponse === { sessionId: string }` and their symmetric presence on `window.api.datasources.startConsent`.
-- [ ] 2.2 Write failing type test asserting `DatasourcesCancelConsentRequest === { sessionId: string }` and response is `void`.
-- [ ] 2.3 Write failing type test asserting the `DatasourceEvent` union contains the five consent variants (`consent-started`, `consent-completed`, `consent-cancelled`, `consent-failed`, `consent-timeout`) with the payload shapes specified in `datasources-ui` delta.
-- [ ] 2.4 Write failing type test asserting `DatasourceSummary` has `errorKind: DatasourceErrorTag | null` and that `errorKind` is required-when-errored (discriminated union variants narrow the type).
-- [ ] 2.5 Add the request/response/event types to `packages/ipc-contracts/src/datasources.ts`; add `errorKind` to `DatasourceSummary`. Rerun the type tests — they pass. Contract-level Vitest suite runs green (`pnpm -F @ft5/ipc-contracts test`).
+- [x] 2.1 Write failing type test in `packages/ipc-contracts/src/__tests__/datasources.test-d.ts` asserting `DatasourcesStartConsentRequest === { providerId: string; datasourceId?: string }` and `DatasourcesStartConsentResponse === { sessionId: string }` and their symmetric presence on `window.api.datasources.startConsent`.
+- [x] 2.2 Write failing type test asserting `DatasourcesCancelConsentRequest === { sessionId: string }` and response is `void`.
+- [x] 2.3 Write failing type test asserting the `DatasourceEvent` union contains the five consent variants (`consent-started`, `consent-completed`, `consent-cancelled`, `consent-failed`, `consent-timeout`) with the payload shapes specified in `datasources-ui` delta.
+- [x] 2.4 Write failing type test asserting `DatasourceSummary` has `errorKind: DatasourceErrorTag | null` and that `errorKind` is required-when-errored (discriminated union variants narrow the type).
+- [x] 2.5 Add the request/response/event types to `packages/ipc-contracts/src/datasources.ts`; add `errorKind` to `DatasourceSummary`. Rerun the type tests — they pass. Contract-level Vitest suite runs green (`pnpm -F @ft5/ipc-contracts test`).
 
 ## 3. Engine PKCE (`packages/fs-datasource-engine`)
 
