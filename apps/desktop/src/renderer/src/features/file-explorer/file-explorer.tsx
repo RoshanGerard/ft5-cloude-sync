@@ -26,8 +26,9 @@
 //     succeeds regardless of the active mode.
 //
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 import type { FileEntry, FilesRemoveTarget } from "@ft5/ipc-contracts";
 
@@ -37,9 +38,14 @@ import { Icon } from "@/components/icon";
 import { Breadcrumb } from "./breadcrumb";
 import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
 import { DetailsPane } from "./details-pane";
+import { DropZone, type DropZoneStatus } from "./drop-zone";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
 import { ProviderKindContext } from "./provider-kind-context";
+import type {
+  ConflictResolver,
+  UploadToaster,
+} from "./use-upload-orchestrator";
 import {
   SearchResults,
   isEngineBacked,
@@ -80,6 +86,22 @@ export interface FileExplorerProps {
    * entries the engine response wins regardless of this status.
    */
   providerStatus?: DatasourceStatus;
+  /**
+   * Optional conflict resolver forwarded to the drop-zone's upload
+   * orchestrator. Task 7 wires the real shadcn-dialog-backed resolver;
+   * until then the default is a stub that surfaces a "coming soon" toast
+   * on any conflict so drops against colliding names don't fail silently.
+   * Remove this stub when Task 7 lands.
+   */
+  conflictResolver?: ConflictResolver;
+  /**
+   * Optional per-job toaster forwarded to the drop-zone's upload
+   * orchestrator. Task 9 wires the real Sonner-backed per-job surface;
+   * until then the default emits a single informational toast when a job
+   * is dispatched and a red toast on batch error. Remove the stub when
+   * Task 9 lands.
+   */
+  toaster?: UploadToaster;
 }
 
 /**
@@ -106,10 +128,32 @@ function DashboardHomeButton() {
   );
 }
 
+// Temporary stubs for the drop-zone's upload-orchestrator ports. Tasks 7
+// (conflict resolver dialog) and 9 (per-job Sonner toasts) replace these
+// with real implementations. Kept module-level so every mount shares one
+// identity; a prop override takes precedence when callers pass one in.
+const STUB_CONFLICT_RESOLVER: ConflictResolver = {
+  async resolve() {
+    toast.error("Conflict resolution coming soon");
+    // Abort the batch so we don't silently overwrite until Task 7 lands.
+    return { aborted: true };
+  },
+};
+const STUB_TOASTER: UploadToaster = {
+  onJobDispatched(args) {
+    toast.info(`Upload queued: ${args.basename}`);
+  },
+  onBatchError(message) {
+    toast.error(message);
+  },
+};
+
 export function FileExplorer({
   datasourceId,
   providerKind = "s3",
   providerStatus,
+  conflictResolver = STUB_CONFLICT_RESOLVER,
+  toaster = STUB_TOASTER,
 }: FileExplorerProps) {
   const router = useRouter();
   // Grab the per-datasource store directly — the module-level cache
@@ -328,8 +372,29 @@ export function FileExplorer({
     }
   }, [state.currentPath, state.entries, state.loading, keyboardNav]);
 
+  // DropZone status — derived inline from the two signals the composite
+  // already consults. `errorTag` from the engine envelope wins for the
+  // disconnected / auth-revoked cases; `providerStatus` covers syncing.
+  // NOTE: the `DatasourceStatus` contract type doesn't model "disconnected"
+  // or "auth-revoked" directly — those live on the files.list error
+  // envelope. The drop-zone uses its own `DropZoneStatus` union that
+  // matches the spec's blocking rule exactly.
+  const dropZoneStatus: DropZoneStatus = useMemo(() => {
+    if (state.errorTag === "disconnected") return "disconnected";
+    if (state.errorTag === "auth-revoked") return "auth-revoked";
+    if (providerStatus === "syncing") return "syncing";
+    return "usable";
+  }, [state.errorTag, providerStatus]);
+
   return (
     <ProviderKindContext.Provider value={providerKind}>
+    <DropZone
+      datasourceId={datasourceId}
+      currentPath={state.currentPath}
+      status={dropZoneStatus}
+      conflictResolver={conflictResolver}
+      toaster={toaster}
+    >
     <div
       data-testid="file-explorer-root"
       className="bg-background flex flex-1 min-h-0 flex-col"
@@ -442,6 +507,7 @@ export function FileExplorer({
         onCancel={handleCancelDelete}
       />
     </div>
+    </DropZone>
     </ProviderKindContext.Provider>
   );
 }

@@ -35,10 +35,10 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 5. Renderer — drag-drop zone + overlay
 
-- [ ] 5.1 Write failing tests in `drop-zone.test.tsx`: (a) dragover with `dataTransfer.types` including `"Files"` activates overlay; (b) dragover without `"Files"` does not activate; (c) drop dispatches the orchestrator with `targetDir = currentPath`; (d) drop of a folder shows the toast and dispatches zero uploads; (e) mixed file+folder drop dispatches only the files; (f) drop while datasource is `disconnected` renders blocked overlay, drop is no-op.
-- [ ] 5.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/drop-zone.tsx` — wrapper component with drag event handlers, reads datasource status from the store to compute `isBlocked`.
-- [ ] 5.3 Implement `apps/desktop/src/renderer/src/features/file-explorer/drop-overlay.tsx` — renders active (amber) and blocked (neutral) variants per design § Visual direction. Icons from Lucide via the existing `icons.ts`. Uses `role="status"` + `aria-live="polite"`.
-- [ ] 5.4 Wrap the outermost container of `file-explorer.tsx` with `<DropZone>`. Ensure existing file-explorer tests still pass (no layout regression).
+- [x] 5.1 Write failing tests in `drop-zone.test.tsx`: (a) dragover with `dataTransfer.types` including `"Files"` activates overlay; (b) dragover without `"Files"` does not activate; (c) drop dispatches the orchestrator with `targetDir = currentPath`; (d) drop of a folder shows the toast and dispatches zero uploads; (e) mixed file+folder drop dispatches only the files; (f) drop while datasource is `disconnected` renders blocked overlay, drop is no-op.
+- [x] 5.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/drop-zone.tsx` — wrapper component with drag event handlers, reads datasource status from the store to compute `isBlocked`.
+- [x] 5.3 Implement `apps/desktop/src/renderer/src/features/file-explorer/drop-overlay.tsx` — renders active (amber) and blocked (neutral) variants per design § Visual direction. Icons from Lucide via the existing `icons.ts`. Uses `role="status"` + `aria-live="polite"`.
+- [x] 5.4 Wrap the outermost container of `file-explorer.tsx` with `<DropZone>`. Ensure existing file-explorer tests still pass (no layout regression).
 
 ## 6. Renderer — Upload dialog
 
