@@ -435,22 +435,9 @@ describe("mock-fs: resetMockFs", () => {
   });
 });
 
-describe("mock-fs: enumerateSeededDirectorySizes", () => {
-  it("reports a size entry per seeded directory across all four datasources", () => {
-    resetMockFs();
-    const sizes = enumerateSeededDirectorySizes();
-    expect(sizes.length).toBeGreaterThan(4);
-    const datasourcesSeen = new Set(sizes.map((s) => s.datasourceId));
-    for (const id of SEEDED_DATASOURCE_IDS) {
-      expect(datasourcesSeen.has(id), `${id} must appear in the enumeration`).toBe(
-        true,
-      );
-    }
-    for (const s of sizes) {
-      expect(typeof s.datasourceId).toBe("string");
-      expect(typeof s.path).toBe("string");
-      expect(typeof s.size).toBe("number");
-      expect(s.size).toBeLessThanOrEqual(300);
-    }
-  });
-});
+// wire-file-explorer-to-service REMOVED the 300-entry ceiling
+// requirement from the file-explorer capability spec; the ceiling was a
+// property of the in-memory mock file system, not of the capability.
+// The private DIRECTORY_SIZE_CEILING in mock-fs.ts stays as a
+// defensive guard against accidentally seeding absurdly large
+// fixtures, but we no longer assert it at the test layer.

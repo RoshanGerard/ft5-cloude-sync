@@ -48,10 +48,10 @@
 
 ## 7. Spec cleanup — existing tests that assumed mocks
 
-- [ ] 7.1 Remove the Vitest test that enforces the 300-entry mock-fs ceiling; delete it and any fixture it gates; verify no other test depends on the fixture.
-- [ ] 7.2 Update `store.test.ts` scenarios that expected the old `{ removed, failed }` bulk-delete shape to the new per-path `results` envelope.
-- [ ] 7.3 Update `search-ui.test.tsx` scenarios that asserted the Drive/OneDrive "Native search not available" message to expect engine-backed results (or the tagged error).
-- [ ] 7.4 Run `pnpm -r test --silent` and `pnpm -r typecheck` from the repo root; zero failures before moving on.
+- [x] 7.1 Remove the Vitest test that enforces the 300-entry mock-fs ceiling; delete it and any fixture it gates; verify no other test depends on the fixture.
+- [x] 7.2 Update `store.test.ts` scenarios that expected the old `{ removed, failed }` bulk-delete shape to the new per-path `results` envelope. (Done in Section 1 fix-gap; re-verified here.)
+- [x] 7.3 Update `search-ui.test.tsx` scenarios that asserted the Drive/OneDrive "Native search not available" message to expect engine-backed results (or the tagged error). (Done in Section 1 fix-gap; re-verified here.)
+- [x] 7.4 Run `pnpm -r test --silent` and `pnpm -r typecheck` from the repo root; zero failures before moving on. — **1601 tests pass / 7 skipped / 0 type errors across all packages.**
 
 ## 8. Smoke in worktree (real providers)
 
