@@ -6,6 +6,9 @@
 
 import { randomUUID } from "node:crypto";
 
+import type { DatasourceClient } from "@ft5/fs-datasource-engine";
+import type { DatasourceType } from "@ft5/ipc-contracts";
+
 import type {
   CommandHandlers,
   Connection,
@@ -18,12 +21,24 @@ import type Database from "better-sqlite3";
 
 import { handleAuthenticateStart } from "./authenticate-start.js";
 import { handleAuthenticateComplete } from "./authenticate-complete.js";
+import { makeFilesListHandler } from "./files-list.js";
+import { makeFilesStatHandler } from "./files-stat.js";
+import { makeFilesSearchHandler } from "./files-search.js";
+import { makeFilesRemoveHandler } from "./files-remove.js";
 
 export interface HandlersDeps {
   readonly db: Database.Database;
   readonly bus: EventBus;
   readonly serviceVersion: string;
   readonly serviceUuid: string;
+  /**
+   * Per-datasource engine client resolver. When absent (existing tests
+   * that predate the `files:*` commands), `files:*` handlers are omitted
+   * from the returned map. Production bootstrap always supplies it.
+   */
+  readonly resolveClient?: (
+    datasourceId: string,
+  ) => Promise<DatasourceClient<DatasourceType>>;
 }
 
 export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
@@ -223,6 +238,21 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
     "sync:authenticate-start": handleAuthenticateStart,
 
     "sync:authenticate-complete": handleAuthenticateComplete,
+
+    // files:* handlers — wired only when a resolveClient is supplied so
+    // older tests that build handlers without engine deps keep compiling.
+    ...(deps.resolveClient
+      ? {
+          "files:list": makeFilesListHandler({ resolveClient: deps.resolveClient }),
+          "files:stat": makeFilesStatHandler({ resolveClient: deps.resolveClient }),
+          "files:search": makeFilesSearchHandler({
+            resolveClient: deps.resolveClient,
+          }),
+          "files:remove": makeFilesRemoveHandler({
+            resolveClient: deps.resolveClient,
+          }),
+        }
+      : {}),
   };
 }
 

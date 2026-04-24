@@ -237,6 +237,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       bus,
       serviceVersion: options.serviceVersion ?? "0.0.0",
       serviceUuid: options.serviceUuid ?? "",
+      resolveClient,
     });
     const subscribeHandler: CommandHandler<"sync:subscribe-events"> = async (
       _params,

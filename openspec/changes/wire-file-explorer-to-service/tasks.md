@@ -7,12 +7,12 @@
 
 ## 2. Service — `files:*` command handlers in `fs-sync`
 
-- [ ] 2.1 Write failing unit tests for `files:list` under `services/fs-sync/src/commands/files-list.test.ts` covering: happy path returns `{ ok: true, value: { entries, truncated: false } }`; `auth-revoked` engine error returns `{ ok: false, error: { tag: "auth-revoked", retryable: false } }`; unknown `datasourceId` returns `{ ok: false, error: { tag: "other" } }`.
-- [ ] 2.2 Implement `files:list` handler in `services/fs-sync/src/commands/files-list.ts` delegating to `client.listDirectory({ kind: "path", path })` via the service's `ClientFactory`; wire into the command dispatcher.
-- [ ] 2.3 Repeat TDD loop for `files:stat` (delegates to `client.getMetadata`).
-- [ ] 2.4 Repeat TDD loop for `files:search` (delegates to `client.search(query, { kind: "path", path })`; `truncated` flag derives from the engine's envelope).
-- [ ] 2.5 Write failing tests for `files:remove` covering: single-path success; single-path failure (engine throws `rate-limited`); multi-path partial failure using `Promise.allSettled`; directory entry dispatches to `deleteDirectory` (resolved by `getMetadata` before delete). Implement handler in `services/fs-sync/src/commands/files-remove.ts`.
-- [ ] 2.6 Add a command-dispatcher integration test that exercises all four commands end-to-end against an in-memory fake engine fixture.
+- [x] 2.1 Write failing unit tests for `files:list` under `services/fs-sync/src/commands/files-list.test.ts` covering: happy path returns `{ ok: true, value: { entries, truncated: false } }`; `auth-revoked` engine error returns `{ ok: false, error: { tag: "auth-revoked", retryable: false } }`; unknown `datasourceId` returns `{ ok: false, error: { tag: "other" } }`.
+- [x] 2.2 Implement `files:list` handler in `services/fs-sync/src/commands/files-list.ts` delegating to `client.listDirectory({ kind: "path", path })` via the service's `ClientFactory`; wire into the command dispatcher.
+- [x] 2.3 Repeat TDD loop for `files:stat` (delegates to `client.getMetadata`).
+- [x] 2.4 Repeat TDD loop for `files:search` (delegates to `client.search(query, { kind: "path", path })`; `truncated` flag derives from the engine's envelope).
+- [x] 2.5 Write failing tests for `files:remove` covering: single-path success; single-path failure (engine throws `rate-limited`); multi-path partial failure using `Promise.allSettled`; directory entry dispatches to `deleteDirectory` (resolved by `getMetadata` before delete). Implement handler in `services/fs-sync/src/commands/files-remove.ts`.
+- [x] 2.6 Add a command-dispatcher integration test that exercises all four commands end-to-end against an in-memory fake engine fixture.
 
 ## 3. Main process — IPC handler rewire
 
