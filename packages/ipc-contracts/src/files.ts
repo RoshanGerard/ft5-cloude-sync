@@ -117,15 +117,6 @@ export interface FilesRemoveValue {
 }
 export type FilesRemoveResponse = FilesEnvelope<FilesRemoveValue>;
 
-// Legacy per-path failure shape retained for source-compatibility with
-// consumers that still read `.reason`. New code should consume
-// `FilesRemoveEntryResult` instead; this alias is removed once every
-// call-site is migrated in Section 4.
-export interface FilesRemoveFailure {
-  path: string;
-  reason: string;
-}
-
 export interface FilesDownloadRequest {
   datasourceId: string;
   path: string;

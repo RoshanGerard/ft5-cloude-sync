@@ -7,7 +7,7 @@
 // See design.md D2+D3 and the base spec "IPC command surface" requirement.
 
 import type { CredentialsSchema } from "../datasources.js";
-import type { FileEntry } from "../files.js";
+import type { FileEntry, FilesErrorTag } from "../files.js";
 import type {
   AuthIntent,
   AuthResult,
@@ -316,17 +316,11 @@ interface GetStatusCommand {
 // rejected (e.g. unknown `datasourceId`, auth revoked before any path was
 // attempted).
 
-/**
- * Discriminated tag for every recoverable error a files:* command can
- * produce. Stays deliberately narrow — specific provider codes that the
- * engine knows about get collapsed into one of these four tags at the
- * service boundary so the renderer only has to switch four ways.
- */
-export type FilesErrorTag =
-  | "auth-revoked"
-  | "disconnected"
-  | "rate-limited"
-  | "other";
+// Canonical `FilesErrorTag` lives in `../files.ts` (the renderer-facing
+// envelope file). Re-exported here so command authors keep a single import
+// path for the tag set; the union is declared once and used in both
+// layers.
+export type { FilesErrorTag };
 
 /**
  * Command-level error shape shared by every `files:*` command. `retryable`

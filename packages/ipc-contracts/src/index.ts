@@ -43,7 +43,6 @@ export type {
   FilesListResponse,
   FilesListValue,
   FilesRemoveEntryResult,
-  FilesRemoveFailure,
   FilesRemoveRequest,
   FilesRemoveResponse,
   FilesRemoveValue,
