@@ -12,13 +12,13 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 2. Main-process IPC handlers (apps/desktop/src/main/ipc)
 
-- [ ] 2.1 Write a failing test `files/__tests__/upload.test.ts` asserting `handleFilesUpload` is a thin proxy over `syncClient.enqueueUpload` — forwards `datasourceId`, `sourcePath`, `targetPath`, `conflictPolicy` verbatim and returns the envelope.
-- [ ] 2.2 Implement `apps/desktop/src/main/ipc/files/upload.ts` exporting `handleFilesUpload(req, deps)` that calls `deps.syncClient.enqueueUpload(req)` and wraps the result/error in the envelope.
-- [ ] 2.3 Write a failing test `datasources/__tests__/pick-files-to-upload.test.ts` asserting `handlePickFilesToUpload` invokes `dialog.showOpenDialog` with `properties: ["openFile", "multiSelections"]` and returns `{ filePaths, canceled }`.
-- [ ] 2.4 Implement `apps/desktop/src/main/ipc/datasources/pick-files-to-upload.ts`.
-- [ ] 2.5 Wire both new handlers into the IPC registry in `apps/desktop/src/main/ipc/index.ts`. Remove the `datasources.upload` registration.
-- [ ] 2.6 Delete `apps/desktop/src/main/ipc/datasources/upload.ts` and its test files (`upload.test.ts`, `upload.existing-renderer-compat.test.ts`). Confirm no references remain via grep.
-- [ ] 2.7 Add a grep-based composite test that fails if any source under `apps/desktop/src/main/ipc/files/` imports a provider SDK or calls `engine.uploadFile` directly.
+- [x] 2.1 Write a failing test `files/__tests__/upload.test.ts` asserting `handleFilesUpload` is a thin proxy over `syncClient.enqueueUpload` — forwards `datasourceId`, `sourcePath`, `targetPath`, `conflictPolicy` verbatim and returns the envelope.
+- [x] 2.2 Implement `apps/desktop/src/main/ipc/files/upload.ts` exporting `handleFilesUpload(req, deps)` that calls `deps.syncClient.enqueueUpload(req)` and wraps the result/error in the envelope.
+- [x] 2.3 Write a failing test `datasources/__tests__/pick-files-to-upload.test.ts` asserting `handlePickFilesToUpload` invokes `dialog.showOpenDialog` with `properties: ["openFile", "multiSelections"]` and returns `{ filePaths, canceled }`.
+- [x] 2.4 Implement `apps/desktop/src/main/ipc/datasources/pick-files-to-upload.ts`.
+- [x] 2.5 Wire both new handlers into the IPC registry in `apps/desktop/src/main/ipc/index.ts`. Remove the `datasources.upload` registration.
+- [x] 2.6 Delete `apps/desktop/src/main/ipc/datasources/upload.ts` and its test files (`upload.test.ts`, `upload.existing-renderer-compat.test.ts`). Confirm no references remain via grep.
+- [x] 2.7 Add a grep-based composite test that fails if any source under `apps/desktop/src/main/ipc/files/` imports a provider SDK or calls `engine.uploadFile` directly.
 
 ## 3. Preload bindings (apps/desktop/src/preload)
 
