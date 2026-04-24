@@ -522,10 +522,23 @@ export function getFileTree(datasourceId: string): FileEntry[] {
 export function list(req: FilesListRequest): FilesListResponse {
   const tree = trees[req.datasourceId];
   if (!tree) {
-    return { entries: [], nextCursor: null };
+    // Unknown datasourceId becomes a command-level error so the renderer can
+    // surface a targeted "reconnect" prompt; the mock has no authentication
+    // to revoke, so `tag: "other"` is the honest mapping.
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `datasource not found: ${req.datasourceId}`,
+        retryable: false,
+      },
+    };
   }
   const entries = tree.byParent.get(req.path) ?? [];
-  return { entries: entries.map(cloneEntry), nextCursor: null };
+  return {
+    ok: true,
+    value: { entries: entries.map(cloneEntry), truncated: false },
+  };
 }
 
 export function stat(req: FilesStatRequest): FileEntry {
@@ -569,47 +582,82 @@ export function rename(req: FilesRenameRequest): FilesRenameResponse {
 
 export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
   const tree = trees[req.datasourceId];
-  const removed: string[] = [];
-  const failed: { path: string; reason: string }[] = [];
+  const results: Array<
+    | { path: string; ok: true }
+    | {
+        path: string;
+        ok: false;
+        error: { tag: "other"; message: string };
+      }
+  > = [];
 
   if (!tree) {
-    for (const path of req.paths) {
-      failed.push({ path, reason: "datasource not found" });
-    }
-    return { removed, failed };
+    // Whole-batch rejection: no path was attempted. Command-level error
+    // carries the tagged envelope; per-path `results` stays empty.
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `datasource not found: ${req.datasourceId}`,
+        retryable: false,
+      },
+    };
   }
 
   for (const path of req.paths) {
     // Any path under /_locked/ fails with the fixed reason — partial-failure
     // code path.
     if (path.startsWith("/_locked/") || path === "/_locked") {
-      failed.push({ path, reason: "provider locked the file" });
+      results.push({
+        path,
+        ok: false,
+        error: { tag: "other", message: "provider locked the file" },
+      });
       continue;
     }
     const target = findEntry(tree, path);
     if (!target) {
-      failed.push({ path, reason: "not found" });
+      results.push({
+        path,
+        ok: false,
+        error: { tag: "other", message: "not found" },
+      });
       continue;
     }
     if (target.kind === "directory") {
-      failed.push({ path, reason: "directory removal is not supported" });
+      results.push({
+        path,
+        ok: false,
+        error: {
+          tag: "other",
+          message: "directory removal is not supported",
+        },
+      });
       continue;
     }
     const siblings = tree.byParent.get(target.parentPath);
     if (!siblings) {
-      failed.push({ path, reason: "not found" });
+      results.push({
+        path,
+        ok: false,
+        error: { tag: "other", message: "not found" },
+      });
       continue;
     }
     const idx = siblings.findIndex((e) => e.path === path);
     if (idx === -1) {
-      failed.push({ path, reason: "not found" });
+      results.push({
+        path,
+        ok: false,
+        error: { tag: "other", message: "not found" },
+      });
       continue;
     }
     siblings.splice(idx, 1);
-    removed.push(path);
+    results.push({ path, ok: true });
   }
 
-  return { removed, failed };
+  return { ok: true, value: { results } };
 }
 
 interface InternalSearchResult {
@@ -652,13 +700,24 @@ function internalSearch(req: FilesSearchRequest): InternalSearchResult {
 export function search(req: FilesSearchRequest): FilesSearchResponse {
   const result = internalSearch(req);
   if (result.providerSearchDeferred) {
+    // The legacy `providerSearchDeferred: true` sentinel becomes an
+    // `ok: false` envelope with `tag: "other"`. The renderer will need to
+    // recognize this message in its error-branch to restore the "provider
+    // search not wired" UX — flagged for Section 4.
     return {
-      entries: result.entries,
-      truncated: result.truncated,
-      providerSearchDeferred: true,
+      ok: false,
+      error: {
+        tag: "other",
+        message:
+          "provider native search is not wired yet; try a narrower path scope",
+        retryable: false,
+      },
     };
   }
-  return { entries: result.entries, truncated: result.truncated };
+  return {
+    ok: true,
+    value: { entries: result.entries, truncated: result.truncated },
+  };
 }
 
 export function download(req: FilesDownloadRequest): FilesDownloadResponse {
