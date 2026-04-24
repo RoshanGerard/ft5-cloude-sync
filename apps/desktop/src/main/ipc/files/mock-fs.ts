@@ -13,6 +13,7 @@ import type {
   FilesStatRequest,
   MimeFamily,
 } from "@ft5/ipc-contracts";
+import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -708,8 +709,7 @@ export function search(req: FilesSearchRequest): FilesSearchResponse {
       ok: false,
       error: {
         tag: "other",
-        message:
-          "provider native search is not wired yet; try a narrower path scope",
+        message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
         retryable: false,
       },
     };

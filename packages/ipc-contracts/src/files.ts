@@ -100,13 +100,28 @@ export interface FilesRenameResponse {
 // `ok: true` whenever the service successfully ATTEMPTED all paths; each
 // path's individual success/failure lives here. An `ok: false` envelope
 // means the batch itself was rejected before any path was tried.
+//
+// Fields are `readonly` so the sync-service command contract and the
+// renderer-facing response contract can share one declaration (the
+// command layer already treats every shape as readonly).
 export type FilesRemoveEntryResult =
-  | { path: string; ok: true }
+  | { readonly path: string; readonly ok: true }
   | {
-      path: string;
-      ok: false;
-      error: { tag: FilesErrorTag; message: string };
+      readonly path: string;
+      readonly ok: false;
+      readonly error: {
+        readonly tag: FilesErrorTag;
+        readonly message: string;
+      };
     };
+
+// Canonical message the engine emits when a provider's native search
+// endpoint is not yet wired (currently: Google Drive, OneDrive). The
+// renderer's search dispatcher uses this exact string to distinguish a
+// deferred-provider case from a generic "other" error, so callers MUST
+// emit and match on the canonical value — not a paraphrase.
+export const FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE =
+  "provider native search is not wired yet; try a narrower path scope";
 
 export interface FilesRemoveRequest {
   datasourceId: string;

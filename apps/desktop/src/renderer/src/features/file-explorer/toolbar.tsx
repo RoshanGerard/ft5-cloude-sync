@@ -3,6 +3,7 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import type { FilesSearchResponse } from "@ft5/ipc-contracts";
+import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -150,13 +151,13 @@ function SearchInput({ store }: SearchInputProps) {
       );
       return;
     }
-    // Provider-native-search-not-wired is encoded as tag:"other" with this
-    // canonical message. Any other error surfaces an empty result with
-    // truncated=true so the UI shows the provider-honest empty state.
+    // Provider-native-search-not-wired is encoded as tag:"other" with the
+    // canonical FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE. Any other error
+    // surfaces an empty result with truncated=true so the UI shows the
+    // provider-honest empty state.
     const deferred =
       response.error.tag === "other" &&
-      response.error.message ===
-        "provider native search is not wired yet; try a narrower path scope";
+      response.error.message === FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE;
     store.setSearchResults([], true, deferred);
   };
 

@@ -38,6 +38,7 @@ import {
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { FileEntry } from "@ft5/ipc-contracts";
+import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
 
 // FileExplorer now calls `useRouter()` for the back-to-dashboard button.
 // Mock `next/navigation` so the App Router invariant doesn't fire under
@@ -88,9 +89,6 @@ interface InstallOptions {
   };
 }
 
-const PROVIDER_SEARCH_DEFERRED_MESSAGE =
-  "provider native search is not wired yet; try a narrower path scope";
-
 function installApiMock(options: InstallOptions = {}): void {
   filesListMock = vi.fn();
   const listResponses = options.listResponses ?? new Map();
@@ -116,7 +114,7 @@ function installApiMock(options: InstallOptions = {}): void {
         ok: false as const,
         error: {
           tag: "other" as const,
-          message: PROVIDER_SEARCH_DEFERRED_MESSAGE,
+          message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
           retryable: false,
         },
       }

@@ -7,7 +7,11 @@
 // See design.md D2+D3 and the base spec "IPC command surface" requirement.
 
 import type { CredentialsSchema } from "../datasources.js";
-import type { FileEntry, FilesErrorTag } from "../files.js";
+import type {
+  FileEntry,
+  FilesErrorTag,
+  FilesRemoveEntryResult,
+} from "../files.js";
 import type {
   AuthIntent,
   AuthResult,
@@ -337,23 +341,10 @@ export interface FilesCommandErrorShape extends ErrorShape {
   readonly retryAfterMs?: number;
 }
 
-/**
- * Per-path outcome returned inside `files:remove` result. Mirrors the
- * command-level error tag set minus `retryable` / `retryAfterMs` — those
- * belong to the batch, not to a single path. Callers that want to retry a
- * single failed path re-submit it as a new `files:remove` with one path in
- * `paths`.
- */
-export type FilesRemoveEntryResult =
-  | { readonly path: string; readonly ok: true }
-  | {
-      readonly path: string;
-      readonly ok: false;
-      readonly error: {
-        readonly tag: FilesErrorTag;
-        readonly message: string;
-      };
-    };
+// Canonical `FilesRemoveEntryResult` lives in `../files.ts`. Re-exported
+// here so callers working against the sync-service surface keep a single
+// import path; the union is declared once and shared across layers.
+export type { FilesRemoveEntryResult };
 
 interface FilesListCommand {
   readonly command: "files:list";

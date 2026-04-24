@@ -56,7 +56,10 @@ export type {
   FilesStatValue,
   MimeFamily,
 } from "./files.js";
-export { FILES_CHANNELS } from "./files.js";
+export {
+  FILES_CHANNELS,
+  FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+} from "./files.js";
 
 // Engine-facing file primitives (generic over `DatasourceType`). These live
 // alongside the UI's `FileEntry` / `MimeFamily` rather than replacing them;

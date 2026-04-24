@@ -15,6 +15,7 @@ import type {
   FilesStatRequest,
   FilesStatResponse,
 } from "@ft5/ipc-contracts";
+import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
 
 // Renderer-side round-trip test for every `window.api.files.*` method.
 //
@@ -156,8 +157,7 @@ describe("window.api.files round-trip", () => {
       ok: false,
       error: {
         tag: "other",
-        message:
-          "provider native search is not wired yet; try a narrower path scope",
+        message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
         retryable: false,
       },
     };
