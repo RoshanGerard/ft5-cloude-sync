@@ -29,9 +29,9 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 4. Renderer upload orchestrator hook
 
-- [ ] 4.1 Write failing tests in `apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-upload-orchestrator.test.ts`: (a) no conflicts → N dispatches in parallel; (b) single conflict → conflict dialog opens → user picks Overwrite → that file dispatches with `conflictPolicy: "overwrite"`; (c) preflight stat rejects with `auth-revoked` → zero dispatches, one red toast; (d) user clicks "Cancel all" → zero dispatches, orchestrator state resets.
-- [ ] 4.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/use-upload-orchestrator.ts` — exported hook that accepts `{datasourceId, targetDir, files}`, returns `{ start(): Promise<void> }`, drives preflight stat → conflict prompts → dispatch → toast-per-job.
-- [ ] 4.3 Add a helper `resolveConflicts` that walks conflicts serially and honors "Apply to remaining". Test it in isolation.
+- [x] 4.1 Write failing tests in `apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-upload-orchestrator.test.ts`: (a) no conflicts → N dispatches in parallel; (b) single conflict → conflict dialog opens → user picks Overwrite → that file dispatches with `conflictPolicy: "overwrite"`; (c) preflight stat rejects with `auth-revoked` → zero dispatches, one red toast; (d) user clicks "Cancel all" → zero dispatches, orchestrator state resets.
+- [x] 4.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/use-upload-orchestrator.ts` — exported hook that accepts `{datasourceId, targetDir, files}`, returns `{ start(): Promise<void> }`, drives preflight stat → conflict prompts → dispatch → toast-per-job.
+- [x] 4.3 Add a helper `resolveConflicts` that walks conflicts serially and honors "Apply to remaining". Test it in isolation.
 
 ## 5. Renderer — drag-drop zone + overlay
 
