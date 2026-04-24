@@ -205,7 +205,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     observer?.onStage("construct-client-factory");
 
     // 8. construct-scheduler
-    const uploadExec = buildUploadExecutor({ factory, resolveClient });
+    // Pass engineBus so the executor can translate the engine's streaming
+    // `"uploading"` events into service-side `job-progress` events. Without
+    // this wiring, progress bars only get the terminal 100% tick.
+    const uploadExec = buildUploadExecutor({ factory, resolveClient, engineBus });
     const mirrorExec = buildMirrorSyncExecutor({ db, resolveClient });
     scheduler = new Scheduler(db, {
       executors: { upload: uploadExec, sync: mirrorExec },
