@@ -14,13 +14,13 @@
 
 ## 3. Engine PKCE (`packages/fs-datasource-engine`)
 
-- [ ] 3.1 Write failing test in `googledrive-client.test.ts` — "Authorize URL carries S256 challenge parameters". Parse the authorize URL; assert `code_challenge_method === "S256"` and that `code_challenge` equals `base64url(SHA256(captured_verifier))` where the verifier is exposed via a test-only accessor on the intent.
-- [ ] 3.2 Write failing test — "Verifier threads into the token exchange". Injected `fetchImpl` intercepts the POST to `oauth2.googleapis.com/token`; assert exactly one `code_verifier` form field matches the verifier.
-- [ ] 3.3 Write failing test — "Fresh verifier per call". Two successive `authenticate()` calls yield two distinct `code_challenge` values.
-- [ ] 3.4 Write failing test — "Verifier is never stored or logged". Grep-scan the produced `AuthResult` and `StoredCredentials` fixtures for the verifier string after a complete flow; assert zero matches.
-- [ ] 3.5 Implement PKCE in `googledrive-client.ts`: generate `code_verifier` (48 bytes base64url → 64 chars) at the top of `doAuthenticateImpl`, compute `code_challenge = base64url(SHA256(verifier))`, add `code_challenge` + `code_challenge_method=S256` to the authorize URL URLSearchParams, capture the verifier inside the `completeWith` closure, and pass it as `code_verifier` in `exchangeCodeForTokens` form body. Rerun tests 3.1–3.4 — all pass.
-- [ ] 3.6 Update the existing `googledrive-client.contract.test.ts` expectations that pin the authorize URL as a string: switch to URL-parsing assertions so the test tolerates the new PKCE parameters.
-- [ ] 3.7 Run `pnpm -F @ft5/fs-datasource-engine test` — entire package test suite green.
+- [x] 3.1 Write failing test in `googledrive-client.test.ts` — "Authorize URL carries S256 challenge parameters". Parse the authorize URL; assert `code_challenge_method === "S256"` and that `code_challenge` equals `base64url(SHA256(captured_verifier))` where the verifier is exposed via a test-only accessor on the intent.
+- [x] 3.2 Write failing test — "Verifier threads into the token exchange". Injected `fetchImpl` intercepts the POST to `oauth2.googleapis.com/token`; assert exactly one `code_verifier` form field matches the verifier.
+- [x] 3.3 Write failing test — "Fresh verifier per call". Two successive `authenticate()` calls yield two distinct `code_challenge` values.
+- [x] 3.4 Write failing test — "Verifier is never stored or logged". Grep-scan the produced `AuthResult` and `StoredCredentials` fixtures for the verifier string after a complete flow; assert zero matches.
+- [x] 3.5 Implement PKCE in `googledrive-client.ts`: generate `code_verifier` (48 bytes base64url → 64 chars) at the top of `doAuthenticateImpl`, compute `code_challenge = base64url(SHA256(verifier))`, add `code_challenge` + `code_challenge_method=S256` to the authorize URL URLSearchParams, capture the verifier inside the `completeWith` closure, and pass it as `code_verifier` in `exchangeCodeForTokens` form body. Rerun tests 3.1–3.4 — all pass.
+- [x] 3.6 Update the existing `googledrive-client.contract.test.ts` expectations that pin the authorize URL as a string: switch to URL-parsing assertions so the test tolerates the new PKCE parameters. — N/A: `contract.test.ts` does not assert on the authorize URL (no `toBe`/`toEqual`/`toContain` against `authorizeUrl`); the shared contract suite is URL-agnostic for OAuth. Verified by running the contract suite after impl — 10/10 passing unchanged.
+- [x] 3.7 Run `pnpm -F @ft5/fs-datasource-engine test` — entire package test suite green. (Ran via `pnpm exec vitest run packages/fs-datasource-engine`; the `-F` script alias is unbound in this package. 197/197 passing, 9/9 files.)
 
 ## 4. Main-process OAuth consent broker (`apps/desktop/src/main/oauth/`)
 

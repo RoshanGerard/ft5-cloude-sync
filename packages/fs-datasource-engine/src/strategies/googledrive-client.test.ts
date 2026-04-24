@@ -22,7 +22,7 @@
 //   specific to Drive (ambiguous + ambiguousSiblings populated on the
 //   resolved entry's providerMetadata).
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -252,6 +252,7 @@ function makeHarness(options: {
   drive: GoogleDriveClientLike | ((token: string) => GoogleDriveClientLike);
   fetchImpl?: typeof fetch;
   credsOverrides?: Parameters<typeof makeCreds>[0];
+  codeVerifierFactory?: () => string;
 }): {
   bus: EventBus;
   events: Array<{ event: string; payload: unknown }>;
@@ -280,6 +281,9 @@ function makeHarness(options: {
     {
       driveFactory,
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      ...(options.codeVerifierFactory
+        ? { codeVerifierFactory: options.codeVerifierFactory }
+        : {}),
     },
   ) as GoogleDriveClient;
   createdClients.push(client);
@@ -1158,15 +1162,27 @@ describe("GoogleDriveClient — authenticate", () => {
 // generated; it must NEVER appear in any persisted or logged surface.
 
 describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
-  /** Helper — read the test-only `codeVerifier` property on the intent. */
-  function readVerifier(intent: OAuthIntent): string {
-    const v = (intent as OAuthIntent & { codeVerifier?: unknown }).codeVerifier;
-    if (typeof v !== "string") {
-      throw new Error(
-        "expected test-only `codeVerifier` string on OAuth intent",
-      );
-    }
-    return v;
+  /**
+   * Capturing verifier factory. Returns a factory that records every
+   * emitted verifier into `captured`. Each call MUST return a fresh value
+   * — we generate 48 random bytes just like the production default, so
+   * the "fresh per call" test exercises real entropy flow.
+   */
+  function makeCapturingVerifierFactory(): {
+    factory: () => string;
+    captured: string[];
+  } {
+    const captured: string[] = [];
+    return {
+      captured,
+      factory: () => {
+        // 48 bytes of entropy → base64url (64 chars, no padding) — same
+        // shape the production default produces.
+        const v = randomBytes(48).toString("base64url");
+        captured.push(v);
+        return v;
+      },
+    };
   }
 
   function base64urlSha256(input: string): string {
@@ -1175,7 +1191,8 @@ describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
 
   it("Authorize URL carries S256 challenge parameters", async () => {
     const { client } = makeFakeDrive({});
-    const h = makeHarness({ drive: client });
+    const { factory, captured } = makeCapturingVerifierFactory();
+    const h = makeHarness({ drive: client, codeVerifierFactory: factory });
     const intent = (await h.client.authenticate()) as OAuthIntent;
     const url = new URL(intent.authorizeUrl);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
@@ -1183,8 +1200,11 @@ describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
     expect(typeof challenge).toBe("string");
     // Challenge is base64url-encoded SHA256 → 43 chars, no padding.
     expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    const verifier = readVerifier(intent);
-    // Verifier is 48 bytes base64url → 64 chars.
+    // Factory was called exactly once — the verifier captured is the one
+    // the authorize URL's challenge is derived from.
+    expect(captured).toHaveLength(1);
+    const verifier = captured[0]!;
+    // Verifier shape: 48 bytes base64url → 64 URL-safe chars.
     expect(verifier).toMatch(/^[A-Za-z0-9_-]{64}$/);
     expect(challenge).toBe(base64urlSha256(verifier));
   });
@@ -1201,9 +1221,15 @@ describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     ) as unknown as typeof fetch;
-    const h = makeHarness({ drive: client, fetchImpl });
+    const { factory, captured } = makeCapturingVerifierFactory();
+    const h = makeHarness({
+      drive: client,
+      fetchImpl,
+      codeVerifierFactory: factory,
+    });
     const intent = (await h.client.authenticate()) as OAuthIntent;
-    const verifier = readVerifier(intent);
+    expect(captured).toHaveLength(1);
+    const verifier = captured[0]!;
     await intent.completeWith("auth-code-abc");
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0]!;
@@ -1211,15 +1237,24 @@ describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
     const body = String((call[1] as { body: string }).body);
     const form = new URLSearchParams(body);
     const codeVerifierValues = form.getAll("code_verifier");
+    // Exactly one code_verifier field; value matches the captured verifier
+    // — which in turn matches the authorize URL's challenge.
     expect(codeVerifierValues).toHaveLength(1);
     expect(codeVerifierValues[0]).toBe(verifier);
+    const authorizeChallenge = new URL(intent.authorizeUrl).searchParams.get(
+      "code_challenge",
+    );
+    expect(authorizeChallenge).toBe(base64urlSha256(verifier));
   });
 
   it("Fresh verifier per call", async () => {
     const { client } = makeFakeDrive({});
-    const h = makeHarness({ drive: client });
+    const { factory, captured } = makeCapturingVerifierFactory();
+    const h = makeHarness({ drive: client, codeVerifierFactory: factory });
     const intent1 = (await h.client.authenticate()) as OAuthIntent;
     const intent2 = (await h.client.authenticate()) as OAuthIntent;
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).not.toBe(captured[1]);
     const challenge1 = new URL(intent1.authorizeUrl).searchParams.get(
       "code_challenge",
     );
@@ -1229,9 +1264,9 @@ describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
     expect(challenge1).toBeTruthy();
     expect(challenge2).toBeTruthy();
     expect(challenge1).not.toBe(challenge2);
-    const verifier1 = readVerifier(intent1);
-    const verifier2 = readVerifier(intent2);
-    expect(verifier1).not.toBe(verifier2);
+    // Challenges are the SHA256(verifier) of the respective calls.
+    expect(challenge1).toBe(base64urlSha256(captured[0]!));
+    expect(challenge2).toBe(base64urlSha256(captured[1]!));
   });
 
   it("Verifier is never stored or logged", async () => {
@@ -1246,9 +1281,15 @@ describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     ) as unknown as typeof fetch;
-    const h = makeHarness({ drive: client, fetchImpl });
+    const { factory, captured } = makeCapturingVerifierFactory();
+    const h = makeHarness({
+      drive: client,
+      fetchImpl,
+      codeVerifierFactory: factory,
+    });
     const intent = (await h.client.authenticate()) as OAuthIntent;
-    const verifier = readVerifier(intent);
+    expect(captured).toHaveLength(1);
+    const verifier = captured[0]!;
     const authResult = await intent.completeWith("auth-code-xyz");
     // The AuthResult returned from the completeWith closure MUST NOT
     // contain the verifier at any nesting depth.
@@ -1264,6 +1305,9 @@ describe("GoogleDriveClient — authenticate (PKCE S256)", () => {
     expect(JSON.stringify(stored)).not.toContain(verifier);
     // authResult.meta round-trips only OAuth config, not secrets.
     expect(JSON.stringify(authResult.meta ?? {})).not.toContain(verifier);
+    // The OAuth intent object itself must not leak the verifier as a
+    // property — the implementation keeps it in a closure only.
+    expect(JSON.stringify(intent)).not.toContain(verifier);
   });
 });
 
