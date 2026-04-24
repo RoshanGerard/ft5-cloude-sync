@@ -31,7 +31,11 @@ describe("sync-service command contract", () => {
       | "sync:authenticate"
       | "sync:authenticate-start"
       | "sync:authenticate-complete"
-      | "sync:get-status";
+      | "sync:get-status"
+      | "files:list"
+      | "files:stat"
+      | "files:search"
+      | "files:remove";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });
 

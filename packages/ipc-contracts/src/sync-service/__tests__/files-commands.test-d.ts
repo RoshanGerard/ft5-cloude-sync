@@ -18,39 +18,21 @@ import type {
   CommandName,
   CommandParams,
   CommandResult,
+  FilesCommandErrorShape,
+  FilesErrorTag,
+  FilesRemoveEntryResult,
 } from "../commands.js";
 
 // ---- Shared envelope ------------------------------------------------------
-
-type FilesErrorTag =
-  | "auth-revoked"
-  | "disconnected"
-  | "rate-limited"
-  | "other";
-
-interface FilesErrorShape {
-  readonly tag: FilesErrorTag;
-  readonly message: string;
-  readonly retryable: boolean;
-  readonly retryAfterMs?: number;
-}
+//
+// `FilesCommandErrorShape` is exported from commands.ts and extends the
+// transport-level `ErrorShape` (see frames.ts). The outer RPC envelope is
+// already defined by `ResponseFrame` in frames.ts — the test below just
+// asserts the shape the service returns inside its `error` leaf.
 
 type FilesEnvelope<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: FilesErrorShape };
-
-// Per-path remove outcome — design.md Decision 2: per-path success/failure
-// so the renderer can render "3 removed, 1 failed" without a second probe.
-type FilesRemoveEntryResult =
-  | { readonly path: string; readonly ok: true }
-  | {
-      readonly path: string;
-      readonly ok: false;
-      readonly error: {
-        readonly tag: FilesErrorTag;
-        readonly message: string;
-      };
-    };
+  | { readonly ok: false; readonly error: FilesCommandErrorShape };
 
 // ---- Tests ----------------------------------------------------------------
 
@@ -60,6 +42,12 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<CommandMap["files:stat"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:search"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:remove"]>().not.toBeNever();
+  });
+
+  it("FilesErrorTag is the exact four-variant union", () => {
+    expectTypeOf<FilesErrorTag>().toEqualTypeOf<
+      "auth-revoked" | "disconnected" | "rate-limited" | "other"
+    >();
   });
 
   it("CommandName includes every files:* command", () => {
@@ -96,7 +84,7 @@ describe("sync-service files:* command contract", () => {
   });
 
   it("files:list error carries the tagged envelope error shape", () => {
-    expectTypeOf<CommandError<"files:list">>().toEqualTypeOf<FilesErrorShape>();
+    expectTypeOf<CommandError<"files:list">>().toEqualTypeOf<FilesCommandErrorShape>();
   });
 
   // -- files:stat -----------------------------------------------------------
@@ -115,7 +103,7 @@ describe("sync-service files:* command contract", () => {
   });
 
   it("files:stat error carries the tagged envelope error shape", () => {
-    expectTypeOf<CommandError<"files:stat">>().toEqualTypeOf<FilesErrorShape>();
+    expectTypeOf<CommandError<"files:stat">>().toEqualTypeOf<FilesCommandErrorShape>();
   });
 
   // -- files:search ---------------------------------------------------------
@@ -138,7 +126,7 @@ describe("sync-service files:* command contract", () => {
   it("files:search error carries the tagged envelope error shape", () => {
     expectTypeOf<
       CommandError<"files:search">
-    >().toEqualTypeOf<FilesErrorShape>();
+    >().toEqualTypeOf<FilesCommandErrorShape>();
   });
 
   // -- files:remove ---------------------------------------------------------
@@ -162,7 +150,7 @@ describe("sync-service files:* command contract", () => {
     // Per-path failures travel inside `result.results`, not `error`.
     expectTypeOf<
       CommandError<"files:remove">
-    >().toEqualTypeOf<FilesErrorShape>();
+    >().toEqualTypeOf<FilesCommandErrorShape>();
   });
 
   // -- Envelope shape --------------------------------------------------------
@@ -175,6 +163,6 @@ describe("sync-service files:* command contract", () => {
     >();
     expectTypeOf<
       Extract<ListEnvelope, { ok: false }>["error"]
-    >().toEqualTypeOf<FilesErrorShape>();
+    >().toEqualTypeOf<FilesCommandErrorShape>();
   });
 });
