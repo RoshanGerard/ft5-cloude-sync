@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
-import type { DatasourceFileEntry, DatasourceType } from "@ft5/ipc-contracts";
+import type { DatasourceType } from "@ft5/ipc-contracts";
 import { DatasourceError } from "@ft5/ipc-contracts";
 
 import { makeFilesRemoveHandler } from "./files-remove.js";
@@ -28,36 +28,21 @@ function makeFakeClient(
   } as DatasourceClient<DatasourceType>;
 }
 
-function makeEngineEntry(
-  path: string,
-  kind: "file" | "folder" = "file",
-): DatasourceFileEntry<"google-drive"> {
-  return {
-    handle: `h-${path}`,
-    kind,
-    name: path.split("/").pop() ?? "",
-    path,
-    size: kind === "file" ? 100 : undefined,
-    mimeFamily: kind === "folder" ? "folder" : "other",
-    modifiedAt: Date.parse("2026-04-01T00:00:00.000Z"),
-    providerMetadata: {},
-  };
-}
-
 const ctx = {
   connection: { id: 1, closed: false, sendEvent: () => undefined },
 } as const;
 
 describe("files:remove handler", () => {
-  it("single-path success returns ok:true with results[0].ok:true", async () => {
-    const client = makeFakeClient({
-      getMetadata: vi.fn().mockResolvedValue(makeEngineEntry("/a.txt")),
-      deleteFile: vi.fn().mockResolvedValue(undefined),
-    });
+  it("single-target file: dispatches deleteFile by handle and returns ok:true with results[0].ok:true", async () => {
+    const deleteFile = vi.fn().mockResolvedValue(undefined);
+    const client = makeFakeClient({ deleteFile });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
-      { datasourceId: "ds-1", paths: ["/a.txt"] },
+      {
+        datasourceId: "ds-1",
+        targets: [{ path: "/a.txt", handle: "h-a-1", kind: "file" }],
+      },
       ctx,
     );
 
@@ -65,17 +50,17 @@ describe("files:remove handler", () => {
       ok: true,
       result: { results: [{ path: "/a.txt", ok: true }] },
     });
-    expect(client.deleteFile).toHaveBeenCalledWith({ kind: "path", path: "/a.txt" });
+    // Authoritative addressing: handle, not path. Skips getMetadata.
+    expect(deleteFile).toHaveBeenCalledWith({ kind: "handle", handle: "h-a-1" });
+    expect(client.getMetadata).not.toHaveBeenCalled();
     expect(client.deleteDirectory).not.toHaveBeenCalled();
   });
 
-  it("directory entry dispatches to deleteDirectory (which engines unconditionally reject with 'unsupported') and surfaces a per-path error", async () => {
+  it("single-target directory: dispatches deleteDirectory by handle (which engines unconditionally reject with 'unsupported') and surfaces a per-target error", async () => {
     // Real engines throw DatasourceError{ tag: "unsupported" } for every
     // deleteDirectory call — see BaseClient.deleteDirectory. Here we mock
-    // the contracted rejection so the test matches production behavior; the
-    // handler should dispatch to deleteDirectory (not deleteFile) and the
-    // per-path result should be ok:false with tag "other" (the files error
-    // mapping collapses "unsupported" → "other").
+    // the contracted rejection so the test matches production behavior.
+    // The files error mapping collapses "unsupported" → "other".
     const deleteDirectory = vi.fn().mockRejectedValue(
       new DatasourceError({
         tag: "unsupported",
@@ -86,22 +71,23 @@ describe("files:remove handler", () => {
         message: "deleteDirectory is disabled for product stability",
       }),
     );
-    const client = makeFakeClient({
-      getMetadata: vi.fn().mockResolvedValue(makeEngineEntry("/folder", "folder")),
-      deleteDirectory,
-    });
+    const client = makeFakeClient({ deleteDirectory });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
-      { datasourceId: "ds-1", paths: ["/folder"] },
+      {
+        datasourceId: "ds-1",
+        targets: [{ path: "/folder", handle: "h-folder", kind: "directory" }],
+      },
       ctx,
     );
 
-    expect(client.deleteDirectory).toHaveBeenCalledWith({
-      kind: "path",
-      path: "/folder",
+    expect(deleteDirectory).toHaveBeenCalledWith({
+      kind: "handle",
+      handle: "h-folder",
     });
     expect(client.deleteFile).not.toHaveBeenCalled();
+    expect(client.getMetadata).not.toHaveBeenCalled();
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.result.results).toHaveLength(1);
@@ -116,24 +102,60 @@ describe("files:remove handler", () => {
     }
   });
 
-  it("single-path failure (engine throws rate-limited) returns per-path error", async () => {
-    const client = makeFakeClient({
-      getMetadata: vi.fn().mockResolvedValue(makeEngineEntry("/a.txt")),
-      deleteFile: vi.fn().mockRejectedValue(
-        new DatasourceError({
-          tag: "rate-limited",
-          datasourceType: "google-drive",
-          datasourceId: "ds-1",
-          retryable: true,
-          retryAfterMs: 15000,
-          message: "provider throttled",
-        }),
-      ),
+  it("ambiguous-path scenario: two files with identical path but distinct handles both delete without a 'multiple files at this path' error", async () => {
+    // Regression guard for the Drive duplicate-name bug that motivated
+    // this handler shape. Before the handle-based rewrite, the handler
+    // called `getMetadata({ kind: "path", path })` first, which Drive
+    // rejects with "Ambiguous path - multiple files at this path" when
+    // two files share a path. With handle addressing, each target
+    // deletes cleanly.
+    const deletedHandles: string[] = [];
+    const deleteFile = vi.fn().mockImplementation(async (target: { handle: string }) => {
+      deletedHandles.push(target.handle);
     });
+    const client = makeFakeClient({ deleteFile });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
-      { datasourceId: "ds-1", paths: ["/a.txt"] },
+      {
+        datasourceId: "ds-1",
+        targets: [
+          { path: "/acme.txt", handle: "h-acme-1", kind: "file" },
+          { path: "/acme.txt", handle: "h-acme-2", kind: "file" },
+        ],
+      },
+      ctx,
+    );
+
+    expect(deletedHandles).toEqual(["h-acme-1", "h-acme-2"]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.results).toEqual([
+        { path: "/acme.txt", ok: true },
+        { path: "/acme.txt", ok: true },
+      ]);
+    }
+  });
+
+  it("single-target failure (engine throws rate-limited) returns per-target error", async () => {
+    const deleteFile = vi.fn().mockRejectedValue(
+      new DatasourceError({
+        tag: "rate-limited",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: true,
+        retryAfterMs: 15000,
+        message: "provider throttled",
+      }),
+    );
+    const client = makeFakeClient({ deleteFile });
+    const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        targets: [{ path: "/a.txt", handle: "h-a", kind: "file" }],
+      },
       ctx,
     );
 
@@ -149,14 +171,10 @@ describe("files:remove handler", () => {
     }
   });
 
-  it("multi-path partial failure: results array preserves per-path outcome in order", async () => {
-    let call = 0;
-    const getMetadata = vi.fn().mockImplementation(async () => {
-      return makeEngineEntry("/" + String(call++));
-    });
-    const deleteFile = vi.fn().mockImplementation(async (target: { path: string }) => {
-      // Succeed for /a and /c; fail for /b.
-      if (target.path === "/b") {
+  it("multi-target partial failure: results array preserves per-target outcome in order", async () => {
+    const deleteFile = vi.fn().mockImplementation(async (target: { handle: string }) => {
+      // Succeed for h-a and h-c; fail for h-b.
+      if (target.handle === "h-b") {
         throw new DatasourceError({
           tag: "provider-error",
           datasourceType: "google-drive",
@@ -166,11 +184,18 @@ describe("files:remove handler", () => {
         });
       }
     });
-    const client = makeFakeClient({ getMetadata, deleteFile });
+    const client = makeFakeClient({ deleteFile });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
-      { datasourceId: "ds-1", paths: ["/a", "/b", "/c"] },
+      {
+        datasourceId: "ds-1",
+        targets: [
+          { path: "/a", handle: "h-a", kind: "file" },
+          { path: "/b", handle: "h-b", kind: "file" },
+          { path: "/c", handle: "h-c", kind: "file" },
+        ],
+      },
       ctx,
     );
 
@@ -196,7 +221,10 @@ describe("files:remove handler", () => {
     });
 
     const result = await handler(
-      { datasourceId: "ds-ghost", paths: ["/a.txt"] },
+      {
+        datasourceId: "ds-ghost",
+        targets: [{ path: "/a.txt", handle: "h-a", kind: "file" }],
+      },
       ctx,
     );
 
@@ -207,14 +235,18 @@ describe("files:remove handler", () => {
     }
   });
 
-  it("empty paths returns ok:true with empty results (no engine calls)", async () => {
+  it("empty targets returns ok:true with empty results (no engine calls)", async () => {
     const client = makeFakeClient();
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
-    const result = await handler({ datasourceId: "ds-1", paths: [] }, ctx);
+    const result = await handler(
+      { datasourceId: "ds-1", targets: [] },
+      ctx,
+    );
 
     expect(result).toEqual({ ok: true, result: { results: [] } });
-    expect(client.getMetadata).not.toHaveBeenCalled();
     expect(client.deleteFile).not.toHaveBeenCalled();
+    expect(client.deleteDirectory).not.toHaveBeenCalled();
+    expect(client.getMetadata).not.toHaveBeenCalled();
   });
 });

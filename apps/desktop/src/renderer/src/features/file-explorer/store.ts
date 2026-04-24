@@ -8,6 +8,7 @@ import type {
   FilesDownloadResponse,
   FilesErrorTag,
   FilesRemoveResponse,
+  FilesRemoveTarget,
   FilesRenameResponse,
 } from "@ft5/ipc-contracts";
 
@@ -177,7 +178,7 @@ export interface ExplorerStore {
   rename(entryId: string, newName: string): Promise<void>;
 
   // Remove (delete) — accepts one or more paths; issues a single IPC call.
-  remove(paths: string[]): Promise<void>;
+  remove(targets: FilesRemoveTarget[]): Promise<void>;
 
   // Download — one-shot IPC for a file entry; does NOT use pendingOps
   // (the entry stays in the list; the op is user-facing via toast only).
@@ -763,15 +764,16 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
 
   // --- Remove (delete) --------------------------------------------------
 
-  async function remove(paths: string[]): Promise<void> {
-    if (paths.length === 0) return;
+  async function remove(targets: FilesRemoveTarget[]): Promise<void> {
+    if (targets.length === 0) return;
 
-    const total = paths.length;
+    const total = targets.length;
     // Seed one pendingOp per path (keyed by path — matches the IPC
-    // contract's `paths` payload and the handler's `failed[].path` field).
+    // response envelope's `results[].path` field, which is the surface
+    // the optimistic UI reverts against on partial failure).
     const now = Date.now();
     const nextOps: Record<string, PendingOp> = { ...state.pendingOps };
-    for (const p of paths) nextOps[p] = { kind: "remove", startedAt: now };
+    for (const t of targets) nextOps[t.path] = { kind: "remove", startedAt: now };
     set({ ...state, pendingOps: nextOps, lastError: null }, false);
 
     try {
@@ -781,7 +783,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
             files?: {
               remove?: (req: {
                 datasourceId: string;
-                paths: string[];
+                targets: FilesRemoveTarget[];
               }) => Promise<FilesRemoveResponse>;
             };
           };
@@ -790,18 +792,18 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       if (api === undefined) {
         throw new Error("window.api.files.remove is unavailable");
       }
-      const response = await api({ datasourceId, paths });
+      const response = await api({ datasourceId, targets });
 
       const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
-      for (const p of paths) delete clearedOps[p];
+      for (const t of targets) delete clearedOps[t.path];
 
       if (!response.ok) {
-        // Whole-operation failure: no paths removed; revert all pending and
+        // Whole-operation failure: nothing removed; revert all pending and
         // surface the envelope error to the user.
         const pathToEntryId = new Map(
           state.entries.map((e) => [e.path, e.id] as const),
         );
-        const firstPath = paths[0];
+        const firstPath = targets[0]?.path;
         const entryId =
           firstPath !== undefined
             ? (pathToEntryId.get(firstPath) ?? firstPath)
@@ -880,15 +882,15 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       const clearedOps: Record<string, PendingOp> = { ...state.pendingOps };
-      for (const p of paths) delete clearedOps[p];
+      for (const t of targets) delete clearedOps[t.path];
       const pathToEntryId = new Map(
         state.entries.map((e) => [e.path, e.id] as const),
       );
-      const firstPath = paths[0];
+      const firstPath = targets[0]?.path;
       const entryId =
         firstPath !== undefined
           ? (pathToEntryId.get(firstPath) ?? firstPath)
-          : firstPath ?? "";
+          : "";
       set(
         {
           ...state,

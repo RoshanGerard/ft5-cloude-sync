@@ -8,6 +8,7 @@
 
 import type { CredentialsSchema } from "../datasources.js";
 import type {
+  EntryKind,
   FileEntry,
   FilesErrorTag,
   FilesRemoveEntryResult,
@@ -385,11 +386,25 @@ interface FilesSearchCommand {
   readonly error: FilesCommandErrorShape;
 }
 
+// `files:remove` addresses each entry by `handle` (the authoritative,
+// unambiguous engine ID) while preserving `path` for the response's
+// per-path result matching. `kind` lets the handler skip a second
+// `getMetadata` round-trip when dispatching to deleteFile vs
+// deleteDirectory — and skipping that round-trip is the whole point of
+// this shape, since `getMetadata({ kind: "path", ... })` is itself
+// ambiguity-vulnerable on providers that allow multiple entries with
+// the same path (Google Drive).
+interface FilesRemoveTargetShape {
+  readonly path: string;
+  readonly handle: string;
+  readonly kind: EntryKind;
+}
+
 interface FilesRemoveCommand {
   readonly command: "files:remove";
   readonly params: {
     readonly datasourceId: string;
-    readonly paths: readonly string[];
+    readonly targets: readonly FilesRemoveTargetShape[];
   };
   readonly result: {
     readonly results: readonly FilesRemoveEntryResult[];

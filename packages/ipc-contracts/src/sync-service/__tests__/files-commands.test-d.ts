@@ -131,10 +131,14 @@ describe("sync-service files:* command contract", () => {
 
   // -- files:remove ---------------------------------------------------------
 
-  it("files:remove params are { datasourceId, paths: string[] }", () => {
+  it("files:remove params are { datasourceId, targets: readonly FilesRemoveTargetShape[] }", () => {
     expectTypeOf<CommandParams<"files:remove">>().toEqualTypeOf<{
       readonly datasourceId: string;
-      readonly paths: readonly string[];
+      readonly targets: readonly {
+        readonly path: string;
+        readonly handle: string;
+        readonly kind: "directory" | "file";
+      }[];
     }>();
   });
 

@@ -215,7 +215,11 @@ describe("window.api.files round-trip", () => {
 
     const req: FilesRemoveRequest = {
       datasourceId: "ds-s3-archive",
-      paths: ["/projects/a.txt", "/projects/b.txt", "/projects/c.txt"],
+      targets: [
+        { path: "/projects/a.txt", handle: "h-a", kind: "file" },
+        { path: "/projects/b.txt", handle: "h-b", kind: "file" },
+        { path: "/projects/c.txt", handle: "h-c", kind: "file" },
+      ],
     };
     const result = await filesApi.remove(req);
 

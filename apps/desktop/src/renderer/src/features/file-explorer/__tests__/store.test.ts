@@ -1040,6 +1040,16 @@ describe("remove action", () => {
     );
   }
 
+  // Build FilesRemoveTarget[] from the test seed. In seedEntries we use
+  // `id === path` for simplicity; real entries have id=handle which is
+  // distinct (Drive's fileId) — the shape is the same.
+  function targetsFor(
+    paths: string[],
+    kind: "file" | "directory" = "file",
+  ): Array<{ path: string; handle: string; kind: "file" | "directory" }> {
+    return paths.map((p) => ({ path: p, handle: p, kind }));
+  }
+
   it("single-entry happy path: one pendingOp, single IPC call, removes entry, toast.success", async () => {
     const entries = seedEntries(["file-1"]);
     type RemoveEnvelope = {
@@ -1060,14 +1070,14 @@ describe("remove action", () => {
     const store = makeStore("ds-1");
     store.setEntries(entries);
 
-    const promise = store.remove(["file-1"]);
+    const promise = store.remove(targetsFor(["file-1"]));
     // Mid-flight
     const mid = snap(store);
     expect(mid.pendingOps["file-1"]).toBeDefined();
     expect(mid.pendingOps["file-1"]?.kind).toBe("remove");
     expect(removeFn).toHaveBeenCalledTimes(1);
     expect(removeFn).toHaveBeenCalledWith(
-      expect.objectContaining({ paths: ["file-1"] }),
+      expect.objectContaining({ targets: targetsFor(["file-1"]) }),
     );
 
     resolveRemove({
@@ -1104,7 +1114,7 @@ describe("remove action", () => {
 
     // Prime pendingOps synchronously BEFORE the await so the test observes
     // the "three ops all present" invariant.
-    const promise = store.remove(["a", "b", "c"]);
+    const promise = store.remove(targetsFor(["a", "b", "c"]));
     const mid = snap(store);
     expect(mid.pendingOps["a"]).toBeDefined();
     expect(mid.pendingOps["b"]).toBeDefined();
@@ -1114,7 +1124,7 @@ describe("remove action", () => {
 
     expect(removeFn).toHaveBeenCalledTimes(1);
     expect(removeFn).toHaveBeenCalledWith(
-      expect.objectContaining({ paths: ["a", "b", "c"] }),
+      expect.objectContaining({ targets: targetsFor(["a", "b", "c"]) }),
     );
 
     const after = snap(store);
@@ -1147,7 +1157,7 @@ describe("remove action", () => {
     const store = makeStore("ds-1");
     store.setEntries(entries);
 
-    await store.remove(["a", "b", "c"]);
+    await store.remove(targetsFor(["a", "b", "c"]));
 
     const after = snap(store);
     expect(after.pendingOps).toEqual({});
@@ -1178,7 +1188,7 @@ describe("remove action", () => {
     const store = makeStore("ds-1");
     store.setEntries(entries);
 
-    await store.remove(["a", "b"]);
+    await store.remove(targetsFor(["a", "b"]));
 
     const after = snap(store);
     expect(after.pendingOps).toEqual({});
@@ -1195,7 +1205,7 @@ describe("remove action", () => {
     const store = makeStore("ds-1");
     store.setEntries(entries);
 
-    await store.remove(["a", "b"]);
+    await store.remove(targetsFor(["a", "b"]));
 
     const after = snap(store);
     expect(after.pendingOps).toEqual({});

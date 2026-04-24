@@ -1,9 +1,21 @@
 // `files:remove` command handler. Resolves the engine client once, then
-// processes every path in parallel via `Promise.allSettled`. Each path is
-// stat'd to decide between `deleteFile` and `deleteDirectory`. Per-path
-// results are aggregated into the envelope. The outer `ok` stays `true`
-// as long as the command itself executed (i.e. resolveClient succeeded);
-// per-path errors land in `results[i].error`.
+// processes every target in parallel via `Promise.allSettled`. Each
+// target is addressed by `handle` (the authoritative engine ID) rather
+// than by path — providers like Google Drive permit multiple entries
+// with the same path, so a path-based `getMetadata` + `deleteFile` pair
+// is ambiguity-vulnerable. Handle-based addressing avoids that entirely
+// and also lets us drop the `getMetadata` round-trip: the caller already
+// supplies `kind`, so the handler can dispatch directly to `deleteFile`
+// vs `deleteDirectory`.
+//
+// Per-target outcomes are aggregated into the envelope. The outer `ok`
+// stays `true` as long as the command itself executed (i.e. resolveClient
+// succeeded); per-target errors land in `results[i].error`.
+//
+// When the sibling change `add-engine-rename-download` lands, its
+// `files:rename` / `files:download` handlers SHOULD follow the same
+// handle-first pattern — every `files:*` call that mutates or returns a
+// single entry is ambiguity-vulnerable on path-only addressing.
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
 import type {
@@ -32,21 +44,29 @@ export function makeFilesRemoveHandler(
       return { ok: false, error: normalizeFilesError(err) };
     }
     const settled = await Promise.allSettled(
-      params.paths.map(async (path): Promise<FilesRemoveEntryResult> => {
+      params.targets.map(async (target): Promise<FilesRemoveEntryResult> => {
         try {
-          // Engine vocab uses "folder"; the UI's FileEntry vocab uses
-          // "directory". At the engine seam we switch on the engine value.
-          const entry = await client.getMetadata({ kind: "path", path });
-          if (entry.kind === "folder") {
-            await client.deleteDirectory({ kind: "path", path });
+          // Address by handle — the engine's Target union supports both
+          // `{ kind: "path" }` and `{ kind: "handle" }`, and the handle
+          // form is unambiguous on every provider. Dispatch on the
+          // caller-supplied `kind` (UI's vocab: "directory" / "file") —
+          // the engine's corresponding terminal is `deleteDirectory` /
+          // `deleteFile`, and the engine always throws `unsupported` for
+          // deleteDirectory (see BaseClient.deleteDirectory); the caller
+          // surfaces that as a per-target error.
+          if (target.kind === "directory") {
+            await client.deleteDirectory({
+              kind: "handle",
+              handle: target.handle,
+            });
           } else {
-            await client.deleteFile({ kind: "path", path });
+            await client.deleteFile({ kind: "handle", handle: target.handle });
           }
-          return { path, ok: true };
+          return { path: target.path, ok: true };
         } catch (err) {
           const normalized = normalizeFilesError(err);
           return {
-            path,
+            path: target.path,
             ok: false,
             error: { tag: normalized.tag, message: normalized.message },
           };
@@ -59,7 +79,7 @@ export function makeFilesRemoveHandler(
       s.status === "fulfilled"
         ? s.value
         : {
-            path: params.paths[i]!,
+            path: params.targets[i]!.path,
             ok: false,
             error: {
               tag: "other",

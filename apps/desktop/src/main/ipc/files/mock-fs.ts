@@ -605,7 +605,11 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
     };
   }
 
-  for (const path of req.paths) {
+  // Mock-fs is path-based (no handle ambiguity on an in-memory tree), so
+  // the new `targets` shape is read by destructuring `.path` off each one.
+  // The per-entry `handle` and `kind` fields are accepted but not consulted.
+  for (const reqTarget of req.targets) {
+    const path = reqTarget.path;
     // Any path under /_locked/ fails with the fixed reason — partial-failure
     // code path.
     if (path.startsWith("/_locked/") || path === "/_locked") {

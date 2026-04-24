@@ -123,9 +123,26 @@ export type FilesRemoveEntryResult =
 export const FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE =
   "provider native search is not wired yet; try a narrower path scope";
 
+// Per-entry deletion target. `handle` is the authoritative address; `path`
+// is preserved so the per-path response envelope matches back to the
+// renderer's display keys. `kind` lets the handler dispatch to
+// `deleteFile` vs `deleteDirectory` without a second round-trip to
+// `getMetadata` — that second round-trip was itself ambiguity-vulnerable
+// on providers (notably Google Drive) that allow multiple entries at the
+// same path. See files-remove.ts for the end-to-end story.
+//
+// Rename / Download are currently mock-fs only; when the sibling change
+// `add-engine-rename-download` lands, its contracts SHOULD adopt the same
+// handle-first pattern.
+export interface FilesRemoveTarget {
+  path: string;
+  handle: string;
+  kind: EntryKind;
+}
+
 export interface FilesRemoveRequest {
   datasourceId: string;
-  paths: string[];
+  targets: FilesRemoveTarget[];
 }
 export interface FilesRemoveValue {
   results: FilesRemoveEntryResult[];

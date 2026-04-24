@@ -239,10 +239,14 @@ describe("ipc-contracts files request/response pairs", () => {
     expectTypeOf<FilesRenameResponse>().toEqualTypeOf<{ entry: FileEntry }>();
   });
 
-  it("remove: { datasourceId, paths } request, ok envelope with per-path results", () => {
+  it("remove: { datasourceId, targets } request, ok envelope with per-path results", () => {
     const req: FilesRemoveRequest = {
       datasourceId: "ds-1",
-      paths: ["/a", "/b", "/c"],
+      targets: [
+        { path: "/a", handle: "h-a", kind: "file" },
+        { path: "/b", handle: "h-b", kind: "file" },
+        { path: "/c", handle: "h-c", kind: "file" },
+      ],
     };
     const res: FilesRemoveResponse = {
       ok: true,
@@ -258,7 +262,7 @@ describe("ipc-contracts files request/response pairs", () => {
         ],
       },
     };
-    expect(req.paths).toHaveLength(3);
+    expect(req.targets).toHaveLength(3);
     if (res.ok) {
       expect(res.value.results).toHaveLength(3);
       const third = res.value.results[2]!;
@@ -270,7 +274,11 @@ describe("ipc-contracts files request/response pairs", () => {
 
     expectTypeOf<FilesRemoveRequest>().toEqualTypeOf<{
       datasourceId: string;
-      paths: string[];
+      targets: Array<{
+        path: string;
+        handle: string;
+        kind: "directory" | "file";
+      }>;
     }>();
     expectTypeOf<FilesRemoveResponse>().toEqualTypeOf<
       | {

@@ -12,7 +12,7 @@ function makeFakeClient(opts?: { resolve?: unknown; reject?: unknown }) {
 }
 
 describe("handleFilesRemove — delegates to SyncClient.request('files:remove')", () => {
-  it("forwards { datasourceId, paths } and maps per-path results into the files envelope", async () => {
+  it("forwards { datasourceId, targets } and maps per-path results into the files envelope", async () => {
     const results = [
       { path: "/a", ok: true as const },
       {
@@ -22,15 +22,19 @@ describe("handleFilesRemove — delegates to SyncClient.request('files:remove')"
       },
     ];
     const client = makeFakeClient({ resolve: { results } });
+    const targets = [
+      { path: "/a", handle: "h-a", kind: "file" as const },
+      { path: "/b", handle: "h-b", kind: "file" as const },
+    ];
 
     const result = await handleFilesRemove(
-      { datasourceId: "ds-1", paths: ["/a", "/b"] },
+      { datasourceId: "ds-1", targets },
       { syncClient: client as never },
     );
 
     expect(client.request).toHaveBeenCalledWith("files:remove", {
       datasourceId: "ds-1",
-      paths: ["/a", "/b"],
+      targets,
     });
     expect(result).toEqual({ ok: true, value: { results } });
   });
@@ -44,7 +48,10 @@ describe("handleFilesRemove — delegates to SyncClient.request('files:remove')"
       }),
     });
     const result = await handleFilesRemove(
-      { datasourceId: "ds-ghost", paths: ["/a"] },
+      {
+        datasourceId: "ds-ghost",
+        targets: [{ path: "/a", handle: "h-a", kind: "file" }],
+      },
       { syncClient: client as never },
     );
     expect(result.ok).toBe(false);

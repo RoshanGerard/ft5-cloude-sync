@@ -20,7 +20,7 @@ export async function handleFilesRemove(
   try {
     const result = await deps.syncClient.request("files:remove", {
       datasourceId: req.datasourceId,
-      paths: req.paths,
+      targets: req.targets,
     });
     return {
       ok: true,

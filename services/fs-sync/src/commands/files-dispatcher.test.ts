@@ -196,16 +196,18 @@ describe("files:* dispatcher integration", () => {
     });
   });
 
-  it("files:remove end-to-end: dispatcher fans out to getMetadata + deleteFile with allSettled", async () => {
-    (fakeClient.getMetadata as ReturnType<typeof vi.fn>).mockImplementation(
-      async (target: { path: string }) =>
-        makeEngineEntry({ path: target.path, name: target.path.split("/").pop() }),
-    );
+  it("files:remove end-to-end: dispatcher fans out to deleteFile by handle with allSettled (no getMetadata round-trip)", async () => {
     (fakeClient.deleteFile as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 
     const h = handlers["files:remove"]!;
     const result = await h(
-      { datasourceId: "ds-1", paths: ["/a", "/b"] },
+      {
+        datasourceId: "ds-1",
+        targets: [
+          { path: "/a", handle: "h-a", kind: "file" },
+          { path: "/b", handle: "h-b", kind: "file" },
+        ],
+      },
       ctx,
     );
 
@@ -217,5 +219,15 @@ describe("files:* dispatcher integration", () => {
       ]);
     }
     expect(fakeClient.deleteFile).toHaveBeenCalledTimes(2);
+    // Handle-based addressing skips the ambiguity-vulnerable getMetadata call.
+    expect(fakeClient.getMetadata).not.toHaveBeenCalled();
+    expect(fakeClient.deleteFile).toHaveBeenCalledWith({
+      kind: "handle",
+      handle: "h-a",
+    });
+    expect(fakeClient.deleteFile).toHaveBeenCalledWith({
+      kind: "handle",
+      handle: "h-b",
+    });
   });
 });

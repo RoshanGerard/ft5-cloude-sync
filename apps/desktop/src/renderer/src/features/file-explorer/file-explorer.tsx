@@ -29,7 +29,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 
-import type { FileEntry } from "@ft5/ipc-contracts";
+import type { FileEntry, FilesRemoveTarget } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/icon";
@@ -127,9 +127,19 @@ export function FileExplorer({
   // on the store changes; stale-response guard lives in the hook.
   useExplorerData(store, datasourceId);
 
-  // Confirm-delete dialog state — target paths captured at click-time.
+  // Confirm-delete dialog state — targets captured at click-time. Each
+  // target carries the authoritative engine `handle` so the downstream
+  // files:remove call addresses unambiguously (critical for providers
+  // like Google Drive where multiple entries can share a path). `path`
+  // is preserved purely for the per-entry response-envelope match.
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const pendingDeleteRef = useRef<string[]>([]);
+  const pendingDeleteRef = useRef<FilesRemoveTarget[]>([]);
+
+  const entryToRemoveTarget = (e: FileEntry): FilesRemoveTarget => ({
+    path: e.path,
+    handle: e.id,
+    kind: e.kind,
+  });
 
   // Search → navigate handoff. When a search result is activated the
   // composite clears the search + navigates to the entry's parentPath.
@@ -152,18 +162,18 @@ export function FileExplorer({
   } | null>(null);
 
   const entriesById = new Map(state.entries.map((e) => [e.id, e] as const));
-  const pathsForSelection = (): string[] => {
-    const out: string[] = [];
+  const targetsForSelection = (): FilesRemoveTarget[] => {
+    const out: FilesRemoveTarget[] = [];
     for (const id of state.selection) {
       const entry = entriesById.get(id);
-      if (entry !== undefined) out.push(entry.path);
+      if (entry !== undefined) out.push(entryToRemoveTarget(entry));
     }
     return out;
   };
 
-  const openConfirmDelete = (paths: string[]): void => {
-    if (paths.length === 0) return;
-    pendingDeleteRef.current = paths;
+  const openConfirmDelete = (targets: FilesRemoveTarget[]): void => {
+    if (targets.length === 0) return;
+    pendingDeleteRef.current = targets;
     setConfirmOpen(true);
   };
 
@@ -186,7 +196,7 @@ export function FileExplorer({
       store.startEdit(entry.id);
     },
     onDeleteRequested: (entries) => {
-      openConfirmDelete(entries.map((e) => e.path));
+      openConfirmDelete(entries.map(entryToRemoveTarget));
     },
     onContextMenuRequested: (entry) => {
       // Programmatic open: find the focused entry's DOM node by
@@ -225,21 +235,21 @@ export function FileExplorer({
   // delete the full selection; otherwise delete just that entry.
   const handleContextDelete = (entry: FileEntry) => {
     if (state.selection.has(entry.id)) {
-      openConfirmDelete(pathsForSelection());
+      openConfirmDelete(targetsForSelection());
     } else {
-      openConfirmDelete([entry.path]);
+      openConfirmDelete([entryToRemoveTarget(entry)]);
     }
   };
 
   const handleToolbarDelete = () => {
-    openConfirmDelete(pathsForSelection());
+    openConfirmDelete(targetsForSelection());
   };
 
   const handleConfirmDelete = () => {
-    const paths = pendingDeleteRef.current;
+    const targets = pendingDeleteRef.current;
     pendingDeleteRef.current = [];
     setConfirmOpen(false);
-    void store.remove(paths);
+    void store.remove(targets);
   };
 
   const handleRetry = () => {
