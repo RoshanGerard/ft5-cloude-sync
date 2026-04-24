@@ -175,25 +175,6 @@ When `normalizeError` tags an exception `auth-expired`, the Template base SHALL 
 - **WHEN** `refreshToken` throws
 - **THEN** the caller's operation rejects with a `DatasourceError` whose `tag === "auth-expired"`, exactly one `token-expired` event is emitted, exactly one `authentication-failed` event is emitted, and `CredentialStore.put` is NOT called with any new value
 
-### Requirement: CredentialStore port + SqliteCredentialStore implementation
-
-The engine SHALL declare an abstract port `interface CredentialStore { get(datasourceId: string): Promise<StoredCredentials | null>; put(datasourceId: string, creds: StoredCredentials): Promise<void>; delete(datasourceId: string): Promise<void> }`. The Electron host SHALL provide `SqliteCredentialStore` which implements the port by (a) serializing `creds` to JSON, (b) encrypting via `safeStorage.encryptString`, (c) persisting the ciphertext as a `BLOB` in table `datasource_credentials (datasource_id TEXT PRIMARY KEY, encrypted_blob BLOB NOT NULL, schema_version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`. Reads SHALL decrypt via `safeStorage.decryptString` and parse JSON. If `safeStorage.isEncryptionAvailable()` returns `false` at process start, `SqliteCredentialStore` SHALL refuse construction and the main process SHALL surface a startup error; plaintext fallback is FORBIDDEN.
-
-#### Scenario: Credentials round-trip through encryption
-
-- **WHEN** a test invokes `store.put("ds-1", { accessToken: "abc", refreshToken: "def" })` and then `store.get("ds-1")`
-- **THEN** `get` resolves with an object structurally equal to the input; inspecting the SQLite row directly shows `encrypted_blob` is a non-empty buffer that does NOT contain the literal substring `"abc"` or `"def"`
-
-#### Scenario: Unavailable encryption refuses to operate
-
-- **WHEN** `safeStorage.isEncryptionAvailable()` is stubbed to return `false` at store construction time
-- **THEN** `new SqliteCredentialStore(...)` throws a startup error identifying the missing capability, and no row is written or read
-
-#### Scenario: Schema version tag is present on writes
-
-- **WHEN** `put` is called
-- **THEN** the persisted row has `schema_version === 1`, and `created_at` / `updated_at` are Unix-millis numbers set to (approximately) the call time
-
 ### Requirement: Normalized `DatasourceError` with 8-tag taxonomy
 
 The engine SHALL expose `class DatasourceError<T extends DatasourceType = DatasourceType> extends Error` from `packages/ipc-contracts`. Instances SHALL carry `tag: DatasourceErrorTag`, `datasourceType: T`, `datasourceId: string`, `retryable: boolean`, `retryAfterMs?: number`, and `raw?: unknown`. `DatasourceErrorTag` SHALL be the union `"auth-expired" | "auth-revoked" | "not-found" | "conflict" | "unsupported" | "rate-limited" | "network-error" | "provider-error"`. Every concrete strategy's `normalizeError(e: unknown)` SHALL return an instance of this class; strategies SHALL NOT throw raw provider exceptions from their `doX` methods as observed by the base class.
