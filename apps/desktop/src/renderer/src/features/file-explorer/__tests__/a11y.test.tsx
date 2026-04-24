@@ -61,13 +61,22 @@ import { seedEntry } from "./test-utils.js";
 let filesListMock: Mock;
 
 function installApiMock(
-  responses: Map<string, { entries: FileEntry[]; nextCursor: string | null }>,
+  responses: Map<
+    string,
+    { entries: FileEntry[]; truncated?: boolean; nextCursor?: string | null }
+  >,
 ): void {
   filesListMock = vi.fn();
   filesListMock.mockImplementation(async (req: { path: string }) => {
     const canned = responses.get(req.path);
-    if (canned !== undefined) return canned;
-    return { entries: [], nextCursor: null };
+    const inner = canned ?? { entries: [] };
+    return {
+      ok: true as const,
+      value: {
+        entries: inner.entries,
+        truncated: inner.truncated ?? false,
+      },
+    };
   });
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),

@@ -61,8 +61,13 @@ import { seedEntry } from "./test-utils.js";
 let filesListMock: Mock;
 
 interface InstallOptions {
-  // Optional canned responses per path call; default is "empty".
-  responses?: Map<string, { entries: FileEntry[]; nextCursor: string | null }>;
+  // Optional canned responses per path call; default is "empty". The inner
+  // shape mirrors `FilesListValue`; `nextCursor` is tolerated as a legacy
+  // field but ignored — the new envelope uses `truncated` only.
+  responses?: Map<
+    string,
+    { entries: FileEntry[]; truncated?: boolean; nextCursor?: string | null }
+  >;
   // If set, the `files.list` mock rejects with this error.
   reject?: Error;
   // A deferred promise the test can resolve manually — useful for the
@@ -82,8 +87,14 @@ function installApiMock(options: InstallOptions = {}): void {
     const responses = options.responses ?? new Map();
     filesListMock.mockImplementation(async (req: { path: string }) => {
       const canned = responses.get(req.path);
-      if (canned !== undefined) return canned;
-      return { entries: [], nextCursor: null };
+      const inner = canned ?? { entries: [] };
+      return {
+        ok: true as const,
+        value: {
+          entries: inner.entries,
+          truncated: inner.truncated ?? false,
+        },
+      };
     });
   }
 

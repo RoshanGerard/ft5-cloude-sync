@@ -1042,10 +1042,16 @@ describe("remove action", () => {
 
   it("single-entry happy path: one pendingOp, single IPC call, removes entry, toast.success", async () => {
     const entries = seedEntries(["file-1"]);
-    let resolveRemove: (value: { removed: string[]; failed: [] }) => void = () => {};
+    type RemoveEnvelope = {
+      ok: true;
+      value: {
+        results: Array<{ path: string; ok: true }>;
+      };
+    };
+    let resolveRemove: (value: RemoveEnvelope) => void = () => {};
     const removeFn = vi.fn(
       () =>
-        new Promise<{ removed: string[]; failed: [] }>((res) => {
+        new Promise<RemoveEnvelope>((res) => {
           resolveRemove = res;
         }),
     );
@@ -1064,7 +1070,10 @@ describe("remove action", () => {
       expect.objectContaining({ paths: ["file-1"] }),
     );
 
-    resolveRemove({ removed: ["file-1"], failed: [] });
+    resolveRemove({
+      ok: true,
+      value: { results: [{ path: "file-1", ok: true }] },
+    });
     await promise;
 
     const after = snap(store);
@@ -1077,7 +1086,16 @@ describe("remove action", () => {
   it("multi-entry happy path: one IPC call with all paths, removes all, toast 'Deleted 3 items'", async () => {
     const entries = seedEntries(["a", "b", "c"]);
     const removeFn = vi.fn(() =>
-      Promise.resolve({ removed: ["a", "b", "c"], failed: [] }),
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          results: [
+            { path: "a", ok: true as const },
+            { path: "b", ok: true as const },
+            { path: "c", ok: true as const },
+          ],
+        },
+      }),
     );
     installFilesRemoveApi(removeFn);
 
@@ -1110,8 +1128,18 @@ describe("remove action", () => {
     const entries = seedEntries(["a", "b", "c"]);
     const removeFn = vi.fn(() =>
       Promise.resolve({
-        removed: ["a", "b"],
-        failed: [{ path: "c", reason: "provider locked the file" }],
+        ok: true as const,
+        value: {
+          results: [
+            { path: "a", ok: true as const },
+            { path: "b", ok: true as const },
+            {
+              path: "c",
+              ok: false as const,
+              error: { tag: "other" as const, message: "provider locked the file" },
+            },
+          ],
+        },
       }),
     );
     installFilesRemoveApi(removeFn);
@@ -1131,6 +1159,32 @@ describe("remove action", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "Deleted 2 of 3 items; 1 failed",
     );
+  });
+
+  it("envelope-level failure (ok:false): no removals, all pending ops cleared, lastError set, toast.error", async () => {
+    const entries = seedEntries(["a", "b"]);
+    const removeFn = vi.fn(() =>
+      Promise.resolve({
+        ok: false as const,
+        error: {
+          tag: "auth-revoked" as const,
+          message: "Refresh token expired",
+          retryable: false,
+        },
+      }),
+    );
+    installFilesRemoveApi(removeFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries(entries);
+
+    await store.remove(["a", "b"]);
+
+    const after = snap(store);
+    expect(after.pendingOps).toEqual({});
+    expect(after.entries).toEqual(entries);
+    expect(after.lastError?.reason).toBe("Refresh token expired");
+    expect(toast.error).toHaveBeenCalledWith("Refresh token expired");
   });
 
   it("full failure: IPC throws — all pending ops cleared, entries unchanged, lastError set, toast.error", async () => {
