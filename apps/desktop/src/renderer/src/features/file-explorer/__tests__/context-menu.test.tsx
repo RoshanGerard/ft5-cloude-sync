@@ -11,6 +11,7 @@ import "@testing-library/jest-dom/vitest";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { FileContextMenu } from "../context-menu.js";
+import { ProviderKindContext } from "../provider-kind-context.js";
 import { useKeyboardNav } from "../use-keyboard-nav.js";
 import { createExplorerStore } from "../store.js";
 import { seedEntry } from "./test-utils.js";
@@ -62,12 +63,18 @@ interface HarnessProps {
 
 function Harness(props: HarnessProps) {
   const { entry, ...rest } = props;
+  // This suite exercises the file-entry affordances on a synthetic mock
+  // datasource (Rename + Download remain enabled). The ProviderKindContext
+  // default is engine-backed ("s3") so the disable-affordance guarantee
+  // fails closed — opt in explicitly here.
   return (
-    <FileContextMenu entry={entry} {...rest}>
-      <button type="button" data-testid="trigger" tabIndex={0}>
-        {entry.name}
-      </button>
-    </FileContextMenu>
+    <ProviderKindContext.Provider value="mock">
+      <FileContextMenu entry={entry} {...rest}>
+        <button type="button" data-testid="trigger" tabIndex={0}>
+          {entry.name}
+        </button>
+      </FileContextMenu>
+    </ProviderKindContext.Provider>
   );
 }
 

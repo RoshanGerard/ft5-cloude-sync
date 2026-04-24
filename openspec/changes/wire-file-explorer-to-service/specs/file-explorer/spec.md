@@ -27,11 +27,11 @@ When the datasource is not in a state that permits browsing — `disconnected`, 
 #### Scenario: State components meet WCAG AA color contrast and expose live regions
 
 - **WHEN** any of the four state components renders
-- **THEN** the primary text / icon against the component's background passes WCAG AA contrast (amber-600 on white meets 4.66:1); the component carries `role="status"` (for loading and syncing) or `role="alert"` (for disconnected and auth-revoked) with `aria-live="polite"`; icons are marked `aria-hidden="true"`; the primary action button is focusable via keyboard and lands in the tab order immediately after the toolbar
+- **THEN** the primary text / icon against the component's background passes WCAG AA contrast (amber-600 on white meets 4.66:1); the component carries `role="status"` (for syncing and connected-but-empty) or `role="alert"` (for disconnected and auth-revoked) with `aria-live="polite"`; icons are marked `aria-hidden="true"`; the primary action button is focusable via keyboard and lands in the tab order immediately after the toolbar. The loading skeleton (separate requirement) is decorative, carries `aria-hidden="true"`, and is NOT a live region — the syncing state is the canonical loading cue for assistive technology
 
 ### Requirement: Loading renders skeleton rows matched to the active view mode
 
-While `window.api.files.list` is in flight and no prior response has resolved for the current folder, the entries area SHALL render 6 greyed skeleton rows whose structural silhouette matches the active view mode (List / Details: icon rectangle + name rectangle + trailing metadata rectangle; Small Icons / Tiles: icon rectangle + wrapped-text rectangles; Medium / Large Icons: square image rectangle + name rectangle below). The skeleton rows SHALL NOT include a spinner or text. Skeletons SHALL replace the empty-state and error-state components while loading.
+While `window.api.files.list` is in flight and no prior response has resolved for the current folder, the entries area SHALL render 6 greyed skeleton rows whose structural silhouette matches the active view mode (List / Details: icon rectangle + name rectangle + trailing metadata rectangle; Small Icons / Tiles: icon rectangle + wrapped-text rectangles; Medium / Large Icons: square image rectangle + name rectangle below). The skeleton rows SHALL NOT include a spinner or text. The skeleton root SHALL be marked `aria-hidden="true"`; since the silhouette conveys no textual information, narrating it would be noise for assistive-technology users. Live-region loading cues are reserved for the syncing state. Skeletons SHALL replace the empty-state and error-state components while loading.
 
 #### Scenario: List mode shows 6 skeleton rows during load
 

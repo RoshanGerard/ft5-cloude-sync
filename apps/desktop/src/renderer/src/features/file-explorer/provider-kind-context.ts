@@ -13,11 +13,13 @@ import type { ProviderKind } from "./search-results";
  * wire-file-explorer-to-service spec § Rename and Download
  * affordances are disabled for engine-backed datasources).
  *
- * Default is `"mock"` so stand-alone unit tests that mount view
- * modes without wrapping them in FileExplorer retain the enabled-
- * affordance behaviour (mock datasources pass through).
+ * Default is `"s3"` (engine-backed) so that the disable-Rename/
+ * Download guarantee fails *closed* — any consumer that forgets
+ * to wrap FileContextMenu in a provider gets the safe treatment.
+ * Stand-alone tests for synthetic mock affordances MUST explicitly
+ * wrap in `<ProviderKindContext.Provider value="mock">`.
  */
-export const ProviderKindContext = createContext<ProviderKind>("mock");
+export const ProviderKindContext = createContext<ProviderKind>("s3");
 
 export function useProviderKind(): ProviderKind {
   return useContext(ProviderKindContext);

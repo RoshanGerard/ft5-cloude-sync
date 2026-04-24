@@ -69,10 +69,26 @@ describe("files:remove handler", () => {
     expect(client.deleteDirectory).not.toHaveBeenCalled();
   });
 
-  it("directory entry dispatches to deleteDirectory, not deleteFile", async () => {
+  it("directory entry dispatches to deleteDirectory (which engines unconditionally reject with 'unsupported') and surfaces a per-path error", async () => {
+    // Real engines throw DatasourceError{ tag: "unsupported" } for every
+    // deleteDirectory call — see BaseClient.deleteDirectory. Here we mock
+    // the contracted rejection so the test matches production behavior; the
+    // handler should dispatch to deleteDirectory (not deleteFile) and the
+    // per-path result should be ok:false with tag "other" (the files error
+    // mapping collapses "unsupported" → "other").
+    const deleteDirectory = vi.fn().mockRejectedValue(
+      new DatasourceError({
+        tag: "unsupported",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: false,
+        raw: "disabled-for-product-stability",
+        message: "deleteDirectory is disabled for product stability",
+      }),
+    );
     const client = makeFakeClient({
       getMetadata: vi.fn().mockResolvedValue(makeEngineEntry("/folder", "folder")),
-      deleteDirectory: vi.fn().mockResolvedValue(undefined),
+      deleteDirectory,
     });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
@@ -81,12 +97,23 @@ describe("files:remove handler", () => {
       ctx,
     );
 
-    expect(result.ok).toBe(true);
     expect(client.deleteDirectory).toHaveBeenCalledWith({
       kind: "path",
       path: "/folder",
     });
     expect(client.deleteFile).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.results).toHaveLength(1);
+      const r0 = result.result.results[0];
+      expect(r0.ok).toBe(false);
+      if (!r0.ok) {
+        expect(r0.error.tag).toBe("other");
+        expect(r0.error.message).toBe(
+          "deleteDirectory is disabled for product stability",
+        );
+      }
+    }
   });
 
   it("single-path failure (engine throws rate-limited) returns per-path error", async () => {
