@@ -92,3 +92,169 @@ dialog. Capture screenshots of the four overlay/dialog states.
 
 **Owner:** unassigned. To do during the next environment-loop pass for
 this feature.
+
+---
+
+## add-drive-oauth-browser-consent — §1 GCP OAuth client + Actions secrets + `.env.local` (HUMAN prerequisite)
+
+**Scenario** (per the archived `openspec/changes/archive/2026-04-25-add-drive-oauth-browser-consent/tasks.md` §1.1–1.3):
+
+- §1.1 Register a "Desktop app" OAuth 2.0 client in the org-owned GCP
+  project (Google Cloud Console → APIs & Services → Credentials → Create
+  Credentials → OAuth client ID → Desktop app). Enable the Google Drive
+  API in the same project, configure the consent screen with `auth/drive`
+  scope, and add internal dev accounts as test users. Capture the
+  `client_id` + `client_secret`.
+- §1.2 Add `FT5_GOOGLE_OAUTH_CLIENT_ID` and
+  `FT5_GOOGLE_OAUTH_CLIENT_SECRET` to GitHub Actions secrets
+  (Settings → Secrets and variables → Actions). Verify CI can read them
+  by echoing their **lengths only** in a dry-run workflow step.
+- §1.3 Create local `apps/desktop/.env.local` (gitignored — pattern
+  added by this change) from the committed `apps/desktop/.env.example`
+  template, populated with the two values from §1.1. Rebuild via
+  `pnpm --filter @ft5/desktop build:all` so electron-vite's `loadEnv`
+  picks them up at the `define` map.
+
+**Status:** PENDING — operational, never automatable.
+
+**Why deferred:** These are one-time human ops. The codebase wires
+everything correctly (verified by `apps/desktop/src/main/__tests__/oauth-build-constants.test.ts`
+and the `electron.vite.config.ts` non-dev fail-fast guard); they only
+take effect once a real client + secret exist. The `FT5_DEV_CREDENTIALS=1`
+override path is available as a smoke-test workaround that does not
+need any of this (`README.md` Section 2).
+
+**Re-verification command:** With §1 complete, run `pnpm --filter @ft5/desktop build:all`
+and grep the resulting `apps/desktop/dist/main/index.js` for the client
+ID — the build inlines it at the `__FT5_GOOGLE_OAUTH_CLIENT_ID__`
+identifier. Length-only check (never echo the value).
+
+**Owner:** unassigned (HUMAN). Required for §12.1–§12.4 below to be
+runnable against real Google credentials.
+
+---
+
+## add-drive-oauth-browser-consent — §12.1 fresh add + real GCP client smoke
+
+**Scenario** (per the archived tasks.md §12.1): Run `pnpm -F @ft5/desktop dev`
+with `apps/desktop/.env.local` containing real credentials and
+`FT5_DEV_CREDENTIALS` UNSET. Click Add Datasource → Google Drive →
+Connect. The system browser opens to the Google consent page. Complete
+consent. The dialog auto-closes. A new card appears in the dashboard.
+Upload a small file. Confirm the file appears at the Drive root.
+
+**Status:** BLOCKED on the follow-up change `implement-datasource-onboarding`.
+
+**Why deferred:** This change ships the OAuth UI + main-process broker
+correctly. After `completeWith(code)` succeeds, the engine's
+`decorateIntent` calls `credentialStore.put(...)` — but
+`apps/desktop/src/main/index.ts` wires `noopCredentialStore` per the
+broader architecture's "Decision 1 — credential ownership lives on the
+service" (wire-fs-sync-service). The fs-sync service's stubbed
+`sync:authenticate-start` / `sync:authenticate-complete` handlers are
+where credential persistence should land; until those are implemented
+(by `implement-datasource-onboarding`), the registry row is created
+but no credentials reach the service. Exploring the new card returns
+`Failed to load: no credentials registered for datasourceId=…`. See
+the archived `design.md` "Known gap — credential persistence" entry.
+
+**Re-verification command:** After `implement-datasource-onboarding`
+merges, repeat the §12.1 manual flow. The desktop broker should
+forward the `AuthResult` to the service via
+`client.authenticateComplete(...)`; the service's
+`ConfigFileCredentialStore` writes to `~/ft5/sync_app/credentials.json`
+or its `--dev` equivalent; exploring the card succeeds and shows the
+Drive root.
+
+**Owner:** unassigned. Pick up alongside `implement-datasource-onboarding`.
+
+---
+
+## add-drive-oauth-browser-consent — §12.2 revoke + reconnect smoke
+
+**Scenario** (per the archived tasks.md §12.2): After §12.1, open
+Google Account → Security → Third-party apps → revoke the OAuth grant.
+Wait for the card to move to error state with the `auth-revoked`
+banner. Click the "Reconnect" button on the banner. The browser
+re-opens to the Google consent page. Complete consent. The card
+returns to `connected`. A fresh sync succeeds.
+
+**Status:** BLOCKED on `implement-datasource-onboarding`.
+
+**Why deferred:** Same gap as §12.1 — the Reconnect path goes through
+`startConsent({providerId, datasourceId: <existing>})` and ends in the
+same `completeWith` → `noopCredentialStore.put(...)` no-op. Even if
+the visual flow works (banner appears, Reconnect opens browser,
+consent succeeds, banner clears), the credentials still don't reach
+the fs-sync service. Sync will fail with the same "no credentials
+registered" error.
+
+The renderer's reconnect path is unit-tested in
+`apps/desktop/src/renderer/src/features/datasources/__tests__/card-auth-error-banner.test.tsx`
+(11 tests covering banner-on-auth-class-error, Reconnect → startConsent,
+consent-completed → card flips to connected via store refresh).
+
+**Re-verification command:** Same as §12.1 (post `implement-datasource-onboarding`),
+plus the revoke step from the Google Account UI.
+
+**Owner:** unassigned. Pick up alongside `implement-datasource-onboarding`.
+
+---
+
+## add-drive-oauth-browser-consent — §12.3 cancel mid-consent smoke
+
+**Scenario** (per the archived tasks.md §12.3): With real GCP
+credentials in `.env.local` (§1 done), run `pnpm -F @ft5/desktop dev`,
+click Add Datasource → Google Drive → Connect. The browser opens to
+Google. Without completing consent, close the dialog in the desktop app
+(X / Escape / outside-click). The browser tab can be left open or
+closed. The OAuthForm calls `cancelConsent({sessionId})` on unmount
+(D7 invariant fix). No card materialises in the dashboard. If the user
+later clicks Continue in the still-open browser tab, the broker's
+loopback server has already torn down — no late `consent-completed`
+event reaches the store.
+
+**Status:** PENDING — testable today once §1 is complete.
+
+**Why deferred:** Requires a running dev build with real OAuth
+credentials. Unit-tested in
+`apps/desktop/src/renderer/src/features/datasources/__tests__/oauth-form.test.tsx`
+(3 unmount-cancel tests covering: post-Connect unmount fires
+cancelConsent; no-Connect unmount does NOT fire cancelConsent;
+post-terminal-state unmount still fires cancelConsent — broker is
+idempotent). The broker's `cancel()` idempotency is covered in
+`apps/desktop/src/main/oauth/__tests__/consent-broker.test.ts` task 4.4.
+
+**Re-verification command:** With dev build up, click Connect, wait
+for the browser, then close the desktop dialog. Confirm dashboard has
+no new card. Open DevTools → `await window.api.datasources.list()` to
+double-check.
+
+**Owner:** unassigned. Easy bench test once §1 is done.
+
+---
+
+## add-drive-oauth-browser-consent — §12.4 5-min timeout smoke
+
+**Scenario** (per the archived tasks.md §12.4): Click Connect to start
+a consent session. Leave the browser tab idle for 5 minutes (don't
+click Continue). The desktop dialog should surface "Consent timed out
+— please try again" with a Retry button. Clicking Retry should reset
+the session and start a fresh `startConsent` flow.
+
+**Status:** PENDING — testable today once §1 is complete.
+
+**Why deferred:** Real-wall-clock test — fiddly to wait through. The
+broker's 5-minute timer is unit-tested with `vi.useFakeTimers()` in
+`consent-broker.test.ts` task 4.5 ("Timer fires at 5 minutes": advance
+300_001 ms, assert `consent-timeout` emitted, server closed, pending
+session cleared) and task 4.6 ("Timer is cancelled on successful
+completion": complete at t=60_000, advance past t=300_001, assert NO
+`consent-timeout` event). The renderer's timeout-state copy + Retry
+button path is tested in `oauth-form.test.tsx` task 8.3.
+
+**Re-verification command:** With dev build up, click Connect, leave
+the browser tab idle for 5 min 5 s, observe the dialog. Click Retry,
+complete the second consent normally.
+
+**Owner:** unassigned. Pair with §12.3 in a single bench session.
