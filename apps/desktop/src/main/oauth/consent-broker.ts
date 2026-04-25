@@ -11,12 +11,13 @@
 //   broker.start({providerId, datasourceId?}) → Promise<{sessionId}>
 //   broker.cancel({sessionId})               → Promise<void>
 //   broker.dispose()                         → void
+//   broker.subscribe(handler)                → () => void  (consent events)
 //   broker._getPendingSessionForTests(sid)   → PendingSession | undefined
 //
 // Constructor options use dependency injection so tests can stub
 // openExternal and supply a fake engine factory without touching globals.
 
-import type { StoredCredentials, AuthIntent } from "@ft5/ipc-contracts";
+import type { StoredCredentials, AuthIntent, ConsentEvent } from "@ft5/ipc-contracts";
 import type { OAuthIntent } from "@ft5/ipc-contracts";
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,16 @@ export interface OAuthConsentBroker {
   dispose(): void;
 
   /**
+   * Subscribe to consent lifecycle events emitted by the broker.
+   * Mirrors the EventBus subscribe shape from @ft5/fs-datasource-engine:
+   *   subscribe(handler: (e: ConsentEvent) => void): () => void
+   * Returns an unsubscribe function. Handlers registered before task 4.7
+   * lands will receive no events (stub emits nothing), but the surface is
+   * wired so tasks 4.3-4.6 can subscribe without interface changes.
+   */
+  subscribe(handler: (event: ConsentEvent) => void): () => void;
+
+  /**
    * TEST-ONLY: return the pending-session record for the given sessionId,
    * or undefined if not found. Never call from production code.
    */
@@ -121,6 +132,7 @@ export interface OAuthConsentBroker {
  * Create an OAuthConsentBroker instance.
  *
  * Task 4.1: start() and cancel() always throw "Not implemented".
+ * Task 4.2: subscribe() / unsubscribe() surface added (noop stub).
  * Task 4.7: replaces this stub with the real implementation.
  */
 export function createOAuthConsentBroker(
@@ -129,6 +141,11 @@ export function createOAuthConsentBroker(
   // The Map is referenced by _getPendingSessionForTests so the real impl
   // can populate it once task 4.7 lands, without changing the interface.
   const pending = new Map<string, PendingSession>();
+
+  // Consent-event subscribers. The real implementation (task 4.7) populates
+  // this set and calls _emitConsent. The stub keeps the set but never calls
+  // _emitConsent, so no events reach subscribers until 4.7 lands.
+  const consentSubscribers = new Set<(event: ConsentEvent) => void>();
 
   return {
     async start(_opts: BrokerStartOptions): Promise<BrokerStartResult> {
@@ -141,6 +158,14 @@ export function createOAuthConsentBroker(
 
     dispose(): void {
       // No-op in stub — no real servers to close.
+      consentSubscribers.clear();
+    },
+
+    subscribe(handler: (event: ConsentEvent) => void): () => void {
+      consentSubscribers.add(handler);
+      return () => {
+        consentSubscribers.delete(handler);
+      };
     },
 
     _getPendingSessionForTests(
