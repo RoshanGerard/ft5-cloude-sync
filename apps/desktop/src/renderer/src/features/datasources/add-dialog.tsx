@@ -105,6 +105,17 @@ export function AddDatasourceDialog({
       if (selectedProviderId === null) return;
       setSubmitError(null);
       setSubmitting(true);
+
+      // OAuth forms signal completion via a sentinel key. The consent broker
+      // has already registered the datasource in the main process, so we
+      // refresh the list instead of calling add().
+      if (credentials._oauthConsent === "completed") {
+        setSubmitting(false);
+        void actions.refresh();
+        handleOpenChange(false);
+        return;
+      }
+
       try {
         await actions.add({ providerId: selectedProviderId, credentials });
         setSubmitting(false);

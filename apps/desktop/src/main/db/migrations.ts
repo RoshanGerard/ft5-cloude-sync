@@ -96,28 +96,41 @@ export const migration_0003_drop_datasource_credentials: Migration = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// 0004 — add error_kind column (add-drive-oauth-browser-consent)
+// ---------------------------------------------------------------------------
+//
+// Adds `error_kind TEXT` to the `datasources` table so the registry can
+// persist the engine's `DatasourceError.tag` alongside `error_reason`. This
+// lets the renderer distinguish auth-class errors (→ AuthErrorBanner) from
+// other error kinds without parsing the human-readable `error_reason`.
+//
+// The column is nullable and defaults to NULL so existing rows are unaffected.
+// `ALTER TABLE ... ADD COLUMN` in SQLite adds the column to every existing row
+// with the DEFAULT value — no data migration required.
+
+export const migration_0004_datasource_error_kind: Migration = {
+  id: "0004_datasource_error_kind",
+  up: (db) => {
+    db.exec(
+      "ALTER TABLE datasources ADD COLUMN error_kind TEXT DEFAULT NULL",
+    );
+  },
+};
+
 /**
  * The canonical migration list. Append-only.
  *
- * Composition as of wire-fs-sync-service 9.5:
+ * Composition as of add-drive-oauth-browser-consent:
  *   - `migration_0002_datasources` — the registry table.
  *   - `migration_0003_drop_datasource_credentials` — drops the retired
  *     credential table.
+ *   - `migration_0004_datasource_error_kind` — adds `error_kind` column.
  *
- * `migration_0001_datasource_credentials` is deliberately NOT here anymore:
- *   - Existing installs already recorded the 0001 id in `_migrations` when
- *     they first booted, and the runner is forward-only, so removing 0001
- *     from the array does not re-run or rewrite the bookkeeping. On their
- *     next start they will apply 0003 and drop the table.
- *   - Fresh installs see only 0002 + 0003 and never materialize the
- *     credential table; 0003's `DROP TABLE IF EXISTS` is a safe no-op there.
- *
- * The export of `migration_0001_datasource_credentials` is kept so tests can
- * reproduce the "legacy install had the table" scenario (see
- * `db/database.test.ts`'s 0003 cases). Production code paths no longer
- * reference it.
+ * `migration_0001_datasource_credentials` is deliberately NOT here anymore.
  */
 export const DEFAULT_MIGRATIONS = [
   migration_0002_datasources,
   migration_0003_drop_datasource_credentials,
+  migration_0004_datasource_error_kind,
 ] as const;

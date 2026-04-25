@@ -51,6 +51,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "connected",
       lastSyncAt: null,
       itemCount: 0,
+      errorKind: null,
     });
     expect(summary.id).toBe("ds-1");
     expect(summary.providerId).toBe("amazon-s3");
@@ -70,6 +71,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "connected",
       lastSyncAt: null,
       itemCount: 0,
+      errorKind: null,
     });
     const after = Date.now();
     const row = db
@@ -91,6 +93,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "connected",
       lastSyncAt: null,
       itemCount: 0,
+      errorKind: null,
     });
     const removed = registry.remove("ds-1");
     expect(removed).toBe(true);
@@ -109,6 +112,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "connected",
       lastSyncAt: null,
       itemCount: 5,
+      errorKind: null,
     });
     registry.setPaused("ds-1", true);
 
@@ -132,6 +136,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "syncing",
       lastSyncAt: null,
       itemCount: 5,
+      errorKind: null,
     });
     registry.setPaused("ds-1", true);
     registry.setPaused("ds-1", false);
@@ -148,6 +153,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "connected",
       lastSyncAt: null,
       itemCount: 0,
+      errorKind: null,
     });
     registry.setPaused("ds-1", true);
     registry.setStatus("ds-1", "error", "auth token expired");
@@ -175,6 +181,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       lastSyncAt: null,
       itemCount: 0,
       errorReason: "boom",
+      errorKind: null,
     });
     registry.setStatus("ds-1", "connected");
     const row = db
@@ -191,6 +198,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "connected",
       lastSyncAt: null,
       itemCount: 0,
+      errorKind: null,
     });
     const before = Date.now();
     registry.touchLastSyncAt("ds-1");
@@ -209,6 +217,7 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       status: "connected",
       lastSyncAt: null,
       itemCount: 0,
+      errorKind: null,
     });
     expect(registry.getProviderId("ds-1")).toBe("onedrive");
     expect(registry.getProviderId("unknown")).toBeNull();
@@ -223,10 +232,59 @@ describe("DatasourceRegistry (Phase 9b)", () => {
       lastSyncAt: 1_700_000_000_000,
       itemCount: 42,
       errorReason: "network down",
+      errorKind: null,
     });
     const [summary] = registry.list();
     expect(summary!.errorReason).toBe("network down");
     expect(summary!.itemCount).toBe(42);
     expect(summary!.lastSyncAt).toBe(1_700_000_000_000);
+  });
+
+  it("setStatus() with errorKind persists the tag and list() returns it", () => {
+    registry.add({
+      id: "ds-1",
+      displayName: "X",
+      providerId: "google-drive",
+      status: "connected",
+      lastSyncAt: null,
+      itemCount: 0,
+      errorKind: null,
+    });
+    registry.setStatus("ds-1", "error", "auth token revoked", "auth-revoked");
+
+    const [summary] = registry.list();
+    expect(summary!.status).toBe("error");
+    expect(summary!.errorKind).toBe("auth-revoked");
+  });
+
+  it("setStatus() clears errorKind when status transitions to non-error", () => {
+    registry.add({
+      id: "ds-1",
+      displayName: "X",
+      providerId: "google-drive",
+      status: "error",
+      lastSyncAt: null,
+      itemCount: 0,
+      errorKind: null,
+    });
+    registry.setStatus("ds-1", "error", "revoked", "auth-revoked");
+    registry.setStatus("ds-1", "connected"); // clears error fields
+
+    const [summary] = registry.list();
+    expect(summary!.errorKind).toBeNull();
+  });
+
+  it("list() returns errorKind: null for non-error rows", () => {
+    registry.add({
+      id: "ds-1",
+      displayName: "X",
+      providerId: "amazon-s3",
+      status: "connected",
+      lastSyncAt: null,
+      itemCount: 0,
+      errorKind: null,
+    });
+    const [summary] = registry.list();
+    expect(summary!.errorKind).toBeNull();
   });
 });

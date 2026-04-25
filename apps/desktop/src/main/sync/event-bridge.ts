@@ -88,6 +88,7 @@ export interface BridgeRegistry {
     id: string,
     status: "connected" | "syncing" | "paused" | "error",
     errorReason?: string | null,
+    errorKind?: string | null,
   ): void;
 }
 

@@ -54,6 +54,9 @@ export function useDatasourceEvents(
 
   useEffect(() => {
     const unsubscribe = window.api.datasources.onEvent((event) => {
+      // ConsentEvents lack `datasourceType`; this hook only surfaces engine
+      // datasource events. Consent events are handled by the store directly.
+      if (!("datasourceType" in event)) return;
       cbRef.current(event);
     });
     return unsubscribe;

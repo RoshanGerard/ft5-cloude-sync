@@ -15,6 +15,22 @@ import importX from "eslint-plugin-import-x";
 
 export default tseslint.config(
   {
+    // Allow the TypeScript convention of prefixing intentionally-unused
+    // identifiers with `_`. Applies globally so test-file helpers and fake
+    // factories can use `_code`, `_url`, `_event` etc. without suppression
+    // comments on every occurrence.
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
+  {
     ignores: [
       "**/node_modules/**",
       "**/dist/**",

@@ -75,6 +75,7 @@
 //     one. Handle-form targets bypass this check — they explicitly name
 //     one fileId.
 
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 
@@ -343,6 +344,12 @@ export interface GoogleDriveClientOptions {
   fetchImpl?: typeof fetch;
   /** LRU cap for the path↔fileId cache. Default 512. */
   lruCap?: number;
+  /** Test-only hook — override PKCE `code_verifier` generation. Each call
+   * MUST return a fresh 64-char base64url string. Production callers
+   * omit this; the default derives from `crypto.randomBytes(48)`. Tests
+   * inject a capturing factory to inspect the verifier that threaded
+   * into the authorize URL + token exchange. */
+  codeVerifierFactory?: () => string;
 }
 
 export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
@@ -352,6 +359,8 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   private readonly driveFactory: DriveFactory;
   private readonly fetchImpl: typeof fetch;
   private readonly lruCap: number;
+  /** Default verifier generator: 48 random bytes base64url-encoded. */
+  private readonly codeVerifierFactory: () => string;
 
   /** Path → {fileId, ambiguousSiblings?} cache (LRU via insertion-order
    * Map). The value carries `ambiguousSiblings` when the cached path was
@@ -381,6 +390,9 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       options.fetchImpl ??
       ((globalThis as { fetch: typeof fetch }).fetch).bind(globalThis);
     this.lruCap = options.lruCap ?? 512;
+    this.codeVerifierFactory =
+      options.codeVerifierFactory ??
+      (() => randomBytes(48).toString("base64url"));
 
     this.unsubscribe = this.ctx.bus.subscribe((e) => {
       if (e.datasourceId !== this.datasourceId) return;
@@ -748,6 +760,17 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
 
   protected override async doAuthenticateImpl(): Promise<AuthIntent> {
     const { clientId, redirectUri } = this.creds;
+    // PKCE (RFC 7636, S256). Generate a fresh `code_verifier` per consent
+    // attempt — 48 random bytes base64url-encoded → 64 URL-safe characters
+    // — and a matching `code_challenge = base64url(SHA256(verifier))`. The
+    // challenge goes on the authorize URL; the verifier is captured in the
+    // `completeWith` closure below and threaded into the token exchange.
+    // The verifier is NEVER stored on `this` (no instance field), never
+    // persisted via `CredentialStore`, and never logged.
+    const codeVerifier = this.codeVerifierFactory();
+    const codeChallenge = createHash("sha256")
+      .update(codeVerifier)
+      .digest("base64url");
     const params = new URLSearchParams({
       client_id: clientId,
       response_type: "code",
@@ -757,19 +780,26 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       access_type: "offline",
       // Force re-consent so a re-auth always returns a refresh token.
       prompt: "consent",
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
     });
     const authorizeUrl = `${OAUTH_AUTHORIZE_URL}?${params.toString()}`;
     const intent: OAuthIntent = {
       kind: "oauth",
       authorizeUrl,
       completeWith: async (code: string): Promise<AuthResult> => {
-        return this.exchangeCodeForTokens(code);
+        // Closure captures `codeVerifier` — lives only for the duration
+        // of this authenticate() attempt. No instance-field write.
+        return this.exchangeCodeForTokens(code, codeVerifier);
       },
     };
     return intent;
   }
 
-  private async exchangeCodeForTokens(code: string): Promise<AuthResult> {
+  private async exchangeCodeForTokens(
+    code: string,
+    codeVerifier: string,
+  ): Promise<AuthResult> {
     const { clientId, clientSecret, redirectUri } = this.creds;
     const body = new URLSearchParams({
       client_id: clientId,
@@ -777,6 +807,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       code,
       grant_type: "authorization_code",
       redirect_uri: redirectUri,
+      code_verifier: codeVerifier,
     });
     let resp: Response;
     try {

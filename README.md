@@ -183,46 +183,127 @@ on your host:
   only if the single on-disk `better-sqlite3` binary happens to satisfy both
   sides, which by default it does not. Prefer `./bin/dev.sh start`.
 
-### Google Drive datasource setup (dev only)
+### Google Drive datasource setup
 
-> **Consumers don't need to do any of this.** The packaged app will ship with
-> bundled OAuth app credentials and a real in-app consent flow. Today, both
-> are deferred to the `implement-datasource-onboarding` change (see
-> `openspec/changes/wire-fs-sync-service/design.md` Decision 11). Until that
-> lands, smoke-testing Google Drive locally requires manual OAuth setup —
-> the steps below.
+The desktop app ships a real in-app OAuth consent flow: clicking
+**Add Datasource → Google Drive → Connect** opens the system browser to
+Google's consent screen, captures the redirect on a loopback port,
+exchanges the code with PKCE, and adds the connected datasource to the
+dashboard. This is the path covered by the `add-drive-oauth-browser-consent`
+change (see `openspec/changes/add-drive-oauth-browser-consent/`).
 
-The dev build's "Add Google Drive" dialog does **not** open a browser
-(`apps/desktop/src/renderer/src/features/datasources/credential-forms/oauth-form.tsx`
-is mocked; the service's `authenticate-start` returns `not-implemented`).
-The datasource row is created in the desktop registry, but the fs-sync
-service needs credentials supplied out-of-band to actually upload.
+> **Credential-persistence caveat (until `implement-datasource-onboarding`
+> lands).** The OAuth flow currently completes successfully and creates the
+> registry row, but the obtained tokens are **not** routed to the fs-sync
+> service yet — clicking the new card to explore returns
+> `Failed to load: no credentials registered for datasourceId=…`. The
+> follow-up change `implement-datasource-onboarding` wires the service-side
+> `sync:authenticate-*` handlers (currently stubbed). Until then, end-to-end
+> upload testing requires the dev override path described later in this
+> section.
 
-#### 1. Create a Google Cloud OAuth client
+#### Section 1 — One-time OAuth client + secrets setup
+
+These steps are a prerequisite for the in-app consent flow. They are
+operational (humans only — no code) and only need to be done once per
+GCP project.
+
+##### 1.1 Register the Google Cloud OAuth client
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create or
    select a project.
-2. **APIs & Services → Library → Google Drive API → Enable.** (Without
+2. **APIs & Services → Library → Google Drive API → Enable.** Without
    this, every upload fails with `provider-error: Google Drive API has not
-   been used in project …`.)
+   been used in project …`.
 3. **APIs & Services → OAuth consent screen → External.** Fill in the
-   required fields; add your own email under "Test users" so you can sign
-   in without app verification.
+   required fields. Under "Test users" add the dev email accounts that
+   will sign in during testing — without app verification, only listed
+   test users can complete consent.
 4. **APIs & Services → Credentials → Create Credentials → OAuth client ID
-   → Desktop app.** Download the JSON. Note the `client_id`,
-   `client_secret`, and the `redirect_uris` entry (typically
-   `http://localhost`).
+   → Desktop app.** Download the JSON. You need two values from it:
+   - `client_id` (looks like `1234567890-abc….apps.googleusercontent.com`)
+   - `client_secret` (looks like `GOCSPX-…`)
 
-#### 2. Get access + refresh tokens
+   Per Google's [Desktop OAuth docs](https://developers.google.com/identity/protocols/oauth2/native-app),
+   the `client_secret` for Desktop clients is **non-confidential** —
+   PKCE is the real security boundary. Treat it as embedded in the binary,
+   not as a key requiring secret-grade rotation.
 
-The Desktop-app OAuth type uses the loopback flow — Google accepts any
-port on `localhost` at request time. Run the helper script (lives outside
-the repo; don't commit it):
+##### 1.2 Add the secrets to GitHub Actions
+
+CI builds inline the `client_id` and `client_secret` into the main-process
+bundle at build time via electron-vite's `define` map (see
+`apps/desktop/electron.vite.config.ts`). The workflow pulls them from
+repository secrets:
+
+1. **Repo Settings → Secrets and variables → Actions → New repository
+   secret.**
+2. Add both:
+   - `FT5_GOOGLE_OAUTH_CLIENT_ID` = the value from step 1.1
+   - `FT5_GOOGLE_OAUTH_CLIENT_SECRET` = the value from step 1.1
+3. The build / package / Playwright workflow steps in
+   `.github/workflows/ci.yml` already reference them under their `env:`
+   maps, so a fresh run will pick them up.
+
+To verify CI can read the secrets without exposing the values, run a
+dry-run workflow that echoes only their **lengths** (e.g.
+`echo client-id length: ${#FT5_GOOGLE_OAUTH_CLIENT_ID}`) — never echo the
+values themselves.
+
+##### 1.3 Create your local `.env.local`
+
+`pnpm -F @ft5/desktop dev` and `pnpm -F @ft5/desktop build:all` both call
+`loadEnv()` from electron-vite, which reads `apps/desktop/.env.local` (and
+`apps/desktop/.env`) before evaluating the config. `.env.local` is in
+`.gitignore` — it is the right place for local dev credentials.
+
+1. Copy the template:
+   ```bash
+   cp apps/desktop/.env.example apps/desktop/.env.local
+   ```
+2. Fill in the two values from step 1.1:
+   ```dotenv
+   FT5_GOOGLE_OAUTH_CLIENT_ID=<from step 1.1>
+   FT5_GOOGLE_OAUTH_CLIENT_SECRET=<from step 1.1>
+   ```
+3. **Rebuild** (the values are inlined at build time, not read at runtime):
+   ```bash
+   pnpm -F @ft5/desktop build:all
+   ```
+
+If you ever see `OAuth client ID is not configured — set
+FT5_GOOGLE_OAUTH_CLIENT_ID at build time` when clicking Connect, it
+means the rebuild didn't pick up `.env.local`. Confirm the file exists at
+`apps/desktop/.env.local` (not the worktree root) and rerun `build:all`.
+
+#### Section 2 — Dev override (`FT5_DEV_CREDENTIALS=1`)
+
+If you want to skip the browser flow entirely (CI smoke tests, offline
+development, or while `implement-datasource-onboarding` is still pending),
+set the env var before launching:
+
+```bash
+FT5_DEV_CREDENTIALS=1 pnpm -F @ft5/desktop dev
+```
+
+The broker checks the var on every `startConsent` call. When set, it
+short-circuits the loopback flow: no browser opens, no HTTP server binds,
+and `consent-completed` fires immediately using credentials read from
+`<userData>/dev-credentials.json`. The desktop logs a one-shot warning
+at the first invocation:
+
+```
+[ft5] ⚠  FT5_DEV_CREDENTIALS=1 is active — the OAuth browser flow is bypassed.
+NEVER set this in a production build.
+```
+
+You provide the `dev-credentials.json` yourself. To obtain valid tokens,
+run this PowerShell helper once (lives outside the repo; don't commit it):
 
 ```powershell
-# get-gdrive-tokens.ps1 — see commit history for the full script
-$clientId     = "<from step 1>"
-$clientSecret = "<from step 1>"
+# get-gdrive-tokens.ps1
+$clientId     = "<from Section 1.1>"
+$clientSecret = "<from Section 1.1>"
 $scope        = "https://www.googleapis.com/auth/drive.file"
 $port         = 8765
 $redirectUri  = "http://localhost:$port/"
@@ -256,20 +337,43 @@ Write-Host "refreshToken: $($tokens.refresh_token)"
 ```
 
 `access_type=offline` + `prompt=consent` guarantees Google returns a fresh
-`refresh_token` on every run — it'll remain valid indefinitely (the
-`access_token` is short-lived and the strategy auto-refreshes on 401).
+`refresh_token` on every run.
 
-#### 3. Seed `credentials.json`
+Then write `<userData>/dev-credentials.json` — on Windows this is
+`%APPDATA%\ft5-cloude-sync\dev-credentials.json`:
 
-In the desktop app, open DevTools (`Ctrl+Shift+I`) → Console and run:
+```json
+{
+  "providerId": "google-drive",
+  "authResult": {
+    "accessToken": "<from helper>",
+    "refreshToken": "<from helper>",
+    "meta": {
+      "clientId":     "<from Section 1.1>",
+      "clientSecret": "<from Section 1.1>",
+      "redirectUri":  "http://localhost:8765/"
+    }
+  },
+  "createdAt": 1714000000000,
+  "updatedAt": 1714000000000
+}
+```
+
+**Critical:** the `redirectUri` must exactly match the one used by the
+helper (including the trailing slash) or Google rejects the refresh flow
+with `redirect_uri_mismatch`.
+
+For end-to-end upload testing the fs-sync service also needs a
+matching entry — write
+`$HOME\ft5\sync_app\dev\credentials.json` (Unix:
+`$HOME/ft5/sync_app/dev/credentials.json`) keyed by the registry's
+datasource id. Open the desktop's DevTools (`Ctrl+Shift+I`) → Console:
 
 ```js
 await window.api.datasources.list()
 ```
 
-Copy the `id` of the Google Drive row. Then write
-`$HOME\ft5\sync_app\dev\credentials.json` (created automatically on first
-run — or you can create it yourself):
+…copy the `id` of the Google Drive row, then save:
 
 ```json
 {
@@ -277,15 +381,7 @@ run — or you can create it yourself):
   "credentials": {
     "<paste-datasource-id-from-devtools>": {
       "providerId": "google-drive",
-      "authResult": {
-        "accessToken":  "<from step 2>",
-        "refreshToken": "<from step 2>",
-        "meta": {
-          "clientId":     "<from step 1>",
-          "clientSecret": "<from step 1>",
-          "redirectUri":  "http://localhost:8765/"
-        }
-      },
+      "authResult": { "...": "as above" },
       "createdAt": 1714000000000,
       "updatedAt": 1714000000000
     }
@@ -293,21 +389,20 @@ run — or you can create it yourself):
 }
 ```
 
-**Critical:** the `redirectUri` must exactly match the one used in step 2
-(including the trailing slash) or Google rejects the refresh flow with
-`redirect_uri_mismatch`.
-
 The credential store reads this file fresh on every lookup — no service
-restart required. Trigger an upload and it should run.
+restart required.
 
 #### Troubleshooting
 
-| Error (DevTools `sync event: job-failed`)                  | Cause                                                                                                  |
-|---                                                         |---                                                                                                     |
-| `auth-revoked: Google Drive credentials must include meta.*` | `meta` block missing or a field isn't a string. Re-check the JSON schema above.                        |
-| `provider-error: require is not defined`                    | Out-of-date engine build. `./bin/dev.sh restart` to rebuild.                                           |
-| `provider-error: Google Drive API has not been used…`       | Drive API not enabled in your GCP project. See step 1.2.                                               |
-| `no credentials registered for datasourceId=…`              | The datasource ID in `credentials.json` doesn't match the one in the registry. Re-fetch via DevTools. |
+| Error / symptom                                              | Cause                                                                                                                         |
+|---                                                           |---                                                                                                                            |
+| `OAuth client ID is not configured — set FT5_GOOGLE_OAUTH_CLIENT_ID at build time` | `apps/desktop/.env.local` is missing or `build:all` ran before the file was created. See Section 1.3.                          |
+| Connect opens browser, you authorize, browser shows "you can close this tab", but desktop dialog hangs | Token-exchange failure — most often `redirect_uri_mismatch` (you registered a "Web application" client instead of a "Desktop app" client; only Desktop clients accept loopback redirects) or `invalid_client` (clientSecret mismatch). Inspect the main-process terminal for the `consent-failed` message. |
+| Connect opens browser, consent succeeds, dialog auto-closes, card appears, but exploring fails with `Failed to load: no credentials registered for datasourceId=…` | Expected gap — credential persistence is in the `implement-datasource-onboarding` follow-up. Use the dev override path (Section 2) for end-to-end testing today. |
+| Browser never opens after Connect                            | Corporate firewall / endpoint-protection product is quarantining the loopback listener on `127.0.0.1:<ephemeral-port>`. Disable the interfering product temporarily, or use the dev override path (Section 2). |
+| `auth-revoked: Google Drive credentials must include meta.*` | `meta` block missing or a field isn't a string in `dev-credentials.json` / `credentials.json`. Re-check the JSON schema above. |
+| `provider-error: Google Drive API has not been used…`        | Drive API not enabled in your GCP project. See Section 1.1 step 2.                                                            |
+| `no credentials registered for datasourceId=…`               | The datasource id in `credentials.json` doesn't match the one in the desktop registry. Re-fetch via DevTools.                |
 
 ### Hot-reload behaviour (desktop)
 
