@@ -74,7 +74,6 @@ import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
 import {
-  FACTORY_CONSTRUCTION_DS_ID,
   type CredentialShapeValidator,
   type ProviderFactoryFn,
 } from "../factory.js";
@@ -1065,13 +1064,14 @@ export const createOneDriveClientForRegistry: ProviderFactoryFn<"onedrive"> = (
  */
 export const validateOneDriveCredentialShape: CredentialShapeValidator = (
   credentials,
+  datasourceId,
 ) => {
   const authResult = (credentials as { authResult?: unknown }).authResult;
   if (authResult === null || typeof authResult !== "object") {
     throw new DatasourceError<"onedrive">({
       tag: DatasourceErrorTag.InvalidDatasource,
       datasourceType: "onedrive",
-      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      datasourceId,
       retryable: false,
       raw: "onedrive-missing-authResult",
       message: "onedrive credential is missing authResult",
@@ -1082,7 +1082,7 @@ export const validateOneDriveCredentialShape: CredentialShapeValidator = (
     throw new DatasourceError<"onedrive">({
       tag: DatasourceErrorTag.InvalidDatasource,
       datasourceType: "onedrive",
-      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      datasourceId,
       retryable: false,
       raw: "onedrive-missing-accessToken",
       message: "onedrive credential is missing accessToken",
@@ -1094,7 +1094,7 @@ export const validateOneDriveCredentialShape: CredentialShapeValidator = (
       throw new DatasourceError<"onedrive">({
         tag: DatasourceErrorTag.InvalidDatasource,
         datasourceType: "onedrive",
-        datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+        datasourceId,
         retryable: false,
         raw: `onedrive-missing-${field}`,
         message: `onedrive credential is missing ${field}`,

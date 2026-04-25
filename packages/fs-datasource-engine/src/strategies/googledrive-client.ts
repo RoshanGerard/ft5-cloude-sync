@@ -96,7 +96,6 @@ import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
 import {
-  FACTORY_CONSTRUCTION_DS_ID,
   type CredentialShapeValidator,
   type ProviderFactoryFn,
 } from "../factory.js";
@@ -1505,6 +1504,7 @@ export const createGoogleDriveClientForRegistry: ProviderFactoryFn<"google-drive
  */
 export const validateGoogleDriveCredentialShape: CredentialShapeValidator = (
   credentials,
+  datasourceId,
 ) => {
   const authResult = (credentials as { authResult?: unknown }).authResult;
   if (
@@ -1514,7 +1514,7 @@ export const validateGoogleDriveCredentialShape: CredentialShapeValidator = (
     throw new DatasourceError<"google-drive">({
       tag: DatasourceErrorTag.InvalidDatasource,
       datasourceType: "google-drive",
-      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      datasourceId,
       retryable: false,
       raw: "google-drive-missing-authResult",
       message: "google-drive credential is missing authResult",
@@ -1525,7 +1525,7 @@ export const validateGoogleDriveCredentialShape: CredentialShapeValidator = (
     throw new DatasourceError<"google-drive">({
       tag: DatasourceErrorTag.InvalidDatasource,
       datasourceType: "google-drive",
-      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      datasourceId,
       retryable: false,
       raw: "google-drive-missing-accessToken",
       message: "google-drive credential is missing accessToken",
@@ -1537,7 +1537,7 @@ export const validateGoogleDriveCredentialShape: CredentialShapeValidator = (
       throw new DatasourceError<"google-drive">({
         tag: DatasourceErrorTag.InvalidDatasource,
         datasourceType: "google-drive",
-        datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+        datasourceId,
         retryable: false,
         raw: `google-drive-missing-${field}`,
         message: `google-drive credential is missing ${field}`,

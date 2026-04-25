@@ -66,7 +66,6 @@ import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
 import {
-  FACTORY_CONSTRUCTION_DS_ID,
   type CredentialShapeValidator,
   type ProviderFactoryFn,
 } from "../factory.js";
@@ -793,13 +792,14 @@ export const createS3Client: ProviderFactoryFn<"amazon-s3"> = (
  */
 export const validateS3CredentialShape: CredentialShapeValidator = (
   credentials,
+  datasourceId,
 ) => {
   const authResult = (credentials as { authResult?: unknown }).authResult;
   if (authResult === null || typeof authResult !== "object") {
     throw new DatasourceError<"amazon-s3">({
       tag: DatasourceErrorTag.InvalidDatasource,
       datasourceType: "amazon-s3",
-      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      datasourceId,
       retryable: false,
       raw: "amazon-s3-missing-authResult",
       message: "amazon-s3 credential is missing authResult",
@@ -819,7 +819,7 @@ export const validateS3CredentialShape: CredentialShapeValidator = (
       throw new DatasourceError<"amazon-s3">({
         tag: DatasourceErrorTag.InvalidDatasource,
         datasourceType: "amazon-s3",
-        datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+        datasourceId,
         retryable: false,
         raw: `amazon-s3-missing-${field}`,
         message: `amazon-s3 credential is missing ${field}`,

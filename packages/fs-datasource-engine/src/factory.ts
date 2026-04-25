@@ -104,11 +104,20 @@ export type ProviderFactoryFn<P extends ProviderId = ProviderId> = (
  * Per-provider credential-shape validator. Invoked by `factory.create`
  * BEFORE the strategy factory runs (per add-invalid-datasource-state
  * Decision 2 — single choke point). MUST throw `DatasourceError({ tag:
- * "invalid-datasource", retryable: false, message: "<provider> credential
- * is missing <field>" })` when the supplied credentials do not satisfy
- * the provider's expected shape; MUST return without throwing on success.
+ * "invalid-datasource", retryable: false, datasourceId, message:
+ * "<provider> credential is missing <field>" })` when the supplied
+ * credentials do not satisfy the provider's expected shape; MUST
+ * return without throwing on success.
+ *
+ * The validator receives `datasourceId` so the thrown error carries the
+ * real id (rather than the `FACTORY_CONSTRUCTION_DS_ID` sentinel) — the
+ * sync-service `normalizeFilesError` and the dashboard banner both
+ * consume the id to identify which datasource needs reconfiguring.
  */
-export type CredentialShapeValidator = (creds: StoredCredentials) => void;
+export type CredentialShapeValidator = (
+  creds: StoredCredentials,
+  datasourceId: string,
+) => void;
 
 /**
  * A single registry entry: bundles the strategy factory function with the
@@ -219,10 +228,11 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
       }
       // Per-provider credential-shape validation BEFORE strategy
       // construction (per add-invalid-datasource-state Decision 2).
-      // The validator throws DatasourceError({ tag: InvalidDatasource })
-      // with a field-naming message on shape failure; success returns
-      // void.
-      entry.validateCredentialShape(credentials);
+      // The validator throws DatasourceError({ tag: InvalidDatasource,
+      // datasourceId }) with a field-naming message on shape failure;
+      // success returns void. Passing `datasourceId` so the thrown
+      // error carries the real id rather than the construction-sentinel.
+      entry.validateCredentialShape(credentials, datasourceId);
       const descriptor = providers[providerId];
       // Construct a fresh BaseClientContext per call — the descriptor is
       // per-provider, so it cannot live inside the EngineContext.

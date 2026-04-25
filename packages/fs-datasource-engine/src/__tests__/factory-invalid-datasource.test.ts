@@ -193,6 +193,11 @@ describe("ClientFactory.create — wrong-shape credential rejection (§3.5–3.7
       const e = err as DatasourceError;
       expect(e.tag).toBe(DatasourceErrorTag.InvalidDatasource);
       expect(e.retryable).toBe(false);
+      // The thrown error MUST carry the real datasourceId (not the
+      // FACTORY_CONSTRUCTION_DS_ID sentinel) so downstream consumers
+      // (normalizeFilesError, dashboard banner) can identify which
+      // datasource is misconfigured.
+      expect(e.datasourceId).toBe("ds-3");
     }
 
     // The strategy factory MUST NOT have been invoked when shape
