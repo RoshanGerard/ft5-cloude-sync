@@ -451,4 +451,70 @@ describe("createUploadJobToaster", () => {
     expect(updateCall[1]?.id).toBe("toast-B");
     expect(updateCall[1]?.id).not.toBe("toast-A");
   });
+
+  it("(i) onJobCompleted is called with the jobId on terminal status='completed' and NOT for uploading or failed events", () => {
+    // Bug 2 fix: the file-explorer wires `onJobCompleted` to
+    // `store.retryLoad()` so the entries list refreshes once the
+    // provider has acknowledged the new file. The callback must fire
+    // ONLY on `completed` — uploading progress events and terminal
+    // failures should not trigger a refetch (failed uploads leave the
+    // file absent on the provider; refetching would surface nothing
+    // new and would mask the real failure with churn).
+    toast.loading.mockReturnValueOnce("toast-A");
+    toast.loading.mockReturnValueOnce("toast-B");
+    const onJobCompleted = vi.fn();
+    const toaster = createUploadJobToaster({
+      toast,
+      progressApi,
+      onJobCompleted,
+    });
+
+    // Dispatch job-A and emit an `uploading` event — must NOT call
+    // onJobCompleted.
+    toaster.onJobDispatched({
+      jobId: "job-A",
+      basename: "report.pdf",
+      retry: vi.fn(async () => {}),
+    });
+    progressApi.emit(
+      "job-A",
+      progressEvent("job-A", {
+        bytesUploaded: 50,
+        bytesTotal: 100,
+        status: "uploading",
+      }),
+    );
+    expect(onJobCompleted).not.toHaveBeenCalled();
+
+    // Drive job-A to terminal `completed` — onJobCompleted fires once
+    // with the jobId.
+    progressApi.emit(
+      "job-A",
+      progressEvent("job-A", {
+        bytesUploaded: 100,
+        bytesTotal: 100,
+        status: "completed",
+      }),
+    );
+    expect(onJobCompleted).toHaveBeenCalledTimes(1);
+    expect(onJobCompleted).toHaveBeenCalledWith("job-A");
+
+    // Dispatch job-B and drive it to terminal `failed` — must NOT call
+    // onJobCompleted again (still 1 invocation total).
+    toaster.onJobDispatched({
+      jobId: "job-B",
+      basename: "beta.png",
+      retry: vi.fn(async () => {}),
+    });
+    progressApi.emit(
+      "job-B",
+      progressEvent("job-B", {
+        bytesUploaded: 0,
+        bytesTotal: 100,
+        status: "failed",
+        error: "rate-limited",
+      }),
+    );
+    expect(onJobCompleted).toHaveBeenCalledTimes(1);
+  });
 });

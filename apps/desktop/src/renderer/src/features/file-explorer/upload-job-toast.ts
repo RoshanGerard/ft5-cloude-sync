@@ -64,6 +64,16 @@ export interface UploadProgressApi {
 export interface UploadToasterDeps {
   readonly toast?: ToastApi;
   readonly progressApi?: UploadProgressApi;
+  /**
+   * Optional per-job-completed callback. Fires when a `status: "completed"`
+   * upload-progress event arrives for any dispatched job, BEFORE the
+   * progress subscription is closed. The file-explorer wires this to
+   * `store.retryLoad()` so the entries list refreshes once the provider
+   * has acknowledged the new file (Bug 2 fix). Failed uploads do not
+   * trigger this callback — the entries list stays as-is until the user
+   * either retries or navigates.
+   */
+  readonly onJobCompleted?: (jobId: string) => void;
 }
 
 // --- Production fallbacks --------------------------------------------
@@ -174,6 +184,7 @@ export function createUploadJobToaster(
             id: toastId,
             duration: 4000,
           });
+          deps?.onJobCompleted?.(args.jobId);
           unsubscribe();
           return;
         }

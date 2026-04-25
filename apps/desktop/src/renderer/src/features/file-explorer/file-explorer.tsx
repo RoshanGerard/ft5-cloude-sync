@@ -163,6 +163,12 @@ export function FileExplorer({
   const { resolver: defaultConflictResolver, dialogProps: conflictDialogProps } =
     useConflictResolutionDialog();
   const conflictResolver = conflictResolverProp ?? defaultConflictResolver;
+  const router = useRouter();
+  // Grab the per-datasource store directly — the module-level cache
+  // ensures this is the same instance for every mount with the same id.
+  // We subscribe to its state once here; child chrome components accept
+  // the store prop and subscribe themselves with `useSyncExternalStore`.
+  const store = getOrCreateExplorerStore(datasourceId);
   // Task 9.2 — instantiate the production Sonner-backed per-job toaster
   // once per mount so the same instance is shared between the drop-zone
   // and the upload dialog. Tests inject their own toaster via the
@@ -170,14 +176,20 @@ export function FileExplorer({
   // memoising keeps identity stable across re-renders so downstream
   // consumers that compare toaster references (none today, but defensive)
   // don't see spurious changes.
-  const defaultToaster = useMemo(() => createUploadJobToaster(), []);
+  //
+  // Bug 2 fix: wire `onJobCompleted` to `store.retryLoad()` so a
+  // completed upload triggers an immediate refetch of the current
+  // folder's entries. Without this the new file is on the provider but
+  // the explorer's list reflects the pre-upload snapshot until the
+  // user navigates away and back. `store` is included in deps so a
+  // different datasource gets a fresh toaster bound to its own store
+  // (in practice the cache makes this stable per datasourceId, but the
+  // dep is correct).
+  const defaultToaster = useMemo(
+    () => createUploadJobToaster({ onJobCompleted: () => store.retryLoad() }),
+    [store],
+  );
   const toaster = toasterProp ?? defaultToaster;
-  const router = useRouter();
-  // Grab the per-datasource store directly — the module-level cache
-  // ensures this is the same instance for every mount with the same id.
-  // We subscribe to its state once here; child chrome components accept
-  // the store prop and subscribe themselves with `useSyncExternalStore`.
-  const store = getOrCreateExplorerStore(datasourceId);
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
