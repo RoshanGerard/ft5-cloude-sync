@@ -211,7 +211,7 @@ describe("ConflictResolutionDialog", () => {
 
   // Sanity: header text matches the visual contract.
   it("renders the dialog title 'File already exists'", async () => {
-    const { resolved: _resolved } = renderHarness([makeConflict("a.pdf")]);
+    renderHarness([makeConflict("a.pdf")]);
     await screen.findByRole("heading", { name: /File already exists/i });
   });
 });

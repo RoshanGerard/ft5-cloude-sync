@@ -50,8 +50,8 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 7. Renderer — conflict resolution dialog
 
-- [ ] 7.1 Write failing tests in `conflict-resolution-dialog.test.tsx`: (a) serial walk through N conflicts, default checkbox unchecked; (b) "Apply to remaining" checkbox short-circuits further prompts with the last-chosen policy; (c) "Cancel all" resolves the promise with `{ aborted: true }`; (d) "Keep both" resolves with `conflictPolicy: "duplicate"`.
-- [ ] 7.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/conflict-resolution-dialog.tsx` — controlled shadcn `<Dialog>` that walks a queue of conflicts and returns per-file decisions to `useUploadOrchestrator`.
+- [x] 7.1 Write failing tests in `conflict-resolution-dialog.test.tsx`: (a) serial walk through N conflicts, default checkbox unchecked; (b) "Apply to remaining" checkbox short-circuits further prompts with the last-chosen policy; (c) "Cancel all" resolves the promise with `{ aborted: true }`; (d) "Keep both" resolves with `conflictPolicy: "duplicate"`.
+- [x] 7.2 Implement `apps/desktop/src/renderer/src/features/file-explorer/conflict-resolution-dialog.tsx` — controlled shadcn `<Dialog>` that walks a queue of conflicts and returns per-file decisions to `useUploadOrchestrator`.
 
 ## 8. Composite / four-layer wiring tests
 
