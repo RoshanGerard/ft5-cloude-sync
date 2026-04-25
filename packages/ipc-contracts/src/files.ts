@@ -6,11 +6,28 @@
 
 import type { ConflictPolicy } from "./sync-service/commands.js";
 
+// Per add-invalid-datasource-state Decision 1, the tag union is exposed
+// as an `as const` object + derived type (matching `FILES_CHANNELS` /
+// `DATASOURCES_CHANNELS` convention). Net-new code references via
+// `FilesErrorTag.InvalidDatasource`; existing literal references such as
+// `tag === "auth-revoked"` continue to type-check because the derived
+// type is the same string union.
+//
+// `"invalid-datasource"` (per add-invalid-datasource-state Decision 2)
+// surfaces misconfigured datasources detected at the engine layer
+// (`factory.create` shape rejection) or the service-side `resolveClient`
+// adapter (missing credential file). Distinct from `"auth-revoked"` —
+// auth-revoked means the provider terminated the OAuth grant; this tag
+// means the local credential payload is missing or malformed.
+export const FilesErrorTag = {
+  AuthRevoked: "auth-revoked",
+  Disconnected: "disconnected",
+  RateLimited: "rate-limited",
+  Other: "other",
+  InvalidDatasource: "invalid-datasource",
+} as const;
 export type FilesErrorTag =
-  | "auth-revoked"
-  | "disconnected"
-  | "rate-limited"
-  | "other";
+  (typeof FilesErrorTag)[keyof typeof FilesErrorTag];
 
 export interface FilesErrorEnvelope {
   tag: FilesErrorTag;

@@ -20,10 +20,10 @@ import {
   createDefaultProviderRegistry,
   createEventBus as createEngineEventBus,
   type ClientFactory,
-  type DatasourceClient,
   type ProviderRegistry,
 } from "@ft5/fs-datasource-engine";
-import type { DatasourceType, ProviderId } from "@ft5/ipc-contracts";
+
+import { createResolveClient } from "./resolve-client.js";
 
 import { buildCommandHandlers } from "../commands/handlers.js";
 import { ConfigFileCredentialStore } from "../credential-store/config-file.js";
@@ -183,25 +183,15 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
 
     // 7. construct-client-factory
     const factory: ClientFactory = createClientFactory(registry);
-    // Per-datasource resolver. Reads credentials from the store, then asks
-    // the factory to construct a fresh client. Executors invoke this via
-    // the deps.resolveClient port — no strategy SDKs imported here.
-    const resolveClient = async (
-      datasourceId: string,
-    ): Promise<DatasourceClient<DatasourceType>> => {
-      const creds = await credentialStore.get(datasourceId);
-      if (creds === null) {
-        throw new Error(
-          `no credentials registered for datasourceId=${datasourceId}`,
-        );
-      }
-      return factory.create(
-        creds.providerId as ProviderId,
-        datasourceId,
-        creds,
-        { bus: engineBus, credentialStore },
-      ) as DatasourceClient<DatasourceType>;
-    };
+    // Per-datasource resolver lives in `./resolve-client.ts` so its
+    // InvalidDatasource throw path is directly unit-testable (per
+    // add-invalid-datasource-state §5). Executors still invoke it via
+    // the same `deps.resolveClient` port.
+    const resolveClient = createResolveClient({
+      credentialStore,
+      factory,
+      engineBus,
+    });
     observer?.onStage("construct-client-factory");
 
     // 8. construct-scheduler

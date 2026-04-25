@@ -37,6 +37,11 @@ export { DATASOURCES_CHANNELS, providers } from "./datasources.js";
 // UI / file-explorer-facing file primitives (non-generic). These are the
 // shapes the renderer's file-explorer feature consumes via
 // `window.api.files.*`. Shipped by the `ui-file-explorer` change.
+// `FilesErrorTag` is an `as const` object (per
+// add-invalid-datasource-state Decision 1) — re-exported as a value so
+// net-new code can reference `FilesErrorTag.InvalidDatasource`. The
+// merged-name type-alias travels with the value export.
+export { FilesErrorTag } from "./files.js";
 export type {
   EntryKind,
   FileEntry,
@@ -44,7 +49,6 @@ export type {
   FilesDownloadResponse,
   FilesEnvelope,
   FilesErrorEnvelope,
-  FilesErrorTag,
   FilesListRequest,
   FilesListResponse,
   FilesListValue,

@@ -111,7 +111,10 @@ describe("files:list handler", () => {
     }
   });
 
-  it("unknown datasourceId (resolveClient throws) returns ok:false with tag:'other'", async () => {
+  it("unknown datasourceId (resolveClient throws plain Error) returns ok:false with tag:'other'", async () => {
+    // Regression guard — historic behavior for non-DatasourceError
+    // throws stays unchanged after the new `invalid-datasource` branch
+    // lands in normalizeFilesError (per add-invalid-datasource-state §6).
     const handler = makeFilesListHandler({
       resolveClient: async () => {
         throw new Error("no credentials for datasourceId=ds-ghost");
@@ -124,6 +127,40 @@ describe("files:list handler", () => {
     if (!result.ok) {
       expect(result.error.tag).toBe("other");
       expect(result.error.message).toContain("ds-ghost");
+    }
+  });
+
+  it("missing-credentials (resolveClient throws DatasourceError tag='invalid-datasource') returns ok:false with tag:'invalid-datasource' (Decision 2)", async () => {
+    // Per add-invalid-datasource-state §6.4 — when `resolveClient`
+    // surfaces missing credentials as the typed
+    // `DatasourceError({ tag: "invalid-datasource" })`, the
+    // `files:list` handler's existing `try/catch → normalizeFilesError`
+    // path propagates the new tag end-to-end so the renderer's
+    // `<InvalidDatasourceState>` can render. Verifies the spec's
+    // "no per-command handler should need changes" claim (§5.5).
+    const handler = makeFilesListHandler({
+      resolveClient: async () => {
+        throw new DatasourceError({
+          tag: "invalid-datasource",
+          datasourceType: "google-drive",
+          datasourceId: "ds-misconfigured",
+          retryable: false,
+          raw: "no-credentials-registered",
+          message: "Credentials are missing — reconnect this datasource",
+        });
+      },
+    });
+
+    const result = await handler(
+      { datasourceId: "ds-misconfigured", path: "/" },
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("invalid-datasource");
+      expect(result.error.retryable).toBe(false);
+      expect(result.error.message).toMatch(/missing/i);
     }
   });
 

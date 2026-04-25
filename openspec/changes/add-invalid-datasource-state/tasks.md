@@ -32,26 +32,26 @@ per CLAUDE.md.
 
 ## 4. Sync-service: const-object refactor for `FilesErrorTag` + add `InvalidDatasource`
 
-- [ ] 4.1 Write a typed test (`packages/ipc-contracts/src/__tests__/files-error-tag.test-d.ts`) asserting the new `as const` object shape with 5 members AND that existing literal call sites still type-check
-- [ ] 4.2 Run the failing test
-- [ ] 4.3 Convert `FilesErrorTag` in `packages/ipc-contracts/src/files.ts` to const object + derived type, including `InvalidDatasource: "invalid-datasource"`
-- [ ] 4.4 Run typed test to confirm pass; run ipc-contracts suite
+- [x] 4.1 Write a typed test (`packages/ipc-contracts/src/__tests__/files-error-tag.test-d.ts`) asserting the new `as const` object shape with 5 members AND that existing literal call sites still type-check
+- [x] 4.2 Run the failing test
+- [x] 4.3 Convert `FilesErrorTag` in `packages/ipc-contracts/src/files.ts` to const object + derived type, including `InvalidDatasource: "invalid-datasource"`
+- [x] 4.4 Run typed test to confirm pass; run ipc-contracts suite
 
 ## 5. Sync-service: `resolveClient` typed-error throw
 
-- [ ] 5.1 Write a unit test (`services/fs-sync/src/main/__tests__/resolve-client.test.ts` — new file) that stubs `credentialStore.get(id)` to return `null` and asserts `resolveClient(id)` rejects with `DatasourceError instanceof` AND `tag === "invalid-datasource"`
-- [ ] 5.2 Run the failing test to confirm (current path throws plain `Error`)
-- [ ] 5.3 Modify `services/fs-sync/src/main/bootstrap.ts:189-204` — replace `throw new Error("no credentials registered for datasourceId=…")` with the typed `DatasourceError({ tag: DatasourceErrorTag.InvalidDatasource, datasourceId, retryable: false, message: "Credentials are missing — reconnect this datasource" })`
-- [ ] 5.4 Run the test to confirm pass
-- [ ] 5.5 Run `services/fs-sync` full test suite — no per-command handler should need changes; the existing `try/catch → normalizeFilesError` flow propagates the new tag automatically
+- [x] 5.1 Write a unit test (`services/fs-sync/src/main/__tests__/resolve-client.test.ts` — new file) that stubs `credentialStore.get(id)` to return `null` and asserts `resolveClient(id)` rejects with `DatasourceError instanceof` AND `tag === "invalid-datasource"`
+- [x] 5.2 Run the failing test to confirm (current path throws plain `Error`)
+- [x] 5.3 Modify `services/fs-sync/src/main/bootstrap.ts:189-204` — replace `throw new Error("no credentials registered for datasourceId=…")` with the typed `DatasourceError({ tag: DatasourceErrorTag.InvalidDatasource, datasourceId, retryable: false, message: "Credentials are missing — reconnect this datasource" })` (also extracted `resolveClient` to its own `services/fs-sync/src/main/resolve-client.ts` module so the throw path is directly unit-testable)
+- [x] 5.4 Run the test to confirm pass
+- [x] 5.5 Run `services/fs-sync` full test suite — no per-command handler should need changes; the existing `try/catch → normalizeFilesError` flow propagates the new tag automatically
 
 ## 6. Sync-service: `normalizeFilesError` mapping update
 
-- [ ] 6.1 Extend `services/fs-sync/src/commands/files-error-mapping.test.ts` with two new cases: `DatasourceError({ tag: "invalid-datasource" })` → envelope `{ tag: "invalid-datasource", retryable: false }`; non-DatasourceError thrown value continues to map to `Other`
-- [ ] 6.2 Run the failing tests to confirm
-- [ ] 6.3 Update `normalizeFilesError` in `services/fs-sync/src/commands/files-error-mapping.ts` to add the explicit `"invalid-datasource"` mapping branch
-- [ ] 6.4 Write a unit test for `files:list` end-to-end through the new path: stub `resolveClient` to throw the typed error, dispatch the handler, assert response envelope is `{ ok: false, error: { tag: "invalid-datasource", ... } }`
-- [ ] 6.5 Run the test; confirm pass
+- [x] 6.1 Extend `services/fs-sync/src/commands/files-error-mapping.test.ts` with two new cases: `DatasourceError({ tag: "invalid-datasource" })` → envelope `{ tag: "invalid-datasource", retryable: false }`; non-DatasourceError thrown value continues to map to `Other`
+- [x] 6.2 Run the failing tests to confirm
+- [x] 6.3 Update `normalizeFilesError` in `services/fs-sync/src/commands/files-error-mapping.ts` to add the explicit `"invalid-datasource"` mapping branch
+- [x] 6.4 Write a unit test for `files:list` end-to-end through the new path: stub `resolveClient` to throw the typed error, dispatch the handler, assert response envelope is `{ ok: false, error: { tag: "invalid-datasource", ... } }`
+- [x] 6.5 Run the test; confirm pass
 
 ## 7. Renderer: `<InvalidDatasourceState>` component
 

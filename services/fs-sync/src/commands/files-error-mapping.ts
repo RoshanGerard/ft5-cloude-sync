@@ -1,6 +1,6 @@
-// Collapses the engine's DatasourceError.tag vocabulary (9 variants) into
-// the renderer-facing FilesErrorTag (4 variants) that the files:* command
-// envelope carries. The renderer only has to branch four ways; finer
+// Collapses the engine's DatasourceError.tag vocabulary (10 variants) into
+// the renderer-facing FilesErrorTag (5 variants) that the files:* command
+// envelope carries. The renderer only has to branch five ways; finer
 // provider tags stay inside the message.
 
 import type { FilesErrorTag } from "@ft5/ipc-contracts";
@@ -27,7 +27,9 @@ export function normalizeFilesError(err: unknown): FilesErrorEnvelopeInner {
           ? "disconnected"
           : err.tag === "rate-limited"
             ? "rate-limited"
-            : "other";
+            : err.tag === "invalid-datasource"
+              ? "invalid-datasource"
+              : "other";
     const base: FilesErrorEnvelopeInner = {
       tag,
       message: err.message,
