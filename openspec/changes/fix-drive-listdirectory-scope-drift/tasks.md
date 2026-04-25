@@ -73,11 +73,11 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 ## 12. Verification + close-out
 
-- [ ] 12.1 Run `pnpm typecheck` (tsc -b across the workspace) and confirm clean
-- [ ] 12.2 Run `pnpm lint` and confirm clean
-- [ ] 12.3 Run `pnpm test` and confirm all packages green (not just the engine package)
+- [x] 12.1 Run `pnpm typecheck` (tsc -b across the workspace) and confirm clean
+- [x] 12.2 Run `pnpm lint` and confirm clean
+- [x] 12.3 Run `pnpm test` and confirm all packages green (not just the engine package)
 - [ ] 12.4 _(reserved — no separate `build` step in this workspace)_
-- [ ] 12.5 Use the `verification-before-completion` superpower: walk through the proposal's "What Changes" bullets and confirm each is satisfied by the diff
+- [x] 12.5 Use the `verification-before-completion` superpower: walk through the proposal's "What Changes" bullets and confirm each is satisfied by the diff
 - [ ] 12.6 Use `requesting-code-review` for an end-to-end pass before merging
 - [ ] 12.7 Use `finishing-a-development-branch` to merge / archive
 
