@@ -2004,6 +2004,52 @@ describe("GoogleDriveClient — scope drift detection", () => {
     expect(fakeFetch).not.toHaveBeenCalled();
   });
 
+  it("token exchange copies the issued scope from the token-endpoint response onto AuthResult.meta.scope and creds.scope", async () => {
+    const { client: drive } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "exchanged-at",
+          refresh_token: "exchanged-rt",
+          scope: "https://www.googleapis.com/auth/drive openid email",
+          expires_in: 3599,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({ drive, fetchImpl });
+    const intent = (await h.client.authenticate()) as OAuthIntent;
+    const result = await intent.completeWith("auth-code-xyz");
+    expect((result.meta as Record<string, unknown>).scope).toBe(
+      "https://www.googleapis.com/auth/drive openid email",
+    );
+    // Subsequent status() should NOT trigger tokeninfo or fail the sufficiency check
+    await expect(h.client.status()).resolves.toBe("connected");
+  });
+
+  it("refreshToken copies the issued scope from the refresh response onto AuthResult.meta.scope and creds.scope", async () => {
+    const { client: drive } = makeFakeDrive({});
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "refreshed-at",
+          scope: "https://www.googleapis.com/auth/drive",
+          expires_in: 3599,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({ drive, fetchImpl });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const refresh = (h.client as any).refreshTokenImpl.bind(h.client);
+    const result = await refresh();
+    expect((result.meta as Record<string, unknown>).scope).toBe(
+      "https://www.googleapis.com/auth/drive",
+    );
+  });
+
   it("status() with scope-insufficient credentials emits a single status-changed event carrying error=auth-revoked, and does NOT emit authentication-failed", async () => {
     const fakeFetch = vi.fn();
     const aboutSpy = vi.fn();

@@ -754,19 +754,24 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     const accessToken = parsed.access_token;
     const refreshToken = parsed.refresh_token;
     const expiresIn = parsed.expires_in;
+    const issuedScope = parsed.scope;
     if (typeof accessToken !== "string") {
       throw this.normalizeErrorImpl({
         message: "token-response-missing-access_token",
         status: resp.status,
       });
     }
+    const meta: Record<string, unknown> = {
+      clientId: this.creds.clientId,
+      clientSecret: this.creds.clientSecret,
+      redirectUri: this.creds.redirectUri,
+    };
+    if (typeof issuedScope === "string") {
+      meta.scope = issuedScope;
+    }
     const result: AuthResult = {
       accessToken,
-      meta: {
-        clientId: this.creds.clientId,
-        clientSecret: this.creds.clientSecret,
-        redirectUri: this.creds.redirectUri,
-      },
+      meta,
     };
     if (typeof refreshToken === "string") {
       result.refreshToken = refreshToken;
@@ -778,6 +783,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       ...this.creds,
       accessToken,
       ...(typeof refreshToken === "string" ? { refreshToken } : {}),
+      ...(typeof issuedScope === "string" ? { scope: issuedScope } : {}),
     };
     return result;
   }
