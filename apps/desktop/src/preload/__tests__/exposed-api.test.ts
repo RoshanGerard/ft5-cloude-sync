@@ -82,12 +82,14 @@ describe("preload exposed api", () => {
       "files",
       "ping",
       "sync",
+      "webUtils",
     ]);
     expect(typeof exposed.ping).toBe("function");
     expect(typeof exposed.datasources).toBe("object");
     expect(typeof exposed.files).toBe("object");
     expect(typeof exposed.clipboard).toBe("object");
     expect(typeof exposed.sync).toBe("object");
+    expect(typeof exposed.webUtils).toBe("object");
   });
 
   it("ping() invokes ipcRenderer.invoke('ping') with no other args and returns its resolved value", async () => {
