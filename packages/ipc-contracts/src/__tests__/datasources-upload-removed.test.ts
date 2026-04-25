@@ -72,6 +72,15 @@ const SKIP_DIRS = new Set<string>([
   ".turbo",
   ".next",
   ".cache",
+  // Renderer (Next.js) build artifacts that occasionally hang around
+  // in a checked-out tree even when fresh `pnpm install` clears
+  // dist/. The TypeScript .tsbuild output mirrors the renderer's
+  // tsconfig outDir; `out` is Next.js's static-export landing dir.
+  // Both contain pre-archive build output and would surface
+  // false-positive references to symbol names that have been
+  // renamed/retired in source.
+  ".tsbuild",
+  "out",
 ]);
 
 // File names exempt from the scan: lockfiles (gigantic and never the source
