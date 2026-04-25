@@ -46,6 +46,12 @@ export interface ToastApi {
       id?: string | number;
       duration?: number;
       action?: { label: string; onClick: () => void };
+      // Sonner's per-toast richColors override. When true, the toast
+      // renders with red bg/border per Sonner's "rich" error palette
+      // even though the global Toaster is configured without
+      // richColors (see components/ui/sonner.tsx). Used on terminal
+      // upload failures per spec § "flips to red error state".
+      richColors?: boolean;
     },
   ): string | number;
   dismiss(id: string | number): void;
@@ -195,6 +201,12 @@ export function createUploadJobToaster(
           toast.error(reason, {
             id: toastId,
             duration: Number.POSITIVE_INFINITY,
+            // Spec § "flips to red error state" — the global Toaster
+            // is configured without richColors so neutral toasts use
+            // the project's --popover surface; per-toast override
+            // here gives THIS toast the red treatment without
+            // changing every error toast app-wide.
+            richColors: true,
             action: {
               label: "Retry",
               onClick: () => {
