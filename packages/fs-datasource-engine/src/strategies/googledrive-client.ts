@@ -646,16 +646,16 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
 
   /** Verifies the issued grant contains REQUIRED_DRIVE_SCOPE.
    *
-   * Work Unit A: when `scope` is undefined (legacy creds) or sufficient, the
-   * method is a no-op — preserves prior behaviour while wiring up the call
-   * site. The rejection branch (Work Unit B) and tokeninfo backfill (Work
-   * Unit E) add the active guards once their failing tests are written. */
+   * When `meta.scope` is undefined (legacy credential that pre-dates Work Unit
+   * D's scope-capture), issues a single `tokeninfo` request to backfill the
+   * scope, updates the in-memory credential, and persists it best-effort via
+   * the credential store. After the scope is known, evaluates sufficiency. */
   private async checkScopeSufficiency(): Promise<void> {
-    const scope = this.creds.scope;
+    let scope = this.creds.scope;
     if (scope === undefined) {
-      // Backfill via tokeninfo lands in Work Unit E. For now, when scope is
-      // not on the credential, skip the check — preserves prior behavior.
-      return;
+      scope = await this.fetchTokenScope();
+      this.creds = { ...this.creds, scope };
+      await this.persistScope(scope);
     }
     if (!isScopeSufficient(scope)) {
       throw new DatasourceError<"google-drive">({
@@ -666,6 +666,69 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         raw: { kind: "scope-insufficient", requiredScope: REQUIRED_DRIVE_SCOPE, actualScope: scope },
         message: "Drive permissions are too narrow — reconnect with full access to see your existing files.",
       });
+    }
+  }
+
+  /** Calls Google's tokeninfo endpoint to discover the scope of the current
+   * access token. Used only for legacy credentials that pre-date scope
+   * capture (Work Unit E backfill). */
+  private async fetchTokenScope(): Promise<string> {
+    const url = `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(this.creds.accessToken)}`;
+    let resp: Response;
+    try {
+      resp = await this.fetchImpl(url, { method: "GET" });
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    const text = await resp.text();
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      throw this.normalizeErrorImpl({
+        message: "non-json tokeninfo response",
+        status: resp.status,
+      });
+    }
+    if (!resp.ok) {
+      throw this.normalizeErrorImpl({
+        code: typeof parsed.error === "string" ? parsed.error : "tokeninfo-error",
+        status: resp.status,
+        message: typeof parsed.error_description === "string" ? parsed.error_description : undefined,
+      });
+    }
+    const scope = parsed.scope;
+    if (typeof scope !== "string") {
+      throw this.normalizeErrorImpl({
+        message: "tokeninfo-response-missing-scope",
+        status: resp.status,
+      });
+    }
+    return scope;
+  }
+
+  /** Persists a backfilled scope onto the stored credential via read-modify-write.
+   * Errors are swallowed — the in-memory value is already set and is good for
+   * the lifetime of this process; the worst case is another tokeninfo round-trip
+   * on next process start. */
+  private async persistScope(scope: string): Promise<void> {
+    try {
+      const current = await this.ctx.credentialStore.get(this.datasourceId);
+      if (current === null) return; // nothing to write back; in-memory creds are still good
+      const updated: StoredCredentials = {
+        ...current,
+        authResult: {
+          ...current.authResult,
+          meta: {
+            ...(current.authResult.meta ?? {}),
+            scope,
+          },
+        },
+      };
+      await this.ctx.credentialStore.put(this.datasourceId, updated);
+    } catch {
+      // Swallow — the in-memory value is still good; the worst case is another
+      // tokeninfo round-trip on next process start.
     }
   }
 
@@ -1304,8 +1367,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
 
     // OAuth hard-fail from the token endpoint (invalid_grant /
     // unauthorized_client surface via `code` on the synthesized object the
-    // token-parser builds).
-    if (sysCode === "invalid_grant" || sysCode === "unauthorized_client") {
+    // token-parser builds). invalid_token surfaces from the tokeninfo endpoint
+    // when the access token has been revoked or expired beyond refresh.
+    if (
+      sysCode === "invalid_grant" ||
+      sysCode === "unauthorized_client" ||
+      sysCode === "invalid_token"
+    ) {
       return mk("auth-revoked", false);
     }
 
