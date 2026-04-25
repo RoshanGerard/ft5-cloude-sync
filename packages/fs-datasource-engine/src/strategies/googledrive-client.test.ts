@@ -232,11 +232,54 @@ function makeCreds(
         clientSecret: overrides.clientSecret ?? "test-client-secret",
         redirectUri:
           overrides.redirectUri ?? "http://localhost:3000/oauth/callback",
+        // All default creds include the full Drive scope so every pre-existing
+        // test has a sufficient-scope baseline once the sufficiency check lands.
+        scope: "https://www.googleapis.com/auth/drive",
       },
     },
     createdAt: 0,
     updatedAt: 0,
   };
+}
+
+/**
+ * Like `makeCreds` but controls `meta.scope`.
+ *
+ * When `scope` is `undefined`, the returned credential has NO `meta.scope`
+ * field — this is what legacy credentials look like (pre-scope-backfill).
+ * When `scope` is a string, `meta.scope` is set to that value.
+ */
+function makeCredsWithScope(
+  scope: string | undefined,
+  overrides: Parameters<typeof makeCreds>[0] = {},
+): StoredCredentials {
+  const base = makeCreds(overrides);
+  const meta = base.authResult.meta as Record<string, unknown>;
+  if (scope === undefined) {
+    delete meta["scope"];
+  } else {
+    meta["scope"] = scope;
+  }
+  return base;
+}
+
+/**
+ * Returns a `CredentialStore` that records every `put` call.
+ * `get`/`delete` are no-ops, matching the default `makeStore` behaviour.
+ */
+function makeSpyStore(): {
+  store: CredentialStore;
+  puts: Array<{ id: string; creds: StoredCredentials }>;
+} {
+  const puts: Array<{ id: string; creds: StoredCredentials }> = [];
+  const store: CredentialStore = {
+    get: async () => null,
+    put: async (id, creds) => {
+      puts.push({ id, creds });
+    },
+    delete: async () => undefined,
+  };
+  return { store, puts };
 }
 
 function makeStore(): CredentialStore {
@@ -251,6 +294,10 @@ function makeHarness(options: {
   drive: GoogleDriveClientLike | ((token: string) => GoogleDriveClientLike);
   fetchImpl?: typeof fetch;
   credsOverrides?: Parameters<typeof makeCreds>[0];
+  /** Pass a fully-constructed StoredCredentials to bypass makeCreds entirely. */
+  creds?: StoredCredentials;
+  /** Override the credential store (e.g. a spy store). Default: makeStore(). */
+  store?: CredentialStore;
 }): {
   bus: EventBus;
   events: Array<{ event: string; payload: unknown }>;
@@ -262,7 +309,7 @@ function makeHarness(options: {
   bus.subscribe((e) => {
     events.push({ event: e.event as string, payload: e.payload });
   });
-  const store = makeStore();
+  const store = options.store ?? makeStore();
   const ctx: BaseClientContext = {
     bus,
     credentialStore: store,
@@ -272,9 +319,10 @@ function makeHarness(options: {
     typeof options.drive === "function"
       ? options.drive
       : () => options.drive as GoogleDriveClientLike;
+  const resolvedCreds = options.creds ?? makeCreds(options.credsOverrides ?? {});
   const client = createGoogleDriveClient(
     "ds-gd-1",
-    makeCreds(options.credsOverrides ?? {}),
+    resolvedCreds,
     ctx,
     {
       driveFactory,
@@ -1813,5 +1861,72 @@ describe("GoogleDriveClient — testConnection / status", () => {
     });
     const h = makeHarness({ drive: client });
     await expect(h.client.status()).resolves.toBe("connected");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GoogleDriveClient — scope drift detection
+// ---------------------------------------------------------------------------
+//
+// Guard-rail tests for the scope-sufficiency check introduced in
+// fix-drive-listdirectory-scope-drift Work Unit A.
+//
+// These tests assert that SUFFICIENT scopes are never rejected by the check.
+// The rejection branch (Work Unit B) and tokeninfo backfill (Work Unit E)
+// are NOT covered here — they will add their own failing tests when those
+// units land.
+
+describe("GoogleDriveClient — scope drift detection", () => {
+  it("status() with meta.scope=full drive returns 'connected' and does not call tokeninfo", async () => {
+    const fakeFetch = vi.fn();
+    const { client: driveClient } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    const h = makeHarness({
+      drive: driveClient,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive"),
+    });
+    await expect(h.client.status()).resolves.toBe("connected");
+    // Sufficient scope was on the credential — no tokeninfo fetch needed.
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("status() with meta.scope='openid email <drive> profile' (multi-scope grant) returns 'connected'", async () => {
+    const fakeFetch = vi.fn();
+    const { client: driveClient } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    const h = makeHarness({
+      drive: driveClient,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope(
+        "openid email https://www.googleapis.com/auth/drive profile",
+      ),
+    });
+    await expect(h.client.status()).resolves.toBe("connected");
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("constructor propagates meta.scope into creds.scope so status() does not fetch tokeninfo when scope is already known", async () => {
+    const fakeFetch = vi.fn();
+    const { client: driveClient } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    // Default makeCreds includes scope=full drive — no credsOverrides needed.
+    const h = makeHarness({
+      drive: driveClient,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      credsOverrides: undefined,
+    });
+    await expect(h.client.status()).resolves.toBe("connected");
+    // Scope was on the credential at construction — no tokeninfo fetch.
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("makeCredsWithScope(undefined) produces legacy-shaped credential with no meta.scope field", () => {
+    const creds = makeCredsWithScope(undefined);
+    const meta = creds.authResult.meta as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(meta, "scope")).toBe(false);
   });
 });

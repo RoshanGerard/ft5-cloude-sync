@@ -180,6 +180,11 @@ const OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 // would prevent listing the user's existing content.
 const OAUTH_SCOPE = "https://www.googleapis.com/auth/drive";
 
+// The scope the engine requires of the ISSUED grant. Intentionally a separate
+// constant from OAUTH_SCOPE: OAUTH_SCOPE is what the authorize URL requests;
+// REQUIRED_DRIVE_SCOPE is what we validate on the issued credential at runtime.
+const REQUIRED_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+
 // Resumable-upload chunk size. Google recommends multiples of 256 KiB; we
 // pick 10 MiB to match the OneDrive strategy's chunk cadence and keep the
 // streaming-progress UX consistent across providers.
@@ -239,6 +244,14 @@ function isFolder(file: DriveFile): boolean {
   return file.mimeType === DRIVE_FOLDER_MIME;
 }
 
+/** Returns true iff the space-separated `scope` string includes the full
+ * Drive scope as a discrete token. Narrower variants (`drive.file`,
+ * `drive.readonly`, etc.) are insufficient on their own because the engine
+ * performs `createFile`, `uploadFile`, `deleteFile`. */
+export function isScopeSufficient(scope: string): boolean {
+  return scope.split(/\s+/).filter(Boolean).includes(REQUIRED_DRIVE_SCOPE);
+}
+
 // ---------------------------------------------------------------------------
 // Credential extraction
 // ---------------------------------------------------------------------------
@@ -249,6 +262,10 @@ interface GoogleDriveCredsMeta {
   redirectUri: string;
   accessToken: string;
   refreshToken: string;
+  /** The space-separated OAuth scope string from the issued grant, when known.
+   * Populated at construction from `authResult.meta.scope` if present.
+   * `undefined` means legacy credentials pre-dating scope backfill. */
+  scope?: string;
 }
 
 function readCredsFromStored(
@@ -277,6 +294,7 @@ function readCredsFromStored(
     redirectUri: meta.redirectUri,
     accessToken: authResult.accessToken,
     refreshToken: authResult.refreshToken ?? "",
+    ...(typeof meta.scope === "string" ? { scope: meta.scope } : {}),
   };
 }
 
@@ -626,12 +644,35 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   // Status / connection
   // -------------------------------------------------------------------------
 
+  /** Verifies the issued grant contains REQUIRED_DRIVE_SCOPE.
+   *
+   * Work Unit A: when `scope` is undefined (legacy creds) or sufficient, the
+   * method is a no-op — preserves prior behaviour while wiring up the call
+   * site. The rejection branch (Work Unit B) and tokeninfo backfill (Work
+   * Unit E) add the active guards once their failing tests are written. */
+  private async checkScopeSufficiency(): Promise<void> {
+    const scope = this.creds.scope;
+    if (scope === undefined) {
+      // Backfill via tokeninfo lands in Work Unit E. For now, when scope is
+      // not on the credential, skip the check — preserves prior behavior.
+      return;
+    }
+    if (!isScopeSufficient(scope)) {
+      // Rejection branch lands in Work Unit B. For now, skip; a no-op
+      // preserves prior behavior for legacy creds while wiring up the call
+      // site.
+      return;
+    }
+  }
+
   protected override async doStatusImpl(): Promise<DatasourceStatus> {
+    await this.checkScopeSufficiency();
     await this.drive().about.get({ fields: "storageQuota" });
     return "connected";
   }
 
   protected override async doTestConnectionImpl(): Promise<void> {
+    await this.checkScopeSufficiency();
     await this.drive().about.get({ fields: "storageQuota" });
   }
 
