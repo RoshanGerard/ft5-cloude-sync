@@ -233,11 +233,54 @@ function makeCreds(
         clientSecret: overrides.clientSecret ?? "test-client-secret",
         redirectUri:
           overrides.redirectUri ?? "http://localhost:3000/oauth/callback",
+        // All default creds include the full Drive scope so every pre-existing
+        // test has a sufficient-scope baseline once the sufficiency check lands.
+        scope: "https://www.googleapis.com/auth/drive",
       },
     },
     createdAt: 0,
     updatedAt: 0,
   };
+}
+
+/**
+ * Like `makeCreds` but controls `meta.scope`.
+ *
+ * When `scope` is `undefined`, the returned credential has NO `meta.scope`
+ * field — this is what legacy credentials look like (pre-scope-backfill).
+ * When `scope` is a string, `meta.scope` is set to that value.
+ */
+function makeCredsWithScope(
+  scope: string | undefined,
+  overrides: Parameters<typeof makeCreds>[0] = {},
+): StoredCredentials {
+  const base = makeCreds(overrides);
+  const meta = base.authResult.meta as Record<string, unknown>;
+  if (scope === undefined) {
+    delete meta["scope"];
+  } else {
+    meta["scope"] = scope;
+  }
+  return base;
+}
+
+/**
+ * Returns a `CredentialStore` that records every `put` call.
+ * `get`/`delete` are no-ops, matching the default `makeStore` behaviour.
+ */
+function makeSpyStore(): {
+  store: CredentialStore;
+  puts: Array<{ id: string; creds: StoredCredentials }>;
+} {
+  const puts: Array<{ id: string; creds: StoredCredentials }> = [];
+  const store: CredentialStore = {
+    get: async () => null,
+    put: async (id, creds) => {
+      puts.push({ id, creds });
+    },
+    delete: async () => undefined,
+  };
+  return { store, puts };
 }
 
 function makeStore(): CredentialStore {
@@ -252,6 +295,10 @@ function makeHarness(options: {
   drive: GoogleDriveClientLike | ((token: string) => GoogleDriveClientLike);
   fetchImpl?: typeof fetch;
   credsOverrides?: Parameters<typeof makeCreds>[0];
+  /** Pass a fully-constructed StoredCredentials to bypass makeCreds entirely. */
+  creds?: StoredCredentials;
+  /** Override the credential store (e.g. a spy store). Default: makeStore(). */
+  store?: CredentialStore;
   codeVerifierFactory?: () => string;
 }): {
   bus: EventBus;
@@ -264,7 +311,7 @@ function makeHarness(options: {
   bus.subscribe((e) => {
     events.push({ event: e.event as string, payload: e.payload });
   });
-  const store = makeStore();
+  const store = options.store ?? makeStore();
   const ctx: BaseClientContext = {
     bus,
     credentialStore: store,
@@ -274,9 +321,10 @@ function makeHarness(options: {
     typeof options.drive === "function"
       ? options.drive
       : () => options.drive as GoogleDriveClientLike;
+  const resolvedCreds = options.creds ?? makeCreds(options.credsOverrides ?? {});
   const client = createGoogleDriveClient(
     "ds-gd-1",
-    makeCreds(options.credsOverrides ?? {}),
+    resolvedCreds,
     ctx,
     {
       driveFactory,
@@ -1979,5 +2027,360 @@ describe("GoogleDriveClient — testConnection / status", () => {
     });
     const h = makeHarness({ drive: client });
     await expect(h.client.status()).resolves.toBe("connected");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GoogleDriveClient — scope drift detection
+// ---------------------------------------------------------------------------
+//
+// Guard-rail tests for the scope-sufficiency check introduced in
+// fix-drive-listdirectory-scope-drift Work Unit A.
+//
+// These tests assert that SUFFICIENT scopes are never rejected by the check.
+// The rejection branch (Work Unit B) and tokeninfo backfill (Work Unit E)
+// are NOT covered here — they will add their own failing tests when those
+// units land.
+
+describe("GoogleDriveClient — scope drift detection", () => {
+  it("status() with meta.scope=full drive returns 'connected' and does not call tokeninfo", async () => {
+    const fakeFetch = vi.fn();
+    const { client: driveClient } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    const h = makeHarness({
+      drive: driveClient,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive"),
+    });
+    await expect(h.client.status()).resolves.toBe("connected");
+    // Sufficient scope was on the credential — no tokeninfo fetch needed.
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("status() with meta.scope='openid email <drive> profile' (multi-scope grant) returns 'connected'", async () => {
+    const fakeFetch = vi.fn();
+    const { client: driveClient } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    const h = makeHarness({
+      drive: driveClient,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope(
+        "openid email https://www.googleapis.com/auth/drive profile",
+      ),
+    });
+    await expect(h.client.status()).resolves.toBe("connected");
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("constructor propagates meta.scope into creds.scope so status() does not fetch tokeninfo when scope is already known", async () => {
+    const fakeFetch = vi.fn();
+    const { client: driveClient } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    // Default makeCreds includes scope=full drive — no credsOverrides needed.
+    const h = makeHarness({
+      drive: driveClient,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      credsOverrides: undefined,
+    });
+    await expect(h.client.status()).resolves.toBe("connected");
+    // Scope was on the credential at construction — no tokeninfo fetch.
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("makeCredsWithScope(undefined) produces legacy-shaped credential with no meta.scope field", () => {
+    const creds = makeCredsWithScope(undefined);
+    const meta = creds.authResult.meta as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(meta, "scope")).toBe(false);
+  });
+
+  it("status() rejects with auth-revoked + scope-insufficient when meta.scope is drive.file alone", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file"),
+    });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      if (e.retryable !== false) return false;
+      const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.requiredScope === "https://www.googleapis.com/auth/drive" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.file"
+      );
+    });
+    // about.get must NOT be called when scope check fails first
+    expect(aboutSpy).not.toHaveBeenCalled();
+    // Also no tokeninfo fetch — scope was already on the cred
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("testConnection() rejects with auth-revoked + scope-insufficient when meta.scope is drive.readonly alone", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.readonly"),
+    });
+    await expect(h.client.testConnection()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      if (e.retryable !== false) return false;
+      const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.requiredScope === "https://www.googleapis.com/auth/drive" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.readonly"
+      );
+    });
+    expect(aboutSpy).not.toHaveBeenCalled();
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("status() rejects with auth-revoked + scope-insufficient when meta.scope combines drive.file and drive.readonly but not full drive", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"),
+    });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      if (e.retryable !== false) return false;
+      const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.requiredScope === "https://www.googleapis.com/auth/drive" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
+      );
+    });
+    expect(aboutSpy).not.toHaveBeenCalled();
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("token exchange copies the issued scope from the token-endpoint response onto AuthResult.meta.scope and creds.scope", async () => {
+    const { client: drive } = makeFakeDrive({
+      about: () => ({ storageQuota: { limit: "100", usage: "1" } }),
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "exchanged-at",
+          refresh_token: "exchanged-rt",
+          scope: "https://www.googleapis.com/auth/drive openid email",
+          expires_in: 3599,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({ drive, fetchImpl });
+    const intent = (await h.client.authenticate()) as OAuthIntent;
+    const result = await intent.completeWith("auth-code-xyz");
+    expect((result.meta as Record<string, unknown>).scope).toBe(
+      "https://www.googleapis.com/auth/drive openid email",
+    );
+    // The in-memory creds must also reflect the issued scope, not the seeded one.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((h.client as any).creds.scope).toBe(
+      "https://www.googleapis.com/auth/drive openid email",
+    );
+  });
+
+  it("refreshToken copies the issued scope from the refresh response onto AuthResult.meta.scope and creds.scope", async () => {
+    const { client: drive } = makeFakeDrive({});
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "refreshed-at",
+          scope: "https://www.googleapis.com/auth/drive",
+          expires_in: 3599,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({
+      drive,
+      fetchImpl,
+      // Seed with a scope value distinct from the refresh response so that the
+      // creds.scope assertion below is load-bearing: if parseTokenResponse
+      // skips writing scope onto creds, creds.scope stays "drive.file" and
+      // the assertion catches the regression.
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file"),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const refresh = (h.client as any).refreshTokenImpl.bind(h.client);
+    const result = await refresh();
+    expect((result.meta as Record<string, unknown>).scope).toBe(
+      "https://www.googleapis.com/auth/drive",
+    );
+    // The in-memory creds must also reflect the issued scope from the refresh response.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((h.client as any).creds.scope).toBe(
+      "https://www.googleapis.com/auth/drive",
+    );
+  });
+
+  it("token response without a scope field leaves creds.scope unchanged on the seeded value", async () => {
+    const { client: drive } = makeFakeDrive({});
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "exchanged-at",
+          refresh_token: "exchanged-rt",
+          expires_in: 3599,
+          // Note: no `scope` field returned
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({
+      drive,
+      fetchImpl,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive"),
+    });
+    const intent = (await h.client.authenticate()) as OAuthIntent;
+    const result = await intent.completeWith("auth-code-no-scope");
+    // result.meta.scope should be omitted (not undefined-assigned) when the
+    // response did not return one
+    expect((result.meta as Record<string, unknown>).scope).toBeUndefined();
+    // The previously-seeded creds.scope must NOT have been overwritten with undefined
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((h.client as any).creds.scope).toBe(
+      "https://www.googleapis.com/auth/drive",
+    );
+  });
+
+  it("status() with scope-insufficient credentials emits a single status-changed event carrying error=auth-revoked, and does NOT emit authentication-failed", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn();
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file"),
+    });
+    // Snapshot event count after construction, before calling status().
+    const eventsBefore = h.events.length;
+    await expect(h.client.status()).rejects.toBeInstanceOf(DatasourceError);
+    const eventsAfter = h.events.slice(eventsBefore);
+    // Positive assertion: exactly one status-changed event carrying error=auth-revoked.
+    const statusChangedEvents = eventsAfter.filter((e) => e.event === "status-changed");
+    expect(statusChangedEvents).toHaveLength(1);
+    const payload = statusChangedEvents[0]!.payload as { status?: string; error?: string };
+    expect(payload.status).toBe("error");
+    expect(payload.error).toBe("auth-revoked");
+    // Negative assertion: no authentication-failed event on this path.
+    const authFailedEvents = eventsAfter.filter((e) => e.event === "authentication-failed");
+    expect(authFailedEvents).toHaveLength(0);
+    // about.get must NOT be called when scope check fails first.
+    expect(aboutSpy).not.toHaveBeenCalled();
+  });
+
+  it("status() with no meta.scope calls tokeninfo, persists the issued scope, then surfaces scope-insufficient when the issued scope is narrow", async () => {
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client: drive } = makeFakeDrive({ about: aboutSpy });
+    let tokeninfoCalls = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.startsWith("https://oauth2.googleapis.com/tokeninfo")) {
+        tokeninfoCalls += 1;
+        return new Response(
+          JSON.stringify({ scope: "https://www.googleapis.com/auth/drive.file" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch URL: ${u}`);
+    }) as unknown as typeof fetch;
+    const { store, puts } = makeSpyStore();
+    // Seed the store so put-driven read-modify-write has something to read.
+    const seedCreds = makeCredsWithScope(undefined); // legacy — no meta.scope
+    store.get = async () => seedCreds;
+    const h = makeHarness({
+      drive,
+      fetchImpl,
+      creds: seedCreds,
+      store,
+    });
+    // First status(): backfill + sufficiency check fails for narrow scope
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      const raw = e.raw as { kind?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.file"
+      );
+    });
+    // tokeninfo was called exactly once
+    expect(tokeninfoCalls).toBe(1);
+    // The credential store's put was called once with meta.scope set
+    expect(puts).toHaveLength(1);
+    expect(
+      (puts[0]!.creds.authResult.meta as Record<string, unknown>).scope,
+    ).toBe("https://www.googleapis.com/auth/drive.file");
+    // about.get NOT called — scope check stops first
+    expect(aboutSpy).not.toHaveBeenCalled();
+    // Second status(): no tokeninfo, no put — uses cached creds.scope
+    await expect(h.client.status()).rejects.toBeInstanceOf(DatasourceError);
+    expect(tokeninfoCalls).toBe(1); // unchanged
+    expect(puts).toHaveLength(1); // unchanged
+  });
+
+  it("status() with no meta.scope and invalid_token from tokeninfo rejects with auth-revoked and does not persist", async () => {
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client: drive } = makeFakeDrive({ about: aboutSpy });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ error: "invalid_token", error_description: "Invalid Value" }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const { store, puts } = makeSpyStore();
+    const seedCreds = makeCredsWithScope(undefined);
+    store.get = async () => seedCreds;
+    const h = makeHarness({ drive, fetchImpl, creds: seedCreds, store });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
+      e instanceof DatasourceError && e.tag === "auth-revoked" && e.retryable === false,
+    );
+    expect(puts).toHaveLength(0);
+    expect(aboutSpy).not.toHaveBeenCalled();
+  });
+
+  it("status() with no meta.scope and a network error from tokeninfo rejects with network-error, does not persist, and re-attempts on the next status()", async () => {
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client: drive } = makeFakeDrive({ about: aboutSpy });
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      const err = new Error("connect ECONNRESET") as Error & Record<string, unknown>;
+      err.code = "ECONNRESET";
+      err.name = "FetchError";
+      throw err;
+    }) as unknown as typeof fetch;
+    const { store, puts } = makeSpyStore();
+    const seedCreds = makeCredsWithScope(undefined);
+    store.get = async () => seedCreds;
+    const h = makeHarness({ drive, fetchImpl, creds: seedCreds, store });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
+      e instanceof DatasourceError && e.tag === "network-error",
+    );
+    expect(puts).toHaveLength(0);
+    // Next call retries the tokeninfo fetch (no caching of failed backfill)
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
+      e instanceof DatasourceError && e.tag === "network-error",
+    );
+    expect(calls).toBe(2);
   });
 });

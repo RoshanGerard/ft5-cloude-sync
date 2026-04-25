@@ -432,3 +432,4 @@ user-facing impact.
 - Playwright e2e: [`apps/desktop/e2e/file-explorer.spec.ts`](../../apps/desktop/e2e/file-explorer.spec.ts)
 - Canonical keyboard bindings: [`use-keyboard-nav.ts`](../../apps/desktop/src/renderer/src/features/file-explorer/use-keyboard-nav.ts)
 - Companion design doc (datasources dashboard): [`datasources-ui.md`](./datasources-ui.md)
+- Troubleshooting (Google Drive scope drift / AuthRevokedState): [`docs/troubleshooting/google-drive-scope-drift.md`](../troubleshooting/google-drive-scope-drift.md)

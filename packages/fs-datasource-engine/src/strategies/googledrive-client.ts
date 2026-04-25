@@ -181,6 +181,11 @@ const OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 // would prevent listing the user's existing content.
 const OAUTH_SCOPE = "https://www.googleapis.com/auth/drive";
 
+// The scope the engine requires of the ISSUED grant. Intentionally a separate
+// constant from OAUTH_SCOPE: OAUTH_SCOPE is what the authorize URL requests;
+// REQUIRED_DRIVE_SCOPE is what we validate on the issued credential at runtime.
+const REQUIRED_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+
 // Resumable-upload chunk size. Google recommends multiples of 256 KiB; we
 // pick 10 MiB to match the OneDrive strategy's chunk cadence and keep the
 // streaming-progress UX consistent across providers.
@@ -240,6 +245,14 @@ function isFolder(file: DriveFile): boolean {
   return file.mimeType === DRIVE_FOLDER_MIME;
 }
 
+/** Returns true iff the space-separated `scope` string includes the full
+ * Drive scope as a discrete token. Narrower variants (`drive.file`,
+ * `drive.readonly`, etc.) are insufficient on their own because the engine
+ * performs `createFile`, `uploadFile`, `deleteFile`. */
+export function isScopeSufficient(scope: string): boolean {
+  return scope.split(/\s+/).filter(Boolean).includes(REQUIRED_DRIVE_SCOPE);
+}
+
 // ---------------------------------------------------------------------------
 // Credential extraction
 // ---------------------------------------------------------------------------
@@ -250,6 +263,10 @@ interface GoogleDriveCredsMeta {
   redirectUri: string;
   accessToken: string;
   refreshToken: string;
+  /** The space-separated OAuth scope string from the issued grant, when known.
+   * Populated at construction from `authResult.meta.scope` if present.
+   * `undefined` means legacy credentials pre-dating scope backfill. */
+  scope?: string;
 }
 
 function readCredsFromStored(
@@ -278,6 +295,7 @@ function readCredsFromStored(
     redirectUri: meta.redirectUri,
     accessToken: authResult.accessToken,
     refreshToken: authResult.refreshToken ?? "",
+    ...(typeof meta.scope === "string" ? { scope: meta.scope } : {}),
   };
 }
 
@@ -637,12 +655,102 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   // Status / connection
   // -------------------------------------------------------------------------
 
+  /** Verifies the issued grant contains REQUIRED_DRIVE_SCOPE.
+   *
+   * When `meta.scope` is undefined (legacy credential that pre-dates Work Unit
+   * D's scope-capture), issues a single `tokeninfo` request to backfill the
+   * scope, updates the in-memory credential, and persists it best-effort via
+   * the credential store. After the scope is known, evaluates sufficiency. */
+  private async checkScopeSufficiency(): Promise<void> {
+    let scope = this.creds.scope;
+    if (scope === undefined) {
+      scope = await this.fetchTokenScope();
+      this.creds = { ...this.creds, scope };
+      await this.persistScope(scope);
+    }
+    if (!isScopeSufficient(scope)) {
+      throw new DatasourceError<"google-drive">({
+        tag: "auth-revoked",
+        retryable: false,
+        datasourceType: "google-drive",
+        datasourceId: this.datasourceId,
+        raw: { kind: "scope-insufficient", requiredScope: REQUIRED_DRIVE_SCOPE, actualScope: scope },
+        message: "Drive permissions are too narrow — reconnect with full access to see your existing files.",
+      });
+    }
+  }
+
+  /** Calls Google's tokeninfo endpoint to discover the scope of the current
+   * access token. Used only for legacy credentials that pre-date scope
+   * capture (Work Unit E backfill). */
+  private async fetchTokenScope(): Promise<string> {
+    const url = `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(this.creds.accessToken)}`;
+    let resp: Response;
+    try {
+      resp = await this.fetchImpl(url, { method: "GET" });
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    const text = await resp.text();
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      throw this.normalizeErrorImpl({
+        message: "non-json tokeninfo response",
+        status: resp.status,
+      });
+    }
+    if (!resp.ok) {
+      throw this.normalizeErrorImpl({
+        code: typeof parsed.error === "string" ? parsed.error : "tokeninfo-error",
+        status: resp.status,
+        message: typeof parsed.error_description === "string" ? parsed.error_description : undefined,
+      });
+    }
+    const scope = parsed.scope;
+    if (typeof scope !== "string") {
+      throw this.normalizeErrorImpl({
+        message: "tokeninfo-response-missing-scope",
+        status: resp.status,
+      });
+    }
+    return scope;
+  }
+
+  /** Persists a backfilled scope onto the stored credential via read-modify-write.
+   * Errors are swallowed — the in-memory value is already set and is good for
+   * the lifetime of this process; the worst case is another tokeninfo round-trip
+   * on next process start. */
+  private async persistScope(scope: string): Promise<void> {
+    try {
+      const current = await this.ctx.credentialStore.get(this.datasourceId);
+      if (current === null) return; // nothing to write back; in-memory creds are still good
+      const updated: StoredCredentials = {
+        ...current,
+        authResult: {
+          ...current.authResult,
+          meta: {
+            ...(current.authResult.meta ?? {}),
+            scope,
+          },
+        },
+      };
+      await this.ctx.credentialStore.put(this.datasourceId, updated);
+    } catch {
+      // Swallow — the in-memory value is still good; the worst case is another
+      // tokeninfo round-trip on next process start.
+    }
+  }
+
   protected override async doStatusImpl(): Promise<DatasourceStatus> {
+    await this.checkScopeSufficiency();
     await this.drive().about.get({ fields: "storageQuota" });
     return "connected";
   }
 
   protected override async doTestConnectionImpl(): Promise<void> {
+    await this.checkScopeSufficiency();
     await this.drive().about.get({ fields: "storageQuota" });
   }
 
@@ -739,19 +847,24 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     const accessToken = parsed.access_token;
     const refreshToken = parsed.refresh_token;
     const expiresIn = parsed.expires_in;
+    const issuedScope = parsed.scope;
     if (typeof accessToken !== "string") {
       throw this.normalizeErrorImpl({
         message: "token-response-missing-access_token",
         status: resp.status,
       });
     }
+    const meta: Record<string, unknown> = {
+      clientId: this.creds.clientId,
+      clientSecret: this.creds.clientSecret,
+      redirectUri: this.creds.redirectUri,
+    };
+    if (typeof issuedScope === "string") {
+      meta.scope = issuedScope;
+    }
     const result: AuthResult = {
       accessToken,
-      meta: {
-        clientId: this.creds.clientId,
-        clientSecret: this.creds.clientSecret,
-        redirectUri: this.creds.redirectUri,
-      },
+      meta,
     };
     if (typeof refreshToken === "string") {
       result.refreshToken = refreshToken;
@@ -763,6 +876,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       ...this.creds,
       accessToken,
       ...(typeof refreshToken === "string" ? { refreshToken } : {}),
+      ...(typeof issuedScope === "string" ? { scope: issuedScope } : {}),
     };
     return result;
   }
@@ -1283,8 +1397,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
 
     // OAuth hard-fail from the token endpoint (invalid_grant /
     // unauthorized_client surface via `code` on the synthesized object the
-    // token-parser builds).
-    if (sysCode === "invalid_grant" || sysCode === "unauthorized_client") {
+    // token-parser builds). invalid_token surfaces from the tokeninfo endpoint
+    // when the access token has been revoked or expired beyond refresh.
+    if (
+      sysCode === "invalid_grant" ||
+      sysCode === "unauthorized_client" ||
+      sysCode === "invalid_token"
+    ) {
       return mk("auth-revoked", false);
     }
 
