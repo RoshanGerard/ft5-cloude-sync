@@ -22,12 +22,11 @@ export function SyncingState({ progressLabel }: SyncingStateProps) {
     >
       <Icon
         name="refresh-cw"
-        className="animate-spin text-blue-600"
+        className="animate-sync-pulse text-blue-600"
         width={40}
         height={40}
         strokeWidth={1.5}
         aria-hidden="true"
-        style={{ animationDuration: "2.4s", animationTimingFunction: "linear" }}
       />
       <div className="text-[15px] font-semibold text-foreground">
         Indexing your files…

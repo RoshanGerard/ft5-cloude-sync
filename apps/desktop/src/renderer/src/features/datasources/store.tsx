@@ -36,8 +36,6 @@ import type {
   DatasourcesAddResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadRequest,
-  DatasourcesUploadResponse,
   DatasourceSummary,
 } from "@ft5/ipc-contracts";
 import type {
@@ -402,7 +400,6 @@ export interface DatasourceActions {
   action: (
     req: DatasourcesActionRequest,
   ) => Promise<DatasourcesActionResponse>;
-  upload: (req: DatasourcesUploadRequest) => Promise<DatasourcesUploadResponse>;
 }
 
 interface DatasourcesContextValue {
@@ -500,17 +497,12 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
     [],
   );
 
-  const upload = useCallback(
-    async (
-      req: DatasourcesUploadRequest,
-    ): Promise<DatasourcesUploadResponse> => {
-      // Upload returns a transactionId; progress handling is a later phase.
-      // We do NOT mutate local state here — the card's `lastSyncAt` etc. only
-      // changes when a subsequent `action` / `list` resolves with new data.
-      return window.api.datasources.upload(req);
-    },
-    [],
-  );
+  // Note: the legacy `upload` mutation was retired in
+  // `add-file-explorer-drag-drop-upload` (Task 6.3). The datasource card's
+  // "Upload from local…" quick-action now opens the in-app Upload dialog
+  // directly; `window.api.datasources.upload` is no longer in the preload
+  // bridge. Progress events still flow through
+  // `window.api.datasources.onUploadProgress` for `jobId`-keyed toasts.
 
   // Initial load on mount.
   useEffect(() => {
@@ -606,8 +598,8 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
   }, [refresh]);
 
   const actions = useMemo<DatasourceActions>(
-    () => ({ refresh, add, remove, action, upload }),
-    [refresh, add, remove, action, upload],
+    () => ({ refresh, add, remove, action }),
+    [refresh, add, remove, action],
   );
 
   const value = useMemo<DatasourcesContextValue>(

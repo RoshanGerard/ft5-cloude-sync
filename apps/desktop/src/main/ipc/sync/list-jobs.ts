@@ -14,7 +14,7 @@
 // Dependency-injection seam: the second parameter defaults to the
 // supervisor-provisioned client via `getSyncClient()`, matching the
 // "real-by-default, test-overrides" pattern used elsewhere under
-// `ipc/` (see `datasources/upload.ts`'s `UploadDeps`). Registration
+// `ipc/` (see `files/upload.ts`'s `FilesUploadDeps`). Registration
 // in `ipc/index.ts` is deferred to task 5.14.
 
 import type {

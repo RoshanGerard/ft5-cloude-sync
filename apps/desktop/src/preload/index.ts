@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
 import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
@@ -8,11 +8,10 @@ import type {
   DatasourcesAddRequest,
   DatasourcesAddResponse,
   DatasourcesListResponse,
+  DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
   DatasourcesUploadProgressEvent,
-  DatasourcesUploadRequest,
-  DatasourcesUploadResponse,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -25,6 +24,8 @@ import type {
   FilesSearchResponse,
   FilesStatRequest,
   FilesStatResponse,
+  FilesUploadRequest,
+  FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
 import { SYNC_CHANNELS } from "@ft5/ipc-contracts/sync-service-desktop";
@@ -81,10 +82,13 @@ const api = {
       req: DatasourcesActionRequest,
     ): Promise<DatasourcesActionResponse> =>
       ipcRenderer.invoke(DATASOURCES_CHANNELS.action, req),
-    upload: (
-      req: DatasourcesUploadRequest,
-    ): Promise<DatasourcesUploadResponse> =>
-      ipcRenderer.invoke(DATASOURCES_CHANNELS.upload, req),
+    // Opens the OS-native multi-select "Open File" dialog in the main
+    // process and returns the user's selection. Request type is
+    // `Record<string, never>` so the preload takes NO arg and passes only
+    // the channel to `invoke`, mirroring the `ping()`/`getStatus()`
+    // void-request pattern above.
+    pickFilesToUpload: (): Promise<DatasourcesPickFilesResponse> =>
+      ipcRenderer.invoke(DATASOURCES_CHANNELS.pickFilesToUpload),
     onUploadProgress: (
       transactionId: string,
       callback: (event: DatasourcesUploadProgressEvent) => void,
@@ -142,6 +146,8 @@ const api = {
       ipcRenderer.invoke(FILES_CHANNELS.remove, req),
     download: (req: FilesDownloadRequest): Promise<FilesDownloadResponse> =>
       ipcRenderer.invoke(FILES_CHANNELS.download, req),
+    upload: (req: FilesUploadRequest): Promise<FilesUploadResponse> =>
+      ipcRenderer.invoke(FILES_CHANNELS.upload, req),
   },
   clipboard: {
     // Main-process clipboard bridge. `navigator.clipboard.writeText` is
@@ -210,6 +216,14 @@ const api = {
         ipcRenderer.removeListener(SYNC_CHANNELS.event, listener);
       };
     },
+  },
+  // Electron 32+ removed `File.path`. The drag-drop upload flow needs
+  // the absolute filesystem path of each dropped File so the main-
+  // process upload handler can stream it. `webUtils.getPathForFile` is
+  // the supported replacement; the contextBridge proxies the File
+  // object into the preload context where the real `webUtils` lives.
+  webUtils: {
+    getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   },
 };
 

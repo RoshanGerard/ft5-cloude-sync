@@ -15,9 +15,13 @@ import type {
   FilesSearchResponse,
   FilesStatRequest,
   FilesStatResponse,
+  FilesUploadRequest,
+  FilesUploadResponse,
+  FilesUploadValue,
   MimeFamily,
 } from "../files.js";
 import { FILES_CHANNELS } from "../files.js";
+import type { ConflictPolicy } from "../sync-service/commands.js";
 
 describe("ipc-contracts files entry shape", () => {
   it("EntryKind is exactly two values", () => {
@@ -315,6 +319,72 @@ describe("ipc-contracts files request/response pairs", () => {
     >();
   });
 
+  it("upload: { datasourceId, sourcePath, targetPath, conflictPolicy } request, ok envelope with { jobId }", () => {
+    // `files:upload` is the renderer-facing upload command introduced by the
+    // `add-file-explorer-drag-drop-upload` change. It lands directly on the
+    // sync-service's `sync:enqueue-upload` via the main-process handler —
+    // the old `datasources:upload` surface is retired.
+    const req: FilesUploadRequest = {
+      datasourceId: "ds-1",
+      sourcePath: "C:/Users/me/Documents/a.pdf",
+      targetPath: "/projects/2026/a.pdf",
+      conflictPolicy: "overwrite",
+    };
+    const duplicateReq: FilesUploadRequest = {
+      datasourceId: "ds-1",
+      sourcePath: "C:/Users/me/Documents/a.pdf",
+      targetPath: "/projects/2026/a.pdf",
+      conflictPolicy: "duplicate",
+    };
+    const skipReq: FilesUploadRequest = {
+      datasourceId: "ds-1",
+      sourcePath: "C:/Users/me/Documents/a.pdf",
+      targetPath: "/projects/2026/a.pdf",
+      conflictPolicy: "skip",
+    };
+    const ok: FilesUploadResponse = {
+      ok: true,
+      value: { jobId: "job-1" },
+    };
+    const err: FilesUploadResponse = {
+      ok: false,
+      error: {
+        tag: "auth-revoked",
+        message: "Session expired; please reconnect.",
+        retryable: false,
+      },
+    };
+    expect(req.conflictPolicy).toBe("overwrite");
+    expect(duplicateReq.conflictPolicy).toBe("duplicate");
+    expect(skipReq.conflictPolicy).toBe("skip");
+    if (ok.ok) {
+      expect(ok.value.jobId).toBe("job-1");
+    }
+    if (!err.ok) {
+      expect(err.error.tag).toBe("auth-revoked");
+    }
+
+    expectTypeOf<FilesUploadRequest>().toEqualTypeOf<{
+      datasourceId: string;
+      sourcePath: string;
+      targetPath: string;
+      conflictPolicy: ConflictPolicy;
+    }>();
+    expectTypeOf<FilesUploadValue>().toEqualTypeOf<{ jobId: string }>();
+    expectTypeOf<FilesUploadResponse>().toEqualTypeOf<
+      | { ok: true; value: { jobId: string } }
+      | {
+          ok: false;
+          error: {
+            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            message: string;
+            retryable: boolean;
+            retryAfterMs?: number;
+          };
+        }
+    >();
+  });
+
   it("download: { datasourceId, path, toPath? } request, { savedPath } response", () => {
     const req: FilesDownloadRequest = {
       datasourceId: "ds-1",
@@ -342,13 +412,25 @@ describe("ipc-contracts files request/response pairs", () => {
 });
 
 describe("ipc-contracts files channel names", () => {
-  it("FILES_CHANNELS exposes exactly the six expected channels", () => {
+  it("FILES_CHANNELS exposes exactly the seven expected channels", () => {
     expect(FILES_CHANNELS.list).toBe("files:list");
     expect(FILES_CHANNELS.stat).toBe("files:stat");
     expect(FILES_CHANNELS.search).toBe("files:search");
     expect(FILES_CHANNELS.rename).toBe("files:rename");
     expect(FILES_CHANNELS.remove).toBe("files:remove");
     expect(FILES_CHANNELS.download).toBe("files:download");
+    expect(FILES_CHANNELS.upload).toBe("files:upload");
+    expect(Object.keys(FILES_CHANNELS).sort()).toEqual(
+      [
+        "list",
+        "stat",
+        "search",
+        "rename",
+        "remove",
+        "download",
+        "upload",
+      ].sort(),
+    );
   });
 
   it("FILES_CHANNELS is a readonly const with literal channel ids", () => {
@@ -359,6 +441,7 @@ describe("ipc-contracts files channel names", () => {
       readonly rename: "files:rename";
       readonly remove: "files:remove";
       readonly download: "files:download";
+      readonly upload: "files:upload";
     }>();
   });
 });

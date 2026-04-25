@@ -29,7 +29,7 @@ type ExposedApi = {
     add: (req: unknown) => Promise<unknown>;
     remove: (req: unknown) => Promise<unknown>;
     action: (req: unknown) => Promise<unknown>;
-    upload: (req: unknown) => Promise<unknown>;
+    pickFilesToUpload: () => Promise<unknown>;
     onUploadProgress: (
       transactionId: string,
       callback: (event: DatasourcesUploadProgressEvent) => void,
@@ -45,6 +45,7 @@ type ExposedApi = {
     rename: (req: unknown) => Promise<unknown>;
     remove: (req: unknown) => Promise<unknown>;
     download: (req: unknown) => Promise<unknown>;
+    upload: (req: unknown) => Promise<unknown>;
   };
   clipboard: {
     writeText: (text: string) => Promise<void>;
@@ -81,12 +82,14 @@ describe("preload exposed api", () => {
       "files",
       "ping",
       "sync",
+      "webUtils",
     ]);
     expect(typeof exposed.ping).toBe("function");
     expect(typeof exposed.datasources).toBe("object");
     expect(typeof exposed.files).toBe("object");
     expect(typeof exposed.clipboard).toBe("object");
     expect(typeof exposed.sync).toBe("object");
+    expect(typeof exposed.webUtils).toBe("object");
   });
 
   it("ping() invokes ipcRenderer.invoke('ping') with no other args and returns its resolved value", async () => {
@@ -102,16 +105,28 @@ describe("preload exposed api", () => {
   });
 
   describe("datasources surface", () => {
-    it("exposes list/add/remove/action/upload as functions and onUploadProgress as a function", async () => {
+    it("exposes list/add/remove/action/pickFilesToUpload as functions and onUploadProgress as a function", async () => {
       const exposed = await loadExposed();
 
       expect(typeof exposed.datasources.list).toBe("function");
       expect(typeof exposed.datasources.add).toBe("function");
       expect(typeof exposed.datasources.remove).toBe("function");
       expect(typeof exposed.datasources.action).toBe("function");
-      expect(typeof exposed.datasources.upload).toBe("function");
+      expect(typeof exposed.datasources.pickFilesToUpload).toBe("function");
       expect(typeof exposed.datasources.onUploadProgress).toBe("function");
       expect(typeof exposed.datasources.onEvent).toBe("function");
+    });
+
+    it("does NOT expose datasources.upload — the legacy channel is retired in favor of files.upload + datasources.pickFilesToUpload", async () => {
+      const exposed = await loadExposed();
+      const datasources = exposed.datasources as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(datasources.upload).toBeUndefined();
+      expect(
+        Object.prototype.hasOwnProperty.call(datasources, "upload"),
+      ).toBe(false);
     });
 
     it("list() delegates to ipcRenderer.invoke('datasources:list') and returns the resolved value", async () => {
@@ -175,19 +190,23 @@ describe("preload exposed api", () => {
       expect(result).toBe(response);
     });
 
-    it("upload(req) delegates to ipcRenderer.invoke('datasources:upload', req) and returns the resolved value", async () => {
+    it("pickFilesToUpload() delegates to ipcRenderer.invoke('datasources:pick-files-to-upload') with NO second arg — mirrors the void-request `ping`/`getStatus` pattern — and returns the resolved value", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      const response = { transactionId: "tx-1" };
+      const response = {
+        filePaths: ["/tmp/a.txt", "/tmp/b.txt"] as const,
+        canceled: false,
+      };
       invokeMock.mockResolvedValue(response);
 
       const exposed = await loadExposed();
-      const req = { datasourceId: "ds-1" };
-      const result = await exposed.datasources.upload(req);
+      const result = await exposed.datasources.pickFilesToUpload();
 
       expect(invokeMock).toHaveBeenCalledTimes(1);
+      // Bare-channel invocation: the DatasourcesPickFilesRequest contract
+      // type is `Record<string, never>`, so the preload takes no args and
+      // passes only the channel to ipcRenderer.invoke — no empty object.
       expect(invokeMock.mock.calls[0]).toEqual([
-        DATASOURCES_CHANNELS.upload,
-        req,
+        DATASOURCES_CHANNELS.pickFilesToUpload,
       ]);
       expect(result).toBe(response);
     });
@@ -356,7 +375,7 @@ describe("preload exposed api", () => {
   });
 
   describe("files surface", () => {
-    it("exposes list/stat/search/rename/remove/download as functions", async () => {
+    it("exposes list/stat/search/rename/remove/download/upload as functions", async () => {
       const exposed = await loadExposed();
 
       expect(typeof exposed.files.list).toBe("function");
@@ -365,6 +384,7 @@ describe("preload exposed api", () => {
       expect(typeof exposed.files.rename).toBe("function");
       expect(typeof exposed.files.remove).toBe("function");
       expect(typeof exposed.files.download).toBe("function");
+      expect(typeof exposed.files.upload).toBe("function");
     });
 
     it("list(req) delegates to ipcRenderer.invoke('files:list', req)", async () => {
@@ -448,6 +468,25 @@ describe("preload exposed api", () => {
 
       expect(invokeMock).toHaveBeenCalledTimes(1);
       expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.download, req]);
+      expect(result).toBe(response);
+    });
+
+    it("upload(req) delegates to ipcRenderer.invoke('files:upload', req) and returns the resolved envelope", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { ok: true as const, value: { jobId: "job-1" } };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = {
+        datasourceId: "ds-1",
+        sourcePath: "/tmp/a.txt",
+        targetPath: "/projects/2026/a.txt",
+        conflictPolicy: "overwrite" as const,
+      };
+      const result = await exposed.files.upload(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.upload, req]);
       expect(result).toBe(response);
     });
   });

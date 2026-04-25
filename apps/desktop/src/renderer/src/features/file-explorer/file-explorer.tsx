@@ -11,6 +11,11 @@
 // The `data-testid="file-explorer-root"` anchor is preserved for
 // continuity with the route-level tests in `page.test.tsx`.
 //
+// Post-Section-9 cleanup: the conflict-resolver port is now wired to the
+// real `useConflictResolutionDialog()` hook + `<ConflictResolutionDialog>`
+// component (Section 7's deliverable). The Section-6 `STUB_CONFLICT_RESOLVER`
+// "coming soon" toast is gone — real conflicts now drive the actual dialog.
+//
 // Scope boundaries (called out in the Phase 4 composite-wiring commit):
 //   - onActivate wires directory entries to `store.navigate`; file
 //     activation is a no-op (Phase 5 wires the Properties modal).
@@ -26,7 +31,7 @@
 //     succeeds regardless of the active mode.
 //
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 
 import type { FileEntry, FilesRemoveTarget } from "@ft5/ipc-contracts";
@@ -36,10 +41,19 @@ import { Icon } from "@/components/icon";
 
 import { Breadcrumb } from "./breadcrumb";
 import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
+import {
+  ConflictResolutionDialog,
+  useConflictResolutionDialog,
+} from "./conflict-resolution-dialog";
 import { DetailsPane } from "./details-pane";
+import { DropZone, type DropZoneStatus } from "./drop-zone";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
 import { ProviderKindContext } from "./provider-kind-context";
+import type {
+  ConflictResolver,
+  UploadToaster,
+} from "./use-upload-orchestrator";
 import {
   SearchResults,
   isEngineBacked,
@@ -53,6 +67,8 @@ import { SyncingState } from "./states/syncing";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
+import { UploadDialog } from "./upload-dialog";
+import { createUploadJobToaster } from "./upload-job-toast";
 import { useExplorerData } from "./use-explorer-data";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { ViewModeSwitcher } from "./view-mode-switcher";
@@ -80,6 +96,24 @@ export interface FileExplorerProps {
    * entries the engine response wins regardless of this status.
    */
   providerStatus?: DatasourceStatus;
+  /**
+   * Optional conflict resolver forwarded to the drop-zone's upload
+   * orchestrator AND to the in-explorer Upload dialog. Defaults to the
+   * real shadcn-dialog-backed `useConflictResolutionDialog()` resolver
+   * (Section 7) that prompts the user per-file with Overwrite / Keep both
+   * / Skip / Cancel-all and an "apply to remaining" checkbox. Tests that
+   * want deterministic walking inject their own resolver via this prop.
+   */
+  conflictResolver?: ConflictResolver;
+  /**
+   * Optional per-job toaster forwarded to the drop-zone's upload
+   * orchestrator. Defaults to the real Sonner-backed `createUploadJobToaster`
+   * (Task 9): each dispatched job opens its own progress toast bound to
+   * `DATASOURCES_CHANNELS.uploadProgress`, flips to success on terminal
+   * complete (auto-dismiss 4s), or to red with Retry on terminal failure.
+   * Tests inject their own toaster via this prop and bypass Sonner.
+   */
+  toaster?: UploadToaster;
 }
 
 /**
@@ -106,17 +140,56 @@ function DashboardHomeButton() {
   );
 }
 
+// Both upload entry points (drop-zone + Upload dialog) share a single
+// `useConflictResolutionDialog()` instance per FileExplorer mount so the
+// hook's `<ConflictResolutionDialog>` only needs to be rendered once.
+// Tests inject their own `conflictResolver` via the prop and bypass the
+// hook entirely (the hook still mounts but its `dialogProps.open` stays
+// false because no production resolver is in play). The toaster stub
+// was removed in Task 9 — `createUploadJobToaster()` is now the
+// production default.
+
 export function FileExplorer({
   datasourceId,
   providerKind = "s3",
   providerStatus,
+  conflictResolver: conflictResolverProp,
+  toaster: toasterProp,
 }: FileExplorerProps) {
+  // Task 7 wiring (post-Section-9 cleanup): instantiate the production
+  // shadcn-dialog-backed conflict resolver once per mount so the same
+  // resolver + dialog is shared across the drop-zone and the Upload
+  // dialog. Tests override via the `conflictResolver` prop.
+  const { resolver: defaultConflictResolver, dialogProps: conflictDialogProps } =
+    useConflictResolutionDialog();
+  const conflictResolver = conflictResolverProp ?? defaultConflictResolver;
   const router = useRouter();
   // Grab the per-datasource store directly — the module-level cache
   // ensures this is the same instance for every mount with the same id.
   // We subscribe to its state once here; child chrome components accept
   // the store prop and subscribe themselves with `useSyncExternalStore`.
   const store = getOrCreateExplorerStore(datasourceId);
+  // Task 9.2 — instantiate the production Sonner-backed per-job toaster
+  // once per mount so the same instance is shared between the drop-zone
+  // and the upload dialog. Tests inject their own toaster via the
+  // `toaster` prop and bypass this entirely. The factory is cheap, but
+  // memoising keeps identity stable across re-renders so downstream
+  // consumers that compare toaster references (none today, but defensive)
+  // don't see spurious changes.
+  //
+  // Bug 2 fix: wire `onJobCompleted` to `store.retryLoad()` so a
+  // completed upload triggers an immediate refetch of the current
+  // folder's entries. Without this the new file is on the provider but
+  // the explorer's list reflects the pre-upload snapshot until the
+  // user navigates away and back. `store` is included in deps so a
+  // different datasource gets a fresh toaster bound to its own store
+  // (in practice the cache makes this stable per datasourceId, but the
+  // dep is correct).
+  const defaultToaster = useMemo(
+    () => createUploadJobToaster({ onJobCompleted: () => store.retryLoad() }),
+    [store],
+  );
+  const toaster = toasterProp ?? defaultToaster;
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
@@ -126,6 +199,13 @@ export function FileExplorer({
   // Kick off the data-loading effect. Re-fires whenever `currentPath`
   // on the store changes; stale-response guard lives in the hook.
   useExplorerData(store, datasourceId);
+
+  // Upload dialog state — opened by the toolbar Upload button (Task 6.4).
+  // Dialog is controlled (not Radix-trigger-managed) so the file-explorer
+  // owns both open/close AND the `initialDestination` handoff to the
+  // dialog's destination tree. Reset happens inside the dialog on each
+  // false → true edge (see upload-dialog.tsx).
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
 
   // Confirm-delete dialog state — targets captured at click-time. Each
   // target carries the authoritative engine `handle` so the downstream
@@ -328,8 +408,46 @@ export function FileExplorer({
     }
   }, [state.currentPath, state.entries, state.loading, keyboardNav]);
 
+  // DropZone status — derived inline from the two signals the composite
+  // already consults. `errorTag` from the engine envelope wins for the
+  // disconnected / auth-revoked cases; `providerStatus` covers syncing.
+  // NOTE: the `DatasourceStatus` contract type doesn't model "disconnected"
+  // or "auth-revoked" directly — those live on the files.list error
+  // envelope. The drop-zone uses its own `DropZoneStatus` union that
+  // matches the spec's blocking rule exactly.
+  const dropZoneStatus: DropZoneStatus = useMemo(() => {
+    if (state.errorTag === "disconnected") return "disconnected";
+    if (state.errorTag === "auth-revoked") return "auth-revoked";
+    if (providerStatus === "syncing") return "syncing";
+    return "usable";
+  }, [state.errorTag, providerStatus]);
+
+  // Upload-button gate: the toolbar Upload button mirrors the drop-zone
+  // blocked rule (spec line 73). Non-null string = aria-disabled + tooltip;
+  // null = enabled. Keep the reasons short — they surface via `title` (OS
+  // tooltip) and are read by AT.
+  const uploadBlockedReason: string | null = useMemo(() => {
+    switch (dropZoneStatus) {
+      case "disconnected":
+        return "This datasource is disconnected";
+      case "auth-revoked":
+        return "Sign in again to upload";
+      case "syncing":
+        return "This datasource is still indexing — try again in a moment";
+      default:
+        return null;
+    }
+  }, [dropZoneStatus]);
+
   return (
     <ProviderKindContext.Provider value={providerKind}>
+    <DropZone
+      datasourceId={datasourceId}
+      currentPath={state.currentPath}
+      status={dropZoneStatus}
+      conflictResolver={conflictResolver}
+      toaster={toaster}
+    >
     <div
       data-testid="file-explorer-root"
       className="bg-background flex flex-1 min-h-0 flex-col"
@@ -341,7 +459,12 @@ export function FileExplorer({
         <div className="min-w-0 flex-1">
           <Breadcrumb store={store} />
         </div>
-        <Toolbar store={store} onDeleteSelection={handleToolbarDelete} />
+        <Toolbar
+          store={store}
+          onDeleteSelection={handleToolbarDelete}
+          onUploadClick={() => setUploadDialogOpen(true)}
+          uploadBlockedReason={uploadBlockedReason}
+        />
       </div>
 
       {/* overflow-auto on the main column so scrolling entries does not scroll the Details pane. */}
@@ -441,7 +564,26 @@ export function FileExplorer({
         onConfirm={handleConfirmDelete}
         onCancel={handleCancelDelete}
       />
+      {/* Conflict-resolution dialog (Task 7) — Radix portal, so visual
+          placement is immaterial. The hook above owns its open/close
+          state; both the drop-zone and the Upload dialog share the same
+          resolver so a single dialog mount suffices. */}
+      <ConflictResolutionDialog {...conflictDialogProps} />
+      {/* Upload dialog, opened by the toolbar's Upload button. Default
+          destination = file-explorer's currentPath (spec line 30). The
+          dialog internally resets its Files list + navigation state on
+          each false → true edge so reopening starts fresh. */}
+      <UploadDialog
+        open={uploadDialogOpen}
+        onOpenChange={setUploadDialogOpen}
+        datasourceId={datasourceId}
+        datasourceName={datasourceId}
+        initialDestination={state.currentPath}
+        conflictResolver={conflictResolver}
+        toaster={toaster}
+      />
     </div>
+    </DropZone>
     </ProviderKindContext.Provider>
   );
 }

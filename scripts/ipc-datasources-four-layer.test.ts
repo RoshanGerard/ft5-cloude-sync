@@ -18,7 +18,7 @@ const EXPECTED_CHANNELS = [
   "datasources:add",
   "datasources:remove",
   "datasources:action",
-  "datasources:upload",
+  "datasources:pick-files-to-upload",
   "datasources:upload:progress",
 ] as const;
 
@@ -27,9 +27,23 @@ const HANDLER_BY_CHANNEL: Record<string, string | null> = {
   "datasources:add": "add.ts",
   "datasources:remove": "remove.ts",
   "datasources:action": "action.ts",
-  "datasources:upload": "upload.ts",
+  "datasources:pick-files-to-upload": "pick-files-to-upload.ts",
   "datasources:upload:progress": null,
 };
+
+// Map a channel literal to the camelCase key declared on
+// `DATASOURCES_CHANNELS` in `packages/ipc-contracts/src/datasources.ts`.
+// Most keys are the literal's suffix verbatim, but two are special:
+//   - `datasources:upload:progress` → `uploadProgress`
+//   - `datasources:pick-files-to-upload` → `pickFilesToUpload` (kebab → camel)
+// We resolve those explicitly rather than running a generic kebab-to-camel
+// conversion so a future channel that introduces new punctuation can't
+// silently change the contract surface this guardrail asserts.
+function channelConstKeyFor(channel: string): string {
+  if (channel === "datasources:upload:progress") return "uploadProgress";
+  if (channel === "datasources:pick-files-to-upload") return "pickFilesToUpload";
+  return channel.replace(/^datasources:/, "");
+}
 
 describe("datasources IPC four-layer consistency", () => {
   it("contract exposes exactly the expected channel set (no drift)", () => {
@@ -72,7 +86,7 @@ describe("datasources IPC four-layer consistency", () => {
         ).toBe(true);
         continue;
       }
-      const channelConstKey = channel.replace(/^datasources:/, "");
+      const channelConstKey = channelConstKeyFor(channel);
       expect(
         contents.includes(`DATASOURCES_CHANNELS.${channelConstKey}`) ||
           contents.includes(`"${channel}"`),
@@ -88,10 +102,7 @@ describe("datasources IPC four-layer consistency", () => {
     );
     const contents = readFileSync(preloadPath, "utf8");
     for (const channel of EXPECTED_CHANNELS) {
-      const channelConstKey =
-        channel === "datasources:upload:progress"
-          ? "uploadProgress"
-          : channel.replace(/^datasources:/, "");
+      const channelConstKey = channelConstKeyFor(channel);
       expect(
         contents.includes(`DATASOURCES_CHANNELS.${channelConstKey}`) ||
           contents.includes(`"${channel}"`),

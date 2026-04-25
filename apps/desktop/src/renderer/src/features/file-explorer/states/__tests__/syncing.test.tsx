@@ -24,12 +24,12 @@ describe("SyncingState", () => {
     expect(root).toHaveAttribute("aria-live", "polite");
   });
 
-  it("renders an aria-hidden spinner icon with animate-spin in blue", () => {
+  it("renders an aria-hidden indicator icon with animate-sync-pulse in blue", () => {
     render(<SyncingState />);
     const root = screen.getByTestId("file-explorer-state-syncing");
     const svg = root.querySelector("svg");
     expect(svg).not.toBeNull();
-    expect(svg!.classList.toString()).toContain("animate-spin");
+    expect(svg!.classList.toString()).toContain("animate-sync-pulse");
     expect(svg!.classList.toString()).toContain("text-blue-600");
     expect(svg!.getAttribute("aria-hidden")).toBe("true");
   });

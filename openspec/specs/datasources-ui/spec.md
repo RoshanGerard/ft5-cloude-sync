@@ -91,7 +91,7 @@ Adding a new provider type to the system SHALL require exactly (a) adding a `Pro
 
 All datasource reads and mutations from the renderer SHALL go through the `window.api.datasources.*` surface. The renderer SHALL NOT import any provider SDK, any `fs`/`child_process`/`electron`/`drizzle-orm` specifier, or any module under `apps/desktop/src/main/` or `apps/desktop/src/preload/`. The main-process handlers route all list/add/remove/action requests through the persistent `DatasourceRegistry`; there is no feature-flagged "engine-backed vs fixture" dichotomy — the registry is the single source of truth. Long-running sync and upload work is owned by the `fs-sync-service` (see its capability), not by the in-process engine.
 
-The surface SHALL expose: `list()`, `add(req)`, `remove(req)`, `action(req)` (unified pause / resume / sync-now), `upload(req)`, and `onEvent(cb)`. Each call SHALL have a typed request/response (or callback) pair in `packages/ipc-contracts/src/datasources.ts`. Each call SHALL have an `ipcMain.handle` or event-forwarder implementation under `apps/desktop/src/main/ipc/datasources/`. Each call SHALL be bound in the preload via `contextBridge.exposeInMainWorld`.
+The surface SHALL expose: `list()`, `add(req)`, `remove(req)`, `action(req)` (unified pause / resume / sync-now), `pickFilesToUpload()` (opens the native OS file picker for the Upload dialog), and `onEvent(cb)`. Each call SHALL have a typed request/response (or callback) pair in `packages/ipc-contracts/src/datasources.ts`. Each call SHALL have an `ipcMain.handle` or event-forwarder implementation under `apps/desktop/src/main/ipc/datasources/`. Each call SHALL be bound in the preload via `contextBridge.exposeInMainWorld`. The previously-exposed `upload(req)` method SHALL NOT be present — it has been replaced by the in-app Upload dialog which uses `pickFilesToUpload()` and the separate `files.upload` IPC (see the `file-explorer` capability).
 
 #### Scenario: Renderer has no direct SDK import
 
@@ -108,23 +108,33 @@ The surface SHALL expose: `list()`, `add(req)`, `remove(req)`, `action(req)` (un
 - **WHEN** a renderer module imports `window.api.datasources.onEvent` and passes a callback typed as `(e: DatasourceEvent) => void`
 - **THEN** the call site compiles under `strict` mode, the returned value is a function `() => void`, and invoking the returned function unsubscribes the callback from further deliveries
 
-### Requirement: Upload action uses the main-process file picker, never the renderer
+#### Scenario: datasources.upload is absent from the surface
 
-The "Upload from local…" quick action SHALL call `window.api.datasources.upload({ datasourceId })`, which in the main process opens a native OS file picker via `dialog.showOpenDialog`. The renderer SHALL NOT render or reference a `<input type="file">` element for this flow.
+- **WHEN** a Vitest test inspects `window.api.datasources` at runtime and grep-scans the contract, preload, and main-handler trees
+- **THEN** `upload` is NOT present on `window.api.datasources`; `DatasourcesUploadRequest` / `DatasourcesUploadResponse` types do NOT exist in `packages/ipc-contracts/src/datasources.ts`; no `ipcMain.handle` under `apps/desktop/src/main/ipc/datasources/` registers an `upload` channel
 
-The main-process handler SHALL enqueue the selected file as an upload job on the fs-sync service via `sync:enqueue-upload`; it SHALL NOT invoke the engine's `uploadFile` directly in-process. The returned `jobId` SHALL serve as the `transactionId` returned to the renderer. Upload progress SHALL be delivered from main to renderer via the existing one-way IPC event channel `DATASOURCES_CHANNELS.uploadProgress`, scoped to the upload transaction id; the underlying source SHALL be service-emitted `job-progress` events, translated into the existing `DatasourcesUploadProgressEvent` shape. The renderer SHALL NOT need to know whether the upload is service-backed; the existing call sites SHALL continue to compile and function without edit.
+### Requirement: Upload action opens the in-app Upload dialog
+
+The "Upload from local…" quick action on a datasource card SHALL open the in-app Upload dialog (see the `file-explorer` capability for the dialog's full specification). The dialog's default destination SHALL be the datasource root (`/`) when opened from the card (as there is no explorer context at the card level). The renderer SHALL NOT render or reference a `<input type="file">` element for this flow; inside the dialog, the "+ Add files…" affordance SHALL call `window.api.datasources.pickFilesToUpload()`, which in the main process opens a native OS file picker via `dialog.showOpenDialog` with `properties: ["openFile", "multiSelections"]` and returns `{ filePaths: string[]; canceled: boolean }`.
+
+On dialog submission, uploads SHALL be dispatched via `window.api.files.upload` (see the `file-explorer` capability), which proxies to the `fs-sync-service`'s `sync:enqueue-upload` command. The desktop IPC handler for `files.upload` SHALL NOT invoke the engine's `uploadFile` directly in-process. Upload progress SHALL continue to flow to the renderer via the existing one-way IPC event channel `DATASOURCES_CHANNELS.uploadProgress`, scoped per-job to the `jobId` returned by `files.upload`.
 
 Uploads SHALL survive desktop app quit. Closing the desktop window (or even `app.quit`) SHALL NOT cancel or stall the underlying service-side upload job. Progress events emitted by the service while the desktop is closed SHALL be accessible to a subsequent desktop session via the app-open `sync-state-seed` (see the `fs-sync-supervisor` capability).
 
+#### Scenario: Quick action opens the Upload dialog rooted at the datasource root
+
+- **WHEN** the user activates "Upload from local…" on a datasource card's quick-actions menu
+- **THEN** the Upload dialog opens; the destination path is `/`; no native OS file picker opens until the user clicks "+ Add files…" inside the dialog
+
 #### Scenario: Renderer contains no file input for the upload flow
 
-- **WHEN** the upload quick action is invoked
-- **THEN** no `<input type="file">` or web File API reference is present in the rendered DOM tree, and the file-picker UI is the OS-native `dialog.showOpenDialog` surface
+- **WHEN** the Upload dialog is rendered and the user activates "+ Add files…"
+- **THEN** no `<input type="file">` or web File API reference is present in the rendered DOM tree at any point; the file-picker UI is the OS-native `dialog.showOpenDialog` surface reached through `window.api.datasources.pickFilesToUpload`
 
-#### Scenario: Upload progress events are typed and scoped per transaction
+#### Scenario: Upload progress events are typed and scoped per job
 
-- **WHEN** an upload is initiated
-- **THEN** the main process emits progress events on `DATASOURCES_CHANNELS.uploadProgress` keyed by a `transactionId` equal to the service's `jobId`; the renderer subscribes only to events matching that id; an emission for an unrelated id is ignored by the renderer
+- **WHEN** an upload is dispatched via `window.api.files.upload` and returns `{ ok: true, value: { jobId: "job_x" } }`
+- **THEN** the main process emits progress events on `DATASOURCES_CHANNELS.uploadProgress` keyed by a `transactionId` equal to `"job_x"`; the renderer subscribes only to events matching `"job_x"`; an emission for an unrelated jobId is ignored by the renderer
 
 #### Scenario: Upload survives desktop quit
 
@@ -133,8 +143,8 @@ Uploads SHALL survive desktop app quit. Closing the desktop window (or even `app
 
 #### Scenario: Main handler does not call engine.uploadFile directly
 
-- **WHEN** a Vitest test grep-scans `apps/desktop/src/main/ipc/datasources/` for `uploadFile` invocations or `engine.uploadFile`
-- **THEN** no match is found; the only call the handler makes for upload is to the `SyncClient.enqueueUpload` helper (or the equivalent wrapper in the `sync/` subdirectory)
+- **WHEN** a Vitest test grep-scans `apps/desktop/src/main/ipc/files/upload.ts` and `apps/desktop/src/main/ipc/datasources/` for `uploadFile` invocations or `engine.uploadFile`
+- **THEN** no match is found; the only call the file-upload handler makes is to `syncClient.enqueueUpload` (or the equivalent wrapper under `apps/desktop/src/main/sync/`)
 
 ### Requirement: UI foundation layer — shadcn/ui primitives with light and dark themes
 

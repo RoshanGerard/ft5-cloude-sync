@@ -88,12 +88,12 @@ export interface DatasourcesActionResponse {
   datasource: DatasourceSummary;
 }
 
-export interface DatasourcesUploadRequest {
-  datasourceId: string;
-}
-export interface DatasourcesUploadResponse {
-  transactionId: string;
-}
+// The legacy upload request/response types on this surface were retired by
+// `add-file-explorer-drag-drop-upload`. Uploads now flow through
+// `files.upload` (→ sync-service `sync:enqueue-upload`). The progress event
+// shape below survives because the `uploadProgress` channel is still the
+// transport for per-job progress notifications keyed on `transactionId`
+// (the sync-service's job id).
 export interface DatasourcesUploadProgressEvent {
   transactionId: string;
   bytesUploaded: number;
@@ -102,12 +102,27 @@ export interface DatasourcesUploadProgressEvent {
   error?: string;
 }
 
+// `datasources:pick-files-to-upload` is the main-process dialog handler
+// the renderer calls to open the native "Open File" multi-select dialog.
+// The request carries no fields (the dialog's configuration lives in the
+// handler); the response returns the absolute OS paths the user picked,
+// or `canceled: true` when the user dismissed the dialog. `filePaths` is
+// `readonly` so callers can't mutate the OS-provided list in place.
+export type DatasourcesPickFilesRequest = Record<string, never>;
+export interface DatasourcesPickFilesResponse {
+  filePaths: readonly string[];
+  canceled: boolean;
+}
+
 export const DATASOURCES_CHANNELS = {
   list: "datasources:list",
   add: "datasources:add",
   remove: "datasources:remove",
   action: "datasources:action",
-  upload: "datasources:upload",
+  // Replaces the retired upload-channel slot (now removed). Opens the
+  // native multi-select "Open File" dialog; the renderer then dispatches
+  // each picked path through `files.upload`.
+  pickFilesToUpload: "datasources:pick-files-to-upload",
   uploadProgress: "datasources:upload:progress",
   // One-way main → renderer stream carrying `DatasourceEvent<T, K>` envelopes
   // emitted by the FS Datasource Engine's bus. Wired up by the event bridge
