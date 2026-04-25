@@ -2121,4 +2121,100 @@ describe("GoogleDriveClient — scope drift detection", () => {
     // about.get must NOT be called when scope check fails first.
     expect(aboutSpy).not.toHaveBeenCalled();
   });
+
+  it("status() with no meta.scope calls tokeninfo, persists the issued scope, then surfaces scope-insufficient when the issued scope is narrow", async () => {
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client: drive } = makeFakeDrive({ about: aboutSpy });
+    let tokeninfoCalls = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.startsWith("https://oauth2.googleapis.com/tokeninfo")) {
+        tokeninfoCalls += 1;
+        return new Response(
+          JSON.stringify({ scope: "https://www.googleapis.com/auth/drive.file" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch URL: ${u}`);
+    }) as unknown as typeof fetch;
+    const { store, puts } = makeSpyStore();
+    // Seed the store so put-driven read-modify-write has something to read.
+    const seedCreds = makeCredsWithScope(undefined); // legacy — no meta.scope
+    store.get = async () => seedCreds;
+    const h = makeHarness({
+      drive,
+      fetchImpl,
+      creds: seedCreds,
+      store,
+    });
+    // First status(): backfill + sufficiency check fails for narrow scope
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      const raw = e.raw as { kind?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.file"
+      );
+    });
+    // tokeninfo was called exactly once
+    expect(tokeninfoCalls).toBe(1);
+    // The credential store's put was called once with meta.scope set
+    expect(puts).toHaveLength(1);
+    expect(
+      (puts[0]!.creds.authResult.meta as Record<string, unknown>).scope,
+    ).toBe("https://www.googleapis.com/auth/drive.file");
+    // about.get NOT called — scope check stops first
+    expect(aboutSpy).not.toHaveBeenCalled();
+    // Second status(): no tokeninfo, no put — uses cached creds.scope
+    await expect(h.client.status()).rejects.toBeInstanceOf(DatasourceError);
+    expect(tokeninfoCalls).toBe(1); // unchanged
+    expect(puts).toHaveLength(1); // unchanged
+  });
+
+  it("status() with no meta.scope and invalid_token from tokeninfo rejects with auth-revoked and does not persist", async () => {
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client: drive } = makeFakeDrive({ about: aboutSpy });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ error: "invalid_token", error_description: "Invalid Value" }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const { store, puts } = makeSpyStore();
+    const seedCreds = makeCredsWithScope(undefined);
+    store.get = async () => seedCreds;
+    const h = makeHarness({ drive, fetchImpl, creds: seedCreds, store });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
+      e instanceof DatasourceError && e.tag === "auth-revoked" && e.retryable === false,
+    );
+    expect(puts).toHaveLength(0);
+    expect(aboutSpy).not.toHaveBeenCalled();
+  });
+
+  it("status() with no meta.scope and a network error from tokeninfo rejects with network-error, does not persist, and re-attempts on the next status()", async () => {
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client: drive } = makeFakeDrive({ about: aboutSpy });
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      const err = new Error("connect ECONNRESET") as Error & Record<string, unknown>;
+      err.code = "ECONNRESET";
+      err.name = "FetchError";
+      throw err;
+    }) as unknown as typeof fetch;
+    const { store, puts } = makeSpyStore();
+    const seedCreds = makeCredsWithScope(undefined);
+    store.get = async () => seedCreds;
+    const h = makeHarness({ drive, fetchImpl, creds: seedCreds, store });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
+      e instanceof DatasourceError && e.tag === "network-error",
+    );
+    expect(puts).toHaveLength(0);
+    // Next call retries the tokeninfo fetch (no caching of failed backfill)
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
+      e instanceof DatasourceError && e.tag === "network-error",
+    );
+    expect(calls).toBe(2);
+  });
 });
