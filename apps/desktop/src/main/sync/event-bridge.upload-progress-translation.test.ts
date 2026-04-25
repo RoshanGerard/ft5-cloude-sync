@@ -476,4 +476,258 @@ describe("createSyncEventBridge — upload-progress translation", () => {
     },
     5000,
   );
+
+  // ---- Bug 1 fix: terminal-event translation ------------------------------
+  //
+  // The renderer's `createUploadJobToaster` waits on a terminal
+  // `DatasourcesUploadProgressEvent` (status `completed` or `failed`) to
+  // flip the toast off the "Uploading X%" loading state. Before this fix
+  // the bridge only translated `job-progress` → `uploading`; terminal
+  // engine events (`job-completed`, `job-failed`, `job-cancelled`) were
+  // forwarded onto SYNC_CHANNELS.event but never onto the
+  // uploadProgress channel, so toasts hung at 100%.
+  //
+  // Byte-count choice on terminal events: we emit `bytesUploaded: 0`,
+  // `bytesTotal: 0`. The engine's `JobCompletedPayload` does NOT carry
+  // byte counts, and the toaster only reads `status`/`error` on terminal
+  // events (the `uploading` branch is the only consumer of the byte
+  // counts). Reporting 0/0 is honest about "we don't know" and avoids
+  // smuggling stale per-job state into the bridge. If the toaster ever
+  // grows a "completed at N bytes" surface, we can revisit and track
+  // last-seen progress in a `lastProgressByJob` map.
+  //
+  // Cancellation choice: `job-cancelled` is translated to
+  // `status: "failed"` with `error: "upload was cancelled"`. The
+  // toaster's `failed` branch surfaces a Retry-able error toast; if we
+  // emitted nothing, the toast would hang at 100%. The renderer never
+  // sees a dedicated "cancelled" status (the contract only allows
+  // `uploading | completed | failed`), so `failed` is the correct
+  // bucket.
+  describe("terminal-event translation (Bug 1)", () => {
+    it(
+      "translates job-completed for an upload job to status: 'completed'",
+      async () => {
+        const { stub, win } = await setup("terminal-completed");
+
+        stub.send({
+          kind: "event",
+          name: "job-enqueued",
+          payload: {
+            jobId: "j-upload-done",
+            kind: "upload",
+            datasourceId: "ds-1",
+            sourcePath: "/file.txt",
+            targetPath: null,
+            conflictPolicy: "overwrite",
+            enqueuedAt: 1000,
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+        win.webContents.send.mockClear();
+
+        stub.send({
+          kind: "event",
+          name: "job-completed",
+          payload: {
+            jobId: "j-upload-done",
+            completedAt: 2000,
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+
+        const progressCalls = win.webContents.send.mock.calls.filter(
+          (c: unknown[]) => c[0] === DATASOURCES_CHANNELS.uploadProgress,
+        );
+        expect(progressCalls).toHaveLength(1);
+        const event = progressCalls[0]![1] as DatasourcesUploadProgressEvent;
+        expect(event.transactionId).toBe("j-upload-done");
+        expect(event.status).toBe("completed");
+        expect(event.bytesUploaded).toBe(0);
+        expect(event.bytesTotal).toBe(0);
+        expect(event.error).toBeUndefined();
+      },
+      5000,
+    );
+
+    it(
+      "translates job-failed for an upload job to status: 'failed' with error message",
+      async () => {
+        const { stub, win } = await setup("terminal-failed");
+
+        stub.send({
+          kind: "event",
+          name: "job-enqueued",
+          payload: {
+            jobId: "j-upload-fail",
+            kind: "upload",
+            datasourceId: "ds-1",
+            sourcePath: "/file.txt",
+            targetPath: null,
+            conflictPolicy: "overwrite",
+            enqueuedAt: 1000,
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+        win.webContents.send.mockClear();
+
+        stub.send({
+          kind: "event",
+          name: "job-failed",
+          payload: {
+            jobId: "j-upload-fail",
+            failedAt: 2000,
+            attempt: 1,
+            errorTag: "network",
+            errorMessage: "ECONNRESET",
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+
+        const progressCalls = win.webContents.send.mock.calls.filter(
+          (c: unknown[]) => c[0] === DATASOURCES_CHANNELS.uploadProgress,
+        );
+        expect(progressCalls).toHaveLength(1);
+        const event = progressCalls[0]![1] as DatasourcesUploadProgressEvent;
+        expect(event.transactionId).toBe("j-upload-fail");
+        expect(event.status).toBe("failed");
+        expect(event.error).toBe("ECONNRESET");
+      },
+      5000,
+    );
+
+    it(
+      "translates job-cancelled for an upload job to status: 'failed' with cancellation message",
+      async () => {
+        const { stub, win } = await setup("terminal-cancelled");
+
+        stub.send({
+          kind: "event",
+          name: "job-enqueued",
+          payload: {
+            jobId: "j-upload-cancel",
+            kind: "upload",
+            datasourceId: "ds-1",
+            sourcePath: "/file.txt",
+            targetPath: null,
+            conflictPolicy: "overwrite",
+            enqueuedAt: 1000,
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+        win.webContents.send.mockClear();
+
+        stub.send({
+          kind: "event",
+          name: "job-cancelled",
+          payload: {
+            jobId: "j-upload-cancel",
+            cancelledAt: 2000,
+            priorStatus: "running",
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+
+        const progressCalls = win.webContents.send.mock.calls.filter(
+          (c: unknown[]) => c[0] === DATASOURCES_CHANNELS.uploadProgress,
+        );
+        expect(progressCalls).toHaveLength(1);
+        const event = progressCalls[0]![1] as DatasourcesUploadProgressEvent;
+        expect(event.transactionId).toBe("j-upload-cancel");
+        expect(event.status).toBe("failed");
+        expect(event.error).toBeDefined();
+        expect(event.error!.toLowerCase()).toContain("cancel");
+      },
+      5000,
+    );
+
+    it(
+      "does NOT emit uploadProgress for terminal events on non-upload (sync) jobs",
+      async () => {
+        const { stub, win } = await setup("terminal-no-mirror");
+
+        stub.send({
+          kind: "event",
+          name: "job-enqueued",
+          payload: {
+            jobId: "j-sync-done",
+            kind: "sync",
+            datasourceId: "ds-1",
+            sourcePath: "/folder",
+            targetPath: null,
+            conflictPolicy: "overwrite",
+            enqueuedAt: 1000,
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+        win.webContents.send.mockClear();
+
+        stub.send({
+          kind: "event",
+          name: "job-completed",
+          payload: { jobId: "j-sync-done", completedAt: 2000 },
+        });
+        stub.send({
+          kind: "event",
+          name: "job-failed",
+          payload: {
+            jobId: "j-sync-done",
+            failedAt: 2000,
+            attempt: 1,
+            errorTag: "x",
+            errorMessage: "y",
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+
+        const progressCalls = win.webContents.send.mock.calls.filter(
+          (c: unknown[]) => c[0] === DATASOURCES_CHANNELS.uploadProgress,
+        );
+        expect(progressCalls).toHaveLength(0);
+      },
+      5000,
+    );
+
+    it(
+      "terminal translation runs BEFORE jobKinds eviction (order discipline)",
+      async () => {
+        // Regression guard: if the eviction block runs first, jobKinds
+        // would forget the upload kind before the terminal translation
+        // checks `jobKinds.get(jobId) === "upload"`, and no event would
+        // be emitted. This test fails loudly if the ordering ever flips.
+        const { stub, win } = await setup("terminal-order");
+
+        stub.send({
+          kind: "event",
+          name: "job-enqueued",
+          payload: {
+            jobId: "j-order",
+            kind: "upload",
+            datasourceId: "ds-1",
+            sourcePath: "/file.txt",
+            targetPath: null,
+            conflictPolicy: "overwrite",
+            enqueuedAt: 1000,
+          },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+        win.webContents.send.mockClear();
+
+        stub.send({
+          kind: "event",
+          name: "job-completed",
+          payload: { jobId: "j-order", completedAt: 2000 },
+        });
+        await new Promise<void>((r) => setTimeout(r, 20));
+
+        const progressCalls = win.webContents.send.mock.calls.filter(
+          (c: unknown[]) => c[0] === DATASOURCES_CHANNELS.uploadProgress,
+        );
+        expect(progressCalls).toHaveLength(1);
+        expect(
+          (progressCalls[0]![1] as DatasourcesUploadProgressEvent).status,
+        ).toBe("completed");
+      },
+      5000,
+    );
+  });
 });
