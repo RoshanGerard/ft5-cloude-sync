@@ -21,11 +21,11 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 ## 4. Insufficient-scope rejection (covers "drive.file alone", "drive.readonly", "combined narrow")
 
-- [ ] 4.1 Write a failing test: `meta.scope = "https://www.googleapis.com/auth/drive.file"` → `status()` rejects with `tag: "auth-revoked"`, `retryable: false`, `raw.kind === "scope-insufficient"`, `raw.requiredScope === "https://www.googleapis.com/auth/drive"`, `raw.actualScope === "https://www.googleapis.com/auth/drive.file"`, `about.get` NOT called
-- [ ] 4.2 Write a failing test: `meta.scope = "https://www.googleapis.com/auth/drive.readonly"` → `testConnection()` rejects with the same shape
-- [ ] 4.3 Write a failing test: `meta.scope = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"` (combined narrow scopes) → `status()` still rejects with `auth-revoked` + `scope-insufficient`
-- [ ] 4.4 Implement the rejection branch: when `isScopeSufficient(this.creds.scope)` is false, throw the structured `DatasourceError` per design Decision 5; ensure the error message is the exact "Drive permissions are too narrow — reconnect with full access to see your existing files." string
-- [ ] 4.5 Confirm 4.1-4.3 pass; check the existing `normalizeError` map is NOT incorrectly intercepting the synthetic `DatasourceError` (it must early-return on `instanceof DatasourceError` — verify in code)
+- [x] 4.1 Write a failing test: `meta.scope = "https://www.googleapis.com/auth/drive.file"` → `status()` rejects with `tag: "auth-revoked"`, `retryable: false`, `raw.kind === "scope-insufficient"`, `raw.requiredScope === "https://www.googleapis.com/auth/drive"`, `raw.actualScope === "https://www.googleapis.com/auth/drive.file"`, `about.get` NOT called
+- [x] 4.2 Write a failing test: `meta.scope = "https://www.googleapis.com/auth/drive.readonly"` → `testConnection()` rejects with the same shape
+- [x] 4.3 Write a failing test: `meta.scope = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"` (combined narrow scopes) → `status()` still rejects with `auth-revoked` + `scope-insufficient`
+- [x] 4.4 Implement the rejection branch: when `isScopeSufficient(this.creds.scope)` is false, throw the structured `DatasourceError` per design Decision 5; ensure the error message is the exact "Drive permissions are too narrow — reconnect with full access to see your existing files." string
+- [x] 4.5 Confirm 4.1-4.3 pass; check the existing `normalizeError` map is NOT incorrectly intercepting the synthetic `DatasourceError` (it must early-return on `instanceof DatasourceError` — verify in code)
 
 ## 5. Bus emission of `authentication-failed` (covers "Authentication-failed event carries scope-insufficient discriminator")
 
