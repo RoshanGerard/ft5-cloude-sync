@@ -89,7 +89,6 @@ export type {
   AuthResult,
   CredentialsFormIntent,
   DatasourceErrorInit,
-  DatasourceErrorTag,
   DatasourceEvent,
   DatasourceFileEntry,
   DatasourceMimeFamily,
@@ -106,8 +105,13 @@ export type {
   UploadCancelReason,
   UploadCancelledPayload,
 } from "./fs-datasource-engine.js";
+// `DatasourceErrorTag` is now an `as const` object (per
+// add-invalid-datasource-state Decision 1) — re-exported as a value so
+// net-new code can reference `DatasourceErrorTag.InvalidDatasource`. The
+// merged-name type-alias travels with the value export.
 export {
   DatasourceError,
+  DatasourceErrorTag,
   serializeDatasourceError,
 } from "./fs-datasource-engine.js";
 

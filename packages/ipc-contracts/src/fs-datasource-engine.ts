@@ -329,7 +329,7 @@ export interface Quota {
 // ---------------------------------------------------------------------------
 
 /**
- * The 9-tag taxonomy every strategy's `normalizeError` MUST map onto. See
+ * The 10-tag taxonomy every strategy's `normalizeError` MUST map onto. See
  * Decision 9 in `add-fs-datasource-engine` design.md. Consumers (UI toast,
  * telemetry, audit log) switch on `tag` for presentation.
  *
@@ -338,17 +338,27 @@ export interface Quota {
  * `normalizeError` MUST NOT tag a raw provider exception `"cancelled"` —
  * only the engine's `BaseDatasourceClient` rejects with this tag, and
  * only from `uploadFile` after a `cancelUpload` call.
+ *
+ * `"invalid-datasource"` (per add-invalid-datasource-state Decision 2) is
+ * raised by `factory.create` and `resolveClient` when the datasource is
+ * misconfigured — registry drift, missing credential file, or wrong
+ * credential shape — BEFORE any provider call goes out. Strategies'
+ * `normalizeError` MUST NOT emit this tag for raw provider exceptions.
  */
+export const DatasourceErrorTag = {
+  AuthExpired: "auth-expired",
+  AuthRevoked: "auth-revoked",
+  NotFound: "not-found",
+  Conflict: "conflict",
+  Unsupported: "unsupported",
+  RateLimited: "rate-limited",
+  NetworkError: "network-error",
+  ProviderError: "provider-error",
+  Cancelled: "cancelled",
+  InvalidDatasource: "invalid-datasource",
+} as const;
 export type DatasourceErrorTag =
-  | "auth-expired"
-  | "auth-revoked"
-  | "not-found"
-  | "conflict"
-  | "unsupported"
-  | "rate-limited"
-  | "network-error"
-  | "provider-error"
-  | "cancelled";
+  (typeof DatasourceErrorTag)[keyof typeof DatasourceErrorTag];
 
 export interface DatasourceErrorInit<T extends DatasourceType = DatasourceType> {
   tag: DatasourceErrorTag;

@@ -92,10 +92,14 @@ import type {
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
-import type { ProviderFactoryFn } from "../factory.js";
+import {
+  FACTORY_CONSTRUCTION_DS_ID,
+  type CredentialShapeValidator,
+  type ProviderFactoryFn,
+} from "../factory.js";
 
 // ESM shim. This package is "type": "module", so bare `require` is not in
 // scope. `createDefaultDriveFactory` below uses `require("googleapis")` to
@@ -1488,3 +1492,56 @@ export const createGoogleDriveClientForRegistry: ProviderFactoryFn<"google-drive
   (datasourceId, credentials, ctx) => {
     return createGoogleDriveClient(datasourceId, credentials, ctx);
   };
+
+/**
+ * Per-provider credential-shape validator (per
+ * add-invalid-datasource-state Decision 2 + spec scenario "Wrong-shape
+ * credential throws InvalidDatasource"). Wired into the registry entry by
+ * `createDefaultProviderRegistry` and invoked by `factory.create` BEFORE
+ * the strategy factory runs. Throws `DatasourceError({ tag:
+ * "invalid-datasource", retryable: false, message: "google-drive
+ * credential is missing <field>" })` on the first missing/invalid field;
+ * returns `void` on success.
+ */
+export const validateGoogleDriveCredentialShape: CredentialShapeValidator = (
+  credentials,
+) => {
+  const authResult = (credentials as { authResult?: unknown }).authResult;
+  if (
+    authResult === null ||
+    typeof authResult !== "object"
+  ) {
+    throw new DatasourceError<"google-drive">({
+      tag: DatasourceErrorTag.InvalidDatasource,
+      datasourceType: "google-drive",
+      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      retryable: false,
+      raw: "google-drive-missing-authResult",
+      message: "google-drive credential is missing authResult",
+    });
+  }
+  const ar = authResult as Record<string, unknown>;
+  if (typeof ar.accessToken !== "string" || ar.accessToken.length === 0) {
+    throw new DatasourceError<"google-drive">({
+      tag: DatasourceErrorTag.InvalidDatasource,
+      datasourceType: "google-drive",
+      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      retryable: false,
+      raw: "google-drive-missing-accessToken",
+      message: "google-drive credential is missing accessToken",
+    });
+  }
+  const meta = (ar.meta ?? {}) as Record<string, unknown>;
+  for (const field of ["clientId", "clientSecret", "redirectUri"] as const) {
+    if (typeof meta[field] !== "string" || (meta[field] as string).length === 0) {
+      throw new DatasourceError<"google-drive">({
+        tag: DatasourceErrorTag.InvalidDatasource,
+        datasourceType: "google-drive",
+        datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+        retryable: false,
+        raw: `google-drive-missing-${field}`,
+        message: `google-drive credential is missing ${field}`,
+      });
+    }
+  }
+};

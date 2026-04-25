@@ -1,34 +1,103 @@
-# Proposal: Add an "Invalid Datasource" state to the file explorer
-
-**Status**: Stub. Discovered during smoke-testing of `wire-file-explorer-to-service` on 2026-04-24.
+# Proposal: Add an "Invalid Datasource" state
 
 ## Why
 
-The file explorer today has four Pattern-A full-replace states — `disconnected`, `auth-revoked`, `syncing`, `empty` — plus an inline "Failed to load" surface for `rate-limited` and `other` errors. A real-world failure mode the inline surface handles poorly is a **misconfigured / invalid datasource**: a record exists in the datasources store, the UI successfully mounts the explorer, but the sync-service rejects every `files:*` call because the credential is missing, the datasourceId is unknown to the service, or the credential shape is wrong for the declared `providerKind`. Today that surfaces as a terse "Failed to load" line with the raw engine message — the user can't tell whether to retry, reconnect, or delete-and-recreate.
+The file explorer's current rate-limited / other error path collapses
+misconfigured-datasource failures (registry drift, missing credential file,
+wrong credential shape) into a terse `Failed to load: <raw engine message>`
+inline surface. Users cannot tell whether to retry, reconnect, or
+remove-and-recreate. The dashboard card shows the same opaque
+`errorReason` text. This change introduces a dedicated `invalid-datasource`
+error tag carried end-to-end (engine → sync-service → renderer) so both
+surfaces can render an actionable Pattern-A state with **Reconnect** +
+**Remove** affordances.
 
-A dedicated Pattern-A state would give those users a clear next step the same way `disconnected` and `auth-revoked` do today.
+## What Changes
 
-## Out of scope (tracked as separate changes)
+- **Engine**: refactor `DatasourceErrorTag` from a string-literal union to
+  an `as const` object with derived type (matching the existing
+  `FILES_CHANNELS` / `DATASOURCES_CHANNELS` convention), and add a new
+  `InvalidDatasource: "invalid-datasource"` member. Existing literal call
+  sites continue to type-check and are NOT mechanically migrated by this
+  change.
+- **Engine**: `factory.create(...)` throws
+  `DatasourceError({ tag: "invalid-datasource" })` instead of generic
+  `Error` when the providerId is unknown or the supplied credential's
+  shape does not match the provider's expected schema.
+- **Sync-service**: `resolveClient` (in `bootstrap.ts`) replaces its raw
+  `throw new Error("no credentials registered…")` with the typed
+  `DatasourceError({ tag: "invalid-datasource" })`. Per-command handlers
+  (`files-list.ts`, `files-stat.ts`, `files-search.ts`, `files-remove.ts`)
+  stay thin — the existing `try/catch → normalizeFilesError` flow is
+  unchanged.
+- **Sync-service**: same const-object refactor for `FilesErrorTag` (4 → 5
+  members, derived type), plus a 1:1 mapping in `normalizeFilesError`
+  (`engine "invalid-datasource"` → envelope `"invalid-datasource"`).
+- **Renderer (file explorer)**: new `<InvalidDatasourceState>` Pattern-A
+  full-replace component (`AlertTriangle` icon, red sentiment via icon,
+  neutral primary `Reconnect` button, ghost-destructive `Remove` button).
+  Branched in `file-explorer.tsx` when `state.errorTag === FilesErrorTag.InvalidDatasource`.
+  Reconnect calls `startConsent` in-place (no dashboard redirect), shows a
+  spinner while pending, and triggers `store.retryLoad()` on
+  `consent-completed` so the entries appear without a manual refresh.
+- **Renderer (dashboard card)**: new `<InvalidDatasourceBanner>` (sibling
+  of the existing `AuthErrorBanner`) rendered when
+  `summary.status === "error" && summary.errorKind === "invalid-datasource"`.
+  Same Reconnect + Remove behavior as the explorer state.
+- **Renderer (shared)**: new `<ConfirmRemoveDatasourceDialog>` used by
+  both the explorer state's Remove button AND the dashboard banner's
+  Remove button so destructive removal goes through one confirm flow.
+- Executors (upload, mirror-sync) get free coverage of the new tag via
+  the same `resolveClient` port — no executor code changes required.
 
-- `add-drive-oauth-browser-consent` — interactive OAuth flow for adding a Drive datasource (currently falls back to a file-based credential).
-- `fix-drive-listdirectory-scope-drift` — Drive listing returns only app-uploaded files on certain credential provenances.
+No BREAKING changes. The const-object refactor is non-breaking because
+the derived type is the same string union; existing literal references
+continue to compile.
 
-## Open questions (resolve during `/opsx:propose`)
+## Capabilities
 
-1. **Error tag surface.** The current `FilesErrorTag` union is `auth-revoked | disconnected | rate-limited | other`. Is `invalid-datasource` a fifth tag, or is it a refinement of `other` that the sync-service keys on a different field (e.g., a `reason` discriminator)? Prefer explicit tag for UX branching, but consider the 9→4 collapse in `normalizeFilesError` and whether adding a fifth breaks that shape.
-2. **Action affordance.** Is the primary action "Reconnect" (same as auth-revoked), "Reconfigure datasource" (opens the edit form), or "Remove datasource" (destructive)? Probably depends on whether a fix is possible without losing sync history.
-3. **Visual treatment.** Pattern A full-replace with an amber or red sentiment? The spec's WCAG rules already fix amber-600 on white; a red sentiment would need its own contrast verification.
-4. **Trigger conditions.** Enumerate the exact service-side cases: (a) `datasourceId` unknown to service; (b) credential file absent; (c) credential present but shape wrong for `providerKind`; (d) provider descriptor says the credential was valid at issue time but the provider has revoked it beyond what `auth-revoked` covers. Each may warrant the same tag or different ones.
-5. **Interaction with the datasources store.** If the store's own status for this datasource is already `error`, should the state defer to that text, or display its own copy? (Today the store's error flows through separately; the spec's engine-wins rule in `wire-file-explorer-to-service` means the file explorer would typically show its own state.)
+### New Capabilities
 
-## Acceptance criteria (once promoted)
+None. All work modifies existing capabilities.
 
-- A user with a misconfigured datasource sees a Pattern-A full-replace treatment that names the failure and offers a single primary action.
-- The state component meets WCAG AA contrast, carries `role="alert"`, and has keyboard-reachable action.
-- A Vitest composite test covers at least two trigger conditions.
-- The main-IPC surface does not need a new command — the state is a UX refinement of existing `files:list` rejections.
+### Modified Capabilities
 
-## Provenance
+- `fs-datasource-engine`: `DatasourceErrorTag` gains an
+  `InvalidDatasource` member; `factory.create` throws with the new tag
+  for unknown providerId or wrong-shape credential.
+- `fs-sync-service`: `FilesErrorTag` gains an `InvalidDatasource`
+  member; `resolveClient` throws the typed error;
+  `normalizeFilesError` maps the engine tag 1:1 to the envelope tag.
+- `file-explorer`: new `<InvalidDatasourceState>` rendered when the
+  files envelope returns `errorTag === "invalid-datasource"`; Reconnect
+  flow runs in-place via `startConsent` and refreshes via
+  `store.retryLoad()`; Remove goes through the shared confirm dialog.
+- `datasources-ui`: dashboard card renders an
+  `<InvalidDatasourceBanner>` mirroring the existing `AuthErrorBanner`
+  pattern when `errorKind === "invalid-datasource"`.
 
-- Raised by user dev2@forti5.tech on 2026-04-24 during smoke-testing of `wire-file-explorer-to-service`.
-- Recommendation to document as a future change came from the advisor during that same session.
+## Impact
+
+- **Affected code**: `packages/ipc-contracts/src/{files,fs-datasource-engine,datasources}.ts`,
+  `packages/ipc-contracts/src/sync-service/errors.ts`,
+  `packages/fs-datasource-engine/src/factory.ts` (or equivalent),
+  `services/fs-sync/src/main/bootstrap.ts:189`,
+  `services/fs-sync/src/commands/files-error-mapping.ts`,
+  `apps/desktop/src/renderer/src/features/file-explorer/states/invalid-datasource.tsx` (new),
+  `apps/desktop/src/renderer/src/features/file-explorer/file-explorer.tsx`,
+  `apps/desktop/src/renderer/src/features/datasources/card.tsx`,
+  `apps/desktop/src/renderer/src/features/datasources/confirm-remove-dialog.tsx` (new shared component).
+- **APIs**: extends the existing `DatasourceErrorTag` and `FilesErrorTag`
+  unions; no new IPC channels; no new RPC commands. Reuses the existing
+  `datasources:start-consent` and `datasources:remove` surfaces.
+- **Dependencies**: none added. Uses existing shadcn primitives
+  (`Dialog`, `Button`), Lucide `AlertTriangle`, the existing
+  `useConsentSession` hook, and the existing `useDatasourceActions`
+  hook.
+- **Tests**: extends `files-error-mapping.test.ts`,
+  `card-auth-error-banner.test.tsx` pattern (for the new banner
+  sibling), `file-explorer-composite.test.tsx`,
+  `states-integration.test.tsx`, plus new dedicated tests for the
+  state component, banner, and confirm dialog.
+- **Migration**: none. No data schema changes, no persistent state
+  written.

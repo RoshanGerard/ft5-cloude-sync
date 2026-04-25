@@ -60,7 +60,9 @@ export {
 } from "./factory.js";
 export type {
   ClientFactory,
+  CredentialShapeValidator,
   EngineContext,
   ProviderFactoryFn,
   ProviderRegistry,
+  ProviderRegistryEntry,
 } from "./factory.js";

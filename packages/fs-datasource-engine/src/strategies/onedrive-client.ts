@@ -70,10 +70,14 @@ import type {
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
-import type { ProviderFactoryFn } from "../factory.js";
+import {
+  FACTORY_CONSTRUCTION_DS_ID,
+  type CredentialShapeValidator,
+  type ProviderFactoryFn,
+} from "../factory.js";
 
 // ---------------------------------------------------------------------------
 // Graph client duck-typing — `GraphClientLike` shape
@@ -1051,4 +1055,50 @@ export const createOneDriveClientForRegistry: ProviderFactoryFn<"onedrive"> = (
   ctx,
 ) => {
   return createOneDriveClient(datasourceId, credentials, ctx);
+};
+
+/**
+ * Per-provider credential-shape validator (per
+ * add-invalid-datasource-state Decision 2). Wired into the registry entry
+ * by `createDefaultProviderRegistry` and invoked by `factory.create`
+ * BEFORE the strategy factory runs.
+ */
+export const validateOneDriveCredentialShape: CredentialShapeValidator = (
+  credentials,
+) => {
+  const authResult = (credentials as { authResult?: unknown }).authResult;
+  if (authResult === null || typeof authResult !== "object") {
+    throw new DatasourceError<"onedrive">({
+      tag: DatasourceErrorTag.InvalidDatasource,
+      datasourceType: "onedrive",
+      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      retryable: false,
+      raw: "onedrive-missing-authResult",
+      message: "onedrive credential is missing authResult",
+    });
+  }
+  const ar = authResult as Record<string, unknown>;
+  if (typeof ar.accessToken !== "string" || ar.accessToken.length === 0) {
+    throw new DatasourceError<"onedrive">({
+      tag: DatasourceErrorTag.InvalidDatasource,
+      datasourceType: "onedrive",
+      datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+      retryable: false,
+      raw: "onedrive-missing-accessToken",
+      message: "onedrive credential is missing accessToken",
+    });
+  }
+  const meta = (ar.meta ?? {}) as Record<string, unknown>;
+  for (const field of ["clientId", "tenantId", "redirectUri"] as const) {
+    if (typeof meta[field] !== "string" || (meta[field] as string).length === 0) {
+      throw new DatasourceError<"onedrive">({
+        tag: DatasourceErrorTag.InvalidDatasource,
+        datasourceType: "onedrive",
+        datasourceId: FACTORY_CONSTRUCTION_DS_ID,
+        retryable: false,
+        raw: `onedrive-missing-${field}`,
+        message: `onedrive credential is missing ${field}`,
+      });
+    }
+  }
 };
