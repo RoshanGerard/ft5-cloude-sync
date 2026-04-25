@@ -116,6 +116,9 @@ declare global {
         ): Promise<SyncSetRetryPolicyResponse>;
         onEvent(callback: (event: SyncEvent) => void): () => void;
       };
+      webUtils: {
+        getPathForFile(file: File): string;
+      };
     };
   }
 }

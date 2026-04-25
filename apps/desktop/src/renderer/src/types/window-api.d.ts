@@ -79,6 +79,13 @@ declare global {
         onEvent(callback: (event: SyncEvent) => void): () => void;
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
       };
+      // Electron 32+ removed `File.path`. Drag-drop reads each dropped
+      // File's absolute filesystem path via this contextBridge wrapper
+      // around `electron.webUtils.getPathForFile` so the main-process
+      // upload handler can stream the source.
+      webUtils: {
+        getPathForFile(file: File): string;
+      };
     };
   }
 }

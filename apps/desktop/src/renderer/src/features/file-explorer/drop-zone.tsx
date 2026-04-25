@@ -16,10 +16,13 @@
 //     Sonner toast fires if any folder is in the drop batch; the files in
 //     the batch still upload (per spec § "Mixed file + folder drop").
 //
-// Electron note: `File.path` is a renderer-side augmentation that Electron
-// exposes so the main process can stream the source file; every production
-// drop carries `.path` on each File object. Tests build fake File items
-// with `.path` explicitly so the behaviour is reproducible in JSDOM.
+// Electron note: Electron 32+ removed the `File.path` augmentation.
+// Production code now reads the absolute filesystem path via
+// `window.api.webUtils.getPathForFile(file)` (a contextBridge wrapper
+// around `electron.webUtils.getPathForFile`). Tests still set `.path`
+// directly on fake File objects; `resolveSourcePath` checks the bridge
+// first and falls back to `(file as any).path` so JSDOM tests keep
+// working without stubbing `window.api.webUtils`.
 //
 // The orchestrator hook is instantiated INSIDE this component (not in the
 // route layer) so the call to `createUploadOrchestrator` happens once per
@@ -61,11 +64,25 @@ export interface DropZoneProps {
 }
 
 /**
- * Electron-only File augmentation. Production File objects dropped from
- * the OS carry `.path`; tests build fakes with the same shape.
+ * Test-only File augmentation. Tests still set `.path` directly on fake
+ * File objects (production File objects no longer carry `.path` as of
+ * Electron 32). The resolver below honors this shape as a fallback.
  */
 interface FileWithPath extends File {
   readonly path?: string;
+}
+
+function resolveSourcePath(file: FileWithPath): string {
+  // Production: contextBridge-exposed `electron.webUtils.getPathForFile`.
+  const w = globalThis as unknown as {
+    window?: { api?: { webUtils?: { getPathForFile?: (f: File) => string } } };
+  };
+  const fromWebUtils = w.window?.api?.webUtils?.getPathForFile?.(file);
+  if (typeof fromWebUtils === "string" && fromWebUtils.length > 0) {
+    return fromWebUtils;
+  }
+  // Test fallback: fake File objects with `.path` defined inline.
+  return file.path ?? "";
 }
 
 function isBlocked(status: DropZoneStatus): status is DropOverlayBlockedReason {
@@ -108,7 +125,7 @@ function classifyDrop(dt: DataTransfer | null): DropClassification {
       }
       const file = item.getAsFile() as FileWithPath | null;
       if (!file) continue;
-      const sourcePath = file.path ?? "";
+      const sourcePath = resolveSourcePath(file);
       if (sourcePath.length === 0) continue;
       files.push({
         sourcePath,
@@ -127,7 +144,7 @@ function classifyDrop(dt: DataTransfer | null): DropClassification {
     for (let i = 0; i < fileList.length; i += 1) {
       const file = fileList.item(i) as FileWithPath | null;
       if (!file) continue;
-      const sourcePath = file.path ?? "";
+      const sourcePath = resolveSourcePath(file);
       if (sourcePath.length === 0) continue;
       files.push({
         sourcePath,

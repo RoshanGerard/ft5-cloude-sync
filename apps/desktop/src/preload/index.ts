@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
 import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
@@ -216,6 +216,14 @@ const api = {
         ipcRenderer.removeListener(SYNC_CHANNELS.event, listener);
       };
     },
+  },
+  // Electron 32+ removed `File.path`. The drag-drop upload flow needs
+  // the absolute filesystem path of each dropped File so the main-
+  // process upload handler can stream it. `webUtils.getPathForFile` is
+  // the supported replacement; the contextBridge proxies the File
+  // object into the preload context where the real `webUtils` lives.
+  webUtils: {
+    getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   },
 };
 
