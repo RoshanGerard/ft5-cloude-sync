@@ -17,7 +17,7 @@
 // Constructor options use dependency injection so tests can stub
 // openExternal and supply a fake engine factory without touching globals.
 
-import type { StoredCredentials, AuthIntent, ConsentEvent } from "@ft5/ipc-contracts";
+import type { StoredCredentials, AuthIntent, ConsentEvent, DatasourceSummary } from "@ft5/ipc-contracts";
 import type { OAuthIntent } from "@ft5/ipc-contracts";
 
 // ---------------------------------------------------------------------------
@@ -85,6 +85,31 @@ export interface OAuthConsentBrokerOptions {
     datasourceId: string,
     credentials: StoredCredentials,
   ) => { authenticate(): Promise<AuthIntent> };
+
+  /**
+   * Registry write hook. Called by the broker AFTER intent.completeWith(code)
+   * resolves successfully, with a fully-constructed DatasourceSummary.
+   * Tests supply a vi.fn() spy; production wires engine.registry.add.
+   *
+   * Narrow DI: the broker constructs the summary and passes it here,
+   * rather than holding a reference to the whole registry (D7: no row before
+   * completeWith success; tests assert addToRegistry is NOT called at start()).
+   *
+   * Optional to preserve backward-compatibility with existing 4.1/4.2 tests
+   * that do not supply this option.
+   */
+  addToRegistry?: (summary: DatasourceSummary) => DatasourceSummary;
+
+  /**
+   * Datasource id minter. Called once per successful consent to produce the
+   * new datasourceId stored in both the registry row and the
+   * consent-completed event. Tests supply vi.fn returning a fixed string
+   * so they can assert the exact id; production wires a real id minter.
+   *
+   * Optional to preserve backward-compatibility with existing 4.1/4.2 tests.
+   */
+  mintDatasourceId?: () => string;
+
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +158,8 @@ export interface OAuthConsentBroker {
  *
  * Task 4.1: start() and cancel() always throw "Not implemented".
  * Task 4.2: subscribe() / unsubscribe() surface added (noop stub).
+ * Task 4.3: OAuthConsentBrokerOptions extended with addToRegistry and
+ *           mintDatasourceId (both optional, for backward-compatibility).
  * Task 4.7: replaces this stub with the real implementation.
  */
 export function createOAuthConsentBroker(

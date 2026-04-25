@@ -1,11 +1,13 @@
 // Task 4.1 -- failing test: Loopback binding returns an ephemeral port.
 // Task 4.2 -- failing test: State mismatch rejects the callback.
+// Task 4.3 -- failing test: Valid callback invokes completeWith and emits consent-completed.
 //
 // RED phase of TDD. broker.start() throws Not implemented until task 4.7.
 //
 // Spec ref: openspec/changes/add-drive-oauth-browser-consent/specs/datasources-ui/spec.md
 // Scenario: Loopback binding returns an ephemeral port
 // Scenario: State mismatch rejects the callback
+// Scenario: Valid callback invokes completeWith and emits consent-completed
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,7 +15,7 @@ import {
   createOAuthConsentBroker,
   type OAuthConsentBroker,
 } from "../consent-broker.js";
-import type { ConsentEvent } from "@ft5/ipc-contracts";
+import type { ConsentEvent, AuthResult, DatasourceSummary } from "@ft5/ipc-contracts";
 
 // Fake createClient: returns an OAuthIntent whose authorizeUrl echos the
 // redirectUri the broker injected into StoredCredentials meta.
@@ -85,6 +87,52 @@ function makeFakeCreateClientWithSpy() {
         kind: "oauth" as const,
         authorizeUrl: fakeAuthorizeUrl,
         completeWith: completeWithSpy,
+      };
+    },
+  });
+
+  const getLastCompleteWith = () => {
+    if (!lastCompleteWith) {
+      throw new Error("authenticate() not yet called -- no completeWith spy available");
+    }
+    return lastCompleteWith;
+  };
+
+  return { createClient, getLastCompleteWith };
+}
+
+
+/**
+ * Build a createClient factory whose completeWith resolves with the given
+ * fakeAuthResult. Used by task 4.3 to control the AuthResult returned so
+ * assertions on the built DatasourceSummary are deterministic.
+ */
+function makeFakeCreateClientWithResult(fakeAuthResult: AuthResult) {
+  let lastCompleteWith: ReturnType<typeof vi.fn> | null = null;
+
+  const createClient = (
+    _datasourceId: string,
+    credentials: import("@ft5/ipc-contracts").StoredCredentials,
+  ) => ({
+    authenticate: async () => {
+      const meta = (credentials.authResult.meta ?? {}) as Record<string, unknown>;
+      const redirectUri = typeof meta.redirectUri === "string"
+        ? meta.redirectUri
+        : "http://127.0.0.1:0/callback";
+      const fakeAuthorizeUrl =
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        + "?client_id=test-client-id"
+        + "&response_type=code"
+        + "&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive"
+        + "&redirect_uri=" + encodeURIComponent(redirectUri)
+        + "&code_challenge=FAKE_CHALLENGE"
+        + "&code_challenge_method=S256";
+      const spy = vi.fn(async (_code: string): Promise<AuthResult> => fakeAuthResult);
+      lastCompleteWith = spy;
+      return {
+        kind: "oauth" as const,
+        authorizeUrl: fakeAuthorizeUrl,
+        completeWith: spy,
       };
     },
   });
@@ -239,4 +287,120 @@ describe("OAuthConsentBroker", () => {
       brokerWithSpy.dispose();
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Task 4.3 — Valid callback invokes completeWith and emits consent-completed
+  // ---------------------------------------------------------------------------
+
+  it("Valid callback invokes completeWith and emits consent-completed", async () => {
+    // ARRANGE: deterministic AuthResult the fake engine will return.
+    const fakeAuthResult: AuthResult = {
+      accessToken: "real-access-token",
+      refreshToken: "real-refresh-token",
+      expiresAt: Date.now() + 3600_000,
+    };
+
+    const { createClient, getLastCompleteWith } =
+      makeFakeCreateClientWithResult(fakeAuthResult);
+
+    // addToRegistry spy: echoes the summary back (simulates a successful insert).
+    const addToRegistry = vi.fn((summary: DatasourceSummary) => ({ ...summary }));
+    // mintDatasourceId spy: always returns a deterministic id.
+    const mintDatasourceId = vi.fn(() => "ds-test-42");
+
+    // Consent-event subscriber registered BEFORE start() so it catches the
+    // consent-completed event emitted inside the callback handler.
+    const consentListener = vi.fn((_event: ConsentEvent) => {});
+
+    const broker43 = createOAuthConsentBroker({
+      openExternal,
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      createClient,
+      addToRegistry,
+      mintDatasourceId,
+    });
+
+    broker43.subscribe(consentListener);
+
+    try {
+      // ACT (a): start a consent session.
+      // RED: throws "Not implemented" here until task 4.7.
+      const { sessionId } = await broker43.start({ providerId: "google-drive" });
+
+      // ASSERT D7: addToRegistry has NOT been called yet — no registry row
+      // before completeWith succeeds (design decision D7).
+      expect(addToRegistry).not.toHaveBeenCalled();
+
+      // ACT (b): read the bound port and the stored CSRF state.
+      const session = broker43._getPendingSessionForTests(sessionId);
+      expect(session).toBeDefined();
+      const { port, state: correctState } = session!;
+      expect(port).toBeGreaterThanOrEqual(1024);
+      expect(typeof correctState).toBe("string");
+      expect(correctState.length).toBeGreaterThan(0);
+
+      // ACT (c): make a real HTTP GET to /callback with the CORRECT state.
+      const callbackUrl =
+        "http://127.0.0.1:" + String(port) +
+        "/callback?code=valid-code&state=" + encodeURIComponent(correctState);
+      let response: Response;
+      try {
+        response = await fetch(callbackUrl, { signal: AbortSignal.timeout(3000) });
+      } catch (err) {
+        throw new Error(
+          "Expected the loopback server to accept the connection at " +
+          callbackUrl + " but got: " + String(err),
+        );
+      }
+
+      // ASSERT 1: HTTP 200 — spec says respond 200 OK with a minimal HTML page.
+      expect(response.status).toBe(200);
+
+      // ASSERT 2: completeWith called exactly once with valid-code.
+      const completeWithSpy = getLastCompleteWith();
+      await vi.waitFor(() => {
+        expect(completeWithSpy).toHaveBeenCalledTimes(1);
+      }, { timeout: 2000 });
+      expect(completeWithSpy).toHaveBeenCalledWith("valid-code");
+
+      // ASSERT 3: addToRegistry called exactly once with a correct DatasourceSummary.
+      await vi.waitFor(() => {
+        expect(addToRegistry).toHaveBeenCalledTimes(1);
+      }, { timeout: 2000 });
+      const persistedSummary = addToRegistry.mock.calls[0]?.[0] as DatasourceSummary;
+      expect(persistedSummary.id).toBe("ds-test-42");
+      expect(persistedSummary.providerId).toBe("google-drive");
+      expect(persistedSummary.status).toBe("connected");
+      // displayName must match the provider descriptor registered name.
+      expect(persistedSummary.displayName).toBe("Google Drive");
+
+      // ASSERT 4: consent-completed event received by the subscriber.
+      await vi.waitFor(() => {
+        expect(consentListener).toHaveBeenCalledTimes(1);
+      }, { timeout: 2000 });
+      const emittedEvent = consentListener.mock.calls[0]?.[0] as ConsentEvent;
+      expect(emittedEvent).toMatchObject({
+        event: "consent-completed",
+        sessionId,
+        datasourceId: "ds-test-42",
+      });
+
+      // ASSERT 5: pending session cleared after success.
+      expect(broker43._getPendingSessionForTests(sessionId)).toBeUndefined();
+
+      // ASSERT 6: loopback server is closed — a second request fails with
+      // ECONNREFUSED (or equivalent connection-closed error).
+      let secondRequestFailed = false;
+      try {
+        await fetch(callbackUrl, { signal: AbortSignal.timeout(1000) });
+      } catch {
+        secondRequestFailed = true;
+      }
+      expect(secondRequestFailed).toBe(true);
+    } finally {
+      broker43.dispose();
+    }
+  });
+
 });
