@@ -63,8 +63,8 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 ## 10. Contract test compatibility
 
-- [ ] 10.1 Run `googledrive-client.contract.test.ts`. If it now fails because the contract suite's stub credential lacks `meta.scope`, update the stub builder in the contract suite (or its shared helpers in `__tests__/strategy-contract.ts`) to include a sufficient `meta.scope = "https://www.googleapis.com/auth/drive"` on the synthesized credential
-- [ ] 10.2 Confirm `pnpm --filter @ft5/fs-datasource-engine test` passes end-to-end
+- [x] 10.1 Run `googledrive-client.contract.test.ts`. If it now fails because the contract suite's stub credential lacks `meta.scope`, update the stub builder in the contract suite (or its shared helpers in `__tests__/strategy-contract.ts`) to include a sufficient `meta.scope = "https://www.googleapis.com/auth/drive"` on the synthesized credential
+- [x] 10.2 Confirm `pnpm --filter @ft5/fs-datasource-engine test` passes end-to-end
 
 ## 11. Operator documentation
 
