@@ -658,10 +658,14 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       return;
     }
     if (!isScopeSufficient(scope)) {
-      // Rejection branch lands in Work Unit B. For now, skip; a no-op
-      // preserves prior behavior for legacy creds while wiring up the call
-      // site.
-      return;
+      throw new DatasourceError<"google-drive">({
+        tag: "auth-revoked",
+        retryable: false,
+        datasourceType: "google-drive",
+        datasourceId: this.datasourceId,
+        raw: { kind: "scope-insufficient", requiredScope: REQUIRED_DRIVE_SCOPE, actualScope: scope },
+        message: "Drive permissions are too narrow — reconnect with full access to see your existing files.",
+      });
     }
   }
 

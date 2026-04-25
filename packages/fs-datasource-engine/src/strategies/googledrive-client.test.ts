@@ -1929,4 +1929,78 @@ describe("GoogleDriveClient — scope drift detection", () => {
     const meta = creds.authResult.meta as Record<string, unknown>;
     expect(Object.prototype.hasOwnProperty.call(meta, "scope")).toBe(false);
   });
+
+  it("status() rejects with auth-revoked + scope-insufficient when meta.scope is drive.file alone", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file"),
+    });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      if (e.retryable !== false) return false;
+      const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.requiredScope === "https://www.googleapis.com/auth/drive" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.file"
+      );
+    });
+    // about.get must NOT be called when scope check fails first
+    expect(aboutSpy).not.toHaveBeenCalled();
+    // Also no tokeninfo fetch — scope was already on the cred
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("testConnection() rejects with auth-revoked + scope-insufficient when meta.scope is drive.readonly alone", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.readonly"),
+    });
+    await expect(h.client.testConnection()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      if (e.retryable !== false) return false;
+      const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.requiredScope === "https://www.googleapis.com/auth/drive" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.readonly"
+      );
+    });
+    expect(aboutSpy).not.toHaveBeenCalled();
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("status() rejects with auth-revoked + scope-insufficient when meta.scope combines drive.file and drive.readonly but not full drive", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"),
+    });
+    await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof DatasourceError)) return false;
+      if (e.tag !== "auth-revoked") return false;
+      if (e.retryable !== false) return false;
+      const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
+      return (
+        raw?.kind === "scope-insufficient" &&
+        raw?.requiredScope === "https://www.googleapis.com/auth/drive" &&
+        raw?.actualScope === "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
+      );
+    });
+    expect(aboutSpy).not.toHaveBeenCalled();
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
 });
