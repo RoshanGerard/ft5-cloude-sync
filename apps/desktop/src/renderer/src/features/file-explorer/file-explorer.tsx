@@ -192,7 +192,7 @@ export function FileExplorer({
   // Dialog is controlled (not Radix-trigger-managed) so the file-explorer
   // owns both open/close AND the `initialDestination` handoff to the
   // dialog's destination tree. Reset happens inside the dialog on each
-  // false → true transition (see upload-dialog.tsx).
+  // false → true edge (see upload-dialog.tsx).
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
 
   // Confirm-delete dialog state — targets captured at click-time. Each
@@ -560,7 +560,7 @@ export function FileExplorer({
       {/* Upload dialog, opened by the toolbar's Upload button. Default
           destination = file-explorer's currentPath (spec line 30). The
           dialog internally resets its Files list + navigation state on
-          each false → true transition so reopening starts fresh. */}
+          each false → true edge so reopening starts fresh. */}
       <UploadDialog
         open={uploadDialogOpen}
         onOpenChange={setUploadDialogOpen}
