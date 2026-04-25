@@ -68,8 +68,8 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 ## 11. Operator documentation
 
-- [ ] 11.1 Add a short subsection to `docs/` (or wherever onboarding lives — confirm the path before writing) titled "Google Drive: scope drift" explaining the symptom (only app-uploaded files visible), the cause (token issued under narrower consent), and the remediation (re-consent — forward-pointer to `add-drive-oauth-browser-consent`). Keep to ~20 lines
-- [ ] 11.2 Cross-link the section from the `wire-file-explorer-to-service` archived change notes if such cross-linking is the project convention; otherwise skip
+- [x] 11.1 Add a short subsection to `docs/` (or wherever onboarding lives — confirm the path before writing) titled "Google Drive: scope drift" explaining the symptom (only app-uploaded files visible), the cause (token issued under narrower consent), and the remediation (re-consent — forward-pointer to `add-drive-oauth-browser-consent`). Keep to ~20 lines
+- [x] 11.2 Cross-link the section from the `wire-file-explorer-to-service` archived change notes if such cross-linking is the project convention; otherwise skip (cross-linking convention confirmed in `docs/design/file-explorer.md` §9; added one-line link there — the `AuthRevokedState` UI lives in the file explorer, so that is the tightest fit; archived change notes not touched)
 
 ## 12. Verification + close-out
 
