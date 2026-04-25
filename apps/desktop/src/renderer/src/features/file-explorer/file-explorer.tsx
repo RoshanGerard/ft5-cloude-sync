@@ -11,6 +11,11 @@
 // The `data-testid="file-explorer-root"` anchor is preserved for
 // continuity with the route-level tests in `page.test.tsx`.
 //
+// Post-Section-9 cleanup: the conflict-resolver port is now wired to the
+// real `useConflictResolutionDialog()` hook + `<ConflictResolutionDialog>`
+// component (Section 7's deliverable). The Section-6 `STUB_CONFLICT_RESOLVER`
+// "coming soon" toast is gone — real conflicts now drive the actual dialog.
+//
 // Scope boundaries (called out in the Phase 4 composite-wiring commit):
 //   - onActivate wires directory entries to `store.navigate`; file
 //     activation is a no-op (Phase 5 wires the Properties modal).
@@ -36,6 +41,10 @@ import { Icon } from "@/components/icon";
 
 import { Breadcrumb } from "./breadcrumb";
 import { ConfirmDeleteDialog } from "./confirm-delete-dialog";
+import {
+  ConflictResolutionDialog,
+  useConflictResolutionDialog,
+} from "./conflict-resolution-dialog";
 import { DetailsPane } from "./details-pane";
 import { DropZone, type DropZoneStatus } from "./drop-zone";
 import { HistoryButtons } from "./history-buttons";
@@ -60,7 +69,6 @@ import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
 import { UploadDialog } from "./upload-dialog";
 import { createUploadJobToaster } from "./upload-job-toast";
-import { STUB_CONFLICT_RESOLVER } from "./upload-stubs";
 import { useExplorerData } from "./use-explorer-data";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { ViewModeSwitcher } from "./view-mode-switcher";
@@ -90,10 +98,11 @@ export interface FileExplorerProps {
   providerStatus?: DatasourceStatus;
   /**
    * Optional conflict resolver forwarded to the drop-zone's upload
-   * orchestrator. Task 7 wires the real shadcn-dialog-backed resolver;
-   * until then the default is a stub that surfaces a "coming soon" toast
-   * on any conflict so drops against colliding names don't fail silently.
-   * Remove this stub when Task 7 lands.
+   * orchestrator AND to the in-explorer Upload dialog. Defaults to the
+   * real shadcn-dialog-backed `useConflictResolutionDialog()` resolver
+   * (Section 7) that prompts the user per-file with Overwrite / Keep both
+   * / Skip / Cancel-all and an "apply to remaining" checkbox. Tests that
+   * want deterministic walking inject their own resolver via this prop.
    */
   conflictResolver?: ConflictResolver;
   /**
@@ -131,20 +140,29 @@ function DashboardHomeButton() {
   );
 }
 
-// The conflict-resolver stub still lives in `./upload-stubs.ts` so BOTH
-// the drop-zone (explorer) and the Upload-dialog entry points (toolbar +
-// datasource card) share identical placeholder behaviour until the real
-// resolver from `./conflict-resolution-dialog.tsx` is wired in. The
-// toaster stub was removed in Task 9 — `createUploadJobToaster()` is
-// now the production default.
+// Both upload entry points (drop-zone + Upload dialog) share a single
+// `useConflictResolutionDialog()` instance per FileExplorer mount so the
+// hook's `<ConflictResolutionDialog>` only needs to be rendered once.
+// Tests inject their own `conflictResolver` via the prop and bypass the
+// hook entirely (the hook still mounts but its `dialogProps.open` stays
+// false because no production resolver is in play). The toaster stub
+// was removed in Task 9 — `createUploadJobToaster()` is now the
+// production default.
 
 export function FileExplorer({
   datasourceId,
   providerKind = "s3",
   providerStatus,
-  conflictResolver = STUB_CONFLICT_RESOLVER,
+  conflictResolver: conflictResolverProp,
   toaster: toasterProp,
 }: FileExplorerProps) {
+  // Task 7 wiring (post-Section-9 cleanup): instantiate the production
+  // shadcn-dialog-backed conflict resolver once per mount so the same
+  // resolver + dialog is shared across the drop-zone and the Upload
+  // dialog. Tests override via the `conflictResolver` prop.
+  const { resolver: defaultConflictResolver, dialogProps: conflictDialogProps } =
+    useConflictResolutionDialog();
+  const conflictResolver = conflictResolverProp ?? defaultConflictResolver;
   // Task 9.2 — instantiate the production Sonner-backed per-job toaster
   // once per mount so the same instance is shared between the drop-zone
   // and the upload dialog. Tests inject their own toaster via the
@@ -534,6 +552,11 @@ export function FileExplorer({
         onConfirm={handleConfirmDelete}
         onCancel={handleCancelDelete}
       />
+      {/* Conflict-resolution dialog (Task 7) — Radix portal, so visual
+          placement is immaterial. The hook above owns its open/close
+          state; both the drop-zone and the Upload dialog share the same
+          resolver so a single dialog mount suffices. */}
+      <ConflictResolutionDialog {...conflictDialogProps} />
       {/* Upload dialog, opened by the toolbar's Upload button. Default
           destination = file-explorer's currentPath (spec line 30). The
           dialog internally resets its Files list + navigation state on
