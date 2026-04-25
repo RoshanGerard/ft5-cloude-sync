@@ -2044,7 +2044,15 @@ describe("GoogleDriveClient — scope drift detection", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     ) as unknown as typeof fetch;
-    const h = makeHarness({ drive, fetchImpl });
+    const h = makeHarness({
+      drive,
+      fetchImpl,
+      // Seed with a scope value distinct from the refresh response so that the
+      // creds.scope assertion below is load-bearing: if parseTokenResponse
+      // skips writing scope onto creds, creds.scope stays "drive.file" and
+      // the assertion catches the regression.
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file"),
+    });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const refresh = (h.client as any).refreshTokenImpl.bind(h.client);
     const result = await refresh();
