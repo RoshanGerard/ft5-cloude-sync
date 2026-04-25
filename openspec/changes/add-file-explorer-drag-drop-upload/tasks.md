@@ -82,11 +82,11 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 12. Verification + close-out
 
-- [ ] 12.1 `pnpm typecheck` green across the monorepo.
-- [ ] 12.2 `pnpm lint` green.
-- [ ] 12.3 `pnpm test` green — full suite, not just new tests.
-- [ ] 12.4 Full regression pass of every existing file-explorer test and dashboard test (no changes expected to regress).
-- [ ] 12.5 `openspec validate --strict` green.
+- [x] 12.1 `pnpm typecheck` green across the monorepo.
+- [x] 12.2 `pnpm lint` green.
+- [x] 12.3 `pnpm test` green — full suite, not just new tests.
+- [x] 12.4 Full regression pass of every existing file-explorer test and dashboard test (no changes expected to regress).
+- [x] 12.5 `openspec validate --strict` green.
 - [ ] 12.6 Create PR with summary + screenshots.
 - [ ] 12.7 Merge once reviewed.
 - [ ] 12.8 `/opsx:archive add-file-explorer-drag-drop-upload` in the worktree branch BEFORE merging to master (per CLAUDE.md).
