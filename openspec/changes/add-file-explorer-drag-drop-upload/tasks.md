@@ -55,9 +55,9 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 8. Composite / four-layer wiring tests
 
-- [ ] 8.1 Add `packages/ipc-contracts/src/__tests__/files-upload-four-layer.test.ts` asserting `files.upload` has: a contract type in `files.ts`, a main-process handler file at `apps/desktop/src/main/ipc/files/upload.ts`, a preload binding on `window.api.files.upload`, AND at least one renderer call site (grep for `window.api.files.upload` or `api.files.upload` under `apps/desktop/src/renderer/`).
-- [ ] 8.2 Add an analogous test for `datasources.pickFilesToUpload`.
-- [ ] 8.3 Add a grep-based negative test asserting `datasources.upload` is nowhere in the codebase (contract, handler, preload, renderer). Allow the string only in spec / design / tasks documents under `openspec/`.
+- [x] 8.1 Add `packages/ipc-contracts/src/__tests__/files-upload-four-layer.test.ts` asserting `files.upload` has: a contract type in `files.ts`, a main-process handler file at `apps/desktop/src/main/ipc/files/upload.ts`, a preload binding on `window.api.files.upload`, AND at least one renderer call site (grep for `window.api.files.upload` or `api.files.upload` under `apps/desktop/src/renderer/`).
+- [x] 8.2 Add an analogous test for `datasources.pickFilesToUpload`.
+- [x] 8.3 Add a grep-based negative test asserting `datasources.upload` is nowhere in the codebase (contract, handler, preload, renderer). Allow the string only in spec / design / tasks documents under `openspec/`.
 
 ## 9. Sonner toast integration
 

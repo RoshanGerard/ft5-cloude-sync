@@ -88,7 +88,7 @@ export interface DatasourcesActionResponse {
   datasource: DatasourceSummary;
 }
 
-// `DatasourcesUploadRequest` / `DatasourcesUploadResponse` were retired by
+// The legacy upload request/response types on this surface were retired by
 // `add-file-explorer-drag-drop-upload`. Uploads now flow through
 // `files.upload` (→ sync-service `sync:enqueue-upload`). The progress event
 // shape below survives because the `uploadProgress` channel is still the
@@ -119,7 +119,7 @@ export const DATASOURCES_CHANNELS = {
   add: "datasources:add",
   remove: "datasources:remove",
   action: "datasources:action",
-  // Replaces the retired `upload: "datasources:upload"` slot. Opens the
+  // Replaces the retired upload-channel slot (now removed). Opens the
   // native multi-select "Open File" dialog; the renderer then dispatches
   // each picked path through `files.upload`.
   pickFilesToUpload: "datasources:pick-files-to-upload",

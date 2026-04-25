@@ -192,9 +192,9 @@ describe("ipc-contracts datasources request/response pairs", () => {
   });
 
   it("uploadProgress event shape survives (channel stays for per-job progress streaming)", () => {
-    // Retired by `add-file-explorer-drag-drop-upload`: the request/response
-    // types `DatasourcesUploadRequest` / `DatasourcesUploadResponse`. The
-    // renderer now dispatches uploads through `files.upload` (→ sync-service
+    // Retired by `add-file-explorer-drag-drop-upload`: the legacy upload
+    // request/response types on the datasources surface. The renderer now
+    // dispatches uploads through `files.upload` (→ sync-service
     // `sync:enqueue-upload`). The `uploadProgress` channel, however, remains
     // the transport for per-job progress notifications.
     const progressUploading: DatasourcesUploadProgressEvent = {
@@ -252,7 +252,7 @@ describe("ipc-contracts datasources request/response pairs", () => {
 
 describe("ipc-contracts datasources channel names", () => {
   it("DATASOURCES_CHANNELS exposes exactly the seven expected channels and excludes retired upload", () => {
-    // `upload: "datasources:upload"` was retired by
+    // The legacy upload channel slot was retired by
     // `add-file-explorer-drag-drop-upload` — the renderer now dispatches
     // uploads through `files.upload`. `uploadProgress` stays: it's still the
     // transport for per-job progress events. The new dialog channel

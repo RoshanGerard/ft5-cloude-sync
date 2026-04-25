@@ -84,8 +84,8 @@ export function registerIpcHandlers(targetWindow: BrowserWindow | null = null): 
   // renderer then dispatches each path through `files.upload`
   // (separating the picker from the enqueue is what lets the drag-drop
   // path and the upload-dialog destination-picker path share the same
-  // upload code). The `DatasourcesUploadRequest` + `handleDatasourcesUpload`
-  // pair this replaces has been retired — see
+  // upload code). The retired upload request type + matching handler
+  // pair this replaces is gone — see
   // `openspec/changes/add-file-explorer-drag-drop-upload/design.md`.
   ipcMain.handle(
     DATASOURCES_CHANNELS.pickFilesToUpload,
