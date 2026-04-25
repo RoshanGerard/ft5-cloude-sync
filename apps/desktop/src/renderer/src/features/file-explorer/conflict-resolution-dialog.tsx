@@ -43,8 +43,8 @@ import {
   type ConflictChoice,
   type ConflictInfo,
   type ConflictPrompt,
-} from "./resolve-conflicts.js";
-import type { ConflictResolver } from "./use-upload-orchestrator.js";
+} from "./resolve-conflicts";
+import type { ConflictResolver } from "./use-upload-orchestrator";
 import { formatDate, formatSize } from "./view-modes/details-format";
 
 // ---------------------------------------------------------------------------

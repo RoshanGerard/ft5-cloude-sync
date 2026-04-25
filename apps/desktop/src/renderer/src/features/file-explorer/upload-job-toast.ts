@@ -27,7 +27,7 @@
 import type { DatasourcesUploadProgressEvent } from "@ft5/ipc-contracts";
 import { toast as sonnerToast } from "sonner";
 
-import type { UploadToaster } from "./use-upload-orchestrator.js";
+import type { UploadToaster } from "./use-upload-orchestrator";
 
 // Toast api the helper uses (subset of sonner's `toast`). Injected for
 // tests; production falls back to `import { toast } from "sonner"`.

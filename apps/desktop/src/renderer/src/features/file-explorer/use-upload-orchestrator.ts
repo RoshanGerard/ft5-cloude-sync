@@ -40,7 +40,7 @@ import type {
   ConflictChoice,
   ConflictInfo,
   UploadFileItem,
-} from "./resolve-conflicts.js";
+} from "./resolve-conflicts";
 
 export type { ConflictChoice, ConflictInfo, UploadFileItem };
 

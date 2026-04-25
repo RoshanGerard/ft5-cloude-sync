@@ -46,7 +46,7 @@ import {
   type ConflictResolver,
   type UploadFileItem,
   type UploadToaster,
-} from "./use-upload-orchestrator.js";
+} from "./use-upload-orchestrator";
 
 // ---------------------------------------------------------------------------
 // Props

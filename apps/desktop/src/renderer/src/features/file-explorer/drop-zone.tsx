@@ -29,14 +29,14 @@
 import { useCallback, useRef, useState, type ReactElement } from "react";
 import { toast } from "sonner";
 
-import { DropOverlay, type DropOverlayBlockedReason } from "./drop-overlay.js";
+import { DropOverlay, type DropOverlayBlockedReason } from "./drop-overlay";
 import {
   createUploadOrchestrator,
   type ConflictResolver,
   type UploadFileItem,
   type UploadOrchestratorApi,
   type UploadToaster,
-} from "./use-upload-orchestrator.js";
+} from "./use-upload-orchestrator";
 
 export type DropZoneStatus = "usable" | DropOverlayBlockedReason;
 
