@@ -5,7 +5,7 @@
 A Google Drive datasource shows status `connected` but the file explorer lists
 only files uploaded through this app. Pre-existing files in your Drive are
 invisible. After the scope-detection work lands, the datasource may instead
-show `auth-revoked` with the message "Drive permissions are too narrow --
+show `auth-revoked` with the message "Drive permissions are too narrow —
 reconnect with full access to see your existing files."
 
 ## Cause

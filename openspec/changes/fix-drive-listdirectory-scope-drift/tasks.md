@@ -78,7 +78,7 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 - [x] 12.3 Run `pnpm test` and confirm all packages green (not just the engine package)
 - [ ] 12.4 _(reserved — no separate `build` step in this workspace)_
 - [x] 12.5 Use the `verification-before-completion` superpower: walk through the proposal's "What Changes" bullets and confirm each is satisfied by the diff
-- [ ] 12.6 Use `requesting-code-review` for an end-to-end pass before merging
+- [x] 12.6 Use `requesting-code-review` for an end-to-end pass before merging
 - [ ] 12.7 Use `finishing-a-development-branch` to merge / archive
 
 ## 13. Deferred (record but do not implement here)
