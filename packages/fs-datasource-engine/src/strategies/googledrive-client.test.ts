@@ -2025,8 +2025,11 @@ describe("GoogleDriveClient — scope drift detection", () => {
     expect((result.meta as Record<string, unknown>).scope).toBe(
       "https://www.googleapis.com/auth/drive openid email",
     );
-    // Subsequent status() should NOT trigger tokeninfo or fail the sufficiency check
-    await expect(h.client.status()).resolves.toBe("connected");
+    // The in-memory creds must also reflect the issued scope, not the seeded one.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((h.client as any).creds.scope).toBe(
+      "https://www.googleapis.com/auth/drive openid email",
+    );
   });
 
   it("refreshToken copies the issued scope from the refresh response onto AuthResult.meta.scope and creds.scope", async () => {
@@ -2046,6 +2049,41 @@ describe("GoogleDriveClient — scope drift detection", () => {
     const refresh = (h.client as any).refreshTokenImpl.bind(h.client);
     const result = await refresh();
     expect((result.meta as Record<string, unknown>).scope).toBe(
+      "https://www.googleapis.com/auth/drive",
+    );
+    // The in-memory creds must also reflect the issued scope from the refresh response.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((h.client as any).creds.scope).toBe(
+      "https://www.googleapis.com/auth/drive",
+    );
+  });
+
+  it("token response without a scope field leaves creds.scope unchanged on the seeded value", async () => {
+    const { client: drive } = makeFakeDrive({});
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "exchanged-at",
+          refresh_token: "exchanged-rt",
+          expires_in: 3599,
+          // Note: no `scope` field returned
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const h = makeHarness({
+      drive,
+      fetchImpl,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive"),
+    });
+    const intent = (await h.client.authenticate()) as OAuthIntent;
+    const result = await intent.completeWith("auth-code-no-scope");
+    // result.meta.scope should be omitted (not undefined-assigned) when the
+    // response did not return one
+    expect((result.meta as Record<string, unknown>).scope).toBeUndefined();
+    // The previously-seeded creds.scope must NOT have been overwritten with undefined
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((h.client as any).creds.scope).toBe(
       "https://www.googleapis.com/auth/drive",
     );
   });
