@@ -48,7 +48,6 @@ function installApiMock() {
       add: vi.fn(),
       remove: vi.fn(),
       action: vi.fn(),
-      upload: vi.fn(),
       startConsent: vi.fn(),
       cancelConsent: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),

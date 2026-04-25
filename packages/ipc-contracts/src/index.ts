@@ -20,13 +20,13 @@ export type {
   DatasourcesCancelConsentResponse,
   DatasourcesListRequest,
   DatasourcesListResponse,
+  DatasourcesPickFilesRequest,
+  DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
   DatasourcesStartConsentRequest,
   DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
-  DatasourcesUploadRequest,
-  DatasourcesUploadResponse,
   ErroredDatasourceSummary,
   ProviderCapabilities,
   ProviderDescriptor,
@@ -61,12 +61,23 @@ export type {
   FilesStatRequest,
   FilesStatResponse,
   FilesStatValue,
+  FilesUploadRequest,
+  FilesUploadResponse,
+  FilesUploadValue,
   MimeFamily,
 } from "./files.js";
 export {
   FILES_CHANNELS,
   FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
 } from "./files.js";
+
+// `ConflictPolicy` is the canonical union used by both the sync-service
+// command surface and the new renderer-facing `FilesUploadRequest`. The
+// canonical declaration lives in `./sync-service/commands.ts`; re-exported
+// here so the renderer can import the upload contract and the policy union
+// from a single top-level entry point without descending into the
+// sync-service subpath.
+export type { ConflictPolicy } from "./sync-service/commands.js";
 
 // Engine-facing file primitives (generic over `DatasourceType`). These live
 // alongside the UI's `FileEntry` / `MimeFamily` rather than replacing them;

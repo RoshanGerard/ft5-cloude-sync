@@ -70,7 +70,6 @@ let listMock: Mock;
 let addMock: Mock;
 let removeMock: Mock;
 let actionMock: Mock;
-let uploadMock: Mock;
 let startConsentMock: Mock;
 // Captures the onEvent listener registered by DatasourcesProvider so tests
 // can fire synthetic consent events.
@@ -89,7 +88,6 @@ function installApiMock() {
       add: addMock,
       remove: removeMock,
       action: actionMock,
-      upload: uploadMock,
       startConsent: startConsentMock,
       cancelConsent: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
@@ -146,7 +144,6 @@ beforeEach(() => {
   addMock = vi.fn();
   removeMock = vi.fn();
   actionMock = vi.fn();
-  uploadMock = vi.fn();
   installApiMock();
 });
 

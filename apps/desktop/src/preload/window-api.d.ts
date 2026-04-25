@@ -8,13 +8,12 @@ import type {
   DatasourcesCancelConsentRequest,
   DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
+  DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
   DatasourcesStartConsentRequest,
   DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
-  DatasourcesUploadRequest,
-  DatasourcesUploadResponse,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -27,6 +26,8 @@ import type {
   FilesSearchResponse,
   FilesStatRequest,
   FilesStatResponse,
+  FilesUploadRequest,
+  FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
 import type {
@@ -76,9 +77,7 @@ declare global {
         action(
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
-        upload(
-          req: DatasourcesUploadRequest,
-        ): Promise<DatasourcesUploadResponse>;
+        pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
         startConsent(
           req: DatasourcesStartConsentRequest,
         ): Promise<DatasourcesStartConsentResponse>;
@@ -100,6 +99,7 @@ declare global {
         rename(req: FilesRenameRequest): Promise<FilesRenameResponse>;
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
+        upload(req: FilesUploadRequest): Promise<FilesUploadResponse>;
       };
       sync: {
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
@@ -126,6 +126,9 @@ declare global {
           req: SyncSetRetryPolicyRequest,
         ): Promise<SyncSetRetryPolicyResponse>;
         onEvent(callback: (event: SyncEvent) => void): () => void;
+      };
+      webUtils: {
+        getPathForFile(file: File): string;
       };
     };
   }

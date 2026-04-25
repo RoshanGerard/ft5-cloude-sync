@@ -13,13 +13,12 @@ import type {
   DatasourcesCancelConsentRequest,
   DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
+  DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
   DatasourcesStartConsentRequest,
   DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
-  DatasourcesUploadRequest,
-  DatasourcesUploadResponse,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -32,6 +31,8 @@ import type {
   FilesSearchResponse,
   FilesStatRequest,
   FilesStatResponse,
+  FilesUploadRequest,
+  FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
 import type {
@@ -53,9 +54,7 @@ declare global {
         action(
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
-        upload(
-          req: DatasourcesUploadRequest,
-        ): Promise<DatasourcesUploadResponse>;
+        pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
         startConsent(
           req: DatasourcesStartConsentRequest,
         ): Promise<DatasourcesStartConsentResponse>;
@@ -77,6 +76,7 @@ declare global {
         rename(req: FilesRenameRequest): Promise<FilesRenameResponse>;
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
+        upload(req: FilesUploadRequest): Promise<FilesUploadResponse>;
       };
       clipboard: {
         writeText(text: string): Promise<void>;
@@ -89,6 +89,13 @@ declare global {
       sync: {
         onEvent(callback: (event: SyncEvent) => void): () => void;
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
+      };
+      // Electron 32+ removed `File.path`. Drag-drop reads each dropped
+      // File's absolute filesystem path via this contextBridge wrapper
+      // around `electron.webUtils.getPathForFile` so the main-process
+      // upload handler can stream the source.
+      webUtils: {
+        getPathForFile(file: File): string;
       };
     };
   }

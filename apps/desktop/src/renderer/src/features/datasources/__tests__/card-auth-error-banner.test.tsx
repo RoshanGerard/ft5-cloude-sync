@@ -64,7 +64,6 @@ function installApiMock() {
       add: vi.fn(),
       remove: vi.fn().mockResolvedValue({ ok: true }),
       action: vi.fn(),
-      upload: vi.fn().mockResolvedValue({ transactionId: "tx-test" }),
       startConsent: startConsentMock,
       cancelConsent: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),

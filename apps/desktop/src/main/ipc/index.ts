@@ -12,13 +12,13 @@ import type {
   DatasourcesCancelConsentRequest,
   DatasourcesRemoveRequest,
   DatasourcesStartConsentRequest,
-  DatasourcesUploadRequest,
   FilesDownloadRequest,
   FilesListRequest,
   FilesRemoveRequest,
   FilesRenameRequest,
   FilesSearchRequest,
   FilesStatRequest,
+  FilesUploadRequest,
 } from "@ft5/ipc-contracts";
 import type {
   SyncAuthenticateCompleteRequest,
@@ -36,9 +36,9 @@ import { handleDatasourcesAction } from "./datasources/action.js";
 import { handleDatasourcesAdd } from "./datasources/add.js";
 import { handleDatasourcesCancelConsent } from "./datasources/cancel-consent.js";
 import { handleDatasourcesList } from "./datasources/list.js";
+import { handlePickFilesToUpload } from "./datasources/pick-files-to-upload.js";
 import { handleDatasourcesRemove } from "./datasources/remove.js";
 import { handleDatasourcesStartConsent } from "./datasources/start-consent.js";
-import { handleDatasourcesUpload } from "./datasources/upload.js";
 import type { OAuthConsentBroker } from "../oauth/consent-broker.js";
 import { handleFilesDownload } from "./files/download.js";
 import { handleFilesList } from "./files/list.js";
@@ -46,6 +46,7 @@ import { handleFilesRemove } from "./files/remove.js";
 import { handleFilesRename } from "./files/rename.js";
 import { handleFilesSearch } from "./files/search.js";
 import { handleFilesStat } from "./files/stat.js";
+import { handleFilesUpload } from "./files/upload.js";
 import { handlePing } from "./ping.js";
 import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js";
 import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
@@ -57,7 +58,6 @@ import { handleSyncGetRetryPolicy } from "./sync/get-retry-policy.js";
 import { handleSyncGetStatus } from "./sync/get-status.js";
 import { handleSyncListJobs } from "./sync/list-jobs.js";
 import { handleSyncSetRetryPolicy } from "./sync/set-retry-policy.js";
-import { getSyncClient } from "../sync/sync-client-holder.js";
 
 // Central IPC handler registration. Called once from `main/index.ts` after
 // `app.whenReady()`. Keeping the `ipcMain.handle` calls here (rather than
@@ -88,33 +88,31 @@ export function registerIpcHandlers(
       handleDatasourcesAction(req),
   );
 
-  // Datasources upload — proxies to the fs-sync-service via the
-  // sync-client-holder. `getSyncClient()` resolves lazily at invoke
-  // time (not at registration time), matching the structural
-  // availability gate used by the SYNC_CHANNELS handlers below:
-  // the handler rejects cleanly if a file-picker attempt races
-  // supervisor startup. Progress events flow through the
-  // section-7 event-bridge → `DATASOURCES_CHANNELS.uploadProgress`;
-  // this handler no longer emits progress itself (I-B pre-condition
-  // from section 7 review — see tasks.md section 8).
+  // Datasources pick-files — opens the native OS "Open File" dialog in
+  // multi-select mode and returns the picked paths to the renderer. The
+  // renderer then dispatches each path through `files.upload`
+  // (separating the picker from the enqueue is what lets the drag-drop
+  // path and the upload-dialog destination-picker path share the same
+  // upload code). The retired upload request type + matching handler
+  // pair this replaces is gone — see
+  // `openspec/changes/add-file-explorer-drag-drop-upload/design.md`.
   ipcMain.handle(
-    DATASOURCES_CHANNELS.upload,
-    (_event, req: DatasourcesUploadRequest) =>
-      handleDatasourcesUpload(req, {
+    DATASOURCES_CHANNELS.pickFilesToUpload,
+    // The request is `Record<string, never>` — no renderer-supplied fields.
+    // We don't bind `event` or `req` so the lint "no-unused-vars" rule
+    // doesn't flag them; `ipcMain.handle` doesn't require declared params.
+    async () =>
+      handlePickFilesToUpload({
         showOpenDialog: async () => {
-          // Single-select: the handler consumes `filePaths[0]` and would
-          // silently drop any further selections. Multi-file upload is
-          // deferred to a follow-up change.
           const result = targetWindow
             ? await dialog.showOpenDialog(targetWindow, {
-                properties: ["openFile"],
+                properties: ["openFile", "multiSelections"],
               })
             : await dialog.showOpenDialog({
-                properties: ["openFile"],
+                properties: ["openFile", "multiSelections"],
               });
           return { canceled: result.canceled, filePaths: result.filePaths };
         },
-        syncClient: getSyncClient(),
       }),
   );
 
@@ -142,6 +140,16 @@ export function registerIpcHandlers(
   ipcMain.handle(
     FILES_CHANNELS.download,
     (_event, req: FilesDownloadRequest) => handleFilesDownload(req),
+  );
+  // Files upload — renderer-supplied `{ sourcePath, targetPath,
+  // conflictPolicy }`. Thin proxy over `syncClient.enqueueUpload`
+  // (see `files/upload.ts`); progress events continue to reach the
+  // renderer through the sync event-bridge's translation into
+  // `DATASOURCES_CHANNELS.uploadProgress`, keyed by the returned
+  // `jobId`.
+  ipcMain.handle(
+    FILES_CHANNELS.upload,
+    (_event, req: FilesUploadRequest) => handleFilesUpload(req),
   );
 
   // Sync IPC surface — proxied to the out-of-process fs-sync-service via

@@ -584,9 +584,10 @@ export function rename(req: FilesRenameRequest): FilesRenameResponse {
 export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
   const tree = trees[req.datasourceId];
   const results: Array<
-    | { path: string; ok: true }
+    | { path: string; handle: string; ok: true }
     | {
         path: string;
+        handle: string;
         ok: false;
         error: { tag: "other"; message: string };
       }

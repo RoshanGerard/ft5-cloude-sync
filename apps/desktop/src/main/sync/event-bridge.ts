@@ -30,12 +30,21 @@
 //      hook and a `service-reconnected` event after the new handshake
 //      completes.
 //
-//   5. Upload-progress translation (task 7.8): `job-progress` events for
-//      `kind='upload'` jobs are translated to `DatasourcesUploadProgressEvent`
-//      and emitted on `DATASOURCES_CHANNELS.uploadProgress`. The bridge tracks
-//      `jobId → kind` via `job-enqueued` events and seeds the map from the
-//      state-seed jobs. Entries are evicted on terminal events to prevent
-//      unbounded growth. Mirror-job progress is NOT emitted on this channel.
+//   5. Upload-progress translation (task 7.8 + Bug 1 fix): `job-progress`
+//      events for `kind='upload'` jobs are translated to
+//      `DatasourcesUploadProgressEvent` (status `uploading`) and emitted on
+//      `DATASOURCES_CHANNELS.uploadProgress`. Terminal engine events for
+//      upload jobs are also translated: `job-completed` → `status:'completed'`,
+//      `job-failed` and `job-cancelled` → `status:'failed'` (with an `error`
+//      string when one is available). Without these terminal translations the
+//      renderer toaster (`createUploadJobToaster`) never sees a flip-over
+//      event and toasts hang at "Uploading 100%" forever.
+//      The bridge tracks `jobId → kind` via `job-enqueued` events and seeds
+//      the map from the state-seed jobs. Entries are evicted on terminal
+//      events to prevent unbounded growth — the eviction runs AFTER the
+//      terminal translation so `jobKinds.get(jobId) === 'upload'` is still
+//      valid at translation time. Mirror/sync-job progress and terminal
+//      events are NOT emitted on this channel.
 //
 // Singleton guard: `createSyncEventBridge` registers ONE bridge per supervisor
 // lifetime. A second call throws to catch double-init bugs — same pattern as
@@ -241,6 +250,59 @@ export function _createBridge(
               );
             }
           }
+        }
+      }
+
+      // Bug 1 fix: terminal-event translation for upload jobs.
+      // The renderer toaster (`createUploadJobToaster`) waits on a terminal
+      // `DatasourcesUploadProgressEvent` to flip the toast off "Uploading
+      // X%". The engine emits `job-completed`/`job-failed`/`job-cancelled`
+      // but does NOT emit a final `job-progress` event, so without this
+      // translation the toast hangs forever.
+      //
+      // Byte counts on terminal events: emitted as 0/0. The
+      // `JobCompletedPayload` does not carry byte counts, and the toaster
+      // only consumes byte counts on the `uploading` branch — terminal
+      // branches read `status` and `error`. Reporting 0/0 is honest about
+      // "we don't know" rather than smuggling stale per-job state.
+      //
+      // Cancellation: mapped to `status: 'failed'` with an explicit
+      // "upload was cancelled" error message. The contract only allows
+      // `uploading | completed | failed`, and surfacing a Retry-able
+      // failed toast is preferable to a silently-stuck loading toast.
+      //
+      // MUST run BEFORE the eviction block below — eviction deletes the
+      // jobKinds entry and we need `jobKinds.get(jobId) === 'upload'` to
+      // still resolve here.
+      if (
+        (name === "job-completed" || name === "job-failed" || name === "job-cancelled") &&
+        payload
+      ) {
+        const jobId = payload["jobId"] as string | undefined;
+        if (jobId && jobKinds.get(jobId) === "upload") {
+          let status: DatasourcesUploadProgressEvent["status"];
+          let errorMessage: string | undefined;
+          if (name === "job-completed") {
+            status = "completed";
+          } else if (name === "job-failed") {
+            status = "failed";
+            errorMessage =
+              (payload["errorMessage"] as string | undefined) ??
+              (payload["error"] as string | undefined) ??
+              (payload["message"] as string | undefined);
+          } else {
+            // job-cancelled
+            status = "failed";
+            errorMessage = "upload was cancelled";
+          }
+          const terminalEvent: DatasourcesUploadProgressEvent = {
+            transactionId: jobId,
+            bytesUploaded: 0,
+            bytesTotal: 0,
+            status,
+            ...(errorMessage ? { error: errorMessage } : {}),
+          };
+          broadcastUploadProgress(terminalEvent);
         }
       }
 

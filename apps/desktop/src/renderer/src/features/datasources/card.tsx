@@ -27,6 +27,11 @@
 //     guardrail caps feature code at rounded-md. The syncing dot therefore
 //     renders as an SVG <circle> rather than an equivalent radius class on a
 //     <span>.
+//
+// Post-Section-9 cleanup: the `STUB_CONFLICT_RESOLVER` placeholder previously
+// passed to <UploadDialog> is replaced with the real
+// `useConflictResolutionDialog()` hook + `<ConflictResolutionDialog>` from
+// the file-explorer feature. Real conflicts now drive the actual dialog.
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -57,6 +62,12 @@ import {
   useDatasourceUploadProgress,
   useConsentSession,
 } from "./store";
+import { UploadDialog } from "@/features/file-explorer/upload-dialog";
+import { createUploadJobToaster } from "@/features/file-explorer/upload-job-toast";
+import {
+  ConflictResolutionDialog,
+  useConflictResolutionDialog,
+} from "@/features/file-explorer/conflict-resolution-dialog";
 
 export interface DatasourceCardProps {
   summary: DatasourceSummary;
@@ -119,9 +130,28 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
     void actions.action({ datasourceId: summary.id, action: next });
   }, [actions, summary.id, summary.status]);
 
+  // Task 6.3 rewire — instead of calling the retired `datasources.upload`
+  // IPC (which opened a native picker and hard-coded `targetPath = "/" +
+  // basename`), the quick-action now opens the in-app Upload dialog with
+  // the destination defaulted to the datasource root. The user picks both
+  // the files AND the destination folder inside the dialog.
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const onUpload = useCallback(() => {
-    void actions.upload({ datasourceId: summary.id });
-  }, [actions, summary.id]);
+    setUploadDialogOpen(true);
+  }, []);
+
+  // Task 9.2 — production Sonner-backed per-job toaster, instantiated
+  // once per card mount and shared with the upload dialog so the dashboard
+  // upload entry point gets the same per-job progress UX as the in-explorer
+  // drop-zone path.
+  const toaster = useMemo(() => createUploadJobToaster(), []);
+
+  // Task 7 wiring (post-Section-9 cleanup) — production shadcn-dialog
+  // conflict resolver, instantiated once per card mount. Replaces the
+  // earlier `STUB_CONFLICT_RESOLVER` placeholder. Real conflicts now drive
+  // <ConflictResolutionDialog> rendered below.
+  const { resolver: conflictResolver, dialogProps: conflictDialogProps } =
+    useConflictResolutionDialog();
 
   const onRemove = useCallback(() => {
     void actions.remove({ datasourceId: summary.id });
@@ -214,6 +244,29 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
           {summary.errorReason}
         </p>
       ) : null}
+      {/* Upload dialog — portalled by shadcn <Dialog>, so visual placement
+          inside <Card> is immaterial; keeping it here keeps the surface
+          co-located with the quick-action handler that opens it. The
+          dialog defaults its destination to `/` (root) per spec when
+          opened from the dashboard card; the toolbar Upload button
+          (Task 6.4) opens the same component with the file-explorer's
+          currentPath instead. Section 9 wired the production toaster;
+          Section 7's conflict-resolver dialog is wired here too — both
+          ports are now production-grade. */}
+      <UploadDialog
+        open={uploadDialogOpen}
+        onOpenChange={setUploadDialogOpen}
+        datasourceId={summary.id}
+        datasourceName={summary.displayName}
+        initialDestination="/"
+        conflictResolver={conflictResolver}
+        toaster={toaster}
+      />
+      {/* Conflict-resolution dialog (Task 7) — Radix portal, so visual
+          placement is immaterial. The hook above owns its open/close
+          state and is fed by the same orchestrator the UploadDialog
+          uses. */}
+      <ConflictResolutionDialog {...conflictDialogProps} />
     </Card>
   );
 }

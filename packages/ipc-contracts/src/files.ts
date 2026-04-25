@@ -4,6 +4,8 @@
 // `.error.tag` for auth / network / rate-limit recovery UX — see
 // openspec/changes/wire-file-explorer-to-service/design.md Decision 1.
 
+import type { ConflictPolicy } from "./sync-service/commands.js";
+
 export type FilesErrorTag =
   | "auth-revoked"
   | "disconnected"
@@ -167,6 +169,29 @@ export interface FilesDownloadResponse {
   savedPath: string;
 }
 
+// `files:upload` is the renderer-facing upload command introduced by
+// `add-file-explorer-drag-drop-upload`. The main-process handler is a
+// thin proxy over `syncClient.enqueueUpload` (→ sync-service's
+// `sync:enqueue-upload`). The `datasources:upload` surface it replaces has
+// been retired; the `datasources:upload:progress` channel stays as the
+// transport for per-job progress events keyed by the returned `jobId`.
+//
+// `sourcePath` is an absolute OS path (the renderer receives it either
+// from the OS drop payload or via `datasources:pick-files-to-upload`).
+// `targetPath` is an absolute datasource path, e.g. `/projects/2026/a.pdf`.
+// `ConflictPolicy` is reused from the sync-service command contract so a
+// single canonical union governs every upload surface.
+export interface FilesUploadRequest {
+  datasourceId: string;
+  sourcePath: string;
+  targetPath: string;
+  conflictPolicy: ConflictPolicy;
+}
+export interface FilesUploadValue {
+  jobId: string;
+}
+export type FilesUploadResponse = FilesEnvelope<FilesUploadValue>;
+
 export const FILES_CHANNELS = {
   list: "files:list",
   stat: "files:stat",
@@ -174,4 +199,5 @@ export const FILES_CHANNELS = {
   rename: "files:rename",
   remove: "files:remove",
   download: "files:download",
+  upload: "files:upload",
 } as const;

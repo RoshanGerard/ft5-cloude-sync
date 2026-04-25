@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
@@ -148,5 +148,89 @@ describe("Toolbar — View menu", () => {
     const items = await screen.findAllByRole("menuitemradio");
     const tilesIdx = EXPECTED_ITEMS.findIndex((o) => o.value === "tiles");
     expect(items[tilesIdx]!.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+// Task 6.5 — Upload toolbar button is part of the toolbar-controls list.
+// Spec "Toolbar controls are all keyboard reachable and accessibly named"
+// names Upload, Delete, Sort, Search, View, Details; tasks.md §6.4 pins
+// Upload as the FIRST control. Disabled-state behaviour is asserted
+// separately so the default path stays minimal.
+describe("Toolbar — Upload button (task 6.4 / 6.5)", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders an Upload control with a non-empty accessible name", () => {
+    const store = makeStore();
+    render(<Toolbar store={store} onUploadClick={() => {}} />);
+    const upload = screen.getByTestId("file-explorer-upload-trigger");
+    const name =
+      upload.getAttribute("aria-label") ?? upload.textContent ?? "";
+    expect(name.toLowerCase()).toMatch(/upload/);
+  });
+
+  it("is the FIRST button inside the toolbar (leading position per tasks.md §6.4)", () => {
+    const store = makeStore();
+    render(<Toolbar store={store} onUploadClick={() => {}} />);
+    const toolbar = screen.getByRole("toolbar", { name: /explorer toolbar/i });
+    const firstButton = toolbar.querySelector("button");
+    expect(firstButton?.getAttribute("data-testid")).toBe(
+      "file-explorer-upload-trigger",
+    );
+  });
+
+  it("toolbar exposes the full control set (Upload, Delete, Search, View, Details)", () => {
+    // Sort is called out in the spec but lives behind a later-phase flag
+    // (see `toolbar.tsx`'s "Sort control is a later phase" comment), so
+    // this assertion checks the shipping surface only.
+    const store = makeStore();
+    render(<Toolbar store={store} onUploadClick={() => {}} />);
+    expect(
+      screen.getByTestId("file-explorer-upload-trigger"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("file-explorer-delete-trigger"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("file-explorer-search-trigger"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("file-explorer-view-trigger"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("file-explorer-details-toggle"),
+    ).toBeInTheDocument();
+  });
+
+  it("activates onUploadClick when enabled", () => {
+    const store = makeStore();
+    const onUploadClick = vi.fn();
+    render(<Toolbar store={store} onUploadClick={onUploadClick} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("file-explorer-upload-trigger"));
+    });
+    expect(onUploadClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("with `uploadBlockedReason` set: renders aria-disabled=true, exposes the reason via title, and swallows clicks", () => {
+    const store = makeStore();
+    const onUploadClick = vi.fn();
+    render(
+      <Toolbar
+        store={store}
+        onUploadClick={onUploadClick}
+        uploadBlockedReason="This datasource is disconnected"
+      />,
+    );
+    const upload = screen.getByTestId("file-explorer-upload-trigger");
+    // Per spec line 73: aria-disabled, NOT the HTML `disabled` attribute.
+    expect(upload.getAttribute("aria-disabled")).toBe("true");
+    expect(upload.hasAttribute("disabled")).toBe(false);
+    expect(upload.getAttribute("title")).toBe("This datasource is disconnected");
+    act(() => {
+      fireEvent.click(upload);
+    });
+    expect(onUploadClick).not.toHaveBeenCalled();
   });
 });
