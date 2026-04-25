@@ -36,14 +36,14 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 ## 6. New token exchange persists scope (covers "New token exchange persists scope")
 
-- [ ] 6.1 Write a failing test: invoke `doAuthenticateImpl()` to get the OAuth intent, call `intent.completeWith("test-code")` with the injected fetch returning `200 { access_token: "...", refresh_token: "...", scope: "https://www.googleapis.com/auth/drive openid email", expires_in: 3599 }`. Assert the resulting `AuthResult.meta.scope === "https://www.googleapis.com/auth/drive openid email"` and `this.creds.scope` matches
-- [ ] 6.2 Modify `parseTokenResponse` to read `parsed.scope` (string) and copy it onto `result.meta.scope` and `this.creds.scope`
-- [ ] 6.3 Confirm 6.1 passes; confirm the existing token-exchange tests still pass (the new field is additive)
+- [x] 6.1 Write a failing test: invoke `doAuthenticateImpl()` to get the OAuth intent, call `intent.completeWith("test-code")` with the injected fetch returning `200 { access_token: "...", refresh_token: "...", scope: "https://www.googleapis.com/auth/drive openid email", expires_in: 3599 }`. Assert the resulting `AuthResult.meta.scope === "https://www.googleapis.com/auth/drive openid email"` and `this.creds.scope` matches
+- [x] 6.2 Modify `parseTokenResponse` to read `parsed.scope` (string) and copy it onto `result.meta.scope` and `this.creds.scope`
+- [x] 6.3 Confirm 6.1 passes; confirm the existing token-exchange tests still pass (the new field is additive)
 
 ## 7. Refresh persists scope (covers "Token refresh persists scope")
 
-- [ ] 7.1 Write a failing test: with a credential carrying `refreshToken: "rt"`, call `refreshTokenImpl()` with injected fetch returning `200 { access_token: "...", scope: "https://www.googleapis.com/auth/drive", expires_in: 3599 }`. Assert the returned `AuthResult.meta.scope === "https://www.googleapis.com/auth/drive"`
-- [ ] 7.2 No new code needed if 6.2 was implemented at the right layer (`parseTokenResponse` is shared by exchange and refresh). Confirm by running the test; if it fails, refactor so both paths flow through the same scope-capture logic
+- [x] 7.1 Write a failing test: with a credential carrying `refreshToken: "rt"`, call `refreshTokenImpl()` with injected fetch returning `200 { access_token: "...", scope: "https://www.googleapis.com/auth/drive", expires_in: 3599 }`. Assert the returned `AuthResult.meta.scope === "https://www.googleapis.com/auth/drive"`
+- [x] 7.2 No new code needed if 6.2 was implemented at the right layer (`parseTokenResponse` is shared by exchange and refresh). Confirm by running the test; if it fails, refactor so both paths flow through the same scope-capture logic
 
 ## 8. Legacy backfill via tokeninfo (covers "Legacy credential backfilled" + "tokeninfo invalid_token" + "tokeninfo network error")
 
