@@ -2003,4 +2003,30 @@ describe("GoogleDriveClient — scope drift detection", () => {
     expect(aboutSpy).not.toHaveBeenCalled();
     expect(fakeFetch).not.toHaveBeenCalled();
   });
+
+  it("status() with scope-insufficient credentials emits a single status-changed event carrying error=auth-revoked, and does NOT emit authentication-failed", async () => {
+    const fakeFetch = vi.fn();
+    const aboutSpy = vi.fn();
+    const { client } = makeFakeDrive({ about: aboutSpy });
+    const h = makeHarness({
+      drive: client,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file"),
+    });
+    // Snapshot event count after construction, before calling status().
+    const eventsBefore = h.events.length;
+    await expect(h.client.status()).rejects.toBeInstanceOf(DatasourceError);
+    const eventsAfter = h.events.slice(eventsBefore);
+    // Positive assertion: exactly one status-changed event carrying error=auth-revoked.
+    const statusChangedEvents = eventsAfter.filter((e) => e.event === "status-changed");
+    expect(statusChangedEvents).toHaveLength(1);
+    const payload = statusChangedEvents[0]!.payload as { status?: string; error?: string };
+    expect(payload.status).toBe("error");
+    expect(payload.error).toBe("auth-revoked");
+    // Negative assertion: no authentication-failed event on this path.
+    const authFailedEvents = eventsAfter.filter((e) => e.event === "authentication-failed");
+    expect(authFailedEvents).toHaveLength(0);
+    // about.get must NOT be called when scope check fails first.
+    expect(aboutSpy).not.toHaveBeenCalled();
+  });
 });
