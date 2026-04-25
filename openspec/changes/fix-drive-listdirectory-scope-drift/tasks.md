@@ -9,15 +9,15 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 ## 2. Test scaffolding (RED)
 
-- [ ] 2.1 In `packages/fs-datasource-engine/src/strategies/googledrive-client.test.ts`, add a new `describe("scope drift detection")` block; verify it imports an `injectFetch` test helper that asserts the URL the strategy fetches against — needed for both `tokeninfo` and the `about.get` skip-check assertions
-- [ ] 2.2 Add a fixture builder `mkCredsWithScope(scope?: string)` that returns a `StoredCredentials` shape with `meta.clientId/secret/redirectUri` plus an optional `meta.scope`; reuse the existing fake `CredentialStore` if one exists, otherwise add a thin in-memory implementation in the test file with a spy on `update`
+- [x] 2.1 In `packages/fs-datasource-engine/src/strategies/googledrive-client.test.ts`, add a new `describe("scope drift detection")` block; verify it imports an `injectFetch` test helper that asserts the URL the strategy fetches against — needed for both `tokeninfo` and the `about.get` skip-check assertions
+- [x] 2.2 Add a fixture builder `mkCredsWithScope(scope?: string)` that returns a `StoredCredentials` shape with `meta.clientId/secret/redirectUri` plus an optional `meta.scope`; reuse the existing fake `CredentialStore` if one exists, otherwise add a thin in-memory implementation in the test file with a spy on `update`
 
 ## 3. Sufficient-scope happy path (covers "Sufficient scope passes the check" + "embedded in multi-scope grant")
 
-- [ ] 3.1 Write a failing test: with `meta.scope = "https://www.googleapis.com/auth/drive"`, calling `status()` returns `"connected"` and the injected fetch is NOT called for the tokeninfo URL (only `about.get` via the duck-typed factory)
-- [ ] 3.2 Write a failing test: with `meta.scope = "openid email https://www.googleapis.com/auth/drive profile"`, `status()` returns `"connected"`
-- [ ] 3.3 Implement the helper `isScopeSufficient(scope: string): boolean` — `scope.split(/\s+/).includes("https://www.googleapis.com/auth/drive")` — and wire `doStatusImpl` / `doTestConnectionImpl` to call it BEFORE `about.get` when `this.creds.scope` is set
-- [ ] 3.4 Confirm tests in 3.1 and 3.2 pass; confirm pre-existing happy-path tests for status/testConnection still pass
+- [x] 3.1 Write a failing test: with `meta.scope = "https://www.googleapis.com/auth/drive"`, calling `status()` returns `"connected"` and the injected fetch is NOT called for the tokeninfo URL (only `about.get` via the duck-typed factory)
+- [x] 3.2 Write a failing test: with `meta.scope = "openid email https://www.googleapis.com/auth/drive profile"`, `status()` returns `"connected"`
+- [x] 3.3 Implement the helper `isScopeSufficient(scope: string): boolean` — `scope.split(/\s+/).includes("https://www.googleapis.com/auth/drive")` — and wire `doStatusImpl` / `doTestConnectionImpl` to call it BEFORE `about.get` when `this.creds.scope` is set
+- [x] 3.4 Confirm tests in 3.1 and 3.2 pass; confirm pre-existing happy-path tests for status/testConnection still pass
 
 ## 4. Insufficient-scope rejection (covers "drive.file alone", "drive.readonly", "combined narrow")
 
@@ -55,9 +55,9 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 ## 9. Construction reads `meta.scope` into `creds`
 
-- [ ] 9.1 Write a failing test: build a `StoredCredentials` with `meta.scope = "https://www.googleapis.com/auth/drive"`, call `createGoogleDriveClient(...)`, then immediately call `status()`. Assert tokeninfo is NOT fetched (the constructor must propagate `meta.scope` into `this.creds.scope`)
-- [ ] 9.2 Update `readCredsFromStored` to parse `meta.scope` (when string) onto the returned `GoogleDriveCredsMeta` shape; extend the `GoogleDriveCredsMeta` interface with `scope?: string`
-- [ ] 9.3 Confirm 9.1 passes
+- [x] 9.1 Write a failing test: build a `StoredCredentials` with `meta.scope = "https://www.googleapis.com/auth/drive"`, call `createGoogleDriveClient(...)`, then immediately call `status()`. Assert tokeninfo is NOT fetched (the constructor must propagate `meta.scope` into `this.creds.scope`)
+- [x] 9.2 Update `readCredsFromStored` to parse `meta.scope` (when string) onto the returned `GoogleDriveCredsMeta` shape; extend the `GoogleDriveCredsMeta` interface with `scope?: string`
+- [x] 9.3 Confirm 9.1 passes
 
 ## 10. Contract test compatibility
 
