@@ -31,8 +31,8 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 
 > NOTE: original spec/tasks said `authentication-failed`. During Work Unit C pre-flight we discovered the engine's `BaseDatasourceClient.status()` catch path emits `status-changed`, not `authentication-failed` (the latter is reserved for `authenticate()` and refresh-token failures). The structured `raw.kind === "scope-insufficient"` discriminator is on the THROWN error and verified by Work Unit B; the bus event surfaces only the tag. Spec + design updated accordingly. See design.md Decision 5 "Bus event vs thrown error" note.
 
-- [ ] 5.1 Write a test: subscribe to the strategy's bus, call `status()` with insufficient scope (e.g. `meta.scope = "https://www.googleapis.com/auth/drive.file"`), assert: (a) exactly one `status-changed` event is observed whose payload is `{ status: "error", error: "auth-revoked" }`; (b) NO `authentication-failed` event is emitted on this path
-- [ ] 5.2 No new production code needed — the base client's existing emission path covers this. Confirm by running the test green
+- [x] 5.1 Write a test: subscribe to the strategy's bus, call `status()` with insufficient scope (e.g. `meta.scope = "https://www.googleapis.com/auth/drive.file"`), assert: (a) exactly one `status-changed` event is observed whose payload is `{ status: "error", error: "auth-revoked" }`; (b) NO `authentication-failed` event is emitted on this path
+- [x] 5.2 No new production code needed — the base client's existing emission path covers this. Confirm by running the test green
 
 ## 6. New token exchange persists scope (covers "New token exchange persists scope")
 
