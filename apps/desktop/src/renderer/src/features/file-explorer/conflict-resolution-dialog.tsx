@@ -45,7 +45,7 @@ import {
   type ConflictPrompt,
 } from "./resolve-conflicts.js";
 import type { ConflictResolver } from "./use-upload-orchestrator.js";
-import { formatDate, formatSize } from "./view-modes/details-format.js";
+import { formatDate, formatSize } from "./view-modes/details-format";
 
 // ---------------------------------------------------------------------------
 // Props
