@@ -23,6 +23,7 @@
 //   - openspec/changes/wire-fs-sync-service/tasks.md 9.1-9.5.
 
 import type {
+  DatasourceErrorTag,
   DatasourceStatus,
   DatasourceSummary,
 } from "@ft5/ipc-contracts";
@@ -39,6 +40,7 @@ interface DatasourceRow {
   last_sync_at: number | null;
   status: DatasourceStatus;
   error_reason: string | null;
+  error_kind: string | null;
   paused: number;
   created_at: number;
   updated_at: number;
@@ -57,6 +59,7 @@ function rowToSummary(row: DatasourceRow): DatasourceSummary {
     status: effectiveStatus,
     lastSyncAt: row.last_sync_at,
     itemCount: row.item_count ?? 0,
+    errorKind: (row.error_kind as DatasourceErrorTag | null) ?? null,
   };
   if (row.error_reason !== null && row.error_reason !== "") {
     summary.errorReason = row.error_reason;
@@ -79,10 +82,10 @@ export class DatasourceRegistry {
     this.db = db;
 
     this.listStmt = db.prepare(
-      "SELECT id, provider_id, display_name, item_count, last_sync_at, status, error_reason, paused, created_at, updated_at FROM datasources ORDER BY created_at ASC, id ASC",
+      "SELECT id, provider_id, display_name, item_count, last_sync_at, status, error_reason, error_kind, paused, created_at, updated_at FROM datasources ORDER BY created_at ASC, id ASC",
     );
     this.insertStmt = db.prepare(
-      "INSERT INTO datasources (id, provider_id, display_name, item_count, last_sync_at, status, error_reason, paused, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+      "INSERT INTO datasources (id, provider_id, display_name, item_count, last_sync_at, status, error_reason, error_kind, paused, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
     );
     this.removeRowStmt = db.prepare(
       "DELETE FROM datasources WHERE id = ?",
@@ -91,7 +94,7 @@ export class DatasourceRegistry {
       "UPDATE datasources SET paused = ?, updated_at = ? WHERE id = ?",
     );
     this.setStatusStmt = db.prepare(
-      "UPDATE datasources SET status = ?, error_reason = ?, updated_at = ? WHERE id = ?",
+      "UPDATE datasources SET status = ?, error_reason = ?, error_kind = ?, updated_at = ? WHERE id = ?",
     );
     this.touchLastSyncStmt = db.prepare(
       "UPDATE datasources SET last_sync_at = ?, updated_at = ? WHERE id = ?",
@@ -129,6 +132,7 @@ export class DatasourceRegistry {
         summary.lastSyncAt,
         summary.status,
         summary.errorReason ?? null,
+        summary.errorKind ?? null,
         now,
         now,
       );
@@ -155,17 +159,21 @@ export class DatasourceRegistry {
   }
 
   /**
-   * Update the status column and error reason. Pass `null` (or omit) to
-   * clear `error_reason`.
+   * Update the status, error reason, and error kind columns. Pass `null`
+   * (or omit) to clear `error_reason` / `error_kind`. Passing a non-null
+   * `errorKind` without `errorReason` is valid for errors where the tag
+   * alone is sufficient context.
    */
   setStatus(
     id: string,
     status: DatasourceStatus,
     errorReason?: string | null,
+    errorKind?: DatasourceErrorTag | null,
   ): void {
     this.setStatusStmt.run(
       status,
       errorReason ?? null,
+      errorKind ?? null,
       Date.now(),
       id,
     );

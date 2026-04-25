@@ -28,7 +28,7 @@
 //     renders as an SVG <circle> rather than an equivalent radius class on a
 //     <span>.
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { providers } from "@ft5/ipc-contracts";
 import type {
@@ -55,6 +55,7 @@ import {
   useDatasourceActions,
   useDatasourceJobs,
   useDatasourceUploadProgress,
+  useConsentSession,
 } from "./store";
 
 export interface DatasourceCardProps {
@@ -198,10 +199,77 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
         <UsageBar used={summary.usage.used} quota={summary.usage.quota} />
       ) : null}
 
-      {summary.status === "error" && summary.errorReason ? (
-        <p className="text-destructive text-xs">{summary.errorReason}</p>
+      {summary.status === "error" &&
+        (summary.errorKind === "auth-revoked" ||
+          summary.errorKind === "auth-expired") ? (
+        <AuthErrorBanner
+          providerId={summary.providerId}
+          datasourceId={summary.id}
+        />
+      ) : summary.status === "error" && summary.errorReason ? (
+        <p
+          data-testid="error-reason-text"
+          className="text-destructive text-xs"
+        >
+          {summary.errorReason}
+        </p>
       ) : null}
     </Card>
+  );
+}
+
+// Auth-error banner shown when `errorKind` is an auth-class tag.
+// Provides a one-click Reconnect that starts a scoped consent session for
+// this specific datasource (re-auth path, not add-new path).
+function AuthErrorBanner({
+  providerId,
+  datasourceId,
+}: {
+  providerId: string;
+  datasourceId: string;
+}) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const sessionState = useConsentSession(sessionId ?? "__none__");
+
+  const handleReconnect = useCallback(async () => {
+    const res = await window.api.datasources.startConsent({
+      providerId,
+      datasourceId,
+    });
+    setSessionId(res.sessionId);
+  }, [providerId, datasourceId]);
+
+  const isWaiting =
+    sessionId !== null && sessionState.status === "pending";
+  const isFailed =
+    sessionId !== null &&
+    (sessionState.status === "cancelled" ||
+      sessionState.status === "failed" ||
+      sessionState.status === "timeout");
+
+  return (
+    <div
+      data-testid="auth-error-banner"
+      aria-label="Authorization required"
+      className="flex items-center justify-between gap-2"
+    >
+      <p className="text-destructive text-xs">
+        {isWaiting
+          ? "Waiting for browser consent…"
+          : isFailed
+            ? "Reconnect failed — please try again."
+            : "Authentication expired — please reconnect."}
+      </p>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={isWaiting}
+        onClick={() => { void handleReconnect(); }}
+      >
+        {isWaiting ? "Connecting…" : "Reconnect"}
+      </Button>
+    </div>
   );
 }
 

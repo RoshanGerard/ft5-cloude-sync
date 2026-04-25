@@ -30,6 +30,8 @@ type ExposedApi = {
     remove: (req: unknown) => Promise<unknown>;
     action: (req: unknown) => Promise<unknown>;
     upload: (req: unknown) => Promise<unknown>;
+    startConsent: (req: unknown) => Promise<unknown>;
+    cancelConsent: (req: unknown) => Promise<unknown>;
     onUploadProgress: (
       transactionId: string,
       callback: (event: DatasourcesUploadProgressEvent) => void,
@@ -102,7 +104,7 @@ describe("preload exposed api", () => {
   });
 
   describe("datasources surface", () => {
-    it("exposes list/add/remove/action/upload as functions and onUploadProgress as a function", async () => {
+    it("exposes list/add/remove/action/upload/startConsent/cancelConsent as functions and onUploadProgress/onEvent as functions", async () => {
       const exposed = await loadExposed();
 
       expect(typeof exposed.datasources.list).toBe("function");
@@ -110,6 +112,8 @@ describe("preload exposed api", () => {
       expect(typeof exposed.datasources.remove).toBe("function");
       expect(typeof exposed.datasources.action).toBe("function");
       expect(typeof exposed.datasources.upload).toBe("function");
+      expect(typeof exposed.datasources.startConsent).toBe("function");
+      expect(typeof exposed.datasources.cancelConsent).toBe("function");
       expect(typeof exposed.datasources.onUploadProgress).toBe("function");
       expect(typeof exposed.datasources.onEvent).toBe("function");
     });
@@ -190,6 +194,39 @@ describe("preload exposed api", () => {
         req,
       ]);
       expect(result).toBe(response);
+    });
+
+    it("startConsent(req) delegates to ipcRenderer.invoke(DATASOURCES_CHANNELS.startConsent, req) and returns the sessionId", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { sessionId: "sess-abc" };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req = { providerId: "google-drive" };
+      const result = await exposed.datasources.startConsent(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        DATASOURCES_CHANNELS.startConsent,
+        req,
+      ]);
+      expect(result).toBe(response);
+    });
+
+    it("cancelConsent(req) delegates to ipcRenderer.invoke(DATASOURCES_CHANNELS.cancelConsent, req) and returns void", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      invokeMock.mockResolvedValue(undefined);
+
+      const exposed = await loadExposed();
+      const req = { sessionId: "sess-abc" };
+      const result = await exposed.datasources.cancelConsent(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        DATASOURCES_CHANNELS.cancelConsent,
+        req,
+      ]);
+      expect(result).toBeUndefined();
     });
 
     it("onUploadProgress registers a listener on the progress channel and filters by transactionId", async () => {

@@ -22,3 +22,7 @@ playwright-report/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Local environment overrides (contain secrets — never commit)
+.env.local
+*.env.local

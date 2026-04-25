@@ -403,4 +403,222 @@ describe("OAuthConsentBroker", () => {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Task 4.8 — Construction-time validation: missing credentials throw at start()
+  // ---------------------------------------------------------------------------
+
+  it("start() throws a clear error when clientId is empty", async () => {
+    const brokerNoId = createOAuthConsentBroker({
+      openExternal: vi.fn(async (_url: string) => {}),
+      clientId: "",
+      clientSecret: "some-secret",
+      createClient: makeFakeCreateClient(),
+    });
+    await expect(brokerNoId.start({ providerId: "google-drive" })).rejects.toThrow(
+      /client.*id.*configured|FT5_GOOGLE_OAUTH_CLIENT_ID/i,
+    );
+    brokerNoId.dispose();
+  });
+
+  it("start() throws a clear error when clientSecret is empty", async () => {
+    const brokerNoSecret = createOAuthConsentBroker({
+      openExternal: vi.fn(async (_url: string) => {}),
+      clientId: "some-id",
+      clientSecret: "",
+      createClient: makeFakeCreateClient(),
+    });
+    await expect(brokerNoSecret.start({ providerId: "google-drive" })).rejects.toThrow(
+      /client.*secret.*configured|FT5_GOOGLE_OAUTH_CLIENT_SECRET/i,
+    );
+    brokerNoSecret.dispose();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Task 4.4 — Cancel closes listener and emits consent-cancelled
+  // ---------------------------------------------------------------------------
+
+  it("Cancel closes listener and emits consent-cancelled", async () => {
+    const consentListener = vi.fn((_event: ConsentEvent) => {});
+    const broker44 = createOAuthConsentBroker({
+      openExternal,
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      createClient: makeFakeCreateClient(),
+    });
+    broker44.subscribe(consentListener);
+
+    try {
+      // RED: broker.start() throws "Not implemented" until task 4.7.
+      const { sessionId } = await broker44.start({ providerId: "google-drive" });
+
+      const session = broker44._getPendingSessionForTests(sessionId);
+      expect(session).toBeDefined();
+      const { port } = session!;
+
+      // Verify server is listening before cancel.
+      const preCancel = await fetch(
+        "http://127.0.0.1:" + String(port) + "/health-probe",
+        { signal: AbortSignal.timeout(2000) },
+      );
+      expect(preCancel.status).toBeGreaterThanOrEqual(100);
+
+      // ACT: cancel the session.
+      await broker44.cancel({ sessionId });
+
+      // ASSERT 1: subsequent HTTP requests fail (ECONNREFUSED or similar).
+      let connectionFailed = false;
+      try {
+        await fetch(
+          "http://127.0.0.1:" + String(port) + "/callback",
+          { signal: AbortSignal.timeout(1000) },
+        );
+      } catch {
+        connectionFailed = true;
+      }
+      expect(connectionFailed).toBe(true);
+
+      // ASSERT 2: consent-cancelled event emitted with matching sessionId.
+      await vi.waitFor(() => {
+        expect(consentListener).toHaveBeenCalledTimes(1);
+      }, { timeout: 2000 });
+      const emittedEvent = consentListener.mock.calls[0]?.[0] as ConsentEvent;
+      expect(emittedEvent).toMatchObject({ event: "consent-cancelled", sessionId });
+
+      // ASSERT 3: pending session cleared.
+      expect(broker44._getPendingSessionForTests(sessionId)).toBeUndefined();
+
+      // ASSERT 4: second cancel is a no-op — no duplicate event, no thrown error.
+      await expect(broker44.cancel({ sessionId })).resolves.toBeUndefined();
+      await new Promise<void>((r) => setTimeout(r, 50));
+      expect(consentListener).toHaveBeenCalledTimes(1); // still exactly 1
+    } finally {
+      broker44.dispose();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Task 4.5 — Timer fires at 5 minutes
+  // ---------------------------------------------------------------------------
+
+  it("Timer fires at 5 minutes", async () => {
+    vi.useFakeTimers();
+    const consentListener = vi.fn((_event: ConsentEvent) => {});
+    const broker45 = createOAuthConsentBroker({
+      openExternal,
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      createClient: makeFakeCreateClient(),
+    });
+    broker45.subscribe(consentListener);
+
+    try {
+      // RED: broker.start() throws "Not implemented" until task 4.7.
+      const { sessionId } = await broker45.start({ providerId: "google-drive" });
+
+      const session = broker45._getPendingSessionForTests(sessionId);
+      expect(session).toBeDefined();
+      const { port } = session!;
+
+      // ACT: advance the clock by 300001 ms without any callback hit.
+      await vi.advanceTimersByTimeAsync(300_001);
+
+      // ASSERT 1: consent-timeout event emitted.
+      await vi.waitFor(() => {
+        expect(consentListener).toHaveBeenCalledTimes(1);
+      }, { timeout: 2000 });
+      const emittedEvent = consentListener.mock.calls[0]?.[0] as ConsentEvent;
+      expect(emittedEvent).toMatchObject({ event: "consent-timeout", sessionId });
+
+      // ASSERT 2: loopback server is closed — new connection refused.
+      let connectionFailed = false;
+      try {
+        await fetch("http://127.0.0.1:" + String(port) + "/callback");
+      } catch {
+        connectionFailed = true;
+      }
+      expect(connectionFailed).toBe(true);
+
+      // ASSERT 3: pending session cleared.
+      expect(broker45._getPendingSessionForTests(sessionId)).toBeUndefined();
+
+      // ASSERT 4: no further events after the timeout.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(consentListener).toHaveBeenCalledTimes(1);
+    } finally {
+      broker45.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Task 4.6 — Timer is cancelled on successful completion
+  // ---------------------------------------------------------------------------
+
+  it("Timer is cancelled on successful completion", async () => {
+    vi.useFakeTimers();
+    const consentListener = vi.fn((_event: ConsentEvent) => {});
+
+    const fakeAuthResult: AuthResult = {
+      accessToken: "real-access-token",
+      refreshToken: "real-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    };
+    const { createClient } = makeFakeCreateClientWithResult(fakeAuthResult);
+    const addToRegistry = vi.fn((summary: DatasourceSummary) => ({ ...summary }));
+    const mintDatasourceId = vi.fn(() => "ds-test-timer");
+
+    const broker46 = createOAuthConsentBroker({
+      openExternal,
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      createClient,
+      addToRegistry,
+      mintDatasourceId,
+    });
+    broker46.subscribe(consentListener);
+
+    try {
+      // RED: broker.start() throws "Not implemented" until task 4.7.
+      const { sessionId } = await broker46.start({ providerId: "google-drive" });
+
+      const session = broker46._getPendingSessionForTests(sessionId);
+      expect(session).toBeDefined();
+      const { port, state: correctState } = session!;
+
+      // Advance to t=60000 ms — timer has NOT fired yet (fires at 300000).
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      // ACT: complete the callback at t=60000.
+      const callbackUrl =
+        "http://127.0.0.1:" + String(port) +
+        "/callback?code=valid-code&state=" + encodeURIComponent(correctState);
+      let response: Response;
+      try {
+        response = await fetch(callbackUrl);
+      } catch (err) {
+        throw new Error(
+          "Expected HTTP server still listening at " + callbackUrl +
+          " but got: " + String(err),
+        );
+      }
+      expect(response.status).toBe(200);
+
+      // ASSERT 1: exactly one consent-completed event.
+      await vi.waitFor(() => {
+        expect(consentListener).toHaveBeenCalledTimes(1);
+      }, { timeout: 2000 });
+      const emittedEvent = consentListener.mock.calls[0]?.[0] as ConsentEvent;
+      expect(emittedEvent).toMatchObject({ event: "consent-completed", sessionId });
+
+      // ACT: advance well past the 5-minute mark.
+      await vi.advanceTimersByTimeAsync(300_001);
+
+      // ASSERT 2: no consent-timeout event — still exactly 1 event total.
+      expect(consentListener).toHaveBeenCalledTimes(1);
+    } finally {
+      broker46.dispose();
+      vi.useRealTimers();
+    }
+  });
+
 });

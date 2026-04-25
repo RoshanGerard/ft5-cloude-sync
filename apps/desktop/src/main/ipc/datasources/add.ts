@@ -33,6 +33,7 @@ export async function handleDatasourcesAdd(
     status: "connected",
     lastSyncAt: null,
     itemCount: 0,
+    errorKind: null,
   };
 
   const summary: DatasourceSummary = descriptor.capabilities.quota

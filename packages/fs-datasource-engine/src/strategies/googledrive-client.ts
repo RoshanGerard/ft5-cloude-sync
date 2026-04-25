@@ -295,7 +295,6 @@ function readCredsFromStored(
 export function createDefaultDriveFactory(): DriveFactory {
   return (accessToken: string): GoogleDriveClientLike => {
     // Lazy import so the SDK is not required at module-load time for tests.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("googleapis") as {
       google: {
         auth: {

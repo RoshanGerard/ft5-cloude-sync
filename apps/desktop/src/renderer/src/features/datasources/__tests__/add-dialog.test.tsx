@@ -35,6 +35,7 @@ import {
   type Mock,
 } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -70,8 +71,17 @@ let addMock: Mock;
 let removeMock: Mock;
 let actionMock: Mock;
 let uploadMock: Mock;
+let startConsentMock: Mock;
+// Captures the onEvent listener registered by DatasourcesProvider so tests
+// can fire synthetic consent events.
+let onEventCapture: ((event: unknown) => void) | null = null;
 
 function installApiMock() {
+  startConsentMock = vi
+    .fn()
+    .mockResolvedValue({ sessionId: "sess-add-dialog" });
+  onEventCapture = null;
+
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
     datasources: {
@@ -80,7 +90,13 @@ function installApiMock() {
       remove: removeMock,
       action: actionMock,
       upload: uploadMock,
+      startConsent: startConsentMock,
+      cancelConsent: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
+      onEvent: vi.fn().mockImplementation((cb: (e: unknown) => void) => {
+        onEventCapture = cb;
+        return () => { onEventCapture = null; };
+      }),
     },
   };
 }
@@ -215,20 +231,22 @@ describe("AddDatasourceDialog — task 6.1", () => {
     });
   });
 
-  it("submitting the OAuth form (google-drive) calls add() and closes on success", async () => {
+  it("OAuth form (google-drive) calls startConsent, consent-completed triggers refresh and closes the dialog", async () => {
     const returnedSummary = buildSummary({
       id: "ds-gd-1",
       displayName: "My Personal Drive",
       providerId: "google-drive",
     });
-    addMock.mockResolvedValue({ datasource: returnedSummary });
+    // Second list() call (refresh after consent-completed) returns the new ds.
+    listMock
+      .mockResolvedValueOnce({ datasources: [] })
+      .mockResolvedValue({ datasources: [returnedSummary] });
 
     renderDashboard();
     await screen.findByTestId("datasources-empty");
     const trigger = screen.getByTestId("add-datasource-trigger");
     // Focus the trigger before opening so Radix has a meaningful element to
-    // restore focus to on close. `fireEvent.click` does not implicitly focus
-    // under jsdom (unlike a real browser click), so we do it explicitly.
+    // restore focus to on close.
     trigger.focus();
     fireEvent.click(trigger);
 
@@ -243,16 +261,23 @@ describe("AddDatasourceDialog — task 6.1", () => {
     });
     fireEvent.click(connect);
 
+    // startConsent must be called; add() must NOT be called.
     await waitFor(() => {
-      expect(addMock).toHaveBeenCalledTimes(1);
+      expect(startConsentMock).toHaveBeenCalledTimes(1);
     });
-    const call = addMock.mock.calls[0]![0] as {
-      providerId: string;
-      credentials: Record<string, unknown>;
-    };
-    expect(call.providerId).toBe("google-drive");
-    expect(call.credentials).toBeTruthy();
-    expect(Object.keys(call.credentials).length).toBeGreaterThan(0);
+    expect(addMock).not.toHaveBeenCalled();
+    expect(startConsentMock.mock.calls[0]![0]).toMatchObject({
+      providerId: "google-drive",
+    });
+
+    // Fire the consent-completed event through the captured onEvent listener.
+    act(() => {
+      onEventCapture!({
+        event: "consent-completed",
+        sessionId: "sess-add-dialog",
+        datasourceId: returnedSummary.id,
+      });
+    });
 
     // Dialog closes.
     await waitFor(() => {
@@ -264,7 +289,7 @@ describe("AddDatasourceDialog — task 6.1", () => {
       expect(document.activeElement).toBe(trigger);
     });
 
-    // New card appears in the grid.
+    // New card appears after refresh.
     await waitFor(() => {
       expect(screen.getByText(returnedSummary.displayName)).toBeInTheDocument();
     });

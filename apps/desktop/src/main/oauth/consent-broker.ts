@@ -1,24 +1,16 @@
-// OAuthConsentBroker — stub for task 4.1.
-//
-// Minimum surface needed for the failing test to compile.
-// No real implementation — start() throws "Not implemented".
-// The real implementation lands in task 4.7.
-//
-// API surface (satisfies all §4 test scenarios 4.1-4.6):
-//
-//   createOAuthConsentBroker(options) → OAuthConsentBroker
-//
-//   broker.start({providerId, datasourceId?}) → Promise<{sessionId}>
-//   broker.cancel({sessionId})               → Promise<void>
-//   broker.dispose()                         → void
-//   broker.subscribe(handler)                → () => void  (consent events)
-//   broker._getPendingSessionForTests(sid)   → PendingSession | undefined
-//
-// Constructor options use dependency injection so tests can stub
-// openExternal and supply a fake engine factory without touching globals.
+import * as http from "node:http";
+import { randomBytes } from "node:crypto";
+import type { AddressInfo } from "node:net";
 
-import type { StoredCredentials, AuthIntent, ConsentEvent, DatasourceSummary } from "@ft5/ipc-contracts";
-import type { OAuthIntent } from "@ft5/ipc-contracts";
+import type {
+  StoredCredentials,
+  AuthIntent,
+  ConsentEvent,
+  DatasourceSummary,
+  OAuthIntent,
+  ProviderId,
+} from "@ft5/ipc-contracts";
+import { providers } from "@ft5/ipc-contracts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -52,7 +44,7 @@ export interface PendingSession {
   /** The authorizeUrl after the broker appended &state=<state>. */
   authorizeUrl: string;
   /** The http.Server listening on 127.0.0.1:<port>. */
-  server: import("node:http").Server;
+  server: http.Server;
   /** 5-minute timeout handle. */
   timer: ReturnType<typeof setTimeout>;
 }
@@ -110,6 +102,25 @@ export interface OAuthConsentBrokerOptions {
    */
   mintDatasourceId?: () => string;
 
+  /**
+   * Dev-override credentials reader. When present and returns non-null, the
+   * broker short-circuits the browser OAuth flow: no HTTP server is bound,
+   * `openExternal` is never called, and `consent-completed` is emitted
+   * immediately using the returned credentials.
+   *
+   * Production code MUST leave this undefined. Only the main-process bootstrap
+   * wires it when `FT5_DEV_CREDENTIALS=1` is set at runtime.
+   */
+  readDevCredentials?: () => StoredCredentials | null;
+
+  /**
+   * One-shot warning callback. Called by the broker exactly once (per broker
+   * instance) the first time `start()` enters the dev-override path. Tests
+   * supply a vi.fn() spy; production wires a `console.warn` call.
+   *
+   * Optional — callers that do not care about the warning may omit it.
+   */
+  warnOnce?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,12 +128,11 @@ export interface OAuthConsentBrokerOptions {
 // ---------------------------------------------------------------------------
 
 export interface OAuthConsentBroker {
-  /** Start a new OAuth consent session. Throws "Not implemented" until 4.7. */
+  /** Start a new OAuth consent session. */
   start(opts: BrokerStartOptions): Promise<BrokerStartResult>;
 
   /**
    * Cancel an active consent session. Idempotent.
-   * Throws "Not implemented" until 4.7.
    */
   cancel(opts: { sessionId: string }): Promise<void>;
 
@@ -134,11 +144,7 @@ export interface OAuthConsentBroker {
 
   /**
    * Subscribe to consent lifecycle events emitted by the broker.
-   * Mirrors the EventBus subscribe shape from @ft5/fs-datasource-engine:
-   *   subscribe(handler: (e: ConsentEvent) => void): () => void
-   * Returns an unsubscribe function. Handlers registered before task 4.7
-   * lands will receive no events (stub emits nothing), but the surface is
-   * wired so tasks 4.3-4.6 can subscribe without interface changes.
+   * Returns an unsubscribe function.
    */
   subscribe(handler: (event: ConsentEvent) => void): () => void;
 
@@ -150,41 +156,229 @@ export interface OAuthConsentBroker {
 }
 
 // ---------------------------------------------------------------------------
-// Factory (stub — throws "Not implemented")
+// Factory
 // ---------------------------------------------------------------------------
 
-/**
- * Create an OAuthConsentBroker instance.
- *
- * Task 4.1: start() and cancel() always throw "Not implemented".
- * Task 4.2: subscribe() / unsubscribe() surface added (noop stub).
- * Task 4.3: OAuthConsentBrokerOptions extended with addToRegistry and
- *           mintDatasourceId (both optional, for backward-compatibility).
- * Task 4.7: replaces this stub with the real implementation.
- */
 export function createOAuthConsentBroker(
-  _options: OAuthConsentBrokerOptions,
+  options: OAuthConsentBrokerOptions,
 ): OAuthConsentBroker {
-  // The Map is referenced by _getPendingSessionForTests so the real impl
-  // can populate it once task 4.7 lands, without changing the interface.
   const pending = new Map<string, PendingSession>();
-
-  // Consent-event subscribers. The real implementation (task 4.7) populates
-  // this set and calls _emitConsent. The stub keeps the set but never calls
-  // _emitConsent, so no events reach subscribers until 4.7 lands.
   const consentSubscribers = new Set<(event: ConsentEvent) => void>();
+  let hasWarned = false;
+
+  function _emitConsent(event: ConsentEvent): void {
+    for (const handler of consentSubscribers) {
+      try {
+        handler(event);
+      } catch {
+        // Subscriber errors must not abort delivery to other subscribers.
+      }
+    }
+  }
+
+  function cleanup(sessionId: string): void {
+    const session = pending.get(sessionId);
+    if (!session) return;
+    clearTimeout(session.timer);
+    session.server.close();
+    pending.delete(sessionId);
+  }
 
   return {
-    async start(_opts: BrokerStartOptions): Promise<BrokerStartResult> {
-      throw new Error("Not implemented");
+    async start(opts: BrokerStartOptions): Promise<BrokerStartResult> {
+      // Dev override: bypass browser, HTTP binding, and clientId/clientSecret.
+      if (options.readDevCredentials) {
+        const devCreds = options.readDevCredentials();
+        if (devCreds !== null) {
+          if (!hasWarned) {
+            hasWarned = true;
+            options.warnOnce?.();
+          }
+          const sessionId = randomBytes(32).toString("base64url");
+          const datasourceId =
+            opts.datasourceId ??
+            (options.mintDatasourceId?.() ?? randomBytes(16).toString("base64url"));
+          const provider = providers[opts.providerId as keyof typeof providers];
+          const summary: DatasourceSummary = {
+            id: datasourceId,
+            displayName: provider?.displayName ?? opts.providerId,
+            providerId: opts.providerId,
+            status: "connected",
+            lastSyncAt: null,
+            itemCount: 0,
+            errorKind: null,
+          };
+          options.addToRegistry?.(summary);
+          _emitConsent({ event: "consent-completed", sessionId, datasourceId });
+          return { sessionId };
+        }
+      }
+
+      if (!options.clientId) {
+        throw new Error(
+          "OAuth client ID is not configured — set FT5_GOOGLE_OAUTH_CLIENT_ID at build time",
+        );
+      }
+      if (!options.clientSecret) {
+        throw new Error(
+          "OAuth client secret is not configured — set FT5_GOOGLE_OAUTH_CLIENT_SECRET at build time",
+        );
+      }
+
+      const sessionId = randomBytes(32).toString("base64url");
+      const state = randomBytes(32).toString("base64url");
+
+      // Create HTTP server — per-session handler captures sessionId in closure.
+      const server = http.createServer((req, res) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+        if (url.pathname !== "/callback") {
+          // Health probe or other paths — acknowledge and return.
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("Waiting for OAuth consent...");
+          return;
+        }
+
+        const session = pending.get(sessionId);
+        if (!session) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("Session not found");
+          return;
+        }
+
+        const receivedState = url.searchParams.get("state");
+        const code = url.searchParams.get("code") ?? "";
+
+        if (receivedState !== state) {
+          // CSRF state mismatch — possible replay or cross-site attack.
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("State mismatch — consent rejected");
+          cleanup(sessionId);
+          _emitConsent({ event: "consent-failed", sessionId, tag: "auth-revoked" });
+          return;
+        }
+
+        // Valid callback — respond immediately so the browser can display the
+        // success page, then complete the token exchange asynchronously.
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(
+          "<!DOCTYPE html><html><body>" +
+            "<p>You can close this tab and return to the app.</p>" +
+            "</body></html>",
+        );
+
+        Promise.resolve().then(async () => {
+          cleanup(sessionId);
+          try {
+            await session.intent.completeWith(code);
+            const datasourceId =
+              session.datasourceId ??
+              (options.mintDatasourceId?.() ??
+                randomBytes(16).toString("base64url"));
+            const provider =
+              providers[session.providerId as keyof typeof providers];
+            const summary: DatasourceSummary = {
+              id: datasourceId,
+              displayName: provider?.displayName ?? session.providerId,
+              providerId: session.providerId,
+              status: "connected",
+              lastSyncAt: null,
+              itemCount: 0,
+              errorKind: null,
+            };
+            options.addToRegistry?.(summary);
+            _emitConsent({ event: "consent-completed", sessionId, datasourceId });
+          } catch (err) {
+            _emitConsent({
+              event: "consent-failed",
+              sessionId,
+              tag: "provider-error",
+              message: String(err),
+            });
+          }
+        });
+      });
+
+      // Bind to 127.0.0.1:0 — OS picks the port.
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.removeListener("error", reject);
+          resolve();
+        });
+      });
+
+      const port = (server.address() as AddressInfo).port;
+      const redirectUri = `http://127.0.0.1:${port}/callback`;
+
+      // Pre-auth StoredCredentials blob — engine reads OAuth config from meta.
+      const preAuthCredentials: StoredCredentials = {
+        providerId: opts.providerId as ProviderId,
+        authResult: {
+          accessToken: "",
+          meta: {
+            clientId: options.clientId,
+            clientSecret: options.clientSecret,
+            redirectUri,
+          },
+        },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      const client = options.createClient(
+        opts.datasourceId ?? sessionId,
+        preAuthCredentials,
+      );
+      const intent = await client.authenticate();
+
+      if (intent.kind !== "oauth") {
+        server.close();
+        throw new Error(`Expected oauth intent but got: ${intent.kind}`);
+      }
+
+      // Append CSRF state to the authorize URL.
+      const urlWithState = new URL(intent.authorizeUrl);
+      urlWithState.searchParams.set("state", state);
+      const finalAuthorizeUrl = urlWithState.toString();
+
+      // 5-minute consent timeout.
+      const timer = setTimeout(() => {
+        cleanup(sessionId);
+        _emitConsent({ event: "consent-timeout", sessionId });
+      }, 300_000);
+
+      // Store the pending session before opening the browser.
+      pending.set(sessionId, {
+        sessionId,
+        providerId: opts.providerId,
+        ...(opts.datasourceId !== undefined ? { datasourceId: opts.datasourceId } : {}),
+        port,
+        state,
+        intent: intent as OAuthIntent,
+        authorizeUrl: finalAuthorizeUrl,
+        server,
+        timer,
+      });
+
+      await options.openExternal(finalAuthorizeUrl);
+
+      return { sessionId };
     },
 
-    async cancel(_opts: { sessionId: string }): Promise<void> {
-      throw new Error("Not implemented");
+    async cancel(opts: { sessionId: string }): Promise<void> {
+      const session = pending.get(opts.sessionId);
+      if (!session) return; // Idempotent no-op.
+      cleanup(opts.sessionId);
+      _emitConsent({ event: "consent-cancelled", sessionId: opts.sessionId });
     },
 
     dispose(): void {
-      // No-op in stub — no real servers to close.
+      for (const session of pending.values()) {
+        clearTimeout(session.timer);
+        session.server.close();
+      }
+      pending.clear();
       consentSubscribers.clear();
     },
 
@@ -195,9 +389,7 @@ export function createOAuthConsentBroker(
       };
     },
 
-    _getPendingSessionForTests(
-      sessionId: string,
-    ): PendingSession | undefined {
+    _getPendingSessionForTests(sessionId: string): PendingSession | undefined {
       return pending.get(sessionId);
     },
   };

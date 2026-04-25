@@ -30,6 +30,8 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  ConsentEvent,
+  DatasourceErrorTag,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -393,6 +395,62 @@ function jobsReducer(state: JobsState, action: JobsAction): JobsState {
 // surfaces (network banner, toasts) that can subscribe to
 // `window.api.sync.onEvent` independently when they ship.
 
+// ---------------------------------------------------------------------------
+// Consent sessions slice
+//
+// Tracks in-flight OAuth consent sessions initiated via `startConsent`. The
+// provider subscribes to `window.api.datasources.onEvent` and dispatches
+// `ConsentEvent` variants here. `useConsentSession(sessionId)` exposes the
+// per-session state to form components.
+// ---------------------------------------------------------------------------
+
+export type ConsentSessionState =
+  | { status: "pending" }
+  | { status: "completed"; datasourceId: string }
+  | { status: "cancelled" }
+  | { status: "failed"; tag: DatasourceErrorTag; message?: string }
+  | { status: "timeout" };
+
+type ConsentSessionsAction = { type: "consent/event"; event: ConsentEvent };
+
+function consentSessionsReducer(
+  state: Map<string, ConsentSessionState>,
+  action: ConsentSessionsAction,
+): Map<string, ConsentSessionState> {
+  const { event } = action;
+  const next = new Map(state);
+  switch (event.event) {
+    case "consent-started":
+      if (!next.has(event.sessionId)) {
+        next.set(event.sessionId, { status: "pending" });
+      }
+      return next;
+    case "consent-completed":
+      next.set(event.sessionId, {
+        status: "completed",
+        datasourceId: event.datasourceId,
+      });
+      return next;
+    case "consent-cancelled":
+      next.set(event.sessionId, { status: "cancelled" });
+      return next;
+    case "consent-failed": {
+      const sessionState: ConsentSessionState = {
+        status: "failed",
+        tag: event.tag,
+        ...(event.message !== undefined ? { message: event.message } : {}),
+      };
+      next.set(event.sessionId, sessionState);
+      return next;
+    }
+    case "consent-timeout":
+      next.set(event.sessionId, { status: "timeout" });
+      return next;
+    default:
+      return state;
+  }
+}
+
 export interface DatasourceActions {
   refresh: () => Promise<void>;
   add: (req: DatasourcesAddRequest) => Promise<DatasourcesAddResponse>;
@@ -409,6 +467,7 @@ interface DatasourcesContextValue {
   state: DatasourcesState;
   jobs: JobsState;
   actions: DatasourceActions;
+  consentSessions: Map<string, ConsentSessionState>;
 }
 
 const DatasourcesContext = createContext<DatasourcesContextValue | null>(null);
@@ -424,6 +483,13 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
 
   // Decision-13 jobs slice. Driven exclusively by `window.api.sync.onEvent`.
   const [jobs, dispatchJobs] = useReducer(jobsReducer, EMPTY_JOBS_STATE);
+
+  // Consent sessions slice. Driven by `window.api.datasources.onEvent`
+  // ConsentEvent variants.
+  const [consentSessions, dispatchConsent] = useReducer(
+    consentSessionsReducer,
+    new Map<string, ConsentSessionState>(),
+  );
 
   // Mount sentinel: gates every post-await dispatch so we do not call
   // `setState` on an unmounted provider (React 19 strict-mode double-mount
@@ -605,14 +671,41 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
     // here won't cause re-subscription.
   }, [refresh]);
 
+  // Consent-event subscription. Subscribes to the datasources event channel
+  // and dispatches only ConsentEvent variants to the consent sessions reducer.
+  // On consent-completed, also triggers a list refresh so card statuses
+  // reflect the newly-connected datasource without waiting for a manual
+  // refresh. Non-consent events (AnyDatasourceEvent) are silently ignored here
+  // — they are handled by per-card `useDatasourceEvents` subscribers.
+  useEffect(() => {
+    const datasourcesApi = window.api?.datasources;
+    if (!datasourcesApi?.onEvent) return;
+    const unsubscribe = datasourcesApi.onEvent((event) => {
+      if (!mountedRef.current) return;
+      // Consent events carry an `event` discriminator (string starting with
+      // "consent-"). Engine events carry `datasourceType`. Narrowing here
+      // avoids importing a runtime type guard from ipc-contracts.
+      if ("event" in event && (event.event as string).startsWith("consent-")) {
+        const consentEvent = event as ConsentEvent;
+        dispatchConsent({ type: "consent/event", event: consentEvent });
+        // Refresh the datasource list so the reconnected card's status
+        // transitions from "error" to "connected".
+        if (consentEvent.event === "consent-completed") {
+          void refresh();
+        }
+      }
+    });
+    return unsubscribe;
+  }, [refresh]);
+
   const actions = useMemo<DatasourceActions>(
     () => ({ refresh, add, remove, action, upload }),
     [refresh, add, remove, action, upload],
   );
 
   const value = useMemo<DatasourcesContextValue>(
-    () => ({ state, jobs, actions }),
-    [state, jobs, actions],
+    () => ({ state, jobs, actions, consentSessions }),
+    [state, jobs, actions, consentSessions],
   );
 
   return (
@@ -679,6 +772,23 @@ export interface UploadProgressView {
  * `startedAt` field, and `updatedAt` is overwritten on every `job-progress`
  * tick for freshness, so `createdAt` is the only stable per-job ordinal.
  */
+const PENDING_SESSION: ConsentSessionState = { status: "pending" };
+
+/**
+ * Returns the current consent session state for `sessionId`. Starts at
+ * `{ status: "pending" }` and transitions when the provider receives a
+ * matching `ConsentEvent` from the datasources event channel.
+ */
+export function useConsentSession(sessionId: string): ConsentSessionState {
+  const ctx = useContext(DatasourcesContext);
+  if (ctx === null) {
+    throw new Error(
+      "useConsentSession must be used within a <DatasourcesProvider>.",
+    );
+  }
+  return ctx.consentSessions.get(sessionId) ?? PENDING_SESSION;
+}
+
 export function useDatasourceUploadProgress(
   datasourceId: string,
 ): UploadProgressView | null {

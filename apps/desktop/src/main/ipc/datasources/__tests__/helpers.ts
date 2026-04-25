@@ -22,6 +22,7 @@ export const FIXTURE_SUMMARIES: ReadonlyArray<DatasourceSummary> = [
     lastSyncAt: 1_700_000_000_000,
     itemCount: 1240,
     usage: { used: 12_000_000_000, quota: 16_000_000_000 },
+    errorKind: null,
   },
   {
     id: "ds-onedrive-work",
@@ -31,6 +32,7 @@ export const FIXTURE_SUMMARIES: ReadonlyArray<DatasourceSummary> = [
     lastSyncAt: 1_700_000_000_000,
     itemCount: 4812,
     usage: { used: 880_000_000_000, quota: 1_000_000_000_000 },
+    errorKind: null,
   },
   {
     id: "ds-s3-archive",
@@ -39,6 +41,7 @@ export const FIXTURE_SUMMARIES: ReadonlyArray<DatasourceSummary> = [
     status: "paused",
     lastSyncAt: 1_700_000_000_000,
     itemCount: 23_401,
+    errorKind: null,
   },
   {
     id: "ds-gdrive-team",
@@ -49,5 +52,6 @@ export const FIXTURE_SUMMARIES: ReadonlyArray<DatasourceSummary> = [
     itemCount: 312,
     usage: { used: 5_400_000_000, quota: 16_000_000_000 },
     errorReason: "Refresh token expired — reconnect required",
+    errorKind: "auth-revoked",
   },
 ];
