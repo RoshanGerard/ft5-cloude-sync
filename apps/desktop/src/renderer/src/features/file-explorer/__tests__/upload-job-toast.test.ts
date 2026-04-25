@@ -355,4 +355,100 @@ describe("createUploadJobToaster", () => {
     expect(unsubA!).not.toHaveBeenCalled();
     expect(unsubB!).toHaveBeenCalledTimes(1);
   });
+
+  it("(h) retry → orchestrator re-dispatch → onJobDispatched(new jobId) opens a NEW toast bound to a fresh progress subscription", () => {
+    // Task 9.3 round-trip: this proves that after the Retry action fires,
+    // a fresh `onJobDispatched` for a new jobId opens a brand-new toast
+    // and a brand-new progress subscription — no leakage from the
+    // dismissed toast or the unsubscribed feed of the original jobId.
+    toast.loading.mockReturnValueOnce("toast-A");
+    const toaster = createUploadJobToaster({ toast, progressApi });
+
+    // First dispatch: simulate the orchestrator's initial response.
+    // `retry` is what `dispatchOne(plan)` would be — the test stubs it
+    // out and asserts later that the toaster invokes it once.
+    const retry = vi.fn(async () => {});
+    toaster.onJobDispatched({
+      jobId: "job-A",
+      basename: "report.pdf",
+      retry,
+    });
+
+    // Drive the failure path so the error toast is created with the
+    // Retry action attached.
+    progressApi.emit(
+      "job-A",
+      progressEvent("job-A", {
+        bytesUploaded: 0,
+        bytesTotal: 100,
+        status: "failed",
+        error: "rate-limited",
+      }),
+    );
+
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      {
+        action?: { label: string; onClick: () => void };
+      } | undefined,
+    ];
+    const onClick = errorCall[1]?.action?.onClick;
+    expect(onClick).toBeDefined();
+
+    // Click Retry. This should call `retry()`, unsubscribe job-A's feed,
+    // and dismiss `toast-A` (covered by test (e)). We then simulate the
+    // orchestrator's response by calling `onJobDispatched` for the new
+    // jobId — exactly what the orchestrator's `dispatchOne(plan)` does
+    // when its re-dispatched `files.upload` returns `{ ok: true,
+    // value: { jobId } }`.
+    onClick!();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+    const unsubA = progressApi.unsubscribesFor("job-A");
+    expect(unsubA!).toHaveBeenCalled();
+
+    // Reset the retry handler so the new dispatch carries a fresh
+    // closure (mirrors the orchestrator: each `dispatchOne` invocation
+    // captures its own `plan` and creates a new `retry`).
+    const retry2 = vi.fn(async () => {});
+    toast.loading.mockReturnValueOnce("toast-B");
+    toaster.onJobDispatched({
+      jobId: "job-A2",
+      basename: "report.pdf",
+      retry: retry2,
+    });
+
+    // A NEW progress subscription was opened for the new jobId.
+    expect(progressApi.onUploadProgress).toHaveBeenCalledTimes(2);
+    const secondSubCall = progressApi.onUploadProgress.mock.calls[1] as [
+      string,
+      unknown,
+    ];
+    expect(secondSubCall[0]).toBe("job-A2");
+
+    // A NEW loading toast was opened. Per test (a), the helper passes
+    // an explicit `{ id }` to the initial `toast.loading` call (so
+    // Sonner uses it as the toast key); the mock's
+    // `mockReturnValueOnce("toast-B")` then overrides the return so
+    // the helper captures `"toast-B"` as the canonical id for
+    // subsequent updates. The load-bearing assertion is that the
+    // captured id is DIFFERENT from the dismissed `"toast-A"` — we
+    // verify that by emitting a progress event for `job-A2` and
+    // asserting the update targets `"toast-B"`, not `"toast-A"`.
+
+    // Confirm the new subscription routes updates to the new toast id.
+    progressApi.emit(
+      "job-A2",
+      progressEvent("job-A2", {
+        bytesUploaded: 25,
+        bytesTotal: 100,
+        status: "uploading",
+      }),
+    );
+    const updateCall = toast.loading.mock.calls[
+      toast.loading.mock.calls.length - 1
+    ] as [string, { id?: string | number } | undefined];
+    expect(updateCall[1]?.id).toBe("toast-B");
+    expect(updateCall[1]?.id).not.toBe("toast-A");
+  });
 });

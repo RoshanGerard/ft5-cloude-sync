@@ -57,10 +57,8 @@ import {
   useDatasourceUploadProgress,
 } from "./store";
 import { UploadDialog } from "@/features/file-explorer/upload-dialog";
-import {
-  STUB_CONFLICT_RESOLVER,
-  STUB_TOASTER,
-} from "@/features/file-explorer/upload-stubs";
+import { createUploadJobToaster } from "@/features/file-explorer/upload-job-toast";
+import { STUB_CONFLICT_RESOLVER } from "@/features/file-explorer/upload-stubs";
 
 export interface DatasourceCardProps {
   summary: DatasourceSummary;
@@ -132,6 +130,12 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
   const onUpload = useCallback(() => {
     setUploadDialogOpen(true);
   }, []);
+
+  // Task 9.2 — production Sonner-backed per-job toaster, instantiated
+  // once per card mount and shared with the upload dialog so the dashboard
+  // upload entry point gets the same per-job progress UX as the in-explorer
+  // drop-zone path.
+  const toaster = useMemo(() => createUploadJobToaster(), []);
 
   const onRemove = useCallback(() => {
     void actions.remove({ datasourceId: summary.id });
@@ -228,7 +232,7 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
         datasourceName={summary.displayName}
         initialDestination="/"
         conflictResolver={STUB_CONFLICT_RESOLVER}
-        toaster={STUB_TOASTER}
+        toaster={toaster}
       />
     </Card>
   );

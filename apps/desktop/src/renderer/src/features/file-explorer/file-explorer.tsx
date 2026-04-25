@@ -59,7 +59,8 @@ import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
 import { UploadDialog } from "./upload-dialog";
-import { STUB_CONFLICT_RESOLVER, STUB_TOASTER } from "./upload-stubs";
+import { createUploadJobToaster } from "./upload-job-toast";
+import { STUB_CONFLICT_RESOLVER } from "./upload-stubs";
 import { useExplorerData } from "./use-explorer-data";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { ViewModeSwitcher } from "./view-mode-switcher";
@@ -97,10 +98,11 @@ export interface FileExplorerProps {
   conflictResolver?: ConflictResolver;
   /**
    * Optional per-job toaster forwarded to the drop-zone's upload
-   * orchestrator. Task 9 wires the real Sonner-backed per-job surface;
-   * until then the default emits a single informational toast when a job
-   * is dispatched and a red toast on batch error. Remove the stub when
-   * Task 9 lands.
+   * orchestrator. Defaults to the real Sonner-backed `createUploadJobToaster`
+   * (Task 9): each dispatched job opens its own progress toast bound to
+   * `DATASOURCES_CHANNELS.uploadProgress`, flips to success on terminal
+   * complete (auto-dismiss 4s), or to red with Retry on terminal failure.
+   * Tests inject their own toaster via this prop and bypass Sonner.
    */
   toaster?: UploadToaster;
 }
@@ -129,18 +131,29 @@ function DashboardHomeButton() {
   );
 }
 
-// Task-6 refactor: the temporary conflict-resolver + toaster stubs now
-// live in `./upload-stubs.ts` so BOTH the drop-zone (explorer) and the
-// Upload-dialog entry points (toolbar + datasource card) share identical
-// placeholder behaviour. Tasks 7 / 9 replace the stubs in one place.
+// The conflict-resolver stub still lives in `./upload-stubs.ts` so BOTH
+// the drop-zone (explorer) and the Upload-dialog entry points (toolbar +
+// datasource card) share identical placeholder behaviour until the real
+// resolver from `./conflict-resolution-dialog.tsx` is wired in. The
+// toaster stub was removed in Task 9 — `createUploadJobToaster()` is
+// now the production default.
 
 export function FileExplorer({
   datasourceId,
   providerKind = "s3",
   providerStatus,
   conflictResolver = STUB_CONFLICT_RESOLVER,
-  toaster = STUB_TOASTER,
+  toaster: toasterProp,
 }: FileExplorerProps) {
+  // Task 9.2 — instantiate the production Sonner-backed per-job toaster
+  // once per mount so the same instance is shared between the drop-zone
+  // and the upload dialog. Tests inject their own toaster via the
+  // `toaster` prop and bypass this entirely. The factory is cheap, but
+  // memoising keeps identity stable across re-renders so downstream
+  // consumers that compare toaster references (none today, but defensive)
+  // don't see spurious changes.
+  const defaultToaster = useMemo(() => createUploadJobToaster(), []);
+  const toaster = toasterProp ?? defaultToaster;
   const router = useRouter();
   // Grab the per-datasource store directly — the module-level cache
   // ensures this is the same instance for every mount with the same id.

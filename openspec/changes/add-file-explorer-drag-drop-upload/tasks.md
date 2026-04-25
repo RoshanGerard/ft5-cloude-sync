@@ -61,9 +61,9 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 9. Sonner toast integration
 
-- [ ] 9.1 Write a failing test for a `upload-job-toast.ts` helper that subscribes to `DATASOURCES_CHANNELS.uploadProgress` for a given `jobId`, updates a Sonner toast per progress event, flips to success on terminal success (auto-dismiss 4s), flips to red with Retry on terminal failure.
-- [ ] 9.2 Implement the helper. Wire it from `useUploadOrchestrator` so each dispatched job spawns exactly one toast.
-- [ ] 9.3 Retry re-dispatches `files.upload` with the original `{datasourceId, sourcePath, targetPath, conflictPolicy}` and replaces the toast with one bound to the new `jobId`.
+- [x] 9.1 Write a failing test for a `upload-job-toast.ts` helper that subscribes to `DATASOURCES_CHANNELS.uploadProgress` for a given `jobId`, updates a Sonner toast per progress event, flips to success on terminal success (auto-dismiss 4s), flips to red with Retry on terminal failure.
+- [x] 9.2 Implement the helper. Wire it from `useUploadOrchestrator` so each dispatched job spawns exactly one toast.
+- [x] 9.3 Retry re-dispatches `files.upload` with the original `{datasourceId, sourcePath, targetPath, conflictPolicy}` and replaces the toast with one bound to the new `jobId`.
 
 ## 10. Accessibility + visual polish
 
