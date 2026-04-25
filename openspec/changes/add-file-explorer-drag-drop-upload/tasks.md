@@ -67,18 +67,18 @@ Follow `test-driven-development` (write the failing test first) and `subagent-dr
 
 ## 10. Accessibility + visual polish
 
-- [ ] 10.1 Manual a11y check in the dev build: tab through the toolbar → Upload button receives focus with visible ring; tab into the Upload dialog → focus trapped; Escape closes; conflict dialog action buttons reachable by Tab; checkbox labeled.
-- [ ] 10.2 Manual contrast check: amber-600 active overlay text on amber-600/8 tint → confirm WCAG AA; muted-foreground blocked overlay body on white → confirm WCAG AA.
-- [ ] 10.3 Visual regression: screenshot the active overlay, blocked overlay (each state), Upload dialog, and conflict dialog; add to `docs/screenshots/` (if that directory is the convention) or attach to the change's archive notes.
+- [~] 10.1 Manual a11y check in the dev build — DEFERRED to PENDING_TC.MD. shadcn primitives + aria attributes verified at code level.
+- [~] 10.2 Manual contrast check — DEFERRED to PENDING_TC.MD. design.md asserts AA pass; visual confirmation in next env-loop pass.
+- [~] 10.3 Visual regression screenshots — DEFERRED to PENDING_TC.MD.
 
 ## 11. End-to-end smoke (manual, in the worktree)
 
-- [ ] 11.1 Drag 3 files from OS onto a connected Google Drive datasource's explorer while inside `/docs` → confirm files appear in the folder on Drive, 3 toasts complete.
-- [ ] 11.2 Click Upload on the dashboard card → dialog opens defaulted to root; pick 2 files, one colliding with an existing name; resolve conflict with Overwrite; confirm both succeed.
-- [ ] 11.3 Click Upload on the file-explorer toolbar while inside `/projects/2026` → dialog opens defaulted to `/projects/2026`; pick 1 file; navigate destination tree into `/projects/2026/drafts`; submit; confirm file lands in `/projects/2026/drafts`.
-- [ ] 11.4 Drag a file onto a `disconnected` datasource's explorer → neutral overlay; drop does nothing.
-- [ ] 11.5 Drag a folder → rejection toast, zero jobs dispatched.
-- [ ] 11.6 Upload 5 files, kill the network mid-upload → each toast turns red with Retry; click Retry on one → re-dispatches just that file and a fresh toast appears.
+- [x] 11.1 Drag 3 files from OS onto a connected Google Drive datasource's explorer while inside `/docs` → confirm files appear in the folder on Drive, 3 toasts complete.
+- [x] 11.2 Click Upload on the dashboard card → dialog opens defaulted to root; pick 2 files, one colliding with an existing name; resolve conflict with Overwrite; confirm both succeed.
+- [x] 11.3 Click Upload on the file-explorer toolbar while inside `/projects/2026` → dialog opens defaulted to `/projects/2026`; pick 1 file; navigate destination tree into `/projects/2026/drafts`; submit; confirm file lands in `/projects/2026/drafts`.
+- [~] 11.4 Drag a file onto a `disconnected` datasource's explorer → neutral overlay; drop does nothing. — DEFERRED. Status reconciliation (renderer doesn't see "disconnected" when sync-service is unreachable) is a separate sync-service-side bug, filed as `fix-datasource-status-disconnected-on-service-unavailable`. Drop-zone blocked-overlay code path itself is unit-test covered in drop-zone.test.tsx.
+- [x] 11.5 Drag a folder → rejection toast, zero jobs dispatched.
+- [~] 11.6 Upload 5 files, kill the network mid-upload → each toast turns red with Retry; click Retry on one → re-dispatches just that file and a fresh toast appears. — DEFERRED to PENDING_TC.MD. Component pieces unit-test verified (test (e) + test (h) in upload-job-toast.test.ts; terminal-event translation in event-bridge.upload-progress-translation.test.ts). Red-Retry toast UI confirmed via the invalid-credentials drag-drop run.
 
 ## 12. Verification + close-out
 

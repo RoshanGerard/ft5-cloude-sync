@@ -50,3 +50,45 @@ the fs-sync-service process from another terminal. Observe each toast.
 
 **Owner:** unassigned. To do during the next environment-loop pass for
 this feature, or to be folded into the broader manual-QA suite.
+
+---
+
+## add-file-explorer-drag-drop-upload — §10 a11y + visual polish
+
+**Scenario** (per `openspec/changes/add-file-explorer-drag-drop-upload/tasks.md` §10):
+
+- §10.1 Manual a11y check in the dev build:
+  - tab through the toolbar → Upload button receives focus with visible ring
+  - tab into the Upload dialog → focus trapped; Escape closes
+  - conflict dialog action buttons reachable by Tab; checkbox labeled
+- §10.2 Manual contrast check:
+  - amber-600 active overlay text on amber-600/8 tint → confirm WCAG AA
+  - muted-foreground blocked overlay body on white → confirm WCAG AA
+- §10.3 Visual regression: screenshot the active overlay, blocked overlay
+  (each state), Upload dialog, and conflict dialog; add to
+  `docs/screenshots/` (if that directory is the convention) or attach
+  to the change's archive notes.
+
+**Status:** PENDING — manual smoke confirmation deferred. The component
+implementations have been verified through unit + composite tests:
+- shadcn primitives (Dialog, Button, Checkbox) handle focus-trap +
+  Escape-to-close out of the box.
+- `aria-label` / `role="status"` / `aria-live="polite"` are present on
+  drop-zone overlay (drop-overlay.tsx).
+- Conflict dialog checkbox has `aria-label` matching the visible
+  text (conflict-resolution-dialog.tsx).
+- The design.md visual contract was followed throughout the
+  implementation, with WCAG AA contrast asserted in design.md
+  ("amber-600 on white at 15px/600 = 4.66:1 ✓; muted-foreground body
+  on white passes ✓").
+
+**Why deferred:** Visual regression screenshots and manual tab-through
+require a running dev build with a human at the keyboard. Will be
+captured in the next visual-QA pass alongside §11.4 / §11.6.
+
+**Re-verification command:** Boot the dev build (`./dev.sh` from worktree
+root). Tab through the toolbar, Upload dialog, and a forced conflict
+dialog. Capture screenshots of the four overlay/dialog states.
+
+**Owner:** unassigned. To do during the next environment-loop pass for
+this feature.
