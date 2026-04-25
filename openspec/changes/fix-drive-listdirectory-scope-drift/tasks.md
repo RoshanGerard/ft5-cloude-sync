@@ -27,10 +27,12 @@ Implementation order is TDD: failing test first, then minimum code, then refacto
 - [x] 4.4 Implement the rejection branch: when `isScopeSufficient(this.creds.scope)` is false, throw the structured `DatasourceError` per design Decision 5; ensure the error message is the exact "Drive permissions are too narrow — reconnect with full access to see your existing files." string
 - [x] 4.5 Confirm 4.1-4.3 pass; check the existing `normalizeError` map is NOT incorrectly intercepting the synthetic `DatasourceError` (it must early-return on `instanceof DatasourceError` — verify in code)
 
-## 5. Bus emission of `authentication-failed` (covers "Authentication-failed event carries scope-insufficient discriminator")
+## 5. Bus emission of `status-changed` (covers "Status-changed event carries the auth-revoked tag on scope-insufficient rejection")
 
-- [ ] 5.1 Write a failing test: subscribe to the strategy's bus, call `status()` with insufficient scope, assert exactly one `authentication-failed` event is observed whose payload's `tag === "auth-revoked"` and `raw.kind === "scope-insufficient"`, with `requiredScope` + `actualScope` preserved
-- [ ] 5.2 No new code needed — the base client's existing emission path covers this. Confirm by running the test; if it fails, investigate whether the base correctly serializes `raw` for the scope-insufficient case (it should, since `raw` is structured-cloneable JSON)
+> NOTE: original spec/tasks said `authentication-failed`. During Work Unit C pre-flight we discovered the engine's `BaseDatasourceClient.status()` catch path emits `status-changed`, not `authentication-failed` (the latter is reserved for `authenticate()` and refresh-token failures). The structured `raw.kind === "scope-insufficient"` discriminator is on the THROWN error and verified by Work Unit B; the bus event surfaces only the tag. Spec + design updated accordingly. See design.md Decision 5 "Bus event vs thrown error" note.
+
+- [ ] 5.1 Write a test: subscribe to the strategy's bus, call `status()` with insufficient scope (e.g. `meta.scope = "https://www.googleapis.com/auth/drive.file"`), assert: (a) exactly one `status-changed` event is observed whose payload is `{ status: "error", error: "auth-revoked" }`; (b) NO `authentication-failed` event is emitted on this path
+- [ ] 5.2 No new production code needed — the base client's existing emission path covers this. Confirm by running the test green
 
 ## 6. New token exchange persists scope (covers "New token exchange persists scope")
 

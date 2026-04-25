@@ -80,8 +80,8 @@ When the check passes, behavior is unchanged: the strategy proceeds to call `abo
 - **WHEN** `status()` is called
 - **THEN** the method rejects with `tag === "auth-revoked"` and `raw.kind === "scope-insufficient"` (no narrow combination satisfies the requirement)
 
-#### Scenario: Authentication-failed event carries scope-insufficient discriminator
+#### Scenario: Status-changed event carries the auth-revoked tag on scope-insufficient rejection
 
 - **GIVEN** a `GoogleDriveClient` configured for emission via the engine bus, whose `meta.scope` is `drive.file`
 - **WHEN** `status()` is called and rejects with the scope-insufficient `auth-revoked`
-- **THEN** the bus observes exactly one `authentication-failed` event whose payload carries the serialized error with `tag: "auth-revoked"` and `raw: { kind: "scope-insufficient", requiredScope, actualScope }`
+- **THEN** the bus observes exactly one `status-changed` event whose payload is `{ status: "error", error: "auth-revoked" }` (the engine's existing `BaseDatasourceClient.status()` catch path emits `status-changed`, not `authentication-failed`; bus subscribers receive only the tag, while the full structured `raw: { kind: "scope-insufficient", requiredScope, actualScope }` discriminator is carried on the THROWN `DatasourceError` and is verified by the rejection scenarios above)
