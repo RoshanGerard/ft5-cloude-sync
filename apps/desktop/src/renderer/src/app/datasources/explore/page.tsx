@@ -143,7 +143,7 @@ function ExplorePageContent() {
   // <DatasourcesProvider> is required here because the explorer's
   // invalid-datasource branch reaches into `useDatasourceActions` (for the
   // shared confirm-remove dialog) and `<InvalidDatasourceState>` reaches
-  // into `useConsentSession`. The dashboard route at `app/page.tsx` already
+  // into `useAuthSession`. The dashboard route at `app/page.tsx` already
   // wraps in the same provider; the explore route was missing it because
   // §7's component had not been wired in yet.
   // `onDatasourceRemoved` flips the route to `not-found` after the user

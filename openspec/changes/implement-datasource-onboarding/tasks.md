@@ -211,14 +211,14 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 28. Renderer — store-consent → store-auth migration
 
-- [ ] 28.1 Rename `store-consent.test.tsx` → `store-auth.test.tsx`; update test assertions to use `auth-*` event names and `sync.onEvent` mocks instead of `consent-*` and `datasources.onEvent`
-- [ ] 28.2 Update the corresponding store slice in `apps/desktop/src/renderer/src/features/datasources/store.tsx` to consume from sync stream
-- [ ] 28.3 Rerun → green
+- [x] 28.1 Renamed `store-consent.test.tsx` → `store-auth.test.tsx`. All assertions retargeted to `auth-*` SyncEvent shapes via the captured `window.api.sync.onEvent` listener; the legacy `datasources.onEvent` consent listener is gone
+- [x] 28.2 Store reducer surgery already landed in §21 (replaced `consentSessionsReducer` with `authSessionsReducer`); §28 is a test-rename-only phase per advisor's direction (the §21 commit deliberately kept the rename pending until consumers migrated)
+- [x] 28.3 6 green
 
 ## 29. Renderer — verify `consent-` is unreferenced in production code
 
-- [ ] 29.1 Add a Vitest grep test (`apps/desktop/src/renderer/src/__tests__/no-consent-references.test.ts`) that scans all `.ts` / `.tsx` under `apps/desktop/src/renderer/src/` and asserts no non-test file contains the literal `consent-`, `useConsentSession`, or `datasources.startConsent`
-- [ ] 29.2 Fix any leftover references the test surfaces; rerun → green
+- [x] 29.1 Added `apps/desktop/src/renderer/src/__tests__/no-consent-references.test.ts` — recursively walks `.ts`/`.tsx` under the renderer src tree (skips `__tests__/`, `__forbidden_lint_regression__/`, `node_modules/`, `dist/`) and asserts no non-test file contains `consent-`, `useConsentSession`, or `datasources.startConsent` literals
+- [x] 29.2 Initial run flagged 7 references — all in stale doc comments. Cleaned: `app/datasources/explore/page.tsx` ("uses useConsentSession" → "uses useAuthSession"); `features/datasources/store.tsx` (3 stale references in slice comments + the `useAuthSession` JSDoc); `features/file-explorer/file-explorer.tsx` ("startConsent + useConsentSession" → "sync.authenticateStart + useAuthSession"). Also refreshed the `event-stream.ts` ConsentEvent guard comment. Final run green
 
 ## 30. Repo + docs — `README.md` per-provider OAuth registration section
 

@@ -403,8 +403,8 @@ function jobsReducer(state: JobsState, action: JobsAction): JobsState {
 //
 // Keys on `correlationId` (not `sessionId`) because the service-side
 // authenticate flow allocates correlation ids; the renderer never mints
-// them. Replaces the prior `useConsentSession` slice that consumed the
-// retired `consent-*` events on the datasources channel.
+// them. The retired pre-§21 reconnect/onboarding event slice that
+// consumed the legacy datasources event channel is gone.
 // ---------------------------------------------------------------------------
 
 export type AuthSessionState =
@@ -509,7 +509,7 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
   const [jobs, dispatchJobs] = useReducer(jobsReducer, EMPTY_JOBS_STATE);
 
   // Auth sessions slice (§21). Driven by `window.api.sync.onEvent`
-  // auth-* event variants. Replaces the retired `consent-*` slice.
+  // auth-* event variants.
   const [authSessions, dispatchAuth] = useReducer(
     authSessionsReducer,
     new Map<string, AuthSessionState>(),
@@ -819,10 +819,8 @@ const PENDING_SESSION: AuthSessionState = { status: "pending" };
  * Starts at `{ status: "pending" }` and transitions when the provider
  * receives a matching `auth-*` `SyncEvent` from the sync event channel.
  *
- * Renamed from `useConsentSession` per implement-datasource-onboarding
- * §21. The consent-* event family was retired in favour of the
- * service-emitted auth-* family on the sync event stream — see
- * design.md Decision 7.
+ * Introduced by implement-datasource-onboarding §21 — see design.md
+ * Decision 7 for the event taxonomy that backs this hook.
  */
 export function useAuthSession(correlationId: string): AuthSessionState {
   const ctx = useContext(DatasourcesContext);
