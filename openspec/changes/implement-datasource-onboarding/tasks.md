@@ -138,12 +138,12 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 18. Desktop main — delete `consent-broker.ts` + tests
 
-- [ ] 18.1 Delete `apps/desktop/src/main/oauth/consent-broker.ts`
-- [ ] 18.2 Delete `apps/desktop/src/main/oauth/__tests__/consent-broker.test.ts`, `consent-broker-dev-override.test.ts`, and any other consent-broker-* test files
-- [ ] 18.3 Delete the `noopCredentialStore` declaration in `apps/desktop/src/main/index.ts` (lines 280-284 today) and the `createOAuthConsentBroker(...)` block (lines 288-319) and the `broker.dispose()` cleanup wiring (line 320)
-- [ ] 18.4 Delete the broker-related imports from `apps/desktop/src/main/index.ts` (`createOAuthConsentBroker`, `randomBytes`, `readFileSync`, `path` if otherwise unused, `__FT5_GOOGLE_OAUTH_CLIENT_ID__` / `_SECRET__` references)
-- [ ] 18.5 Update `electron.vite.config.ts` to drop the `__FT5_GOOGLE_OAUTH_CLIENT_ID__` / `_SECRET__` `define` entries
-- [ ] 18.6 Run the full desktop main test suite — typecheck + vitest. Anything that imported from `oauth/consent-broker` must now be deleted or migrated; expect compile errors that mark the next deletion targets
+- [x] 18.1 Deleted `apps/desktop/src/main/oauth/consent-broker.ts`
+- [x] 18.2 Deleted `apps/desktop/src/main/oauth/__tests__/consent-broker.test.ts` + `consent-broker-dev-override.test.ts`. Empty `__tests__/` and `oauth/` directories also removed
+- [x] 18.3 Deleted from `apps/desktop/src/main/index.ts`: the `noopCredentialStore` declaration, the `createOAuthConsentBroker(...)` block, the `dev-credentials` path resolution + `isDevOverride` env-var check, and the second `window.on("closed", () => broker.dispose())` cleanup wiring (the existing first `closed` handler that disposes `eventBridge` + `syncEventBridge` is left untouched). Also dropped the `broker` argument from `registerIpcHandlers(window)`
+- [x] 18.4 Deleted the broker-related imports from `apps/desktop/src/main/index.ts`: `createOAuthConsentBroker`, `randomBytes` (unused after removal), `readFileSync` (unused after removal), `CredentialStore` type-only import, and the two `__FT5_GOOGLE_OAUTH_CLIENT_ID__` / `_SECRET__` ambient declarations. `path` is retained — still used by renderer asset resolution + db path + service path
+- [x] 18.5 Updated `apps/desktop/electron.vite.config.ts`: replaced the `loadEnv()` + clientId/clientSecret + non-development fail-fast block + `define: { __FT5_GOOGLE_OAUTH_*__ }` entries with a plain `defineConfig({...})` shell. Comment block at top now references `implement-datasource-onboarding §18.5` and points to the service-side config file (`~/ft5/sync_app/config.json`) per design.md Decision 4
+- [x] 18.6 Ran main-process tests post-deletion: 58 tests green across event-bridge.* (28), datasources/registry* (18), datasources/remove (8), engine (4) suites. Renderer + preload + remaining ipc/datasources `consent` files DO still reference removed types — that's the §19 destruction and §21+ renderer migration scope
 
 ## 19. Desktop main — delete `datasources:start-consent` / `cancel-consent` IPC handlers
 

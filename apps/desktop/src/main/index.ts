@@ -1,12 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-// Build-time OAuth client credentials inlined by electron-vite's `define` map
-// (electron.vite.config.ts D6). These are NOT read from process.env at runtime.
-declare const __FT5_GOOGLE_OAUTH_CLIENT_ID__: string;
-declare const __FT5_GOOGLE_OAUTH_CLIENT_SECRET__: string;
 import { BrowserWindow, app, net, protocol, shell } from "electron";
 import { buildMainWindowOptions } from "./window-options.js";
 import { registerIpcHandlers } from "./ipc/index.js";
@@ -22,8 +16,6 @@ import { resolveSyncPipePath } from "./sync/pipe-paths.js";
 import { resolveServiceNodeBinary } from "./sync/node-binary-resolver.js";
 import { setSyncClient } from "./sync/sync-client-holder.js";
 import type { SyncEventBridgeHandle } from "./sync/event-bridge.js";
-import { createOAuthConsentBroker } from "./oauth/consent-broker.js";
-import type { CredentialStore } from "@ft5/fs-datasource-engine";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
 // is a built-in and points at `dist/main/` at runtime.
@@ -267,61 +259,18 @@ async function bootstrap(): Promise<void> {
     syncEventBridge?.dispose();
   });
 
-  // OAuth consent broker — credentials are read from build-time env vars
-  // (task 11 inlines them via esbuild define; in dev they come from .env.local).
-  // The broker validates that clientId/clientSecret are non-empty at start()
-  // time, not here, so missing vars degrade gracefully: the IPC handler is
-  // registered but throws a user-facing error on the first startConsent call.
-  //
-  // `createClient` builds a temporary client used only to generate the OAuth
-  // authorize URL. The no-op credentialStore satisfies the EngineContext
-  // interface; credentials are owned by the fs-sync service end-to-end and
-  // are never read or written here (wire-fs-sync-service section 9).
-  const noopCredentialStore: CredentialStore = {
-    get: async () => null,
-    put: async () => undefined,
-    delete: async () => undefined,
-  };
-  const devCredentialsPath = path.join(app.getPath("userData"), "dev-credentials.json");
-  const isDevOverride = process.env["FT5_DEV_CREDENTIALS"] === "1";
-
-  const broker = createOAuthConsentBroker({
-    openExternal: (url) => shell.openExternal(url),
-    clientId: __FT5_GOOGLE_OAUTH_CLIENT_ID__,
-    clientSecret: __FT5_GOOGLE_OAUTH_CLIENT_SECRET__,
-    createClient: (datasourceId, credentials) =>
-      getEngine().factory.create(credentials.providerId, datasourceId, credentials, {
-        bus: getEngine().bus,
-        credentialStore: noopCredentialStore,
-      }),
-    addToRegistry: (summary) => getEngine().registry.add(summary),
-    mintDatasourceId: () =>
-      `ds-google-drive-${randomBytes(8).toString("hex")}`,
-    ...(isDevOverride
-      ? {
-          readDevCredentials: () => {
-            try {
-              return JSON.parse(
-                readFileSync(devCredentialsPath, "utf-8"),
-              ) as import("@ft5/ipc-contracts").StoredCredentials;
-            } catch {
-              return null;
-            }
-          },
-          warnOnce: () => {
-            console.warn(
-              "[ft5] ⚠  FT5_DEV_CREDENTIALS=1 is active — the OAuth browser flow is bypassed.",
-              "NEVER set this in a production build.",
-            );
-          },
-        }
-      : {}),
-  });
-  window.on("closed", () => broker.dispose());
+  // OAuth consent broker — relocated to the fs-sync service per
+  // implement-datasource-onboarding design Decision 1 + Decision 2.
+  // The desktop main process retains only the side of the flow it
+  // cannot delegate: `shell.openExternal` (in the sync event-bridge,
+  // see Decision 6) and dialog rendering (in the renderer). All
+  // engine.authenticate() execution, OAuth loopback HTTP listening,
+  // OAuth app config consumption, and credential persistence are
+  // service-side concerns now.
 
   // Register IPC handlers AFTER window creation so upload progress events can
   // be routed to the correct renderer via webContents.send.
-  registerIpcHandlers(window, broker);
+  registerIpcHandlers(window);
 
   // Silence the `net` import lint — `net.fetch` is available for future
   // handler work that needs to chain to file:// URLs. Kept imported here
