@@ -259,9 +259,9 @@ All seven §33 subtasks are HUMAN-only manual smoke flows requiring real GCP/Azu
 - [x] 34.2 Confirm `openspec validate implement-datasource-onboarding` is green
 - [x] 34.3 Confirm full test suite + typecheck + lint are green (re-run if any task in §29-§33 surfaced regressions)
 - [x] 34.4 Run advisor checkpoint per CLAUDE.md "Coding discipline" — deliverable durable on the local worktree branch (user opted out of push); advisor flagged spec-prose contradiction at datasources-ui spec.md L12, fixed in commit 643a020
-- [ ] 34.5 Use the `superpowers:finishing-a-development-branch` skill to wrap up
-- [ ] 34.6 Run `/opsx:archive implement-datasource-onboarding` in the worktree branch BEFORE merging to master
-- [ ] 34.7 Update `MEMORY.md` (auto-memory) with the change-state entry following the existing convention
+- [x] 34.5 Use the `superpowers:finishing-a-development-branch` skill to wrap up — user pre-selected Option 3 (keep branch as-is); they will handle push/PR/merge themselves. Worktree preserved.
+- [x] 34.6 Run `/opsx:archive implement-datasource-onboarding` in the worktree branch BEFORE merging to master — archived in commit 8aeac8e. Header-mismatch gotcha for `fs-sync-service` MODIFIED requirement resolved by reverting header text to match canonical spec verbatim (kept body changes).
+- [x] 34.7 Update `MEMORY.md` (auto-memory) with the change-state entry following the existing convention — written to `~/.claude/projects/.../memory/implement-datasource-onboarding-change-state.md`.
 
 ## Deferred follow-up — NOT in this change
 
