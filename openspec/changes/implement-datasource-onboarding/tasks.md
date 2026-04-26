@@ -230,8 +230,8 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 31. Repo + docs — supersede `.env.local` build-time inlining
 
-- [ ] 31.1 Edit the existing `apps/desktop/.env.example` to mark `FT5_GOOGLE_OAUTH_CLIENT_ID` and `FT5_GOOGLE_OAUTH_CLIENT_SECRET` as deprecated/unused. Either delete them with a comment line referencing the new service config path, or leave them with a `# DEPRECATED — see services/fs-sync/config.example.json` note
-- [ ] 31.2 If GitHub Actions still references the secrets in any workflow YAML, update / remove those references; if no other consumer exists, the secrets become unused and the README OAuth-registration steps point to the new config file
+- [x] 31.1 Marked `FT5_GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` deprecated in `apps/desktop/.env.example` (Choice A — keep commented-out lines + DEPRECATED preamble pointing at `services/fs-sync/config.example.json`). The migration breadcrumb makes the rename obvious to contributors who still have a populated `.env.local` from the previous workflow
+- [x] 31.2 Stripped four `FT5_GOOGLE_OAUTH_*` `env:` blocks from `.github/workflows/ci.yml` — Build desktop step, Package (macOS / Windows / Linux) steps. Per advisor guidance the GitHub repo secrets themselves stay provisioned-but-unused (cleanup is a separate housekeeping task; design.md Decision 4 closing paragraph already foresaw this state). Comment block above the build step explains the rationale and points to `~/ft5/sync_app/config.json`
 
 ## 32. Verification — typecheck + lint + full test suite
 
