@@ -337,7 +337,10 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
    * Optional OAuth app config seeded at construction. Populated on the
    * createForAuth path; `undefined` on the legacy createOneDriveClient
    * path that carries the config via `creds.authResult.meta` (preserved
-   * during the transition; tracked for deletion in §22.x).
+   * during the transition; tracked for deletion in §22.x). The
+   * constructor parameter accepts `null` as an alias for `undefined`
+   * so the factory.createForAuth contract (`OAuthAppConfig | null`)
+   * lands here without a boundary translation step.
    */
   private preAuth: PreAuthConfig | undefined;
   private readonly graphFactory: GraphFactory;
@@ -363,11 +366,13 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     init: { datasourceId: string; ctx: BaseClientContext },
     creds: OneDriveCredsMeta | null,
     options: OneDriveClientOptions = {},
-    preAuth?: PreAuthConfig,
+    preAuth?: PreAuthConfig | null,
   ) {
     super(init);
     this.creds = creds;
-    this.preAuth = preAuth;
+    // Normalise null → undefined so internal precedence checks compare
+    // against a single sentinel.
+    this.preAuth = preAuth ?? undefined;
     this.graphFactory = options.graphFactory ?? createDefaultGraphFactory();
     this.fetchImpl = options.fetchImpl ?? ((globalThis as { fetch: typeof fetch }).fetch).bind(globalThis);
     this.lruCap = options.lruCap ?? 512;

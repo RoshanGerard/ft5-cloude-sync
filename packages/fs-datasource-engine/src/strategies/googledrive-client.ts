@@ -373,7 +373,10 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
    * Optional OAuth app config seeded at construction. Populated on the
    * createForAuth path; `undefined` on the legacy createGoogleDriveClient
    * path that carries the config via `creds.authResult.meta` (preserved
-   * during the transition; tracked for deletion in §22.x).
+   * during the transition; tracked for deletion in §22.x). The
+   * constructor parameter accepts `null` as an alias for `undefined` so
+   * the factory.createForAuth contract (`OAuthAppConfig | null`) lands
+   * here without a boundary translation step.
    */
   private preAuth: PreAuthConfig | undefined;
   private readonly driveFactory: DriveFactory;
@@ -402,11 +405,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     init: { datasourceId: string; ctx: BaseClientContext },
     creds: GoogleDriveCredsMeta | null,
     options: GoogleDriveClientOptions = {},
-    preAuth?: PreAuthConfig,
+    preAuth?: PreAuthConfig | null,
   ) {
     super(init);
     this.creds = creds;
-    this.preAuth = preAuth;
+    // Normalise null → undefined so internal precedence checks compare
+    // against a single sentinel.
+    this.preAuth = preAuth ?? undefined;
     this.driveFactory = options.driveFactory ?? createDefaultDriveFactory();
     this.fetchImpl =
       options.fetchImpl ??

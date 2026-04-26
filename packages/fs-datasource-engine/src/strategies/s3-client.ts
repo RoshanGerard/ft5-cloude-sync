@@ -275,13 +275,16 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
    * `preAuth` is accepted for type uniformity across the strategy hierarchy
    * (implement-datasource-onboarding §2.7). S3 is a credentials-form
    * provider — it does not consume an OAuth app config — so the value is
-   * intentionally ignored. The parameter is `void`-cast to silence the
-   * unused-parameter lint without dropping the slot from the signature.
+   * intentionally ignored. Accepts `null` as an alias for `undefined` so
+   * the factory.createForAuth contract (`OAuthAppConfig | null`) lands
+   * here without a boundary translation step. The parameter is
+   * `void`-cast to silence the unused-parameter lint without dropping
+   * the slot from the signature.
    */
   constructor(
     init: { datasourceId: string; ctx: BaseClientContext },
     creds: S3CredsMeta,
-    preAuth?: PreAuthConfig,
+    preAuth?: PreAuthConfig | null,
   ) {
     super(init);
     this.creds = creds;

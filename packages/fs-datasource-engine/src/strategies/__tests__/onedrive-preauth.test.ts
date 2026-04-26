@@ -183,4 +183,27 @@ describe("OneDriveClient — preAuth (no creds)", () => {
 
     client.dispose();
   });
+
+  it("treats preAuth: null as equivalent to undefined (factory.createForAuth dispatch shape symmetry)", async () => {
+    // The factory contract is `OAuthAppConfig | null`. Passing null for an
+    // OAuth provider would be a programmer error caught at the factory
+    // level (§3 spec scenario), but at the constructor level the strategy
+    // accepts null and treats it as "no preAuth" — same downstream
+    // behavior as undefined.
+    const ctx = makeContext();
+    const graphFactory = (): GraphClientLike => makeFakeGraph();
+
+    const client = new OneDriveClient(
+      { datasourceId: "ds-od-null-preauth", ctx },
+      null,
+      { graphFactory },
+      null,
+    );
+
+    await expect(client.authenticate()).rejects.toThrow(
+      /missing-oauth-app-config|cannot resolve OAuth app config/i,
+    );
+
+    client.dispose();
+  });
 });

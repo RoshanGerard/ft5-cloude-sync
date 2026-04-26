@@ -65,6 +65,18 @@ describe("S3Client — preAuth (type uniformity, no-op)", () => {
     expect(client.type).toBe("amazon-s3");
   });
 
+  it("accepts construction with preAuth: null (factory.createForAuth dispatch shape)", () => {
+    const ctx = makeContext();
+    // Mirror the upcoming `factory.createForAuth("amazon-s3", null, ctx)`
+    // call shape — null carries the credentials-form intent semantics.
+    const client = new S3Client(
+      { datasourceId: "ds-s3-null", ctx },
+      stubCreds,
+      null,
+    );
+    expect(client.type).toBe("amazon-s3");
+  });
+
   it("accepts a PreAuthConfig value at the slot (ignored — no-op for credentials-form)", () => {
     const ctx = makeContext();
     const preAuth: PreAuthConfig = {
