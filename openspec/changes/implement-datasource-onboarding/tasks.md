@@ -8,9 +8,9 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 1. Pre-flight & worktree
 
-- [ ] 1.1 Confirm with user where to put the worktree: in-place vs sibling (per CLAUDE.md `using-git-worktrees`); default to `.worktrees/implement-datasource-onboarding/` if no answer
-- [ ] 1.2 Create the worktree + branch via the `using-git-worktrees` skill
-- [ ] 1.3 Verify a clean baseline: run `pnpm typecheck` and the full vitest suite once in the worktree to confirm green-before-changes; capture any pre-existing flaky/failing test as a known-baseline (e.g., the `scripts/preload-bundle.test.ts` flake noted in `add-invalid-datasource-state` §1.3 may still apply)
+- [x] 1.1 Confirm with user where to put the worktree: in-place vs sibling (per CLAUDE.md `using-git-worktrees`); default to `.worktrees/implement-datasource-onboarding/` if no answer (user picked sibling at `.worktrees/implement-datasource-onboarding/`)
+- [x] 1.2 Create the worktree + branch via the `using-git-worktrees` skill (worktree at `.worktrees/implement-datasource-onboarding/`, branch `feature/implement-datasource-onboarding` off master `ec538a5`; pnpm install completed in 1m4s)
+- [x] 1.3 Verify a clean baseline: run `pnpm typecheck` and the full vitest suite once in the worktree to confirm green-before-changes; capture any pre-existing flaky/failing test as a known-baseline (e.g., the `scripts/preload-bundle.test.ts` flake noted in `add-invalid-datasource-state` §1.3 may still apply) — Result: typecheck green; vitest **1955 pass / 1 fail / 7 skip across 248 files**. The single failure is the same documented `scripts/preload-bundle.test.ts` flake — `tsc -b` from typecheck overwrites the Vite-bundled `apps/desktop/dist/preload/index.js` with the tsc-compiled output that includes runtime `require()` for `@ft5/ipc-contracts` workspace dep; vitest's preload-bundle guardrail then flags it. Structural fragility, unrelated to this change. Treated as the known-baseline flake.
 
 ## 2. Engine — `OAuthAppConfig` type + `PreAuthConfig` strategy slot
 
