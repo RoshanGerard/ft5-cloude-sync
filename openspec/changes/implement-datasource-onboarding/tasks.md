@@ -178,10 +178,10 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 23. Renderer — `aws-access-key-form.tsx` + `custom-form.tsx` migration
 
-- [ ] 23.1 Write failing tests in `apps/desktop/src/renderer/src/features/datasources/__tests__/aws-access-key-form.test.tsx` (new file): form mount calls nothing; clicking Connect with valid values calls `window.api.sync.authenticateStart({providerId: "amazon-s3"})` exactly once; the response's `formSchema` populates the field set; submit calls `window.api.sync.authenticateComplete({correlationId, completion: {kind: "credentials-form", values}})` exactly once; on `ok: true` the form's `onSubmit` fires; on `ok: false` an inline error renders
-- [ ] 23.2 Rewrite `aws-access-key-form.tsx` to use the two-step authenticate flow; remove `actions.add` calls
-- [ ] 23.3 Repeat 23.1/23.2 for `custom-form.tsx`
-- [ ] 23.4 Rerun → all green
+- [x] 23.1 Failing tests in `aws-access-key-form.test.tsx` (new) — 7 cases: mount no-op, submit valid → authenticateStart + authenticateComplete with values verbatim, no datasources.add, ok: true → onSubmit with sentinel + datasourceId, ok: false → inline error, start ok: false → no complete call, Connect disabled until fields non-empty
+- [x] 23.2 Rewrote `aws-access-key-form.tsx` to drive the two-step authenticate flow. `actions.add` is no longer touched in this component
+- [x] 23.3 Failing tests + impl for `custom-form.tsx` — 6 cases mirroring the AWS shape, plus the JSON parse-error arm. Note: form `aria-label` was deliberately left as "Custom custom credentials" so test label-matching narrowed via `\(JSON\)` to disambiguate from the form-wrapper aria-label
+- [x] 23.4 13 green across both forms (7 AWS + 6 custom)
 
 ## 24. Renderer — `add-dialog.tsx` adjustments
 
