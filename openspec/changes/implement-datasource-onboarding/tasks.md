@@ -185,10 +185,10 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 24. Renderer — `add-dialog.tsx` adjustments
 
-- [ ] 24.1 Update `apps/desktop/src/renderer/src/features/datasources/__tests__/add-dialog.test.tsx`: the OAuth-completion sentinel handling in `handleCredentialsSubmit` now consumes `_authCompleted` (renamed from `_oauthConsent`); successful authenticate calls `actions.refresh()` and closes the dialog; non-OAuth path no longer goes through `actions.add` — the form itself drives `sync.authenticateComplete` and signals via the same sentinel
-- [ ] 24.2 Update `add-dialog.tsx` accordingly
-- [ ] 24.3 Update `add-dialog-extensibility.test.tsx` if its provider-id-branch grep expectations change
-- [ ] 24.4 Rerun → green
+- [x] 24.1 Rewrote `add-dialog.test.tsx` (9 cases) — removed the consent-event harness; OAuth path now uses `sync.authenticateStart` + auth-completed events; AWS path drives `sync.authenticate{Start,Complete}` inside the form; assertions check `addMock` is NOT called for either provider (the form-driven add path no longer touches `actions.add`)
+- [x] 24.2 Updated `add-dialog.tsx` — `handleCredentialsSubmit` now consumes the renamed `_authCompleted` sentinel; the `actions.add(...)` codepath is dead. Removed the unused `submitting` state + the "Saving datasource…" copy that previously displayed during the local-add round-trip
+- [x] 24.3 `add-dialog-extensibility.test.tsx` unchanged — its provider-id-branch grep expectations don't reference the auth/consent surface; it only asserts the dialog has no `providerId === ...` literal branches, which is still true
+- [x] 24.4 9 green (add-dialog) + 4 green (extensibility)
 
 ## 25. Renderer — `<AuthErrorBanner>` Reconnect path migration
 
