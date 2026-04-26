@@ -45,6 +45,13 @@ export type {
 export { COMMAND_NAMES } from "./commands.js";
 
 export type {
+  AuthCancelledPayload,
+  AuthCompletedPayload,
+  AuthFailedPayload,
+  AuthFailedTag,
+  AuthInitiatedPayload,
+  AuthTimeoutPayload,
+  CredentialPersistedPayload,
   CredentialStorePermissionViolationPayload,
   EventName,
   EventPayloadMap,
@@ -56,6 +63,7 @@ export type {
   JobRecoveredPayload,
   JobStartedPayload,
   NetworkAvailablePayload,
+  OAuthOpenUrlPayload,
   ServiceEvent,
   SourceUnavailablePayload,
   SyncCompletedPayload,

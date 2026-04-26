@@ -43,8 +43,8 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 5. Contracts — new event taxonomy + remove `consent-*` variants
 
-- [ ] 5.1 Write a typed test asserting `SyncEvent` (the service event union) contains `auth-initiated`, `auth-completed`, `auth-cancelled`, `auth-failed`, `auth-timeout`, `oauth-open-url`, `credential-persisted` variants with their payload shapes per design.md Decision 7; test fails until shapes are in
-- [ ] 5.2 Add the variants to `packages/ipc-contracts/src/sync-service/events.ts` (or wherever the existing `SyncEvent` union lives); rerun typed test → green
+- [x] 5.1 Write a typed test asserting `SyncEvent` (the service event union) contains `auth-initiated`, `auth-completed`, `auth-cancelled`, `auth-failed`, `auth-timeout`, `oauth-open-url`, `credential-persisted` variants with their payload shapes per design.md Decision 7; test fails until shapes are in (added `auth-events.test-d.ts` — tsc errored on missing payload-type exports + missing `EventPayloadMap` keys)
+- [x] 5.2 Add the variants to `packages/ipc-contracts/src/sync-service/events.ts` (or wherever the existing `SyncEvent` union lives); rerun typed test → green (added `AuthInitiated/Completed/Cancelled/Failed/Timeout/OAuthOpenUrl/CredentialPersistedPayload` types + `AuthFailedTag` union; the wire `ServiceEvent` is keyed by `name` per existing convention; existing `events.test-d.ts` exhaustive Expected union updated)
 - [ ] 5.3 Write a typed test asserting `DatasourceEvent` does NOT contain `consent-*` variants; test fails because the variants are still there
 - [ ] 5.4 Remove the `consent-*` variants from `DatasourceEvent` in `packages/ipc-contracts/src/datasources.ts`; remove the `DatasourcesStartConsentRequest/Response`, `DatasourcesCancelConsentRequest/Response` types; remove the `startConsent` and `cancelConsent` keys from `DATASOURCES_CHANNELS`; rerun → green
 - [ ] 5.5 Write a typed test asserting `SyncAuthenticateStartError` includes `service-config-missing` variant with `path`/`providerId` fields; add to the union if missing; rerun → green
