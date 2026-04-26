@@ -18,6 +18,7 @@ import type {
   FilesUploadRequest,
 } from "@ft5/ipc-contracts";
 import type {
+  SyncAuthenticateCancelRequest,
   SyncAuthenticateCompleteRequest,
   SyncAuthenticateStartRequest,
   SyncCancelJobRequest,
@@ -42,6 +43,7 @@ import { handleFilesSearch } from "./files/search.js";
 import { handleFilesStat } from "./files/stat.js";
 import { handleFilesUpload } from "./files/upload.js";
 import { handlePing } from "./ping.js";
+import { handleSyncAuthenticateCancel } from "./sync/authenticate-cancel.js";
 import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js";
 import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
 import { handleSyncCancelJob } from "./sync/cancel-job.js";
@@ -188,6 +190,11 @@ export function registerIpcHandlers(
     SYNC_CHANNELS.authenticateComplete,
     async (_event, req: SyncAuthenticateCompleteRequest) =>
       handleSyncAuthenticateComplete(req),
+  );
+  ipcMain.handle(
+    SYNC_CHANNELS.authenticateCancel,
+    async (_event, req: SyncAuthenticateCancelRequest) =>
+      handleSyncAuthenticateCancel(req),
   );
   ipcMain.handle(SYNC_CHANNELS.getStatus, () => handleSyncGetStatus());
   ipcMain.handle(

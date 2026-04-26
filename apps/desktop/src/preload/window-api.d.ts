@@ -26,6 +26,8 @@ import type {
   PingResponse,
 } from "@ft5/ipc-contracts";
 import type {
+  SyncAuthenticateCancelRequest,
+  SyncAuthenticateCancelResponse,
   SyncAuthenticateCompleteRequest,
   SyncAuthenticateCompleteResponse,
   SyncAuthenticateStartRequest,
@@ -104,6 +106,9 @@ declare global {
         authenticateComplete(
           req: SyncAuthenticateCompleteRequest,
         ): Promise<SyncAuthenticateCompleteResponse>;
+        authenticateCancel(
+          req: SyncAuthenticateCancelRequest,
+        ): Promise<SyncAuthenticateCancelResponse>;
         // `getStatus` has a void request type — no argument, mirrors ping().
         getStatus(): Promise<SyncGetStatusResponse>;
         getRetryPolicy(

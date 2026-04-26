@@ -305,6 +305,19 @@ export class SyncClient {
   }
 
   /**
+   * Symmetric idempotent cancel for an in-flight authenticate session
+   * (implement-datasource-onboarding design Decision 7). Cancel is
+   * best-effort: a second call against the same `correlationId` returns
+   * `{ ok: true, result: { cancelled: false } }` rather than erroring.
+   */
+  authenticateCancel(
+    params: CommandParams<"sync:authenticate-cancel">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:authenticate-cancel">> {
+    return this.request("sync:authenticate-cancel", params, opts);
+  }
+
+  /**
    * Symmetric counterpart to authenticate per design Decision 12 — invoked
    * by the desktop's `datasources:remove` IPC handler after `registry.remove`
    * succeeds so the per-user credential entry on the service side is

@@ -16,6 +16,11 @@ import type {
   JobSummary,
 } from "../sync-service/commands.js";
 import type {
+  AuthCancelledPayload,
+  AuthCompletedPayload,
+  AuthFailedPayload,
+  AuthInitiatedPayload,
+  AuthTimeoutPayload,
   JobCancelledPayload,
   JobCompletedPayload,
   JobEnqueuedPayload,
@@ -37,7 +42,7 @@ import type {
 } from "./events.js";
 
 describe("sync-service-desktop SyncEventKind enumeration", () => {
-  it("enumerates all 13 kinds the renderer must handle", () => {
+  it("enumerates all 18 kinds the renderer must handle", () => {
     type Expected =
       | "sync-state-seed"
       | "job-enqueued"
@@ -51,7 +56,16 @@ describe("sync-service-desktop SyncEventKind enumeration", () => {
       | "source-unavailable"
       | "network-available"
       | "service-disconnected"
-      | "service-reconnected";
+      | "service-reconnected"
+      // Authenticate lifecycle (implement-datasource-onboarding §Prereq B).
+      // The two bridge-only events (`oauth-open-url`, `credential-persisted`)
+      // are filtered out before the renderer-bound forward and SHALL NOT
+      // appear in this union.
+      | "auth-initiated"
+      | "auth-completed"
+      | "auth-cancelled"
+      | "auth-failed"
+      | "auth-timeout";
     expectTypeOf<SyncEventKind>().toEqualTypeOf<Expected>();
   });
 });
@@ -105,6 +119,24 @@ describe("sync-service-desktop SyncEventPayloadMap", () => {
     >();
     expectTypeOf<SyncEventPayloadMap["network-available"]>().toEqualTypeOf<
       NetworkAvailablePayload
+    >();
+  });
+
+  it("authenticate lifecycle payloads re-use the wire-contract shapes", () => {
+    expectTypeOf<SyncEventPayloadMap["auth-initiated"]>().toEqualTypeOf<
+      AuthInitiatedPayload
+    >();
+    expectTypeOf<SyncEventPayloadMap["auth-completed"]>().toEqualTypeOf<
+      AuthCompletedPayload
+    >();
+    expectTypeOf<SyncEventPayloadMap["auth-cancelled"]>().toEqualTypeOf<
+      AuthCancelledPayload
+    >();
+    expectTypeOf<SyncEventPayloadMap["auth-failed"]>().toEqualTypeOf<
+      AuthFailedPayload
+    >();
+    expectTypeOf<SyncEventPayloadMap["auth-timeout"]>().toEqualTypeOf<
+      AuthTimeoutPayload
     >();
   });
 });

@@ -30,6 +30,8 @@ import type {
 } from "@ft5/ipc-contracts";
 import { SYNC_CHANNELS } from "@ft5/ipc-contracts/sync-service-desktop";
 import type {
+  SyncAuthenticateCancelRequest,
+  SyncAuthenticateCancelResponse,
   SyncAuthenticateCompleteRequest,
   SyncAuthenticateCompleteResponse,
   SyncAuthenticateStartRequest,
@@ -186,6 +188,10 @@ const api = {
       req: SyncAuthenticateCompleteRequest,
     ): Promise<SyncAuthenticateCompleteResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.authenticateComplete, req),
+    authenticateCancel: (
+      req: SyncAuthenticateCancelRequest,
+    ): Promise<SyncAuthenticateCancelResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.authenticateCancel, req),
     // `getStatus` has a void request type — invoke with channel only,
     // mirroring the `ping()` pattern above.
     getStatus: (): Promise<SyncGetStatusResponse> =>
