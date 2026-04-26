@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "providers": {
+    "google-drive": {
+      "clientId": "",
+      "clientSecret": ""
+    },
+    "onedrive": {
+      "clientId": "",
+      "clientSecret": ""
+    }
+  }
+}

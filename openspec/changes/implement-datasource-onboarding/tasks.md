@@ -61,9 +61,9 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 7. Service — committed `config.example.json` template
 
-- [ ] 7.1 Write a test that reads `services/fs-sync/config.example.json` from the repo and asserts it is valid JSON with `schemaVersion: 1` and a `providers` object containing `google-drive` and `onedrive` keys (both with empty-string `clientId`/`clientSecret`)
-- [ ] 7.2 Create `services/fs-sync/config.example.json` matching the schema; commit
-- [ ] 7.3 Confirm `.gitignore` does NOT exclude the example file (only the user-managed `~/ft5/sync_app/config.json` should be untracked, and that path is outside the repo)
+- [x] 7.1 Write a test that reads `services/fs-sync/config.example.json` from the repo and asserts it is valid JSON with `schemaVersion: 1` and a `providers` object containing `google-drive` and `onedrive` keys (both with empty-string `clientId`/`clientSecret`) (test at `services/fs-sync/src/__tests__/config-example-template.test.ts` — 4 cases including amazon-s3-absent assertion)
+- [x] 7.2 Create `services/fs-sync/config.example.json` matching the schema; commit (clientId + clientSecret only for google-drive + onedrive; amazon-s3 intentionally absent — access-key auth, no OAuth registration)
+- [x] 7.3 Confirm `.gitignore` does NOT exclude the example file (verified — `git check-ignore` exit 1 = not ignored)
 
 ## 8. Service — `OAuthLoopbackBroker` (port from desktop)
 
