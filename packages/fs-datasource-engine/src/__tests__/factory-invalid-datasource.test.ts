@@ -28,6 +28,7 @@ import {
   createClientFactory,
   type CredentialShapeValidator,
   type EngineContext,
+  type PreAuthFactoryFn,
   type ProviderFactoryFn,
   type ProviderRegistry,
   type ProviderRegistryEntry,
@@ -58,7 +59,12 @@ function makeEngineContext(): EngineContext {
 function makeSpyRegistryEntry<P extends ProviderId>(): ProviderRegistryEntry<P> {
   return {
     create: vi.fn<ProviderFactoryFn<P>>(),
+    createForAuth: vi.fn<PreAuthFactoryFn<P>>(),
     validateCredentialShape: vi.fn<CredentialShapeValidator>(),
+    // No-op default — these tests target only `factory.create`, so the
+    // authKind discriminator is irrelevant. `"oauth"` is chosen as a
+    // stable placeholder.
+    authKind: "oauth",
   };
 }
 
@@ -170,7 +176,9 @@ describe("ClientFactory.create — InvalidDatasource (Decision 2)", () => {
 function makeRealValidatorDriveEntry(): ProviderRegistryEntry<"google-drive"> {
   return {
     create: vi.fn<ProviderFactoryFn<"google-drive">>(),
+    createForAuth: vi.fn<PreAuthFactoryFn<"google-drive">>(),
     validateCredentialShape: validateGoogleDriveCredentialShape,
+    authKind: "oauth",
   };
 }
 

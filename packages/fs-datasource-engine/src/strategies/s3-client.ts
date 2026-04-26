@@ -69,6 +69,7 @@ import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js"
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
+  type PreAuthFactoryFn,
 } from "../factory.js";
 
 // ---------------------------------------------------------------------------
@@ -793,6 +794,36 @@ export const createS3Client: ProviderFactoryFn<"amazon-s3"> = (
 ) => {
   const creds = readCredsFromStored(credentials);
   return new S3Client({ datasourceId, ctx }, creds);
+};
+
+/**
+ * Canonical `PreAuthFactoryFn` entry for `factory.createForAuth(...)` —
+ * implement-datasource-onboarding §3.4. S3 is a credentials-form provider:
+ * the factory contract passes `preAuth: null`. The strategy is constructed
+ * with placeholder `S3CredsMeta` — the AWS SDK client built from these
+ * placeholder values is unused on the createForAuth path because
+ * `doAuthenticateImpl()` returns a `CredentialsFormIntent` whose `submit()`
+ * builds its own AWS client (`buildAwsClient(submitted)`) from the values
+ * the user types in. No `aws.send(...)` call ever consumes the placeholder
+ * client. The placeholder `region` is a non-empty value because the AWS
+ * SDK's `S3Client` constructor validates `region` at construction-time
+ * (rejects empty string with "Region is missing"); the value chosen is
+ * neutral and explicitly marked as a placeholder.
+ */
+export const createS3ClientForAuth: PreAuthFactoryFn<"amazon-s3"> = (
+  datasourceId,
+  preAuth,
+  ctx,
+) => {
+  const placeholderCreds: S3CredsMeta = {
+    accessKeyId: "pre-auth-placeholder",
+    secretAccessKey: "pre-auth-placeholder",
+    // AWS SDK validates region at construction; "us-east-1" is the AWS
+    // default and a safe non-empty placeholder.
+    region: "us-east-1",
+    bucket: "pre-auth-placeholder",
+  };
+  return new S3Client({ datasourceId, ctx }, placeholderCreds, preAuth);
 };
 
 /**

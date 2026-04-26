@@ -77,6 +77,7 @@ import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js"
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
+  type PreAuthFactoryFn,
 } from "../factory.js";
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1175,22 @@ export const createOneDriveClientForRegistry: ProviderFactoryFn<"onedrive"> = (
   ctx,
 ) => {
   return createOneDriveClient(datasourceId, credentials, ctx);
+};
+
+/**
+ * Canonical `PreAuthFactoryFn` entry for `factory.createForAuth(...)` —
+ * implement-datasource-onboarding §3.4. Constructs the strategy without
+ * `StoredCredentials` (creds=null) and threads the `OAuthAppConfig` into
+ * the `preAuth` constructor slot. The strategy defaults `tenantId` to
+ * `"common"` on the preAuth path (per design.md Decision 13's OneDrive
+ * clarification — `OAuthAppConfig` deliberately omits `tenantId`).
+ */
+export const createOneDriveClientForAuth: PreAuthFactoryFn<"onedrive"> = (
+  datasourceId,
+  preAuth,
+  ctx,
+) => {
+  return new OneDriveClient({ datasourceId, ctx }, null, {}, preAuth);
 };
 
 /**

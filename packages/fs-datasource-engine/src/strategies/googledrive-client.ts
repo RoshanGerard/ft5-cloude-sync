@@ -99,6 +99,7 @@ import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js"
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
+  type PreAuthFactoryFn,
 } from "../factory.js";
 
 // ESM shim. This package is "type": "module", so bare `require` is not in
@@ -1607,6 +1608,23 @@ export const createGoogleDriveClientForRegistry: ProviderFactoryFn<"google-drive
   (datasourceId, credentials, ctx) => {
     return createGoogleDriveClient(datasourceId, credentials, ctx);
   };
+
+/**
+ * Canonical `PreAuthFactoryFn` entry for `factory.createForAuth(...)` —
+ * implement-datasource-onboarding §3.4. Constructs the strategy without
+ * `StoredCredentials` (creds=null) and threads the `OAuthAppConfig` into
+ * the `preAuth` constructor slot so `doAuthenticateImpl()` can read
+ * clientId / clientSecret / redirectUri without the legacy
+ * `creds.authResult.meta` pathway. The factory itself enforces the
+ * contract (non-null preAuth for OAuth-class providers; see §3.5).
+ */
+export const createGoogleDriveClientForAuth: PreAuthFactoryFn<"google-drive"> = (
+  datasourceId,
+  preAuth,
+  ctx,
+) => {
+  return new GoogleDriveClient({ datasourceId, ctx }, null, {}, preAuth);
+};
 
 /**
  * Per-provider credential-shape validator (per

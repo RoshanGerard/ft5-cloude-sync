@@ -70,6 +70,7 @@ export type {
   ClientFactory,
   CredentialShapeValidator,
   EngineContext,
+  PreAuthFactoryFn,
   ProviderFactoryFn,
   ProviderRegistry,
   ProviderRegistryEntry,

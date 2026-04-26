@@ -23,6 +23,7 @@ import {
   createDefaultProviderRegistry,
   type CredentialShapeValidator,
   type EngineContext,
+  type PreAuthFactoryFn,
   type ProviderFactoryFn,
   type ProviderRegistry,
   type ProviderRegistryEntry,
@@ -99,7 +100,13 @@ function makeSpyFactoryFn<P extends ProviderId>(): ProviderFactoryFn<P> {
 function makeSpyRegistryEntry<P extends ProviderId>(): ProviderRegistryEntry<P> {
   return {
     create: makeSpyFactoryFn<P>(),
+    createForAuth: vi.fn<PreAuthFactoryFn<P>>(),
     validateCredentialShape: vi.fn<CredentialShapeValidator>(),
+    // Default value chosen so the §3.5 createForAuth path can be
+    // exercised with non-null oauthAppConfig in the spy registry without
+    // tripping the credentials-form rejection arm. Tests that need a
+    // credentials-form discriminator override this field on the entry.
+    authKind: "oauth",
   };
 }
 
@@ -159,7 +166,12 @@ describe("createClientFactory", () => {
       .fn<ProviderFactoryFn<"amazon-s3">>()
       .mockReturnValue(fake);
     const registry: ProviderRegistry = {
-      "amazon-s3": { create, validateCredentialShape: vi.fn() },
+      "amazon-s3": {
+        create,
+        createForAuth: vi.fn<PreAuthFactoryFn<"amazon-s3">>(),
+        validateCredentialShape: vi.fn(),
+        authKind: "credentials-form",
+      },
       "google-drive": makeSpyRegistryEntry<"google-drive">(),
       onedrive: makeSpyRegistryEntry<"onedrive">(),
     };
@@ -203,7 +215,12 @@ describe("createClientFactory", () => {
         return makeFakeClient("amazon-s3", datasourceId);
       });
     const registry: ProviderRegistry = {
-      "amazon-s3": { create, validateCredentialShape: vi.fn() },
+      "amazon-s3": {
+        create,
+        createForAuth: vi.fn<PreAuthFactoryFn<"amazon-s3">>(),
+        validateCredentialShape: vi.fn(),
+        authKind: "credentials-form",
+      },
       "google-drive": makeSpyRegistryEntry<"google-drive">(),
       onedrive: makeSpyRegistryEntry<"onedrive">(),
     };
@@ -230,7 +247,12 @@ describe("createClientFactory", () => {
         makeFakeClient("amazon-s3", datasourceId),
       );
     const registry: ProviderRegistry = {
-      "amazon-s3": { create, validateCredentialShape: vi.fn() },
+      "amazon-s3": {
+        create,
+        createForAuth: vi.fn<PreAuthFactoryFn<"amazon-s3">>(),
+        validateCredentialShape: vi.fn(),
+        authKind: "credentials-form",
+      },
       "google-drive": makeSpyRegistryEntry<"google-drive">(),
       onedrive: makeSpyRegistryEntry<"onedrive">(),
     };
