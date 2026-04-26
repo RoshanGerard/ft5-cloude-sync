@@ -112,6 +112,6 @@ per CLAUDE.md.
 
 ## 14. Finishing
 
-- [ ] 14.1 Verify all checkboxes in this file are checked off
-- [ ] 14.2 Use Superpowers `finishing-a-development-branch` skill — the user picks merge / PR / cleanup
-- [ ] 14.3 BEFORE merge: archive this change in the worktree branch via `/opsx:archive` per CLAUDE.md ("Archive in the worktree branch *before* merging. Never merge an unarchived change.")
+- [x] 14.1 Verify all checkboxes in this file are checked off — only §14.2 and §14.3 remain pending; all earlier tasks (§1-§13) confirmed checked
+- [x] 14.2 Use Superpowers `finishing-a-development-branch` skill — the user picks merge / PR / cleanup (invoked after archive per the §14.3 ordering)
+- [x] 14.3 BEFORE merge: archive this change in the worktree branch via `/opsx:archive` per CLAUDE.md ("Archive in the worktree branch *before* merging. Never merge an unarchived change.")

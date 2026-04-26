@@ -3,9 +3,7 @@
 ## Purpose
 
 The `fs-sync-service` capability is the per-user background daemon that owns manual upload and one-way mirror-sync jobs for the `ft5-cloude-sync` desktop app. It runs independently of Electron (installed as a Scheduled Task on Windows, a LaunchAgent on macOS, or a `systemd --user` unit on Linux), so jobs continue after the app closes. It consumes `@ft5/fs-datasource-engine` for every provider call, persists jobs + a local-to-cloud sync snapshot in its own SQLite database at `$HOME/ft5/sync_app/sync.db`, exposes a newline-delimited JSON IPC surface over a named pipe (`\\.\pipe\ft5-sync` on Windows, `$HOME/ft5/sync_app/sync.sock` on Unix), enforces a global concurrency cap of 2 via a semaphore, applies a retry split (system-level network / rate-limit / auth-expired vs. user-configurable provider-error), and ships a plaintext `ConfigFileCredentialStore` with `0600` / user-ACL enforcement as its v1 `CredentialStore` binding. An input port (`MonitorEventSource`) is declared for a future `services/fs-monitor` change; in v1 the port is bound to a no-op and auto-sync commands are NOT exposed.
-
 ## Requirements
-
 ### Requirement: Service is a framework-agnostic, per-user Node.js daemon
 
 The sync service SHALL live at `services/fs-sync/` as a pnpm workspace entry. It SHALL import only from `@ft5/ipc-contracts`, `@ft5/fs-datasource-engine`, Drizzle ORM (`drizzle-orm`, `better-sqlite3`), Node.js built-ins (`net`, `fs`, `fs/promises`, `crypto`, `path`, `dns/promises`, `os`, `child_process`), and its own internal modules. It SHALL NOT import from `electron`, `@electron/*`, any path under `apps/desktop/`, or any renderer-scoped specifier. The service SHALL run under the identity of the current OS user and SHALL NOT require elevated privileges (no Administrator on Windows, no root on macOS/Linux) to start, serve requests, or execute jobs.
@@ -62,11 +60,27 @@ The service SHALL listen for client connections on a named-pipe path. In product
 
 The service SHALL accept and correctly respond to the following commands on its IPC channel: `sync:enqueue-upload`, `sync:enqueue-mirror`, `sync:list-jobs`, `sync:get-job`, `sync:cancel-job`, `sync:subscribe-events`, `sync:unsubscribe-events`, `sync:set-retry-policy`, `sync:get-retry-policy`, `sync:authenticate`, `sync:get-status`, `files:list`, `files:stat`, `files:search`, `files:remove`. Request and response types for every command SHALL be declared in `@ft5/ipc-contracts/sync-service` as discriminated unions, keyed by the `command` field. Any command frame whose `command` is not in this enumerated set SHALL receive a response with `ok: false, error.tag === 'unknown-command'`.
 
-The four `files:*` commands SHALL each accept `{ datasourceId: string, … }` and resolve the engine client for that `datasourceId` via the service's existing `ClientFactory`. The response envelope SHALL be a discriminated union `{ ok: true, value: T } | { ok: false, error: { tag: "auth-revoked" | "disconnected" | "rate-limited" | "other", message: string, retryable: boolean, retryAfterMs?: number } }` where `T` is:
+The four `files:*` commands SHALL each accept `{ datasourceId: string, … }` and resolve the engine client for that `datasourceId` via the service's existing `ClientFactory`. The response envelope SHALL be a discriminated union `{ ok: true, value: T } | { ok: false, error: { tag: FilesErrorTag, message: string, retryable: boolean, retryAfterMs?: number } }` where `FilesErrorTag` is exposed as an `as const` object with a derived type (matching the codebase convention for `FILES_CHANNELS` / `DATASOURCES_CHANNELS`):
+
+```typescript
+export const FilesErrorTag = {
+  AuthRevoked: "auth-revoked",
+  Disconnected: "disconnected",
+  RateLimited: "rate-limited",
+  Other: "other",
+  InvalidDatasource: "invalid-datasource",
+} as const;
+export type FilesErrorTag =
+  (typeof FilesErrorTag)[keyof typeof FilesErrorTag];
+```
+
+`T` is:
 - `files:list` → `{ entries: FileEntry[]; truncated: boolean }` (`truncated: true` when the provider returned a page marker the engine could not follow in this change).
 - `files:stat` → `{ entry: FileEntry }`.
 - `files:search` → `{ entries: FileEntry[]; truncated: boolean }`.
 - `files:remove` → `{ results: Array<{ path: string; handle: string; ok: true } | { path: string; handle: string; ok: false; error: { tag: …; message: string } }> }` — the outer `ok` is `true` whenever the command itself executes, per-target outcomes live in `results`. Each result echoes the caller-supplied `handle` so the renderer correlates by entry id (authoritative) rather than by `path` (ambiguous on providers that allow duplicate-name entries). The request SHALL be `{ datasourceId, targets: Array<{ path, handle, kind }> }`; the handler dispatches via `{ kind: "handle", handle }` for both `deleteFile` and `deleteDirectory`, skipping any `getMetadata` round-trip.
+
+The `normalizeFilesError` helper SHALL map engine `DatasourceError.tag` values to envelope `FilesErrorTag` values 1:1 for `auth-revoked` / `auth-expired` (→ `AuthRevoked`), `network-error` (→ `Disconnected`), `rate-limited` (→ `RateLimited`), and `invalid-datasource` (→ `InvalidDatasource`); all other engine tags (`not-found`, `conflict`, `unsupported`, `provider-error`, `cancelled`) SHALL map to `Other`. Any non-`DatasourceError` thrown value SHALL also map to `Other` with `retryable: false`.
 
 #### Scenario: Unknown command is rejected
 
@@ -82,6 +96,16 @@ The four `files:*` commands SHALL each accept `{ datasourceId: string, … }` an
 
 - **WHEN** a client sends `files:list` with `{ datasourceId, path: "/" }` and the datasource's credentials are revoked
 - **THEN** the service resolves the engine client via `ClientFactory`, invokes `client.listDirectory({ kind: "path", path: "/" })` which throws a normalized engine error whose tag is `auth-revoked`; the service responds with `{ ok: false, error: { tag: "auth-revoked", message: <engine message>, retryable: false } }`
+
+#### Scenario: `files:list` returns invalid-datasource envelope when the credential is missing
+
+- **WHEN** a client sends `files:list` with `{ datasourceId: "ds-orphan", path: "/" }` and `credentialStore.get("ds-orphan")` resolves to `null`
+- **THEN** the service's `resolveClient` throws `DatasourceError({ tag: "invalid-datasource", datasourceId: "ds-orphan", retryable: false, message: "Credentials are missing — reconnect this datasource" })`; the per-command handler's existing `try/catch` invokes `normalizeFilesError`; the response is `{ ok: false, error: { tag: "invalid-datasource", message: "Credentials are missing — reconnect this datasource", retryable: false } }`
+
+#### Scenario: `files:list` returns invalid-datasource envelope when the credential shape is wrong
+
+- **WHEN** a client sends `files:list` for a datasource whose stored credential's `providerId` is `"google-drive"` but the credential payload has S3-shaped fields (`accessKeyId` / `secretAccessKey` and no `accessToken`), and `factory.create` rejects the credential shape
+- **THEN** the response is `{ ok: false, error: { tag: "invalid-datasource", message: <engine factory message>, retryable: false } }` — same envelope shape as the missing-credential case; the renderer renders the same Pattern-A state regardless of which sub-condition triggered
 
 #### Scenario: `files:remove` processes N targets in parallel with per-target results keyed by handle
 
@@ -497,3 +521,20 @@ No other component in the repository SHALL write to `ConfigFileCredentialStore` 
 
 - **WHEN** a Vitest test grep-scans every `.ts` file under `services/fs-sync/src/` and `apps/desktop/src/` for calls to `ConfigFileCredentialStore.prototype.put` or equivalent
 - **THEN** the only call sites are inside (a) the `sync:authenticate` handler and (b) the engine's `BaseDatasourceClient` refresh path (invoked via the injected store), and NO match exists under `apps/desktop/src/`
+
+### Requirement: `resolveClient` throws typed `invalid-datasource` for missing credentials
+
+The service's `resolveClient` adapter (constructed in `services/fs-sync/src/main/bootstrap.ts`) SHALL be the single choke point that detects credential-presence misconfiguration. When `credentialStore.get(datasourceId)` resolves to `null`, `resolveClient` SHALL throw `new DatasourceError({ tag: "invalid-datasource", datasourceId, retryable: false, message: "Credentials are missing — reconnect this datasource" })`. The previous untyped `throw new Error("no credentials registered for datasourceId=…")` SHALL be replaced. Per-command `files:*` handlers SHALL NOT perform their own credential-presence checks — the per-command flow remains `try { client = await deps.resolveClient(...) } catch (err) { return { ok: false, error: normalizeFilesError(err) } }`, so the new typed error flows through the existing mapping automatically.
+
+Executors that consume `resolveClient` (the upload executor, the mirror-sync executor) SHALL also see the typed error; their existing failure handling SHALL be exercised against the new tag in tests.
+
+#### Scenario: Missing credential surfaces as DatasourceError, not generic Error
+
+- **WHEN** a unit test stubs `credentialStore.get("ds-missing")` to return `null` and invokes `resolveClient("ds-missing")`
+- **THEN** the call rejects with a `DatasourceError` instance (verifiable via `err instanceof DatasourceError && err.tag === "invalid-datasource"`); the message reads "Credentials are missing — reconnect this datasource"; `retryable` is `false`
+
+#### Scenario: Per-command handlers stay thin and propagate the new tag
+
+- **WHEN** a unit test wires the `files:list` handler with a `resolveClient` that throws the new typed error and dispatches a `files:list` request
+- **THEN** the handler's existing `try/catch` invokes `normalizeFilesError`; the response is `{ ok: false, error: { tag: "invalid-datasource", message, retryable: false } }`; the handler source contains NO additional credential-presence check beyond the existing `await deps.resolveClient(...)` call
+
