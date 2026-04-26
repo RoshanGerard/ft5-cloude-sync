@@ -50,6 +50,12 @@ export type {
 } from "./requests.js";
 
 export type {
+  AuthCancelledPayload,
+  AuthCompletedPayload,
+  AuthFailedPayload,
+  AuthFailedTag,
+  AuthInitiatedPayload,
+  AuthTimeoutPayload,
   JobCancelledPayload,
   JobCompletedPayload,
   JobEnqueuedPayload,

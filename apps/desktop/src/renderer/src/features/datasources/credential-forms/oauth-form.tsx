@@ -30,6 +30,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { ProviderId } from "@ft5/ipc-contracts";
+
 import { Button } from "@/components/ui/button";
 import { useAuthSession } from "../store";
 
@@ -97,10 +99,15 @@ export function OAuthForm({
     setStartError(null);
     setConfigMissing(null);
     try {
+      // The form receives `providerId: string` from the dialog's
+      // descriptor-based dispatch; the IPC surface narrows to `ProviderId`.
+      // The dialog only routes registered providers to the OAuthForm so the
+      // cast is safe at the call site.
+      const pid = providerId as ProviderId;
       const req =
         datasourceId !== undefined
-          ? { providerId, datasourceId }
-          : { providerId };
+          ? { providerId: pid, datasourceId }
+          : { providerId: pid };
       const res = await window.api.sync.authenticateStart(req);
       if (res.ok) {
         if (res.result.kind === "oauth") {
