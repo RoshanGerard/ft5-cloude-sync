@@ -53,11 +53,11 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 6. Service — `ServiceConfigStore`
 
-- [ ] 6.1 Write unit tests for `ServiceConfigStore` (`services/fs-sync/src/config/__tests__/service-config-store.test.ts`): `getOAuthAppConfig` happy path, missing-file error, missing-provider-entry error, empty-clientId error, empty-clientSecret error, `getRaw`/`setRaw` round-trip, atomic write (mode 0o600 on Unix)
-- [ ] 6.2 Implement `services/fs-sync/src/config/service-config-store.ts` to pass the tests; reuse the atomic-write pattern from `ConfigFileCredentialStore` (write-to-tmp + rename + chmod 0o600)
-- [ ] 6.3 Define `ServiceConfigMissingError` class with `path` and `providerId` fields
-- [ ] 6.4 Wire `ServiceConfigStore` into `services/fs-sync/src/main/bootstrap.ts` (new bootstrap stage between `construct-credential-store` and `construct-provider-registry`); update the `BootstrapStage` union; existing `bootstrap.test.ts` order assertion gets a new entry
-- [ ] 6.5 Add a path-resolver function `resolveServiceConfigPath` parallel to the existing `resolveCredentialsPath` in `services/fs-sync/src/env/paths.ts`; tests confirm the path is `<dataDir>/config.json`
+- [x] 6.1 Write unit tests for `ServiceConfigStore` (`services/fs-sync/src/config/__tests__/service-config-store.test.ts`): `getOAuthAppConfig` happy path, missing-file error, missing-provider-entry error, empty-clientId error, empty-clientSecret error, `getRaw`/`setRaw` round-trip, atomic write (mode 0o600 on Unix) — 10 tests; added unparseable-file scenario + `getRaw` empty-default-when-absent scenario per advisor guidance for §12 forward-compat
+- [x] 6.2 Implement `services/fs-sync/src/config/service-config-store.ts` to pass the tests; reuse the atomic-write pattern from `ConfigFileCredentialStore` (write-to-tmp + rename + chmod 0o600). Permission-widening read check intentionally omitted — OAuth app secrets are documented v1 plaintext (Risks §2) and the operator-edit workflow makes widened-mode reads expected
+- [x] 6.3 Define `ServiceConfigMissingError` class with `path` (absolute) and `providerId` fields; constructor takes a third `reason` argument that disambiguates the four failure modes for service-side diagnostics (file absent, file unparseable, provider entry absent, provider entry has empty fields). Only `path` and `providerId` cross the wire per the contract
+- [x] 6.4 Wire `ServiceConfigStore` into `services/fs-sync/src/main/bootstrap.ts` (new bootstrap stage `construct-service-config-store` between `construct-credential-store` and `construct-provider-registry`); `BootstrapStage` union and order-assertion test updated; `BootstrapOptions.configPath?` added so tests can scope to a scratch dir; `Runtime.serviceConfigStore` added so §9 authenticate-start handler can reach the same instance bootstrap composed
+- [x] 6.5 Add a path-resolver function `resolveServiceConfigPath` parallel to the existing `resolveCredentialsPath` in `services/fs-sync/src/env/paths.ts`; tests confirm the path is `<dataDir>/config.json` for both prod and dev (the dataDir override differentiates the two)
 
 ## 7. Service — committed `config.example.json` template
 

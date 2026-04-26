@@ -26,6 +26,7 @@ import {
 import { createResolveClient } from "./resolve-client.js";
 
 import { buildCommandHandlers } from "../commands/handlers.js";
+import { ServiceConfigStore } from "../config/service-config-store.js";
 import { ConfigFileCredentialStore } from "../credential-store/config-file.js";
 import { applyMigrations } from "../db/migrations.js";
 import { openDatabase } from "../db/open.js";
@@ -35,6 +36,7 @@ import {
   resolveDataDir,
   resolveDbPath,
   resolvePidPath,
+  resolveServiceConfigPath,
   resolveSocketPath,
 } from "../env/paths.js";
 import { createEventBus, type EventBus } from "../events/event-bus.js";
@@ -60,6 +62,7 @@ export type BootstrapStage =
   | "integrity-ok"
   | "acquire-pid-guard"
   | "construct-credential-store"
+  | "construct-service-config-store"
   | "construct-provider-registry"
   | "construct-client-factory"
   | "construct-scheduler"
@@ -113,12 +116,23 @@ export interface BootstrapOptions {
   readonly pidPath?: string;
   readonly dbPath?: string;
   readonly credentialsPath?: string;
+  // Path seam for the service-owned OAuth-app config file. Optional so
+  // tests can scope to a scratch dir; production resolves via
+  // `resolveServiceConfigPath`. The store does NOT auto-create this file —
+  // the user copies `services/fs-sync/config.example.json` into place per
+  // README §Provider OAuth registration.
+  readonly configPath?: string;
 }
 
 export interface Runtime {
   readonly socketPath: string;
   readonly db: Database.Database;
   readonly scheduler: Scheduler;
+  // Available so the §9 authenticate-start handler (and the §12 get/set-config
+  // handlers) can reach the same instance that bootstrap composed. Service
+  // owns the single source of truth for OAuth app config during process
+  // lifetime per design.md Decision 4.
+  readonly serviceConfigStore: ServiceConfigStore;
   readonly stop: () => Promise<void>;
 }
 
@@ -133,6 +147,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
   const socketPath = options.socketPath ?? resolveSocketPath(pathOpts, env);
   const credentialsPath =
     options.credentialsPath ?? resolveCredentialsPath(pathOpts, env);
+  const configPath =
+    options.configPath ?? resolveServiceConfigPath(pathOpts, env);
 
   // Data directory must exist with the right mode BEFORE anything else
   // touches it (openDatabase will create sync.db inside). This is setup,
@@ -176,6 +192,18 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     // Clean up any orphan `.tmp` left by a prior crash between write+rename.
     await credentialStore.cleanupOrphanTmp();
     observer?.onStage("construct-credential-store");
+
+    // 5b. construct-service-config-store
+    // Per design.md Decision 4: service owns the per-provider OAuth app
+    // config. The store does NOT touch disk at construction time; reads are
+    // lazy at `sync:authenticate-start` time so a missing/invalid file does
+    // not break the boot path — it surfaces as the typed
+    // `service-config-missing` wire error inline in the renderer's oauth-form
+    // failure state instead.
+    const serviceConfigStore = new ServiceConfigStore({
+      filePath: configPath,
+    });
+    observer?.onStage("construct-service-config-store");
 
     // 6. construct-provider-registry
     const registry: ProviderRegistry = createDefaultProviderRegistry();
@@ -289,6 +317,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       socketPath,
       db: runtimeDb,
       scheduler: runtimeScheduler,
+      serviceConfigStore,
       async stop(): Promise<void> {
         // Shutdown: probe → scheduler → server → db → PID. Swallow
         // per-step errors so later steps still run.

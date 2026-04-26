@@ -66,12 +66,18 @@ describe("bootstrap ordering", () => {
     });
 
     // The test-level assertion: every stage fires exactly once, in order.
+    // `construct-service-config-store` was added by implement-datasource-
+    // onboarding §6.4; it sits between credential-store and provider-registry
+    // so the OAuth app config is available before any factory.createForAuth
+    // call. The §8/§14 follow-ups will add `construct-loopback-broker` after
+    // `construct-network-probe`; this test covers only the §6 stage.
     const expected: BootstrapStage[] = [
       "open-database",
       "apply-migrations",
       "integrity-ok",
       "acquire-pid-guard",
       "construct-credential-store",
+      "construct-service-config-store",
       "construct-provider-registry",
       "construct-client-factory",
       "construct-scheduler",
