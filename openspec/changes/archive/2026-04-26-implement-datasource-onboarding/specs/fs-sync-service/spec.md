@@ -40,7 +40,7 @@ export type FilesErrorTag =
 - **WHEN** a contract test imports the command-name enumeration from `@ft5/ipc-contracts/sync-service`
 - **THEN** `"sync:get-config"` and `"sync:set-config"` are each present exactly once
 
-### Requirement: `sync:authenticate-start` / `complete` / `cancel` are the canonical credential-writing entry point
+### Requirement: `sync:authenticate` is the canonical credential-writing entry point
 
 The service SHALL accept the three-command authenticate split as the only path that writes to `ConfigFileCredentialStore`. No other component in the repository SHALL write to the credential store outside of (a) these three handlers and (b) the engine's `BaseDatasourceClient` single-flight refresh path (which already writes through the injected `CredentialStore`). Desktop main SHALL NOT have a local credential store.
 
