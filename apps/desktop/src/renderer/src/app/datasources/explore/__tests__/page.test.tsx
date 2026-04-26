@@ -37,7 +37,14 @@ import {
   vi,
   type Mock,
 } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 
@@ -95,17 +102,24 @@ const KNOWN_DATASOURCES: DatasourceSummary[] = [
 
 let listMock: Mock;
 
-function installApiMock(datasources: DatasourceSummary[]): void {
+function installApiMock(
+  datasources: DatasourceSummary[],
+  filesListOverride?: Mock,
+  removeOverride?: Mock,
+): void {
   listMock = vi.fn().mockResolvedValue({ datasources });
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
     datasources: {
       list: listMock,
       add: vi.fn(),
-      remove: vi.fn(),
+      remove: removeOverride ?? vi.fn().mockResolvedValue({ ok: true }),
       action: vi.fn(),
-      upload: vi.fn(),
+      startConsent: vi.fn().mockResolvedValue({ sessionId: "sess-1" }),
+      cancelConsent: vi.fn(),
+      onEvent: vi.fn().mockReturnValue(() => {}),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
+      upload: vi.fn(),
     },
     files: {
       // Default to an empty folder so the FileExplorer composite's
@@ -113,7 +127,9 @@ function installApiMock(datasources: DatasourceSummary[]): void {
       // without needing per-test fixtures here (route tests only assert
       // that the explorer mounts for a known id; per-entry rendering is
       // covered by `file-explorer-composite.test.tsx`).
-      list: vi.fn().mockResolvedValue({ entries: [], nextCursor: null }),
+      list:
+        filesListOverride ??
+        vi.fn().mockResolvedValue({ entries: [], nextCursor: null }),
       stat: vi.fn(),
       search: vi.fn(),
       rename: vi.fn(),
@@ -212,5 +228,84 @@ describe("/datasources/explore route page (task 2.3)", () => {
 
     const store = getOrCreateExplorerStore("ds-s3-archive");
     expect(store.getSnapshot().currentPath).toBe("/");
+  });
+
+  // ---------------------------------------------------------------------
+  // C1 from the §12 code review — Remove from `<InvalidDatasourceState>`
+  // navigates the route out of the explorer. Without this wiring the
+  // route would keep `phase: "found"`, `useExplorerData` would re-fetch
+  // `files:list`, the engine would re-throw `invalid-datasource`, and
+  // the user would be trapped in the same Pattern-A state.
+  // Spec source: openspec/changes/add-invalid-datasource-state/specs/file-explorer/spec.md
+  // "On successful Remove (the IPC call resolves and a `datasource-removed`
+  // event arrives), the file-explorer route SHALL navigate back to /".
+  // ---------------------------------------------------------------------
+  it("flips to 'Datasource not found' after Remove confirms from InvalidDatasourceState", async () => {
+    currentIdParam = "ds-gdrive-personal";
+
+    // Drive the explorer into the invalid-datasource arm: files.list
+    // resolves with the typed envelope. The engine layer's mapping in
+    // §6 already forces `tag === "invalid-datasource"` for missing
+    // credentials.
+    const filesListMock = vi.fn().mockResolvedValue({
+      ok: false,
+      error: {
+        tag: "invalid-datasource",
+        message: "Credentials are missing — reconnect this datasource",
+        retryable: false,
+      },
+    });
+    const removeMock = vi.fn().mockResolvedValue({ ok: true });
+    installApiMock(KNOWN_DATASOURCES, filesListMock, removeMock);
+
+    render(<ExplorePage />);
+
+    // 1. Wait for the Pattern-A state component to render. The
+    //    `<InvalidDatasourceArm>` mounts `<InvalidDatasourceState>` once
+    //    `useExplorerData` resolves the typed-error envelope.
+    const arm = await screen.findByTestId(
+      "file-explorer-state-invalid-datasource",
+    );
+    expect(arm).toBeInTheDocument();
+
+    // 2. Click "Remove datasource" inside the state. This opens the
+    //    shared `<ConfirmRemoveDatasourceDialog>`; the IPC has not been
+    //    called yet.
+    fireEvent.click(
+      within(arm).getByRole("button", { name: /remove datasource/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(removeMock).not.toHaveBeenCalled();
+
+    // 3. Click the destructive Remove inside the dialog. This dispatches
+    //    `actions.remove({ datasourceId })`; once it resolves, the arm's
+    //    `onDatasourceRemoved` callback fires; the route flips to
+    //    `phase: "not-found"`; `<DatasourceNotFound>` renders.
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Remove" }),
+    );
+
+    await waitFor(() => {
+      expect(removeMock).toHaveBeenCalledTimes(1);
+    });
+    expect(removeMock.mock.calls[0]![0]).toEqual({
+      datasourceId: "ds-gdrive-personal",
+    });
+
+    // 4. Route now in `not-found`. The Pattern-A state must be gone, and
+    //    the "Datasource not found" heading + "Return to dashboard" link
+    //    must render.
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("file-explorer-state-invalid-datasource"),
+      ).not.toBeInTheDocument();
+    });
+    const heading = screen.getByRole("heading", {
+      name: /datasource not found/i,
+    });
+    expect(heading).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: /return to dashboard/i });
+    expect(link).toHaveAttribute("href", "/");
   });
 });

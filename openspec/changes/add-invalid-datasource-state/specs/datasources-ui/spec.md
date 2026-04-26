@@ -60,7 +60,7 @@ Activating the Reconnect button SHALL call `window.api.datasources.startConsent(
 
 The container element SHALL carry `data-testid="invalid-datasource-banner"` and `aria-label="Reconfiguration required"`. Tab order SHALL be banner-copy → Reconnect → Remove → next card element.
 
-The Reconnect button SHALL call `window.api.datasources.startConsent({ providerId, datasourceId })` and follow the same `useConsentSession` lifecycle as `AuthErrorBanner` (pending → "Connecting…" with spinner; completed → banner unmounts via summary refresh; failed/cancelled/timeout → banner re-enables with "Reconnect failed — please try again." inline).
+The Reconnect button SHALL call `window.api.datasources.startConsent({ providerId, datasourceId })` and follow the same `useConsentSession` lifecycle as `AuthErrorBanner` (pending → button disabled and label swapped to "Connecting…"; completed → banner unmounts via summary refresh; failed/cancelled/timeout → banner re-enables with "Reconnect failed — please try again." inline). No animated spinner — `animate-spin` is forbidden in feature code by the `scripts/motion-budget.test.ts` guardrail per `ui-ux-design` Decision 10; the disabled label-swap matches the existing `AuthErrorBanner` pattern in `card.tsx:283-326`.
 
 The Remove button SHALL open the shared `<ConfirmRemoveDatasourceDialog>` defined by the `file-explorer` capability (the same component used by the explorer state's Remove button) before dispatching `window.api.datasources.remove({ datasourceId })`. On a successful Remove, the card unmounts via the existing `datasource-removed` event flow.
 
@@ -72,7 +72,7 @@ The Remove button SHALL open the shared `<ConfirmRemoveDatasourceDialog>` define
 #### Scenario: Reconnect button drives the same consent flow as AuthErrorBanner
 
 - **WHEN** the user activates the banner's Reconnect button for a datasource with id `ds-42` and provider `google-drive`
-- **THEN** `window.api.datasources.startConsent({ providerId: "google-drive", datasourceId: "ds-42" })` is called exactly once, the returned `sessionId` is recorded, the button reads "Connecting…" with a spinner during pending, and on a `consent-completed` event with that `sessionId` the card's status flips back to `connected` via the existing event stream and the banner unmounts
+- **THEN** `window.api.datasources.startConsent({ providerId: "google-drive", datasourceId: "ds-42" })` is called exactly once, the returned `sessionId` is recorded, the button is disabled with its visible label swapped to "Connecting…" during pending, and on a `consent-completed` event with that `sessionId` the card's status flips back to `connected` via the existing event stream and the banner unmounts
 
 #### Scenario: Remove button opens the shared confirm dialog before dispatching IPC
 

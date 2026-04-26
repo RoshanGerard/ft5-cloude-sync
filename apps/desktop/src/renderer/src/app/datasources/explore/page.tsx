@@ -146,6 +146,14 @@ function ExplorePageContent() {
   // into `useConsentSession`. The dashboard route at `app/page.tsx` already
   // wraps in the same provider; the explore route was missing it because
   // §7's component had not been wired in yet.
+  // `onDatasourceRemoved` flips the route to `not-found` after the user
+  // confirms Remove from the explorer's invalid-datasource arm. Without
+  // this, the underlying datasource id is gone but the explorer keeps
+  // re-fetching `files:list`, which the engine answers with another
+  // `invalid-datasource` envelope — infinite loop into the same Pattern-A
+  // state. `not-found` renders `<DatasourceNotFound>` with a "Return to
+  // dashboard" link, satisfying the file-explorer spec scenario "On
+  // successful Remove ... the file-explorer route SHALL navigate back to /".
   return (
     <DatasourcesProvider>
       <FileExplorer
@@ -153,6 +161,7 @@ function ExplorePageContent() {
         providerId={state.providerId}
         providerKind={state.providerKind}
         providerStatus={state.providerStatus}
+        onDatasourceRemoved={() => setState({ phase: "not-found" })}
       />
     </DatasourcesProvider>
   );

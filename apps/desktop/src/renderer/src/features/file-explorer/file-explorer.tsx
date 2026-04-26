@@ -129,6 +129,19 @@ export interface FileExplorerProps {
    * Tests inject their own toaster via this prop and bypass Sonner.
    */
   toaster?: UploadToaster;
+  /**
+   * Optional callback invoked after the user confirms Remove from the
+   * `<InvalidDatasourceState>`'s `<ConfirmRemoveDatasourceDialog>` AND
+   * the `actions.remove({ datasourceId })` IPC resolves. The route layer
+   * uses this to navigate the user out of the explore surface (the
+   * underlying datasource no longer exists, so a re-fetch would loop
+   * back into the same `invalid-datasource` arm — see
+   * `openspec/changes/add-invalid-datasource-state/specs/file-explorer/spec.md`
+   * "On successful Remove (the IPC call resolves and a `datasource-removed`
+   * event arrives), the file-explorer route SHALL navigate back to /").
+   * Tests that mount `<FileExplorer>` in isolation may omit it.
+   */
+  onDatasourceRemoved?: () => void;
 }
 
 /**
@@ -184,10 +197,12 @@ function InvalidDatasourceArm({
   providerId,
   datasourceId,
   onReconnectSucceeded,
+  onDatasourceRemoved,
 }: {
   providerId?: string;
   datasourceId: string;
   onReconnectSucceeded: () => void;
+  onDatasourceRemoved?: () => void;
 }) {
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
   const actions = useDatasourceActions();
@@ -202,9 +217,10 @@ function InvalidDatasourceArm({
       <ConfirmRemoveDatasourceDialog
         open={removeDialogOpen}
         onCancel={() => setRemoveDialogOpen(false)}
-        onConfirm={() => {
+        onConfirm={async () => {
           setRemoveDialogOpen(false);
-          void actions.remove({ datasourceId });
+          await actions.remove({ datasourceId });
+          onDatasourceRemoved?.();
         }}
       />
     </>
@@ -218,6 +234,7 @@ export function FileExplorer({
   providerStatus,
   conflictResolver: conflictResolverProp,
   toaster: toasterProp,
+  onDatasourceRemoved,
 }: FileExplorerProps) {
   // Task 7 wiring (post-Section-9 cleanup): instantiate the production
   // shadcn-dialog-backed conflict resolver once per mount so the same
@@ -569,6 +586,7 @@ export function FileExplorer({
                   providerId={providerId}
                   datasourceId={datasourceId}
                   onReconnectSucceeded={() => store.retryLoad()}
+                  onDatasourceRemoved={onDatasourceRemoved}
                 />
               );
             }
