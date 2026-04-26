@@ -30,8 +30,6 @@ import {
   type ReactNode,
 } from "react";
 import type {
-  ConsentEvent,
-  DatasourceErrorTag,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -41,6 +39,7 @@ import type {
   DatasourceSummary,
 } from "@ft5/ipc-contracts";
 import type {
+  AuthFailedTag,
   JobCancelledPayload,
   JobCompletedPayload,
   JobEnqueuedPayload,
@@ -394,55 +393,83 @@ function jobsReducer(state: JobsState, action: JobsAction): JobsState {
 // `window.api.sync.onEvent` independently when they ship.
 
 // ---------------------------------------------------------------------------
-// Consent sessions slice
+// Auth sessions slice (implement-datasource-onboarding §21)
 //
-// Tracks in-flight OAuth consent sessions initiated via `startConsent`. The
-// provider subscribes to `window.api.datasources.onEvent` and dispatches
-// `ConsentEvent` variants here. `useConsentSession(sessionId)` exposes the
-// per-session state to form components.
+// Tracks in-flight authenticate sessions initiated via
+// `window.api.sync.authenticateStart`. The provider subscribes to
+// `window.api.sync.onEvent` and dispatches the `auth-*` SyncEvent variants
+// here. `useAuthSession(correlationId)` exposes the per-session state to
+// form components and reconnect banners.
+//
+// Keys on `correlationId` (not `sessionId`) because the service-side
+// authenticate flow allocates correlation ids; the renderer never mints
+// them. Replaces the prior `useConsentSession` slice that consumed the
+// retired `consent-*` events on the datasources channel.
 // ---------------------------------------------------------------------------
 
-export type ConsentSessionState =
+export type AuthSessionState =
   | { status: "pending" }
   | { status: "completed"; datasourceId: string }
   | { status: "cancelled" }
-  | { status: "failed"; tag: DatasourceErrorTag; message?: string }
+  | { status: "failed"; tag: AuthFailedTag; message?: string }
   | { status: "timeout" };
 
-type ConsentSessionsAction = { type: "consent/event"; event: ConsentEvent };
+type AuthSessionsAction =
+  | {
+      type: "auth/initiated";
+      payload: { correlationId: string };
+    }
+  | {
+      type: "auth/completed";
+      payload: { correlationId: string; datasourceId: string };
+    }
+  | {
+      type: "auth/cancelled";
+      payload: { correlationId: string };
+    }
+  | {
+      type: "auth/failed";
+      payload: { correlationId: string; tag: AuthFailedTag; message?: string };
+    }
+  | {
+      type: "auth/timeout";
+      payload: { correlationId: string };
+    };
 
-function consentSessionsReducer(
-  state: Map<string, ConsentSessionState>,
-  action: ConsentSessionsAction,
-): Map<string, ConsentSessionState> {
-  const { event } = action;
+function authSessionsReducer(
+  state: Map<string, AuthSessionState>,
+  action: AuthSessionsAction,
+): Map<string, AuthSessionState> {
   const next = new Map(state);
-  switch (event.event) {
-    case "consent-started":
-      if (!next.has(event.sessionId)) {
-        next.set(event.sessionId, { status: "pending" });
+  switch (action.type) {
+    case "auth/initiated":
+      // Idempotent — only seed if no terminal state has landed yet.
+      if (!next.has(action.payload.correlationId)) {
+        next.set(action.payload.correlationId, { status: "pending" });
       }
       return next;
-    case "consent-completed":
-      next.set(event.sessionId, {
+    case "auth/completed":
+      next.set(action.payload.correlationId, {
         status: "completed",
-        datasourceId: event.datasourceId,
+        datasourceId: action.payload.datasourceId,
       });
       return next;
-    case "consent-cancelled":
-      next.set(event.sessionId, { status: "cancelled" });
+    case "auth/cancelled":
+      next.set(action.payload.correlationId, { status: "cancelled" });
       return next;
-    case "consent-failed": {
-      const sessionState: ConsentSessionState = {
+    case "auth/failed": {
+      const sessionState: AuthSessionState = {
         status: "failed",
-        tag: event.tag,
-        ...(event.message !== undefined ? { message: event.message } : {}),
+        tag: action.payload.tag,
+        ...(action.payload.message !== undefined
+          ? { message: action.payload.message }
+          : {}),
       };
-      next.set(event.sessionId, sessionState);
+      next.set(action.payload.correlationId, sessionState);
       return next;
     }
-    case "consent-timeout":
-      next.set(event.sessionId, { status: "timeout" });
+    case "auth/timeout":
+      next.set(action.payload.correlationId, { status: "timeout" });
       return next;
     default:
       return state;
@@ -464,7 +491,7 @@ interface DatasourcesContextValue {
   state: DatasourcesState;
   jobs: JobsState;
   actions: DatasourceActions;
-  consentSessions: Map<string, ConsentSessionState>;
+  authSessions: Map<string, AuthSessionState>;
 }
 
 const DatasourcesContext = createContext<DatasourcesContextValue | null>(null);
@@ -481,11 +508,11 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
   // Decision-13 jobs slice. Driven exclusively by `window.api.sync.onEvent`.
   const [jobs, dispatchJobs] = useReducer(jobsReducer, EMPTY_JOBS_STATE);
 
-  // Consent sessions slice. Driven by `window.api.datasources.onEvent`
-  // ConsentEvent variants.
-  const [consentSessions, dispatchConsent] = useReducer(
-    consentSessionsReducer,
-    new Map<string, ConsentSessionState>(),
+  // Auth sessions slice (§21). Driven by `window.api.sync.onEvent`
+  // auth-* event variants. Replaces the retired `consent-*` slice.
+  const [authSessions, dispatchAuth] = useReducer(
+    authSessionsReducer,
+    new Map<string, AuthSessionState>(),
   );
 
   // Mount sentinel: gates every post-await dispatch so we do not call
@@ -646,6 +673,54 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
         case "job-recovered":
           dispatchJobs({ type: "sync/job-recovered", payload: event.payload });
           return;
+        // Authenticate lifecycle (implement-datasource-onboarding §21).
+        // The `useAuthSession(correlationId)` hook reads from the
+        // resulting `authSessions` map; correlation filtering happens at
+        // the hook layer so the reducer is correlation-agnostic.
+        case "auth-initiated":
+          dispatchAuth({
+            type: "auth/initiated",
+            payload: { correlationId: event.payload.correlationId },
+          });
+          return;
+        case "auth-completed":
+          dispatchAuth({
+            type: "auth/completed",
+            payload: {
+              correlationId: event.payload.correlationId,
+              datasourceId: event.payload.datasourceId,
+            },
+          });
+          // Refresh the datasource list so the reconnected card's status
+          // transitions from "error" to "connected" once the desktop
+          // event-bridge has handled the paired `credential-persisted`
+          // event by calling `registry.add(summary)`.
+          void refresh();
+          return;
+        case "auth-cancelled":
+          dispatchAuth({
+            type: "auth/cancelled",
+            payload: { correlationId: event.payload.correlationId },
+          });
+          return;
+        case "auth-failed":
+          dispatchAuth({
+            type: "auth/failed",
+            payload: {
+              correlationId: event.payload.correlationId,
+              tag: event.payload.tag,
+              ...(event.payload.message !== undefined
+                ? { message: event.payload.message }
+                : {}),
+            },
+          });
+          return;
+        case "auth-timeout":
+          dispatchAuth({
+            type: "auth/timeout",
+            payload: { correlationId: event.payload.correlationId },
+          });
+          return;
         // Per Decision 13, the card derivation does NOT depend on these.
         // Ancillary surfaces (toasts, banners) can subscribe independently.
         case "sync-completed":
@@ -663,41 +738,14 @@ export function DatasourcesProvider({ children }: DatasourcesProviderProps) {
     // here won't cause re-subscription.
   }, [refresh]);
 
-  // Consent-event subscription. Subscribes to the datasources event channel
-  // and dispatches only ConsentEvent variants to the consent sessions reducer.
-  // On consent-completed, also triggers a list refresh so card statuses
-  // reflect the newly-connected datasource without waiting for a manual
-  // refresh. Non-consent events (AnyDatasourceEvent) are silently ignored here
-  // — they are handled by per-card `useDatasourceEvents` subscribers.
-  useEffect(() => {
-    const datasourcesApi = window.api?.datasources;
-    if (!datasourcesApi?.onEvent) return;
-    const unsubscribe = datasourcesApi.onEvent((event) => {
-      if (!mountedRef.current) return;
-      // Consent events carry an `event` discriminator (string starting with
-      // "consent-"). Engine events carry `datasourceType`. Narrowing here
-      // avoids importing a runtime type guard from ipc-contracts.
-      if ("event" in event && (event.event as string).startsWith("consent-")) {
-        const consentEvent = event as ConsentEvent;
-        dispatchConsent({ type: "consent/event", event: consentEvent });
-        // Refresh the datasource list so the reconnected card's status
-        // transitions from "error" to "connected".
-        if (consentEvent.event === "consent-completed") {
-          void refresh();
-        }
-      }
-    });
-    return unsubscribe;
-  }, [refresh]);
-
   const actions = useMemo<DatasourceActions>(
     () => ({ refresh, add, remove, action }),
     [refresh, add, remove, action],
   );
 
   const value = useMemo<DatasourcesContextValue>(
-    () => ({ state, jobs, actions, consentSessions }),
-    [state, jobs, actions, consentSessions],
+    () => ({ state, jobs, actions, authSessions }),
+    [state, jobs, actions, authSessions],
   );
 
   return (
@@ -764,21 +812,26 @@ export interface UploadProgressView {
  * `startedAt` field, and `updatedAt` is overwritten on every `job-progress`
  * tick for freshness, so `createdAt` is the only stable per-job ordinal.
  */
-const PENDING_SESSION: ConsentSessionState = { status: "pending" };
+const PENDING_SESSION: AuthSessionState = { status: "pending" };
 
 /**
- * Returns the current consent session state for `sessionId`. Starts at
- * `{ status: "pending" }` and transitions when the provider receives a
- * matching `ConsentEvent` from the datasources event channel.
+ * Returns the current authenticate session state for `correlationId`.
+ * Starts at `{ status: "pending" }` and transitions when the provider
+ * receives a matching `auth-*` `SyncEvent` from the sync event channel.
+ *
+ * Renamed from `useConsentSession` per implement-datasource-onboarding
+ * §21. The consent-* event family was retired in favour of the
+ * service-emitted auth-* family on the sync event stream — see
+ * design.md Decision 7.
  */
-export function useConsentSession(sessionId: string): ConsentSessionState {
+export function useAuthSession(correlationId: string): AuthSessionState {
   const ctx = useContext(DatasourcesContext);
   if (ctx === null) {
     throw new Error(
-      "useConsentSession must be used within a <DatasourcesProvider>.",
+      "useAuthSession must be used within a <DatasourcesProvider>.",
     );
   }
-  return ctx.consentSessions.get(sessionId) ?? PENDING_SESSION;
+  return ctx.authSessions.get(correlationId) ?? PENDING_SESSION;
 }
 
 export function useDatasourceUploadProgress(

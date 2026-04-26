@@ -163,11 +163,11 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 21. Renderer — `useAuthSession` hook (replaces `useConsentSession`)
 
-- [ ] 21.1 Write failing tests in `apps/desktop/src/renderer/src/features/datasources/__tests__/use-auth-session.test.tsx`: hook returns `{status: "pending"}` initially; transitions to `completed` on matching `auth-completed` event delivered via `window.api.sync.onEvent`; ignores events for other correlationIds; transitions to `cancelled` / `failed` / `timeout` on the corresponding events; status carries `tag` and `message` for `failed` (including `service-config-missing`)
-- [ ] 21.2 Implement `useAuthSession(correlationId)` hook in `apps/desktop/src/renderer/src/features/datasources/store.tsx` (or a sibling `use-auth-session.ts`); subscribe via `window.api.sync.onEvent` exactly once per correlation; filter by `event.correlationId === correlationId`
-- [ ] 21.3 Rerun → green
-- [ ] 21.4 Update the store's existing reducer/state slice if needed to track `auth-*` events; remove the `consent-*` event slice
-- [ ] 21.5 Delete `useConsentSession` export and any internal consent-session state once no consumer remains (Phase 22+ deletes the consumers)
+- [x] 21.1 Failing tests in `apps/desktop/src/renderer/src/features/datasources/__tests__/use-auth-session.test.tsx` — 8 cases covering pending initial state, auth-completed → completed + datasourceId, auth-cancelled / auth-failed / auth-timeout transitions, correlationId filtering, non-auth event isolation, and message/tag pass-through
+- [x] 21.2 Implemented `useAuthSession(correlationId)` in `store.tsx` reading from the new `authSessions` map. Hook is correlation-agnostic — the reducer keys all entries by correlationId and the hook filters at lookup time
+- [x] 21.3 8 green
+- [x] 21.4 Replaced `consentSessionsReducer` with `authSessionsReducer`; auth events now flow through the existing single `window.api.sync.onEvent` subscription. Removed the legacy `window.api.datasources.onEvent` consent subscription
+- [x] 21.5 Deleted `useConsentSession` export. Consumers in §22-§27 fail to compile until each phase migrates them; per advisor, the §21 commit deliberately leaves those breaks visible so the §22-§27 work is clearly scoped
 
 ## 22. Renderer — `oauth-form.tsx` migration
 
