@@ -132,9 +132,9 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 17. Desktop main — idempotent `registry.add`
 
-- [ ] 17.1 Write failing tests in `apps/desktop/src/main/datasources/__tests__/registry-idempotent.test.ts`: calling `registry.add` twice with the same `id` does NOT throw; the second call updates `display_name` / `status` / `error_kind` if they differ; `created_at` is preserved (only `updated_at` advances)
-- [ ] 17.2 Modify `apps/desktop/src/main/datasources/registry.ts` `insertStmt` to use `INSERT INTO datasources ... ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name, status=excluded.status, error_reason=excluded.error_reason, error_kind=excluded.error_kind, updated_at=?`
-- [ ] 17.3 Rerun → green; rerun the existing `registry.test.ts` to confirm no regressions on first-insert semantics
+- [x] 17.1 Write failing tests in `apps/desktop/src/main/datasources/registry-idempotent.test.ts` (file lives as a sibling of `registry.test.ts` per local convention, not under a `__tests__/` subdir): calling `registry.add` twice with the same `id` does NOT throw; the second call updates `display_name` / `status` / `error_reason` / `error_kind` if they differ; `created_at` is preserved (only `updated_at` advances). All three failing on `UNIQUE constraint failed: datasources.id` as expected
+- [x] 17.2 Modified `apps/desktop/src/main/datasources/registry.ts` `insertStmt` to `INSERT ... VALUES (...) ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, status = excluded.status, error_reason = excluded.error_reason, error_kind = excluded.error_kind, updated_at = excluded.updated_at`. Columns deliberately NOT updated on conflict: `created_at` (audit stable), `paused` (user-set flag must survive re-emit), `item_count` / `last_sync_at` (real sync history must not regress to first-add defaults)
+- [x] 17.3 Rerun → green: 3 new idempotent tests + 15 existing registry tests = 18 green
 
 ## 18. Desktop main — delete `consent-broker.ts` + tests
 
