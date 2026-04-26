@@ -1,24 +1,19 @@
 /** @vitest-environment jsdom */
 //
-// Tasks 7.1–7.4 — InvalidDatasourceState component.
+// implement-datasource-onboarding §27 — InvalidDatasourceState migration tests.
 //
-// 7.1: Render structure — icon, headline, body, both buttons; role="alert",
-//      aria-live="polite", data-testid="file-explorer-state-invalid-datasource";
-//      AlertTriangle icon carries `text-destructive` and `aria-hidden="true"`.
-// 7.2: useConsentSession lifecycle — pending → buttons disabled + label
-//      "Connecting…" (no animate-spin spinner — Decision 10 motion budget
-//      forbids `animate-spin` in feature code; mirrors AuthErrorBanner
-//      label-swap pattern in card.tsx);
-//      completed → onReconnectSucceeded() fires exactly once;
-//      cancelled / failed / timeout → buttons re-enable + inline error line.
-// 7.3: providerId guard — undefined providerId disables Reconnect with
-//      aria-disabled="true"; click does NOT call startConsent.
-// 7.4: Remove button — click invokes onRequestRemove exactly once; Reconnect
-//      not called.
+// 27.1: useAuthSession lifecycle — pending / completed / failed / timeout.
+//       pending → buttons disabled + label "Connecting…";
+//       completed → onReconnectSucceeded() fires exactly once;
+//       cancelled / failed / timeout → buttons re-enable + inline error line.
+// 27.2: Reconnect calls window.api.sync.authenticateStart({providerId,
+//       datasourceId}); records the returned correlationId.
+// 27.3: providerId guard — undefined providerId disables Reconnect with
+//       aria-disabled="true"; click does NOT call sync.authenticateStart.
+// 27.4: Remove button → onRequestRemove exactly once.
 //
-// The component depends on `useConsentSession` from
-// `@/features/datasources/store`; we mock that module so we don't need the
-// full DatasourcesProvider context tree just to drive lifecycle states.
+// `useAuthSession` is mocked at the module boundary so we can drive
+// sessionState transitions per test without the full DatasourcesProvider tree.
 
 import {
   afterEach,
@@ -38,35 +33,31 @@ import {
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
-import type { ConsentSessionState } from "@/features/datasources/store";
+import type { AuthSessionState } from "@/features/datasources/store";
 
-// Mock `useConsentSession` so we can drive sessionState transitions per test.
-// Tests mutate `mockSessionState` BEFORE re-render to simulate event arrivals.
-let mockSessionState: ConsentSessionState = { status: "pending" };
+let mockSessionState: AuthSessionState = { status: "pending" };
 
 vi.mock("@/features/datasources/store", () => ({
-  useConsentSession: () => mockSessionState,
+  useAuthSession: () => mockSessionState,
 }));
 
 import { InvalidDatasourceState } from "../invalid-datasource";
 
-// ---------------------------------------------------------------------------
-// Shared harness
-// ---------------------------------------------------------------------------
-
-let startConsentMock: Mock;
+let authenticateStartMock: Mock;
 
 function installApiMock() {
-  startConsentMock = vi.fn().mockResolvedValue({ sessionId: "sess-1" });
+  authenticateStartMock = vi.fn().mockResolvedValue({
+    ok: true,
+    result: { correlationId: "corr-1", kind: "oauth" },
+  });
   (window as unknown as { api: unknown }).api = {
-    datasources: {
-      startConsent: startConsentMock,
+    sync: {
+      authenticateStart: authenticateStartMock,
     },
   };
 }
 
 beforeEach(() => {
-  // Reset to baseline pending; each test sets the desired state explicitly.
   mockSessionState = { status: "pending" };
   installApiMock();
 });
@@ -76,11 +67,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ---------------------------------------------------------------------------
-// 7.1 — Render structure
-// ---------------------------------------------------------------------------
-
-describe("InvalidDatasourceState — 7.1: render structure", () => {
+describe("InvalidDatasourceState — render structure", () => {
   it("renders headline, body, and both action buttons", () => {
     render(
       <InvalidDatasourceState
@@ -137,11 +124,7 @@ describe("InvalidDatasourceState — 7.1: render structure", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 7.2 — useConsentSession lifecycle (pending / completed / failed)
-// ---------------------------------------------------------------------------
-
-describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
+describe("InvalidDatasourceState — useAuthSession lifecycle", () => {
   it("pending: both buttons disabled and Reconnect label switches to 'Connecting…'", async () => {
     mockSessionState = { status: "pending" };
 
@@ -154,13 +137,11 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
       />,
     );
 
-    // Click Reconnect to assign the local sessionId; once startConsent
-    // resolves, the component switches into "waiting" mode using
-    // mockSessionState (still "pending") to drive the disabled+label state.
     fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
-    // Re-render so the post-resolve state flushes.
     rerender(
       <InvalidDatasourceState
         providerId="google-drive"
@@ -174,8 +155,30 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
     expect(reconnectBtn).toBeDisabled();
     expect(reconnectBtn.textContent).toContain("Connecting…");
 
-    const removeBtn = screen.getByRole("button", { name: /remove datasource/i });
+    const removeBtn = screen.getByRole("button", {
+      name: /remove datasource/i,
+    });
     expect(removeBtn).toBeDisabled();
+  });
+
+  it("Reconnect calls sync.authenticateStart with {providerId, datasourceId}", async () => {
+    render(
+      <InvalidDatasourceState
+        providerId="google-drive"
+        datasourceId="ds-42"
+        onReconnectSucceeded={() => {}}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
+      providerId: "google-drive",
+      datasourceId: "ds-42",
+    });
   });
 
   it("completed: invokes onReconnectSucceeded exactly once", async () => {
@@ -191,11 +194,11 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
       />,
     );
 
-    // Kick off the consent session so the component records sessionId.
     fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
-    // Flip the consent state to completed and re-render.
     mockSessionState = { status: "completed", datasourceId: "ds-1" };
     rerender(
       <InvalidDatasourceState
@@ -208,8 +211,6 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
 
     expect(onReconnectSucceeded).toHaveBeenCalledTimes(1);
 
-    // Re-render again with the same completed state — must still be exactly
-    // one invocation (single-fire ref guard, not just useEffect dep).
     rerender(
       <InvalidDatasourceState
         providerId="google-drive"
@@ -222,15 +223,15 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
   });
 
   it.each([
-    ["cancelled", { status: "cancelled" } as ConsentSessionState],
+    ["cancelled", { status: "cancelled" } as AuthSessionState],
     [
       "failed",
       {
         status: "failed",
-        tag: "invalid-datasource",
-      } as ConsentSessionState,
+        tag: "auth-revoked",
+      } as AuthSessionState,
     ],
-    ["timeout", { status: "timeout" } as ConsentSessionState],
+    ["timeout", { status: "timeout" } as AuthSessionState],
   ])(
     "%s: re-enables both buttons and shows inline 'Reconnect failed' line",
     async (_label, terminalState) => {
@@ -246,9 +247,10 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
-      await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+      );
 
-      // Flip to terminal state.
       mockSessionState = terminalState;
       rerender(
         <InvalidDatasourceState
@@ -268,7 +270,6 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
       });
       expect(removeBtn).not.toBeDisabled();
 
-      // Inline error message visible.
       expect(
         screen.getByText("Reconnect failed — please try again."),
       ).toBeInTheDocument();
@@ -276,12 +277,8 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// 7.3 — providerId guard
-// ---------------------------------------------------------------------------
-
-describe("InvalidDatasourceState — 7.3: providerId guard", () => {
-  it("Reconnect carries aria-disabled='true' and a tooltip when providerId is undefined; click does NOT call startConsent", () => {
+describe("InvalidDatasourceState — providerId guard", () => {
+  it("Reconnect carries aria-disabled='true' when providerId is undefined; click does NOT call sync.authenticateStart", () => {
     render(
       <InvalidDatasourceState
         datasourceId="ds-1"
@@ -298,16 +295,12 @@ describe("InvalidDatasourceState — 7.3: providerId guard", () => {
     );
 
     fireEvent.click(reconnectBtn);
-    expect(startConsentMock).not.toHaveBeenCalled();
+    expect(authenticateStartMock).not.toHaveBeenCalled();
   });
 });
 
-// ---------------------------------------------------------------------------
-// 7.4 — Remove button → onRequestRemove
-// ---------------------------------------------------------------------------
-
-describe("InvalidDatasourceState — 7.4: Remove button", () => {
-  it("invokes onRequestRemove exactly once when clicked; does NOT call startConsent", () => {
+describe("InvalidDatasourceState — Remove button", () => {
+  it("invokes onRequestRemove exactly once when clicked; does NOT call sync.authenticateStart", () => {
     const onRequestRemove = vi.fn();
     render(
       <InvalidDatasourceState
@@ -322,6 +315,6 @@ describe("InvalidDatasourceState — 7.4: Remove button", () => {
       screen.getByRole("button", { name: /remove datasource/i }),
     );
     expect(onRequestRemove).toHaveBeenCalledTimes(1);
-    expect(startConsentMock).not.toHaveBeenCalled();
+    expect(authenticateStartMock).not.toHaveBeenCalled();
   });
 });

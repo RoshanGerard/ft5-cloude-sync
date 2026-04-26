@@ -204,10 +204,10 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 27. Renderer — `<InvalidDatasourceState>` (file-explorer) Reconnect path
 
-- [ ] 27.1 Update `apps/desktop/src/renderer/src/features/file-explorer/states/__tests__/invalid-datasource.test.tsx`: Reconnect calls `sync.authenticateStart`; `useAuthSession` drives the lifecycle; on `auth-completed` the state's `onReconnectSucceeded` fires which triggers `store.retryLoad()`
-- [ ] 27.2 Update `apps/desktop/src/renderer/src/features/file-explorer/states/invalid-datasource.tsx` accordingly
-- [ ] 27.3 Update the composite test at `apps/desktop/src/renderer/src/features/file-explorer/__tests__/file-explorer-composite.test.tsx` for the equivalent Reconnect arm
-- [ ] 27.4 Rerun → green
+- [x] 27.1 Updated `invalid-datasource.test.tsx` (11 cases) — mock `useAuthSession` at the module boundary; Reconnect calls `sync.authenticateStart({providerId, datasourceId})`; lifecycle assertions for pending / completed / cancelled / failed / timeout; providerId guard preserved; Remove button preserved
+- [x] 27.2 Updated `invalid-datasource.tsx` to use `useAuthSession` + `sync.authenticateStart`. Single-fire guard now keys on `correlationId` instead of `sessionId`
+- [x] 27.3 Updated `file-explorer-composite.test.tsx` `invalid-datasource → Reconnect` arm to mock `sync.onEvent`/`sync.authenticateStart` and fire an `auth-completed` SyncEvent. 7 tests still green
+- [x] 27.4 11 + 7 = 18 green across the §27 surface
 
 ## 28. Renderer — store-consent → store-auth migration
 
