@@ -64,6 +64,7 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
+import type { PreAuthConfig } from "../auth-types.js";
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
 import {
   type CredentialShapeValidator,
@@ -270,13 +271,22 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
   private readonly creds: S3CredsMeta;
   private readonly aws: AwsS3Client;
 
+  /**
+   * `preAuth` is accepted for type uniformity across the strategy hierarchy
+   * (implement-datasource-onboarding §2.7). S3 is a credentials-form
+   * provider — it does not consume an OAuth app config — so the value is
+   * intentionally ignored. The parameter is `void`-cast to silence the
+   * unused-parameter lint without dropping the slot from the signature.
+   */
   constructor(
     init: { datasourceId: string; ctx: BaseClientContext },
     creds: S3CredsMeta,
+    preAuth?: PreAuthConfig,
   ) {
     super(init);
     this.creds = creds;
     this.aws = buildAwsClient(creds);
+    void preAuth;
   }
 
   // -------------------------------------------------------------------------
