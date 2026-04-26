@@ -77,7 +77,7 @@ const PROVIDER_HUMAN_NAME: Record<ProviderKind, string> = {
  * renderer bundle) and degrades to a broken-link-with-visible-text in
  * jsdom, which is fine for the unit tests.
  */
-const DEFERRED_DOCS_HREF = "./docs/design/file-explorer.md#deferred-work";
+const DEFERRED_DOCS_HREF = "./openspec/changes/archive/2026-04-21-ui-file-explorer/file-explorer.md#deferred-work";
 
 export interface SearchResultsProps {
   store: ExplorerStore;

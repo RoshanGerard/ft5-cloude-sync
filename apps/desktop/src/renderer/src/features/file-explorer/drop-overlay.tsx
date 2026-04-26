@@ -13,8 +13,9 @@
 //
 // Motion budget: the spinning icon in the "syncing" blocked variant uses
 // `animate-sync-pulse` (the project's single approved pulse utility) rather
-// than the standard Tailwind spin utility — see docs/design/file-explorer.md
-// motion notes and the SyncingState component for the sibling pattern.
+// than the standard Tailwind spin utility — see
+// openspec/changes/archive/2026-04-21-ui-file-explorer/file-explorer.md motion
+// notes and the SyncingState component for the sibling pattern.
 //
 // Accessibility:
 //   - role="status" + aria-live="polite" so screen readers announce the

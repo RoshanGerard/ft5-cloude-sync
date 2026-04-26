@@ -26,3 +26,6 @@ Thumbs.db
 # Local environment overrides (contain secrets — never commit)
 .env.local
 *.env.local
+
+# Visual brainstorming companion sessions
+.superpowers/

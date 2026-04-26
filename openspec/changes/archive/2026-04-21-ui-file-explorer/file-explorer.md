@@ -9,10 +9,10 @@ contributor does not have to reassemble them from the spec + decisions.
 
 The **binding artifacts** are:
 
-- Spec (behavioural): [`specs/file-explorer/spec.md`](../../openspec/changes/ui-file-explorer/specs/file-explorer/spec.md)
-- Decisions: [`design.md`](../../openspec/changes/ui-file-explorer/design.md)
-- Proposal (scope): [`proposal.md`](../../openspec/changes/ui-file-explorer/proposal.md)
-- Playwright e2e: [`apps/desktop/e2e/file-explorer.spec.ts`](../../apps/desktop/e2e/file-explorer.spec.ts)
+- Spec (behavioural): [`specs/file-explorer/spec.md`](./specs/file-explorer/spec.md)
+- Decisions: [`design.md`](./design.md)
+- Proposal (scope): [`proposal.md`](./proposal.md)
+- Playwright e2e: [`apps/desktop/e2e/file-explorer.spec.ts`](../../../../apps/desktop/e2e/file-explorer.spec.ts)
 
 When this doc and any of the above disagree, the above win and this doc is
 stale — file a docs PR.
@@ -63,7 +63,7 @@ Linear/Vercel dense-quiet direction (Geist Sans / Geist Mono,
 - A Playwright-captured screenshot of the default Details mode is
   checked in for visual reference:
 
-  ![Details mode](../../apps/desktop/e2e/__screenshots__/file-explorer-details-mode.png)
+  ![Details mode](../../../../apps/desktop/e2e/__screenshots__/file-explorer-details-mode.png)
 
 ### 2.2 View modes
 
@@ -282,7 +282,7 @@ Notes:
 
 ## 5. Keyboard bindings
 
-Canonical source: [`use-keyboard-nav.ts`](../../apps/desktop/src/renderer/src/features/file-explorer/use-keyboard-nav.ts).
+Canonical source: [`use-keyboard-nav.ts`](../../../../apps/desktop/src/renderer/src/features/file-explorer/use-keyboard-nav.ts).
 
 | Key | Action | Context |
 |---|---|---|
@@ -364,8 +364,9 @@ renders a deferred-surface message with provider-named copy (e.g.
 _"Native search for Google Drive is not available yet"_) and a link
 to [§8 Deferred work](#deferred-work) below. The `DEFERRED_DOCS_HREF`
 constant in `search-results.tsx` is
-`./docs/design/file-explorer.md#deferred-work` — self-referential to
-this document.
+`./openspec/changes/archive/2026-04-21-ui-file-explorer/file-explorer.md#deferred-work`
+— self-referential to this document (link is repo-relative; in the renderer
+it resolves via the workspace path).
 
 **Selection side-effects around search** (design.md Decision 6,
 store.ts `preSearchSelection`):
@@ -425,11 +426,11 @@ user-facing impact.
 
 ## 9. Reference links
 
-- OpenSpec change: [`openspec/changes/ui-file-explorer/`](../../openspec/changes/ui-file-explorer/)
-- Spec: [`openspec/changes/ui-file-explorer/specs/file-explorer/spec.md`](../../openspec/changes/ui-file-explorer/specs/file-explorer/spec.md)
-- Decisions: [`openspec/changes/ui-file-explorer/design.md`](../../openspec/changes/ui-file-explorer/design.md)
-- Proposal: [`openspec/changes/ui-file-explorer/proposal.md`](../../openspec/changes/ui-file-explorer/proposal.md)
-- Playwright e2e: [`apps/desktop/e2e/file-explorer.spec.ts`](../../apps/desktop/e2e/file-explorer.spec.ts)
-- Canonical keyboard bindings: [`use-keyboard-nav.ts`](../../apps/desktop/src/renderer/src/features/file-explorer/use-keyboard-nav.ts)
-- Companion design doc (datasources dashboard): [`datasources-ui.md`](./datasources-ui.md)
-- Troubleshooting (Google Drive scope drift / AuthRevokedState): [`docs/troubleshooting/google-drive-scope-drift.md`](../troubleshooting/google-drive-scope-drift.md)
+- OpenSpec change (this directory): [`openspec/changes/archive/2026-04-21-ui-file-explorer/`](./)
+- Spec: [`openspec/changes/ui-file-explorer/specs/file-explorer/spec.md`](./specs/file-explorer/spec.md)
+- Decisions: [`openspec/changes/ui-file-explorer/design.md`](./design.md)
+- Proposal: [`openspec/changes/ui-file-explorer/proposal.md`](./proposal.md)
+- Playwright e2e: [`apps/desktop/e2e/file-explorer.spec.ts`](../../../../apps/desktop/e2e/file-explorer.spec.ts)
+- Canonical keyboard bindings: [`use-keyboard-nav.ts`](../../../../apps/desktop/src/renderer/src/features/file-explorer/use-keyboard-nav.ts)
+- Companion design doc (datasources dashboard): [`datasources-ui.md`](../2026-04-19-ui-ux-design/datasources-ui.md)
+- Troubleshooting (Google Drive scope drift / AuthRevokedState): [`google-drive-scope-drift.md`](../2026-04-25-fix-drive-listdirectory-scope-drift/google-drive-scope-drift.md)

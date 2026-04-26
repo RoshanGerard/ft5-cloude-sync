@@ -10,9 +10,9 @@ dashboard, card, dialog shell, or store.
 
 The **binding artifacts** are:
 
-- **Decisions** in `openspec/changes/ui-ux-design/design.md` (Decisions 1–18).
-- **Requirements** in `openspec/changes/ui-ux-design/specs/datasources-ui/spec.md`.
-- **Types** in `packages/ipc-contracts/src/datasources.ts`.
+- **Decisions** in [`./design.md`](./design.md) (Decisions 1–18).
+- **Requirements** in [`./specs/datasources-ui/spec.md`](./specs/datasources-ui/spec.md).
+- **Types** in [`packages/ipc-contracts/src/datasources.ts`](../../../../packages/ipc-contracts/src/datasources.ts).
 
 When this doc and any of the above disagree, the above wins and this doc is
 stale — file a docs PR.
