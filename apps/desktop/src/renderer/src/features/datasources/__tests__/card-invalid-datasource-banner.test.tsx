@@ -1,23 +1,12 @@
 /** @vitest-environment jsdom */
 //
-// Tasks 10.1–10.4 — InvalidDatasourceBanner in DatasourceCard.
+// implement-datasource-onboarding §26 — InvalidDatasourceBanner migration tests.
 //
-// 10.1: Banner renders iff `summary.status === "error" &&
-//       summary.errorKind === "invalid-datasource"`. Reconnect calls
-//       startConsent({providerId, datasourceId}); Remove opens the shared
-//       <ConfirmRemoveDatasourceDialog>; consent-completed unmounts the
-//       banner via summary refresh.
-// 10.2: Banner does NOT render for non-invalid-datasource errorKinds.
-//       network-error → bare <p>; auth-revoked → <AuthErrorBanner>.
-// 10.3: A11y — no axe dep per project convention (see
-//       features/datasources/__tests__/a11y.test.tsx header). Structural
-//       assertions: aria-label present + non-empty; both action buttons have
-//       non-empty accessible names; DOM order is Reconnect → Remove (which
-//       equals tab order without explicit tabIndex overrides).
-//
-// Harness mirrors card-auth-error-banner.test.tsx verbatim — same
-// installApiMock, buildErrorSummary, renderCard helpers — so contributors
-// reading both tests pick up the pattern without context-switching.
+// Reconnect now calls window.api.sync.authenticateStart and useAuthSession
+// drives the disabled / "Connecting…" state. Remove confirmation triggers
+// `datasources.remove` (the desktop main handler internally calls
+// `sync:delete-credentials` per §20 — that pairing is asserted at the
+// main-process layer in remove.test.ts, not here).
 
 import {
   afterEach,
@@ -39,6 +28,7 @@ import {
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
+import type { SyncEvent } from "@ft5/ipc-contracts/sync-service-desktop";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -55,22 +45,19 @@ import { DatasourceCard } from "../card";
 import { DatasourcesProvider } from "../store";
 import { DatasourcesDashboard } from "../dashboard";
 
-// ---------------------------------------------------------------------------
-// Shared harness
-// ---------------------------------------------------------------------------
-
-let startConsentMock: Mock;
+let authenticateStartMock: Mock;
 let removeMock: Mock;
 let listMock: Mock;
-let onEventCapture: ((event: unknown) => void) | null = null;
+let syncOnEventCapture: ((event: SyncEvent) => void) | null = null;
 
 function installApiMock() {
-  startConsentMock = vi
-    .fn()
-    .mockResolvedValue({ sessionId: "sess-reconnect" });
+  authenticateStartMock = vi.fn().mockResolvedValue({
+    ok: true,
+    result: { correlationId: "corr-reconnect", kind: "oauth" },
+  });
   removeMock = vi.fn().mockResolvedValue({ ok: true });
   listMock = vi.fn().mockResolvedValue({ datasources: [] });
-  onEventCapture = null;
+  syncOnEventCapture = null;
 
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
@@ -79,15 +66,23 @@ function installApiMock() {
       add: vi.fn(),
       remove: removeMock,
       action: vi.fn(),
-      startConsent: startConsentMock,
-      cancelConsent: vi.fn(),
+      pickFilesToUpload: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
-      onEvent: vi.fn().mockImplementation((cb: (e: unknown) => void) => {
-        onEventCapture = cb;
+      onEvent: vi.fn().mockReturnValue(() => {}),
+    },
+    sync: {
+      listJobs: vi.fn().mockResolvedValue({ jobs: [] }),
+      onEvent: vi.fn().mockImplementation((cb: (e: SyncEvent) => void) => {
+        syncOnEventCapture = cb;
         return () => {
-          onEventCapture = null;
+          syncOnEventCapture = null;
         };
       }),
+      authenticateStart: authenticateStartMock,
+      authenticateComplete: vi.fn(),
+      authenticateCancel: vi
+        .fn()
+        .mockResolvedValue({ ok: true, result: { cancelled: true } }),
     },
   };
 }
@@ -104,8 +99,9 @@ function buildErrorSummary(
     itemCount: 100,
     errorReason: "Credentials are missing — reconnect this datasource",
     errorKind: "invalid-datasource",
+    paused: false,
     ...overrides,
-  };
+  } as DatasourceSummary;
 }
 
 function renderCard(summary: DatasourceSummary): ReturnType<typeof render> {
@@ -133,11 +129,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ---------------------------------------------------------------------------
-// 10.1 — Banner renders iff errorKind is invalid-datasource
-// ---------------------------------------------------------------------------
-
-describe("InvalidDatasourceBanner — 10.1: renders iff errorKind is invalid-datasource", () => {
+describe("InvalidDatasourceBanner — renders iff errorKind is invalid-datasource", () => {
   it("renders invalid-datasource-banner with both action buttons", () => {
     renderCard(buildErrorSummary({ errorKind: "invalid-datasource" }));
     const banner = screen.getByTestId("invalid-datasource-banner");
@@ -160,7 +152,7 @@ describe("InvalidDatasourceBanner — 10.1: renders iff errorKind is invalid-dat
     expect(screen.queryByTestId("auth-error-banner")).not.toBeInTheDocument();
   });
 
-  it("Reconnect click calls startConsent with {providerId, datasourceId} exactly once", async () => {
+  it("Reconnect click calls sync.authenticateStart with {providerId, datasourceId} exactly once", async () => {
     renderCard(
       buildErrorSummary({
         id: "ds-gd-err",
@@ -172,9 +164,9 @@ describe("InvalidDatasourceBanner — 10.1: renders iff errorKind is invalid-dat
     fireEvent.click(within(banner).getByRole("button", { name: /reconnect/i }));
 
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
     });
-    expect(startConsentMock.mock.calls[0]![0]).toEqual({
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
       providerId: "google-drive",
       datasourceId: "ds-gd-err",
     });
@@ -190,14 +182,10 @@ describe("InvalidDatasourceBanner — 10.1: renders iff errorKind is invalid-dat
     const banner = screen.getByTestId("invalid-datasource-banner");
     fireEvent.click(within(banner).getByRole("button", { name: /^remove$/i }));
 
-    // Dialog is portalled — query at document level, not inside the banner.
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toBeInTheDocument();
-    // IPC must NOT fire on dialog-open alone.
     expect(removeMock).not.toHaveBeenCalled();
 
-    // Click the destructive Remove inside the dialog (exact-match label to
-    // avoid colliding with the trigger).
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
     await waitFor(() => {
@@ -206,17 +194,15 @@ describe("InvalidDatasourceBanner — 10.1: renders iff errorKind is invalid-dat
     expect(removeMock.mock.calls[0]![0]).toEqual({ datasourceId: "ds-gd-err" });
   });
 
-  it("banner unmounts when consent-completed flips the summary back to connected", async () => {
+  it("banner unmounts when auth-completed flips the summary back to connected", async () => {
     const errSummary = buildErrorSummary({ errorKind: "invalid-datasource" });
     const connectedSummary: DatasourceSummary = {
       ...errSummary,
       status: "connected",
       errorKind: null,
       errorReason: undefined,
-    };
+    } as DatasourceSummary;
 
-    // First list() returns the errored summary; subsequent list() (after
-    // consent-completed triggers a refresh) returns the connected summary.
     listMock
       .mockResolvedValueOnce({ datasources: [errSummary] })
       .mockResolvedValue({ datasources: [connectedSummary] });
@@ -231,13 +217,18 @@ describe("InvalidDatasourceBanner — 10.1: renders iff errorKind is invalid-dat
 
     const banner = screen.getByTestId("invalid-datasource-banner");
     fireEvent.click(within(banner).getByRole("button", { name: /reconnect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
     act(() => {
-      onEventCapture!({
-        event: "consent-completed",
-        sessionId: "sess-reconnect",
-        datasourceId: errSummary.id,
+      syncOnEventCapture!({
+        kind: "auth-completed",
+        payload: {
+          correlationId: "corr-reconnect",
+          datasourceId: errSummary.id,
+          summary: connectedSummary,
+        },
       });
     });
 
@@ -249,11 +240,7 @@ describe("InvalidDatasourceBanner — 10.1: renders iff errorKind is invalid-dat
   });
 });
 
-// ---------------------------------------------------------------------------
-// 10.2 — Banner does NOT render for other errorKinds
-// ---------------------------------------------------------------------------
-
-describe("InvalidDatasourceBanner — 10.2: does NOT render for other errorKinds", () => {
+describe("InvalidDatasourceBanner — does NOT render for other errorKinds", () => {
   it("network-error → bare <p data-testid='error-reason-text'>; no banners", () => {
     renderCard(
       buildErrorSummary({
@@ -277,12 +264,7 @@ describe("InvalidDatasourceBanner — 10.2: does NOT render for other errorKinds
   });
 });
 
-// ---------------------------------------------------------------------------
-// 10.3 — Structural a11y assertions (no axe dep per project convention; see
-//        features/datasources/__tests__/a11y.test.tsx header for the rationale)
-// ---------------------------------------------------------------------------
-
-describe("InvalidDatasourceBanner — 10.3: structural a11y", () => {
+describe("InvalidDatasourceBanner — structural a11y", () => {
   it("banner exposes a non-empty aria-label", () => {
     renderCard(buildErrorSummary({ errorKind: "invalid-datasource" }));
     const banner = screen.getByTestId("invalid-datasource-banner");
@@ -302,14 +284,13 @@ describe("InvalidDatasourceBanner — 10.3: structural a11y", () => {
     expect(remove.textContent?.trim()).toBeTruthy();
   });
 
-  it("tab order inside the banner is Reconnect → Remove (DOM order proxies tab order without explicit tabIndex)", () => {
+  it("tab order inside the banner is Reconnect → Remove", () => {
     renderCard(buildErrorSummary({ errorKind: "invalid-datasource" }));
     const banner = screen.getByTestId("invalid-datasource-banner");
     const buttons = banner.querySelectorAll("button");
     expect(buttons.length).toBeGreaterThanOrEqual(2);
     expect(buttons[0]!.textContent?.toLowerCase()).toMatch(/reconnect/);
     expect(buttons[1]!.textContent?.toLowerCase()).toMatch(/^remove$/);
-    // No tabIndex override would break that mapping:
     expect(buttons[0]!.getAttribute("tabindex")).toBeNull();
     expect(buttons[1]!.getAttribute("tabindex")).toBeNull();
   });

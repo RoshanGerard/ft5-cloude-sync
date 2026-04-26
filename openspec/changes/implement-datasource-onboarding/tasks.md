@@ -192,15 +192,15 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 25. Renderer — `<AuthErrorBanner>` Reconnect path migration
 
-- [ ] 25.1 Update `apps/desktop/src/renderer/src/features/datasources/__tests__/card-auth-error-banner.test.tsx`: Reconnect button click calls `window.api.sync.authenticateStart({providerId, datasourceId})` (NOT `datasources.startConsent`); `useAuthSession(correlationId)` drives the disabled / "Connecting…" state and the eventual unmount
-- [ ] 25.2 Update `apps/desktop/src/renderer/src/features/datasources/card.tsx` (the `<AuthErrorBanner>` component definition) accordingly
-- [ ] 25.3 Rerun → green
+- [x] 25.1 Updated `card-auth-error-banner.test.tsx` (12 cases) — Reconnect calls `sync.authenticateStart({providerId, datasourceId})`; the `auth-completed` event triggers a refresh that flips the card to `connected` and unmounts the banner; the button label flips to "Connecting…" + disabled while pending
+- [x] 25.2 Updated `card.tsx` `<AuthErrorBanner>` to use `useAuthSession(correlationId)` + `window.api.sync.authenticateStart`. Status copy "Waiting for browser consent…" → "Waiting for authentication in your browser…" per the design.md Decision 11 wording shift
+- [x] 25.3 12 green
 
 ## 26. Renderer — `<InvalidDatasourceBanner>` Reconnect path migration
 
-- [ ] 26.1 Update `apps/desktop/src/renderer/src/features/datasources/__tests__/card-invalid-datasource-banner.test.tsx`: Reconnect calls `sync.authenticateStart`; Remove confirmation triggers `datasources:remove` AND the desktop main now also calls `sync:delete-credentials` (assertion lives at the main-process layer, see Phase 20)
-- [ ] 26.2 Update `apps/desktop/src/renderer/src/features/datasources/card.tsx` and `confirm-remove-dialog.tsx` if any path branches on the now-removed `consent-*` events
-- [ ] 26.3 Rerun → green
+- [x] 26.1 Updated `card-invalid-datasource-banner.test.tsx` (11 cases) — Reconnect calls `sync.authenticateStart`; Remove → confirm dialog → `datasources.remove`; on `auth-completed` the banner unmounts via the refresh path. The `sync:delete-credentials` pairing is asserted in remove.test.ts at the main-process layer per §20
+- [x] 26.2 Updated `card.tsx` `<InvalidDatasourceBanner>` to use `useAuthSession` + `sync.authenticateStart`. `confirm-remove-dialog.tsx` had no consent-* references — left unchanged
+- [x] 26.3 11 green
 
 ## 27. Renderer — `<InvalidDatasourceState>` (file-explorer) Reconnect path
 

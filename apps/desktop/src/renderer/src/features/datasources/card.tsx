@@ -56,11 +56,13 @@ import {
 import { Icon, isIconName, type IconName } from "@/components/icon";
 import { cn } from "@/lib/utils";
 
+import type { ProviderId } from "@ft5/ipc-contracts";
+
 import {
+  useAuthSession,
   useDatasourceActions,
   useDatasourceJobs,
   useDatasourceUploadProgress,
-  useConsentSession,
 } from "./store";
 import { UploadDialog } from "@/features/file-explorer/upload-dialog";
 import { createUploadJobToaster } from "@/features/file-explorer/upload-job-toast";
@@ -279,8 +281,11 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
 }
 
 // Auth-error banner shown when `errorKind` is an auth-class tag.
-// Provides a one-click Reconnect that starts a scoped consent session for
-// this specific datasource (re-auth path, not add-new path).
+// implement-datasource-onboarding §25 — Reconnect now drives the
+// service-side authenticate flow via `sync.authenticateStart` and
+// `useAuthSession(correlationId)` for the disabled / "Connecting…" state.
+// On `auth-completed` the parent dashboard refreshes the summary list,
+// the card flips to `connected`, and this banner unmounts.
 function AuthErrorBanner({
   providerId,
   datasourceId,
@@ -288,21 +293,28 @@ function AuthErrorBanner({
   providerId: string;
   datasourceId: string;
 }) {
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const sessionState = useConsentSession(sessionId ?? "__none__");
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
+  const sessionState = useAuthSession(correlationId ?? "__none__");
 
   const handleReconnect = useCallback(async () => {
-    const res = await window.api.datasources.startConsent({
-      providerId,
+    const res = await window.api.sync.authenticateStart({
+      providerId: providerId as ProviderId,
       datasourceId,
     });
-    setSessionId(res.sessionId);
+    if (res.ok && res.result.kind === "oauth") {
+      setCorrelationId(res.result.correlationId);
+    }
+    // On res.ok === false (engine-error / service-config-missing) we leave
+    // correlationId null so the button re-enables; the user can retry from
+    // the same banner. Layer 1 surface for Reconnect is the bare button —
+    // detailed inline copy is the dialog flow's responsibility per design
+    // Decision 10.
   }, [providerId, datasourceId]);
 
   const isWaiting =
-    sessionId !== null && sessionState.status === "pending";
+    correlationId !== null && sessionState.status === "pending";
   const isFailed =
-    sessionId !== null &&
+    correlationId !== null &&
     (sessionState.status === "cancelled" ||
       sessionState.status === "failed" ||
       sessionState.status === "timeout");
@@ -315,7 +327,7 @@ function AuthErrorBanner({
     >
       <p className="text-destructive text-xs">
         {isWaiting
-          ? "Waiting for browser consent…"
+          ? "Waiting for authentication in your browser…"
           : isFailed
             ? "Reconnect failed — please try again."
             : "Authentication expired — please reconnect."}
@@ -325,7 +337,9 @@ function AuthErrorBanner({
         size="sm"
         variant="outline"
         disabled={isWaiting}
-        onClick={() => { void handleReconnect(); }}
+        onClick={() => {
+          void handleReconnect();
+        }}
       >
         {isWaiting ? "Connecting…" : "Reconnect"}
       </Button>
@@ -334,11 +348,12 @@ function AuthErrorBanner({
 }
 
 // Invalid-datasource banner shown when `errorKind === "invalid-datasource"`.
-// Mirrors AuthErrorBanner's lifecycle (`useConsentSession` → spinner +
-// disabled-state while pending, terminal-state inline error on
-// cancelled/failed/timeout). Adds a Remove action that opens the shared
-// <ConfirmRemoveDatasourceDialog> before dispatching the IPC, per
-// design.md Decision 5 (one shared destructive flow).
+// implement-datasource-onboarding §26 — Reconnect drives the service-side
+// authenticate flow via `sync.authenticateStart` and `useAuthSession` for
+// the disabled / "Connecting…" state. Remove opens the shared
+// <ConfirmRemoveDatasourceDialog>; on confirm, `actions.remove(...)` runs
+// `datasources.remove` which the desktop main pairs with
+// `sync:delete-credentials` per §20 (asserted in remove.test.ts).
 function InvalidDatasourceBanner({
   providerId,
   datasourceId,
@@ -347,16 +362,18 @@ function InvalidDatasourceBanner({
   datasourceId: string;
 }) {
   const actions = useDatasourceActions();
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const sessionState = useConsentSession(sessionId ?? "__none__");
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
+  const sessionState = useAuthSession(correlationId ?? "__none__");
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
 
   const handleReconnect = useCallback(async () => {
-    const res = await window.api.datasources.startConsent({
-      providerId,
+    const res = await window.api.sync.authenticateStart({
+      providerId: providerId as ProviderId,
       datasourceId,
     });
-    setSessionId(res.sessionId);
+    if (res.ok && res.result.kind === "oauth") {
+      setCorrelationId(res.result.correlationId);
+    }
   }, [providerId, datasourceId]);
 
   const handleRequestRemove = useCallback(() => {
@@ -373,9 +390,9 @@ function InvalidDatasourceBanner({
   }, [actions, datasourceId]);
 
   const isWaiting =
-    sessionId !== null && sessionState.status === "pending";
+    correlationId !== null && sessionState.status === "pending";
   const isFailed =
-    sessionId !== null &&
+    correlationId !== null &&
     (sessionState.status === "cancelled" ||
       sessionState.status === "failed" ||
       sessionState.status === "timeout");
