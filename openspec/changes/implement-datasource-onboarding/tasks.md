@@ -14,8 +14,8 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 2. Engine — `OAuthAppConfig` type + `PreAuthConfig` strategy slot
 
-- [ ] 2.1 Write a typed test (`packages/fs-datasource-engine/src/__tests__/oauth-app-config.test-d.ts`) asserting `OAuthAppConfig = { clientId, clientSecret, redirectUri }` is exported from the engine package's public surface; test fails because the type does not yet exist
-- [ ] 2.2 Add `OAuthAppConfig` type to `packages/fs-datasource-engine/src/index.ts` (or a sibling `auth-types.ts`); rerun the typed test → green
+- [x] 2.1 Write a typed test (`packages/fs-datasource-engine/src/__tests__/oauth-app-config.test-d.ts`) asserting `OAuthAppConfig = { clientId, clientSecret, redirectUri }` is exported from the engine package's public surface; test fails because the type does not yet exist
+- [x] 2.2 Add `OAuthAppConfig` type to `packages/fs-datasource-engine/src/index.ts` (or a sibling `auth-types.ts`); rerun the typed test → green
 - [ ] 2.3 Write a unit test for `GoogleDriveClient` accepting a `preAuth?: PreAuthConfig` constructor parameter and reading `clientId`/`clientSecret`/`redirectUri` from it at `doAuthenticateImpl` time when present (`packages/fs-datasource-engine/src/strategies/__tests__/googledrive-preauth.test.ts`); current test reads from `creds.authResult.meta` so the new test fails
 - [ ] 2.4 Adapt `GoogleDriveClient` to accept and consult the new `preAuth` slot; existing `meta`-reading code path stays for backward compatibility during the transition (deletion of the `meta` path covered later by §22.x)
 - [ ] 2.5 Repeat 2.3/2.4 for `OneDriveClient` (`onedrive-preauth.test.ts` + adaptation in `onedrive-client.ts`)

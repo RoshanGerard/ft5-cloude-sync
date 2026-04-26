@@ -9,9 +9,11 @@
   },
   "include": [
     "src/preload/window-api.d.ts",
-    "src/preload/__tests__/window-api.types.test-d.ts"
+    "src/preload/__tests__/window-api.types.test-d.ts",
+    "../../packages/fs-datasource-engine/src/**/*.test-d.ts"
   ],
   "references": [
-    { "path": "../../packages/ipc-contracts" }
+    { "path": "../../packages/ipc-contracts" },
+    { "path": "../../packages/fs-datasource-engine" }
   ]
 }
