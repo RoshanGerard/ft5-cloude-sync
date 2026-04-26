@@ -183,8 +183,16 @@ export interface OAuthLoopbackBroker {
   start(opts: BrokerStartOptions): Promise<BrokerStartResult>;
 
   /** Cancel an active session. Idempotent — a second cancel for the
-   *  same correlationId is a silent no-op (no event, no throw). */
-  cancel(opts: { correlationId: string }): Promise<void>;
+   *  same correlationId is a silent no-op (no event, no throw).
+   *
+   *  Returns `{ wasActive: true }` when an active session was found and
+   *  cancelled (auth-cancelled was emitted on the bus); returns
+   *  `{ wasActive: false }` when no session was active for that id (no
+   *  event emitted). The §11 sync:authenticate-cancel handler reads
+   *  `wasActive` to decide whether to additionally try the
+   *  credentials-form correlation-store path and emit auth-cancelled
+   *  itself. */
+  cancel(opts: { correlationId: string }): Promise<{ wasActive: boolean }>;
 
   /** Tear down every active session — close every HTTP server,
    *  clear every timer, drain the pending-session map. Called by
@@ -489,13 +497,16 @@ export function createOAuthLoopbackBroker(
       return { correlationId };
     },
 
-    async cancel(opts: { correlationId: string }): Promise<void> {
+    async cancel(
+      opts: { correlationId: string },
+    ): Promise<{ wasActive: boolean }> {
       const session = pending.get(opts.correlationId);
-      if (!session) return; // Idempotent no-op.
+      if (!session) return { wasActive: false }; // Idempotent no-op.
       cleanup(opts.correlationId);
       options.bus.emit("auth-cancelled", {
         correlationId: opts.correlationId,
       });
+      return { wasActive: true };
     },
 
     dispose(): void {

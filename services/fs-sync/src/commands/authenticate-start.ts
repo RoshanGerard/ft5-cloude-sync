@@ -78,6 +78,12 @@ import type { OAuthLoopbackBroker } from "../oauth/loopback-broker.js";
  * Hard-coded vs registry-import is intentional: the handler runs at IPC
  * boundary and a shared, type-checked union is a stronger contract than
  * a lookup that could silently widen if the registry shape changed.
+ *
+ * TODO(future-provider-add): When adding a fourth provider, update both
+ * this switch AND `createDefaultProviderRegistry` in
+ * `packages/fs-datasource-engine/src/factory.ts`. The TS exhaustiveness
+ * check on `ProviderId` will surface a missed update here at compile
+ * time.
  */
 function authKindOf(providerId: ProviderId): "oauth" | "credentials-form" {
   switch (providerId) {

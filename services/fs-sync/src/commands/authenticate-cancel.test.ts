@@ -61,9 +61,14 @@ function buildDeps(): DepsBundle {
   const correlationStore = createAuthCorrelationStore();
   const activeBrokerIds = new Set<string>();
   const brokerCancel = vi.fn(async (opts: { correlationId: string }) => {
+    // Mirror real broker contract: emit auth-cancelled when an active
+    // session is present, return {wasActive: boolean} so the handler
+    // can branch deterministically.
     if (activeBrokerIds.delete(opts.correlationId)) {
       bus.emit("auth-cancelled", { correlationId: opts.correlationId });
+      return { wasActive: true };
     }
+    return { wasActive: false };
   });
   return { bus, events, correlationStore, brokerCancel, activeBrokerIds };
 }

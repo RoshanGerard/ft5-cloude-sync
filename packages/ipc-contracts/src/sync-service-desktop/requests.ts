@@ -28,7 +28,6 @@ import type {
   RetryPolicy,
   RetryPolicyScope,
   SerializableAuthCompletion,
-  SerializableAuthIntent,
   ServiceConfig,
   SyncAlreadyRunningErrorShape,
   SyncAuthenticateCancelError,

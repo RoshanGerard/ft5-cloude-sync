@@ -445,7 +445,12 @@ describe("OAuthLoopbackBroker", () => {
     expect(preCancel.status).toBeGreaterThanOrEqual(100);
 
     // ACT: cancel the session.
-    await broker.cancel({ correlationId });
+    const cancelResult = await broker.cancel({ correlationId });
+
+    // ASSERT 0: cancel returned `{ wasActive: true }` so the §11
+    // sync:authenticate-cancel handler can distinguish active-cancel
+    // from no-op deterministically (without observing the bus).
+    expect(cancelResult).toEqual({ wasActive: true });
 
     // ASSERT 1: subsequent HTTP requests fail.
     let connectionFailed = false;
@@ -472,8 +477,11 @@ describe("OAuthLoopbackBroker", () => {
     // ASSERT 3: pending session cleared.
     expect(broker._getPendingSessionForTests(correlationId)).toBeUndefined();
 
-    // ASSERT 4: second cancel is a no-op — no duplicate event, no thrown error.
-    await expect(broker.cancel({ correlationId })).resolves.toBeUndefined();
+    // ASSERT 4: second cancel is a no-op — returns {wasActive: false},
+    // no duplicate event, no thrown error.
+    await expect(broker.cancel({ correlationId })).resolves.toEqual({
+      wasActive: false,
+    });
     await new Promise<void>((r) => setTimeout(r, 50));
     expect(events.filter((e) => e.name === "auth-cancelled")).toHaveLength(1);
   });

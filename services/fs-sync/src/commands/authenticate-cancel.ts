@@ -43,33 +43,21 @@ export function makeAuthenticateCancelHandler(
   return async (params) => {
     const { correlationId } = params;
 
-    // Subscribe BEFORE calling broker.cancel so we know whether the
-    // broker emitted auth-cancelled (OAuth path was active) or did
-    // nothing (id unknown to broker — handler must emit instead for
-    // the credentials-form path).
-    let brokerEmittedCancelled = false;
-    const unsubscribe = deps.bus.subscribe((name, payload) => {
-      if (
-        name === "auth-cancelled" &&
-        (payload as { correlationId?: string }).correlationId === correlationId
-      ) {
-        brokerEmittedCancelled = true;
-      }
+    // Try the broker (OAuth path). `wasActive: true` means the broker
+    // had a pending session for this id — it was cancelled and the
+    // broker emitted `auth-cancelled` itself. `wasActive: false` means
+    // nothing was active; the broker did not emit. Reading the boolean
+    // is more durable than observing the bus side-effect (which would
+    // couple the handler to the broker's emit timing).
+    const { wasActive: brokerHadIt } = await deps.loopbackBroker.cancel({
+      correlationId,
     });
 
-    let brokerHadIt = false;
-    try {
-      await deps.loopbackBroker.cancel({ correlationId });
-      // The broker is idempotent — `cancel` resolves either way. We
-      // detect "active" via the auth-cancelled side-effect captured
-      // above.
-      brokerHadIt = brokerEmittedCancelled;
-    } finally {
-      unsubscribe();
-    }
-
     // Try the credentials-form path. consume returns the live intent
-    // (or undefined if absent).
+    // (or undefined if absent). In production the broker and the
+    // correlation store are mutually exclusive for the same id, but the
+    // handler does not depend on that — it tries both paths and
+    // unions the results.
     const formIntent = deps.correlationStore.consume(correlationId);
     const formHadIt = formIntent !== undefined;
 
