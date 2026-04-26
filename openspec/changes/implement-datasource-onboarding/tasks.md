@@ -93,9 +93,9 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 11. Service — `handleAuthenticateCancel`
 
-- [ ] 11.1 Write failing tests in a new `authenticate-cancel.test.ts`: cancel during OAuth pending (consumes correlation, calls `broker.cancel`, emits `auth-cancelled`); cancel during credentials-form pending (consumes correlation, no broker call, emits `auth-cancelled`); idempotent cancel (second call is a no-op, emits no event); cancel of unknown correlationId (returns `{ok: true, result: { cancelled: false }}`, no event)
-- [ ] 11.2 Implement `services/fs-sync/src/commands/authenticate-cancel.ts`
-- [ ] 11.3 Wire into `buildCommandHandlers`; rerun test → green
+- [x] 11.1 Failing tests in `authenticate-cancel.test.ts`: OAuth pending (broker.cancel called, broker emits auth-cancelled); credentials-form pending (handler emits auth-cancelled); idempotent (second cancel = `{cancelled: false}`, no event); unknown correlationId = `{cancelled: false}`, no event
+- [x] 11.2 Implement at `services/fs-sync/src/commands/authenticate-cancel.ts` (factory `makeAuthenticateCancelHandler`). Handler is branch-agnostic: subscribes to `auth-cancelled` BEFORE calling `broker.cancel(...)` so it can detect whether the broker emitted (OAuth path) vs no-op (id unknown to broker), then tries `correlationStore.consume(...)` for the credentials-form path. Emits `auth-cancelled` only when the broker did not (mutual exclusion in production)
+- [ ] 11.3 Wire into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
 
 ## 12. Service — `handleGetConfig` / `handleSetConfig`
 
