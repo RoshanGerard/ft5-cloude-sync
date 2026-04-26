@@ -171,10 +171,10 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 22. Renderer — `oauth-form.tsx` migration
 
-- [ ] 22.1 Write failing tests in `apps/desktop/src/renderer/src/features/datasources/__tests__/oauth-form.test.tsx` (rewrite the existing file): form mount calls nothing; clicking Connect calls `window.api.sync.authenticateStart({providerId})` exactly once; the returned `correlationId` is recorded; subscription via `useAuthSession(correlationId)` reflects `auth-completed` → form calls `onSubmit({_authCompleted: "completed", datasourceId})` (or rename the sentinel); `auth-cancelled` / `auth-failed` / `auth-timeout` show inline copy with Retry; dialog unmount calls `window.api.sync.authenticateCancel({correlationId})` exactly once
-- [ ] 22.2 Add the `service-config-missing` arm: when `auth-failed { tag: "service-config-missing", path }` arrives, the form renders the inline copy with `<code>{path}</code>` and the README pointer
-- [ ] 22.3 Rewrite `apps/desktop/src/renderer/src/features/datasources/credential-forms/oauth-form.tsx` to use `useAuthSession`, call `window.api.sync.authenticateStart`, etc.
-- [ ] 22.4 Rerun → green
+- [x] 22.1 Failing tests in `oauth-form.test.tsx` (rewrite) — 14 cases covering: form-mount no-op, Connect → authenticateStart with correct providerId/datasourceId, no datasources.add, auth-completed → onSubmit with `_authCompleted: "completed"` sentinel + datasourceId, correlationId-mismatch ignored, cancel/timeout/failed inline copy + Retry, Retry restarts authenticateStart, unmount → authenticateCancel (only when a correlationId was minted, even after terminal state)
+- [x] 22.2 service-config-missing surfaced inline via the start-call's `{ ok: false, error: { tag: "service-config-missing", path } }` envelope (NOT via auth-failed event — service-config-missing is a typed error class per design Decision 7). Path renders as `<code>{path}</code>` with README pointer
+- [x] 22.3 Rewrote `oauth-form.tsx` to drive the service authenticate flow via `useAuthSession` + `window.api.sync.authenticate{Start,Cancel}`. Sentinel renamed `_oauthConsent` → `_authCompleted` per the §24 add-dialog pairing. Status copy strings updated from "consent" wording to "authentication" wording per design Decision 11
+- [x] 22.4 14 green
 
 ## 23. Renderer — `aws-access-key-form.tsx` + `custom-form.tsx` migration
 

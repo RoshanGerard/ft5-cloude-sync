@@ -1,11 +1,19 @@
 /** @vitest-environment jsdom */
 //
-// Tasks 8.1–8.3 + 8.4 — OAuth form rewrite tests.
+// implement-datasource-onboarding §22 — OAuthForm migration tests.
 //
-// 8.1: OAuthForm calls startConsent (not add) when Connect is clicked.
-// 8.2: Form transitions to done / calls onSubmit on consent-completed.
-// 8.3: Form surfaces cancel and timeout inline with a Retry button.
-// 8.4: Non-OAuth forms (AwsAccessKeyForm) still go through actions.add.
+// The form now drives the service-side authenticate flow:
+//   - Connect → window.api.sync.authenticateStart({providerId, datasourceId?})
+//   - response carries {correlationId, kind: "oauth"}
+//   - useAuthSession(correlationId) drives status transitions via auth-* events
+//   - terminal "completed" → onSubmit({_authCompleted: "completed", datasourceId})
+//   - terminal cancelled / failed / timeout → inline copy + Retry button
+//   - service-config-missing arrives via auth-failed AND via the start-call's
+//     `{ ok: false, error: { tag: "service-config-missing", path } }` envelope
+//   - Dialog unmount → window.api.sync.authenticateCancel({correlationId})
+//
+// Replaces the legacy datasources.startConsent / cancelConsent / consent-*
+// surface entirely.
 
 import {
   afterEach,
@@ -25,7 +33,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import type { ConsentEvent } from "@ft5/ipc-contracts";
+import type { SyncEvent } from "@ft5/ipc-contracts/sync-service-desktop";
 
 import { DatasourcesProvider } from "../store";
 import { OAuthForm, type OAuthFormProps } from "../credential-forms/oauth-form";
@@ -34,23 +42,42 @@ import { OAuthForm, type OAuthFormProps } from "../credential-forms/oauth-form";
 // Shared API mock harness
 // ---------------------------------------------------------------------------
 
-let startConsentMock: Mock;
-let cancelConsentMock: Mock;
+let authenticateStartMock: Mock;
+let authenticateCancelMock: Mock;
+let authenticateCompleteMock: Mock;
 let addMock: Mock;
-let onEventCapture: ((event: ConsentEvent) => void) | null = null;
+let syncOnEventCapture: ((event: SyncEvent) => void) | null = null;
+
+const FIXTURE_SUMMARY = {
+  id: "ds-google-drive-new",
+  providerId: "google-drive" as const,
+  displayName: "My Drive",
+  status: "connected" as const,
+  errorReason: null,
+  errorKind: null,
+  paused: false,
+  lastSyncAt: null,
+  itemCount: 0,
+};
 
 function installApiMock() {
-  startConsentMock = vi
+  authenticateStartMock = vi
     .fn()
-    .mockResolvedValue({ sessionId: "sess-test" });
-  cancelConsentMock = vi.fn().mockResolvedValue(undefined);
+    .mockResolvedValue({
+      ok: true,
+      result: { correlationId: "corr-test", kind: "oauth" },
+    });
+  authenticateCancelMock = vi
+    .fn()
+    .mockResolvedValue({ ok: true, result: { cancelled: true } });
+  authenticateCompleteMock = vi.fn();
   addMock = vi.fn();
-  const onEventMock = vi
+  const syncOnEventMock = vi
     .fn()
-    .mockImplementation((cb: (e: ConsentEvent) => void) => {
-      onEventCapture = cb;
+    .mockImplementation((cb: (e: SyncEvent) => void) => {
+      syncOnEventCapture = cb;
       return () => {
-        onEventCapture = null;
+        syncOnEventCapture = null;
       };
     });
 
@@ -61,14 +88,16 @@ function installApiMock() {
       add: addMock,
       remove: vi.fn(),
       action: vi.fn(),
-      startConsent: startConsentMock,
-      cancelConsent: cancelConsentMock,
+      pickFilesToUpload: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
-      onEvent: onEventMock,
+      onEvent: vi.fn().mockReturnValue(() => {}),
     },
     sync: {
       listJobs: vi.fn().mockResolvedValue({ jobs: [] }),
-      onEvent: vi.fn().mockReturnValue(() => {}),
+      onEvent: syncOnEventMock,
+      authenticateStart: authenticateStartMock,
+      authenticateComplete: authenticateCompleteMock,
+      authenticateCancel: authenticateCancelMock,
     },
   };
 }
@@ -88,7 +117,7 @@ function renderForm(props: Partial<OAuthFormProps> = {}) {
 }
 
 beforeEach(() => {
-  onEventCapture = null;
+  syncOnEventCapture = null;
   installApiMock();
 });
 
@@ -98,48 +127,54 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// 8.1 — startConsent, not add
+// Connect → sync.authenticateStart
 // ---------------------------------------------------------------------------
 
-describe("OAuthForm — 8.1: calls startConsent on connect", () => {
-  it("calls window.api.datasources.startConsent with {providerId} when Connect is clicked", async () => {
+describe("OAuthForm — calls sync.authenticateStart on Connect", () => {
+  it("does not call any API on mount", async () => {
     renderForm();
     await act(async () => {});
 
-    const connectBtn = screen.getByRole("button", { name: /^connect/i });
-    fireEvent.click(connectBtn);
+    expect(authenticateStartMock).not.toHaveBeenCalled();
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it("calls sync.authenticateStart({providerId}) when Connect is clicked", async () => {
+    renderForm();
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
 
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
     });
-    expect(startConsentMock.mock.calls[0]![0]).toEqual({
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
       providerId: "google-drive",
     });
   });
 
-  it("does NOT call add() when Connect is clicked", async () => {
+  it("does NOT call datasources.add when Connect is clicked", async () => {
     renderForm();
     await act(async () => {});
 
-    const connectBtn = screen.getByRole("button", { name: /^connect/i });
-    fireEvent.click(connectBtn);
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
 
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
     });
     expect(addMock).not.toHaveBeenCalled();
   });
 
-  it("passes datasourceId in startConsent request when provided (reconnect path)", async () => {
+  it("passes datasourceId in the start request when provided (reconnect path)", async () => {
     renderForm({ datasourceId: "ds-existing-123" });
     await act(async () => {});
 
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
 
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
     });
-    expect(startConsentMock.mock.calls[0]![0]).toEqual({
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
       providerId: "google-drive",
       datasourceId: "ds-existing-123",
     });
@@ -147,11 +182,11 @@ describe("OAuthForm — 8.1: calls startConsent on connect", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8.2 — done on consent-completed
+// auth-completed → onSubmit with sentinel + datasourceId
 // ---------------------------------------------------------------------------
 
-describe("OAuthForm — 8.2: transitions to done on consent-completed", () => {
-  it("calls onSubmit when consent-completed arrives for the session", async () => {
+describe("OAuthForm — transitions to done on auth-completed", () => {
+  it("calls onSubmit with {_authCompleted, datasourceId} when auth-completed arrives for the matching correlationId", async () => {
     const onSubmit = vi.fn();
     renderForm({ onSubmit });
     await act(async () => {});
@@ -159,23 +194,30 @@ describe("OAuthForm — 8.2: transitions to done on consent-completed", () => {
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
 
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
     });
 
     act(() => {
-      onEventCapture!({
-        event: "consent-completed",
-        sessionId: "sess-test",
-        datasourceId: "ds-google-drive-new",
+      syncOnEventCapture!({
+        kind: "auth-completed",
+        payload: {
+          correlationId: "corr-test",
+          datasourceId: "ds-google-drive-new",
+          summary: FIXTURE_SUMMARY,
+        },
       });
     });
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledTimes(1);
     });
+    expect(onSubmit).toHaveBeenCalledWith({
+      _authCompleted: "completed",
+      datasourceId: "ds-google-drive-new",
+    });
   });
 
-  it("does not call onSubmit when consent-completed arrives for a different session", async () => {
+  it("does not call onSubmit when auth-completed arrives for a different correlationId", async () => {
     const onSubmit = vi.fn();
     renderForm({ onSubmit });
     await act(async () => {});
@@ -183,39 +225,43 @@ describe("OAuthForm — 8.2: transitions to done on consent-completed", () => {
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
 
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
     });
 
     act(() => {
-      onEventCapture!({
-        event: "consent-completed",
-        sessionId: "sess-other",
-        datasourceId: "ds-other",
+      syncOnEventCapture!({
+        kind: "auth-completed",
+        payload: {
+          correlationId: "corr-other",
+          datasourceId: "ds-other",
+          summary: FIXTURE_SUMMARY,
+        },
       });
     });
 
-    // Give React a tick to process any state updates.
     await act(async () => {});
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 8.3 — inline cancel / timeout with Retry
+// auth-cancelled / auth-failed / auth-timeout → inline copy + Retry
 // ---------------------------------------------------------------------------
 
-describe("OAuthForm — 8.3: surfaces cancel and timeout inline with Retry", () => {
-  it("shows cancellation copy and Retry button after consent-cancelled", async () => {
+describe("OAuthForm — surfaces cancel and timeout inline with Retry", () => {
+  it("shows cancellation copy and Retry button after auth-cancelled", async () => {
     renderForm();
     await act(async () => {});
 
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
     act(() => {
-      onEventCapture!({
-        event: "consent-cancelled",
-        sessionId: "sess-test",
+      syncOnEventCapture!({
+        kind: "auth-cancelled",
+        payload: { correlationId: "corr-test" },
       });
     });
 
@@ -226,17 +272,19 @@ describe("OAuthForm — 8.3: surfaces cancel and timeout inline with Retry", () 
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
-  it("shows timeout copy and Retry button after consent-timeout", async () => {
+  it("shows timeout copy and Retry button after auth-timeout", async () => {
     renderForm();
     await act(async () => {});
 
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
     act(() => {
-      onEventCapture!({
-        event: "consent-timeout",
-        sessionId: "sess-test",
+      syncOnEventCapture!({
+        kind: "auth-timeout",
+        payload: { correlationId: "corr-test" },
       });
     });
 
@@ -247,87 +295,155 @@ describe("OAuthForm — 8.3: surfaces cancel and timeout inline with Retry", () 
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
-  it("clicking Retry resets the session and calls startConsent again", async () => {
+  it("shows failed copy with the auth-failed message and Retry button", async () => {
     renderForm();
     await act(async () => {});
 
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
     act(() => {
-      onEventCapture!({ event: "consent-cancelled", sessionId: "sess-test" });
+      syncOnEventCapture!({
+        kind: "auth-failed",
+        payload: {
+          correlationId: "corr-test",
+          tag: "auth-revoked",
+          message: "Token was revoked by the user",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const failed = screen.getByTestId("oauth-failed");
+      expect(failed.textContent).toMatch(/revoked/i);
+    });
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("clicking Retry resets the session and calls authenticateStart again", async () => {
+    renderForm();
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+
+    act(() => {
+      syncOnEventCapture!({
+        kind: "auth-cancelled",
+        payload: { correlationId: "corr-test" },
+      });
     });
 
     const retryBtn = await screen.findByRole("button", { name: /retry/i });
-    // Reset sessionId for the retry so the new startConsent returns a new sessionId.
-    startConsentMock.mockResolvedValue({ sessionId: "sess-retry" });
+    authenticateStartMock.mockResolvedValue({
+      ok: true,
+      result: { correlationId: "corr-retry", kind: "oauth" },
+    });
     fireEvent.click(retryBtn);
 
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(2);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(2);
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// Unmount cleanup — D7 invariant: closing the dialog mid-OAuth must terminate
-// the broker session so completeWith / addToRegistry never run for an
-// abandoned flow. Without this, the broker keeps its loopback HTTP server
-// bound; if the user already clicked Continue in the browser before closing
-// the dialog, the callback still arrives and a registry row materialises in
-// the dashboard for a session the user thought they cancelled.
+// service-config-missing surfacing — both via response error AND via auth-failed
+// ---------------------------------------------------------------------------
+
+describe("OAuthForm — service-config-missing inline copy", () => {
+  it("renders the inline service-config-missing copy with the path as inline code (response.ok === false)", async () => {
+    authenticateStartMock.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        tag: "service-config-missing",
+        path: "/home/user/ft5/sync_app/config.json",
+        providerId: "google-drive",
+      },
+    });
+
+    renderForm();
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+
+    const failed = await screen.findByTestId("oauth-failed");
+    expect(failed.textContent).toMatch(
+      /service configuration missing/i,
+    );
+    // Path is rendered as <code>
+    expect(failed.querySelector("code")?.textContent).toBe(
+      "/home/user/ft5/sync_app/config.json",
+    );
+    expect(failed.textContent).toMatch(/README/i);
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unmount → sync.authenticateCancel
 // ---------------------------------------------------------------------------
 
 describe("OAuthForm — unmount cancels active session", () => {
-  it("calls cancelConsent({sessionId}) when the form unmounts after Connect", async () => {
+  it("calls sync.authenticateCancel({correlationId}) when the form unmounts after Connect", async () => {
     const { unmount } = renderForm();
     await act(async () => {});
 
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
-    // Simulate dialog close: unmount the form. The broker session must be
-    // cancelled so the loopback server tears down.
     unmount();
 
     await waitFor(() => {
-      expect(cancelConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateCancelMock).toHaveBeenCalledTimes(1);
     });
-    expect(cancelConsentMock.mock.calls[0]![0]).toEqual({ sessionId: "sess-test" });
+    expect(authenticateCancelMock.mock.calls[0]![0]).toEqual({
+      correlationId: "corr-test",
+    });
   });
 
-  it("does NOT call cancelConsent when the form unmounts before Connect was clicked", async () => {
+  it("does NOT call authenticateCancel when the form unmounts before Connect was clicked", async () => {
     const { unmount } = renderForm();
     await act(async () => {});
 
-    // No Connect click, no session — unmount immediately.
     unmount();
 
     await act(async () => {});
-    expect(cancelConsentMock).not.toHaveBeenCalled();
+    expect(authenticateCancelMock).not.toHaveBeenCalled();
   });
 
-  it("calls cancelConsent on unmount even after a terminal state — broker is idempotent", async () => {
+  it("calls authenticateCancel on unmount even after a terminal state — service cancel is idempotent", async () => {
     const { unmount } = renderForm();
     await act(async () => {});
 
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
-    await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
 
-    // Drive the session to a terminal "cancelled" state via the event stream.
     act(() => {
-      onEventCapture!({ event: "consent-cancelled", sessionId: "sess-test" });
+      syncOnEventCapture!({
+        kind: "auth-cancelled",
+        payload: { correlationId: "corr-test" },
+      });
     });
     await waitFor(() => {
       expect(screen.getByRole("status").textContent).toMatch(/cancel/i);
     });
 
-    // Now unmount. cancelConsent fires anyway — broker.cancel() is idempotent
-    // on already-cleared sessions, so this is safe.
     unmount();
 
     await waitFor(() => {
-      expect(cancelConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateCancelMock).toHaveBeenCalledTimes(1);
     });
   });
 });
