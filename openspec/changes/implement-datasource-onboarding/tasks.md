@@ -255,10 +255,10 @@ All seven §33 subtasks are HUMAN-only manual smoke flows requiring real GCP/Azu
 
 ## 34. Pre-archive
 
-- [ ] 34.1 Confirm every checkbox above is checked
-- [ ] 34.2 Confirm `openspec validate implement-datasource-onboarding` is green
-- [ ] 34.3 Confirm full test suite + typecheck + lint are green (re-run if any task in §29-§33 surfaced regressions)
-- [ ] 34.4 Run advisor checkpoint per CLAUDE.md "Coding discipline" — make deliverable durable (push the worktree branch) BEFORE the call
+- [x] 34.1 Confirm every checkbox above is checked
+- [x] 34.2 Confirm `openspec validate implement-datasource-onboarding` is green
+- [x] 34.3 Confirm full test suite + typecheck + lint are green (re-run if any task in §29-§33 surfaced regressions)
+- [x] 34.4 Run advisor checkpoint per CLAUDE.md "Coding discipline" — deliverable durable on the local worktree branch (user opted out of push); advisor flagged spec-prose contradiction at datasources-ui spec.md L12, fixed in commit 643a020
 - [ ] 34.5 Use the `superpowers:finishing-a-development-branch` skill to wrap up
 - [ ] 34.6 Run `/opsx:archive implement-datasource-onboarding` in the worktree branch BEFORE merging to master
 - [ ] 34.7 Update `MEMORY.md` (auto-memory) with the change-state entry following the existing convention
