@@ -99,9 +99,9 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 12. Service — `handleGetConfig` / `handleSetConfig`
 
-- [ ] 12.1 Write failing tests in `get-config.test.ts` / `set-config.test.ts`: get-config when file is absent returns the empty default shape; round-trip set-config + get-config; set-config writes 0o600 on Unix
-- [ ] 12.2 Implement the two handlers in `services/fs-sync/src/commands/get-config.ts` and `set-config.ts`
-- [ ] 12.3 Wire into `buildCommandHandlers`; rerun → green
+- [x] 12.1 Failing tests at `services/fs-sync/src/commands/{get-config,set-config}.test.ts`: get-config absent-file → empty default; round-trip set + get; set-config 0o600 on Unix; io-error propagation for both handlers
+- [x] 12.2 Implement at `services/fs-sync/src/commands/{get-config,set-config}.ts` (factories `makeGetConfigHandler`, `makeSetConfigHandler`). Thin wrappers around `ServiceConfigStore.getRaw()` / `setRaw(...)`. Throws map to `{tag: "io-error", message}`
+- [ ] 12.3 Wire into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
 
 ## 13. Service — `handleDeleteCredentials`
 
