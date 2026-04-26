@@ -5,8 +5,12 @@ export interface PingResponse {
   ts: number;
 }
 
+// `ConsentEvent`, `DatasourcesStartConsent{Request,Response}`,
+// `DatasourcesCancelConsent{Request,Response}` were retired by
+// `implement-datasource-onboarding`. The replacement surface is
+// `SyncAuthenticate{Start,Complete,Cancel}*` plus the `auth-*` event
+// taxonomy on `@ft5/ipc-contracts/sync-service`.
 export type {
-  ConsentEvent,
   CredentialsSchema,
   DatasourceAction,
   DatasourceStatus,
@@ -16,16 +20,12 @@ export type {
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
   DatasourcesListRequest,
   DatasourcesListResponse,
   DatasourcesPickFilesRequest,
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   ErroredDatasourceSummary,
   ProviderCapabilities,
