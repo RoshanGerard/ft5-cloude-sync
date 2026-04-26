@@ -105,9 +105,9 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 13. Service — `handleDeleteCredentials`
 
-- [ ] 13.1 Write failing tests in `delete-credentials.test.ts`: delete-when-present (returns `deleted: true`, calls `credentialStore.delete`); delete-when-absent (returns `deleted: false`, no error); delete throws → handler logs structured warning, returns `{ok: true, deleted: false}`
-- [ ] 13.2 Implement `services/fs-sync/src/commands/delete-credentials.ts`
-- [ ] 13.3 Wire into `buildCommandHandlers`; rerun → green
+- [x] 13.1 Failing tests at `services/fs-sync/src/commands/delete-credentials.test.ts`: delete-when-present → `{deleted: true}`; delete-when-absent → `{deleted: false}` and `delete` not called; delete-throws → structured warning `bridge-credential-delete-failed` + `{deleted: false}` (best-effort)
+- [x] 13.2 Implement at `services/fs-sync/src/commands/delete-credentials.ts` (factory `makeDeleteCredentialsHandler`). Pre-checks via `credentialStore.get(...)` to distinguish deleted-vs-absent (engine `CredentialStore.delete` is `Promise<void>` per the port contract — kept that way to preserve the engine port's idempotent semantics)
+- [ ] 13.3 Wire into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
 
 ## 14. Service — bootstrap composition update + integration test
 
