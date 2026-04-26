@@ -362,11 +362,17 @@ describe("ipc-contracts fs-datasource-engine types — credentials & quota", () 
 });
 
 describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
-  it("DatasourceErrorTag is exactly the documented 9-tag union", () => {
+  it("DatasourceErrorTag is exactly the documented 10-tag union", () => {
     // `"cancelled"` joined the taxonomy with `add-fs-engine-cancellation`.
     // It is reserved for base-originated cancellation of in-flight uploads —
     // strategies' own `normalizeError` MUST NOT emit this tag for raw
     // provider exceptions.
+    //
+    // `"invalid-datasource"` joined the taxonomy with
+    // `add-invalid-datasource-state`. It surfaces misconfigured datasources
+    // (registry drift, missing credential file, wrong credential shape)
+    // detected at the `factory.create` / `resolveClient` layer before any
+    // provider call goes out.
     expectTypeOf<DatasourceErrorTag>().toEqualTypeOf<
       | "auth-expired"
       | "auth-revoked"
@@ -377,6 +383,7 @@ describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
       | "network-error"
       | "provider-error"
       | "cancelled"
+      | "invalid-datasource"
     >();
   });
 

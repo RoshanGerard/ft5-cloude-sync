@@ -62,8 +62,11 @@ import {
 import { AuthRevokedState } from "./states/auth-revoked";
 import { DisconnectedState } from "./states/disconnected";
 import { EmptyState } from "./states/empty";
+import { InvalidDatasourceState } from "./states/invalid-datasource";
 import { Skeleton } from "./states/skeleton";
 import { SyncingState } from "./states/syncing";
+import { ConfirmRemoveDatasourceDialog } from "../datasources/confirm-remove-dialog";
+import { useDatasourceActions } from "../datasources/store";
 import { getOrCreateExplorerStore } from "./store";
 import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
@@ -77,6 +80,18 @@ import type { DatasourceStatus } from "@ft5/ipc-contracts";
 
 export interface FileExplorerProps {
   datasourceId: string;
+  /**
+   * Provider key (`google-drive`, `onedrive`, `amazon-s3`, ...) for the
+   * datasource being explored — threaded down to `<InvalidDatasourceState>`
+   * so its in-place Reconnect button can call `startConsent` directly per
+   * design.md Decision 4. Optional because the explore route is the only
+   * call site that has it in scope (`summary.providerId`); unit / composite
+   * tests that mount the explorer in isolation may omit it. When absent
+   * AND the explorer enters the invalid-datasource branch, the state
+   * component disables its Reconnect button per the spec's "providerId
+   * unavailable" scenario.
+   */
+  providerId?: string;
   /**
    * Presentation-layer provider kind for the datasource being explored.
    * Passed down to `<SearchResults>` so the deferred-state surface knows
@@ -114,6 +129,19 @@ export interface FileExplorerProps {
    * Tests inject their own toaster via this prop and bypass Sonner.
    */
   toaster?: UploadToaster;
+  /**
+   * Optional callback invoked after the user confirms Remove from the
+   * `<InvalidDatasourceState>`'s `<ConfirmRemoveDatasourceDialog>` AND
+   * the `actions.remove({ datasourceId })` IPC resolves. The route layer
+   * uses this to navigate the user out of the explore surface (the
+   * underlying datasource no longer exists, so a re-fetch would loop
+   * back into the same `invalid-datasource` arm — see
+   * `openspec/changes/add-invalid-datasource-state/specs/file-explorer/spec.md`
+   * "On successful Remove (the IPC call resolves and a `datasource-removed`
+   * event arrives), the file-explorer route SHALL navigate back to /").
+   * Tests that mount `<FileExplorer>` in isolation may omit it.
+   */
+  onDatasourceRemoved?: () => void;
 }
 
 /**
@@ -149,12 +177,64 @@ function DashboardHomeButton() {
 // was removed in Task 9 — `createUploadJobToaster()` is now the
 // production default.
 
+/**
+ * Renders the invalid-datasource Pattern-A state plus its companion
+ * <ConfirmRemoveDatasourceDialog>. Gated behind the
+ * `state.errorTag === "invalid-datasource"` branch so the
+ * `useDatasourceActions` hook (which throws outside <DatasourcesProvider>)
+ * is only instantiated when the explorer is rendered in a tree that
+ * provides the context — i.e. the production explore route, which now
+ * wraps in <DatasourcesProvider> per the page.tsx fix. Existing
+ * file-explorer tests that mount <FileExplorer> in isolation never reach
+ * this arm and therefore do not need to provide the context.
+ *
+ * Splitting `useDatasourceActions` out of the parent `FileExplorer`
+ * function body is a deviation from the literal §9.7 contract wording
+ * but preserves contract intent: a single shared confirm dialog per
+ * arm activation, a single `actions.remove({ datasourceId })` IPC call.
+ */
+function InvalidDatasourceArm({
+  providerId,
+  datasourceId,
+  onReconnectSucceeded,
+  onDatasourceRemoved,
+}: {
+  providerId?: string;
+  datasourceId: string;
+  onReconnectSucceeded: () => void;
+  onDatasourceRemoved?: () => void;
+}) {
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const actions = useDatasourceActions();
+  return (
+    <>
+      <InvalidDatasourceState
+        providerId={providerId}
+        datasourceId={datasourceId}
+        onReconnectSucceeded={onReconnectSucceeded}
+        onRequestRemove={() => setRemoveDialogOpen(true)}
+      />
+      <ConfirmRemoveDatasourceDialog
+        open={removeDialogOpen}
+        onCancel={() => setRemoveDialogOpen(false)}
+        onConfirm={async () => {
+          setRemoveDialogOpen(false);
+          await actions.remove({ datasourceId });
+          onDatasourceRemoved?.();
+        }}
+      />
+    </>
+  );
+}
+
 export function FileExplorer({
   datasourceId,
+  providerId,
   providerKind = "s3",
   providerStatus,
   conflictResolver: conflictResolverProp,
   toaster: toasterProp,
+  onDatasourceRemoved,
 }: FileExplorerProps) {
   // Task 7 wiring (post-Section-9 cleanup): instantiate the production
   // shadcn-dialog-backed conflict resolver once per mount so the same
@@ -490,6 +570,25 @@ export function FileExplorer({
             }
             if (state.errorTag === "auth-revoked") {
               return <AuthRevokedState onReconnect={handleReconnect} />;
+            }
+            if (state.errorTag === "invalid-datasource") {
+              // Pattern-A full-replace state for misconfigured datasources.
+              // Reconnect lifecycle (startConsent + useConsentSession) lives
+              // inside <InvalidDatasourceState>; the shared
+              // <ConfirmRemoveDatasourceDialog> + actions.remove dispatch
+              // live inside <InvalidDatasourceArm> per design.md Decisions
+              // 4 + 5. `onReconnectSucceeded` re-runs files:list via
+              // store.retryLoad(); on success the engine resolves the
+              // freshly-registered credential and the explorer naturally
+              // transitions out of this branch.
+              return (
+                <InvalidDatasourceArm
+                  providerId={providerId}
+                  datasourceId={datasourceId}
+                  onReconnectSucceeded={() => store.retryLoad()}
+                  onDatasourceRemoved={onDatasourceRemoved}
+                />
+              );
             }
             // rate-limited / other: no dedicated full-replace state
             // component; surface the error inline so the user sees

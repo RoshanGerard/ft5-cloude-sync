@@ -62,10 +62,13 @@ import type {
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
-import type { ProviderFactoryFn } from "../factory.js";
+import {
+  type CredentialShapeValidator,
+  type ProviderFactoryFn,
+} from "../factory.js";
 
 // ---------------------------------------------------------------------------
 // Path ↔ Key utilities
@@ -777,4 +780,50 @@ export const createS3Client: ProviderFactoryFn<"amazon-s3"> = (
 ) => {
   const creds = readCredsFromStored(credentials);
   return new S3Client({ datasourceId, ctx }, creds);
+};
+
+/**
+ * Per-provider credential-shape validator (per
+ * add-invalid-datasource-state Decision 2). Wired into the registry entry
+ * by `createDefaultProviderRegistry` and invoked by `factory.create`
+ * BEFORE the strategy factory runs. Throws `DatasourceError({ tag:
+ * "invalid-datasource", retryable: false, message: "amazon-s3 credential
+ * is missing <field>" })` on the first missing/invalid field.
+ */
+export const validateS3CredentialShape: CredentialShapeValidator = (
+  credentials,
+  datasourceId,
+) => {
+  const authResult = (credentials as { authResult?: unknown }).authResult;
+  if (authResult === null || typeof authResult !== "object") {
+    throw new DatasourceError<"amazon-s3">({
+      tag: DatasourceErrorTag.InvalidDatasource,
+      datasourceType: "amazon-s3",
+      datasourceId,
+      retryable: false,
+      raw: "amazon-s3-missing-authResult",
+      message: "amazon-s3 credential is missing authResult",
+    });
+  }
+  const meta = ((authResult as { meta?: unknown }).meta ?? {}) as Record<
+    string,
+    unknown
+  >;
+  for (const field of [
+    "accessKeyId",
+    "secretAccessKey",
+    "region",
+    "bucket",
+  ] as const) {
+    if (typeof meta[field] !== "string" || (meta[field] as string).length === 0) {
+      throw new DatasourceError<"amazon-s3">({
+        tag: DatasourceErrorTag.InvalidDatasource,
+        datasourceType: "amazon-s3",
+        datasourceId,
+        retryable: false,
+        raw: `amazon-s3-missing-${field}`,
+        message: `amazon-s3 credential is missing ${field}`,
+      });
+    }
+  }
 };

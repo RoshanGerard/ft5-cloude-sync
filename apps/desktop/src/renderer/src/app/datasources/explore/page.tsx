@@ -29,6 +29,7 @@ import { Suspense, useEffect, useState } from "react";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
+import { DatasourcesProvider } from "@/features/datasources/store";
 import { FileExplorer } from "@/features/file-explorer/file-explorer";
 import type { ProviderKind } from "@/features/file-explorer/search-results";
 
@@ -60,6 +61,7 @@ type ResolutionState =
   | {
       phase: "found";
       datasourceId: string;
+      providerId: string;
       providerKind: ProviderKind;
       providerStatus: DatasourceStatus;
     }
@@ -109,6 +111,7 @@ function ExplorePageContent() {
             ? {
                 phase: "found",
                 datasourceId: idParam,
+                providerId: match.providerId,
                 providerKind: providerKindFromId(match.providerId),
                 providerStatus: match.status,
               }
@@ -137,12 +140,30 @@ function ExplorePageContent() {
     // can replace this with a skeleton if the measured time feels long.
     return <div data-testid="file-explorer-resolving" aria-hidden="true" />;
   }
+  // <DatasourcesProvider> is required here because the explorer's
+  // invalid-datasource branch reaches into `useDatasourceActions` (for the
+  // shared confirm-remove dialog) and `<InvalidDatasourceState>` reaches
+  // into `useConsentSession`. The dashboard route at `app/page.tsx` already
+  // wraps in the same provider; the explore route was missing it because
+  // §7's component had not been wired in yet.
+  // `onDatasourceRemoved` flips the route to `not-found` after the user
+  // confirms Remove from the explorer's invalid-datasource arm. Without
+  // this, the underlying datasource id is gone but the explorer keeps
+  // re-fetching `files:list`, which the engine answers with another
+  // `invalid-datasource` envelope — infinite loop into the same Pattern-A
+  // state. `not-found` renders `<DatasourceNotFound>` with a "Return to
+  // dashboard" link, satisfying the file-explorer spec scenario "On
+  // successful Remove ... the file-explorer route SHALL navigate back to /".
   return (
-    <FileExplorer
-      datasourceId={state.datasourceId}
-      providerKind={state.providerKind}
-      providerStatus={state.providerStatus}
-    />
+    <DatasourcesProvider>
+      <FileExplorer
+        datasourceId={state.datasourceId}
+        providerId={state.providerId}
+        providerKind={state.providerKind}
+        providerStatus={state.providerStatus}
+        onDatasourceRemoved={() => setState({ phase: "not-found" })}
+      />
+    </DatasourcesProvider>
   );
 }
 

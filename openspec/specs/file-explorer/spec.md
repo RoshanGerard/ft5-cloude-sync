@@ -3,9 +3,7 @@
 ## Purpose
 
 The `file-explorer` capability covers the renderer's per-datasource file browser: the `/datasources/explore?id=<datasourceId>` route reachable from each datasource card's "Explore" quick action, the navigation chrome (breadcrumb, back / forward / up, toolbar, status row), the six view modes (List, Details, Small Icons, Tiles, Medium Icons, Large Icons), the centralized `(kind, mimeFamily)` → lucide-react icon mapping, the right-click context menu, the toggleable Details pane with per-datasource persistence, selection and keyboard conventions, the async rename / delete / download pipeline with per-entry pending and error state, the provider-honest search affordance (S3 client-side scan; Drive and OneDrive deferred), the `window.api.files.*` IPC surface (`list`, `stat`, `search`, `rename`, `remove`, `download`) wired through all four layers, and the 300-entry directory ceiling enforced on mocked fixtures.
-
 ## Requirements
-
 ### Requirement: Explorer route is reached from the datasource card and scopes to a single datasource
 
 The renderer SHALL expose a file-explorer route at the path `/datasources/explore` with the datasource id passed as the `id` query parameter. The route SHALL be reachable from the datasource card's quick-actions menu via a new "Explore" item. Each visit SHALL scope to exactly one datasource identified by the `id` query parameter, and SHALL maintain its own independent navigation history (back / forward / up) distinct from any other explorer session.
@@ -228,7 +226,7 @@ All file-system reads and mutations from the renderer SHALL go through the `wind
 
 ### Requirement: Non-usable datasource states render as pattern-A full-replace treatments
 
-When the datasource is not in a state that permits browsing — `disconnected`, `auth-revoked`, or `syncing` (initial sync in progress) — the entries area of the file explorer SHALL be replaced by a centered state component with a Lucide icon (40px), a 15px semibold headline, 13px body at `text-muted-foreground` (width-capped ~320px), and, for the two amber states, a single primary action button (`Retry` for disconnected; `Reconnect` for auth-revoked). The `syncing` state SHALL include a progress label (e.g., "~1,240 files · 32%") rendered in `text-blue-600` but no action button. The `connected-but-empty` state (the datasource is reachable, sync is complete, and the current folder contains zero entries) SHALL render the same pattern with neutral iconography (`FolderOpen`, `text-muted-foreground`) and no action button. The toolbar, breadcrumb, history buttons, and Details pane SHALL remain rendered above / beside the state area in every case.
+When the datasource is not in a state that permits browsing — `disconnected`, `auth-revoked`, `invalid-datasource`, or `syncing` (initial sync in progress) — the entries area of the file explorer SHALL be replaced by a centered state component with a Lucide icon (40px), a 15px semibold headline, 13px body at `text-muted-foreground` (width-capped ~320px), and, for the actionable states, action buttons. Specifically: the `disconnected` state has a single primary `Retry` button; the `auth-revoked` state has a single primary `Reconnect` button; the new `invalid-datasource` state has a primary `Reconnect` button (constructive, neutral `bg-primary` styling) PLUS a secondary `Remove datasource` button (`variant="ghost" size="sm"` with `text-destructive`). The `syncing` state SHALL include a progress label (e.g., "~1,240 files · 32%") rendered in `text-blue-600` but no action button. The `connected-but-empty` state (the datasource is reachable, sync is complete, and the current folder contains zero entries) SHALL render the same pattern with neutral iconography (`FolderOpen`, `text-muted-foreground`) and no action button. The toolbar, breadcrumb, history buttons, and Details pane SHALL remain rendered above / beside the state area in every case.
 
 #### Scenario: Disconnected state renders when list rejects with tag "disconnected"
 
@@ -239,6 +237,11 @@ When the datasource is not in a state that permits browsing — `disconnected`, 
 
 - **WHEN** `window.api.files.list` rejects with `{ error: { tag: "auth-revoked", message: "Refresh token expired", retryable: false } }`
 - **THEN** the explorer renders a centered component with the `KeyRound` icon in `text-amber-600`, headline "Sign in again to view files", body "Your session for this datasource expired or was revoked.", and an amber `Reconnect` button that routes to the datasource reconnect flow; no file rows are rendered
+
+#### Scenario: Invalid-datasource state renders when list rejects with tag "invalid-datasource"
+
+- **WHEN** `window.api.files.list` rejects with `{ error: { tag: "invalid-datasource", message: "Credentials are missing — reconnect this datasource", retryable: false } }`
+- **THEN** the explorer renders a centered component with the `AlertTriangle` icon in `text-destructive` (red-600), headline "This datasource needs reconfiguring", body "Its connection details are missing or invalid. Sign in again or remove the datasource and add it back.", a primary neutral `Reconnect` button, and a secondary `Remove datasource` button with `variant="ghost" size="sm"` and `text-destructive` styling; no file rows are rendered; container element carries `data-testid="file-explorer-state-invalid-datasource"`, `role="alert"`, and `aria-live="polite"`
 
 #### Scenario: Syncing state renders when datasources-store status is "syncing" before the first list response resolves
 
@@ -252,8 +255,8 @@ When the datasource is not in a state that permits browsing — `disconnected`, 
 
 #### Scenario: State components meet WCAG AA color contrast and expose live regions
 
-- **WHEN** any of the four state components renders
-- **THEN** the primary text / icon against the component's background passes WCAG AA contrast (amber-600 on white meets 4.66:1); the component carries `role="status"` (for syncing and connected-but-empty) or `role="alert"` (for disconnected and auth-revoked) with `aria-live="polite"`; icons are marked `aria-hidden="true"`; the primary action button is focusable via keyboard and lands in the tab order immediately after the toolbar. The loading skeleton (separate requirement) is decorative, carries `aria-hidden="true"`, and is NOT a live region — the syncing state is the canonical loading cue for assistive technology
+- **WHEN** any of the five state components renders
+- **THEN** the primary text / icon against the component's background passes WCAG AA contrast (amber-600 on white meets 4.66:1; red-600 on white meets 4.83:1); the component carries `role="status"` (for syncing and connected-but-empty) or `role="alert"` (for disconnected, auth-revoked, and invalid-datasource) with `aria-live="polite"`; icons are marked `aria-hidden="true"`; the primary action button is focusable via keyboard and lands in the tab order immediately after the toolbar. The loading skeleton (separate requirement) is decorative, carries `aria-hidden="true"`, and is NOT a live region — the syncing state is the canonical loading cue for assistive technology
 
 ### Requirement: Loading renders skeleton rows matched to the active view mode
 
@@ -489,3 +492,50 @@ Every successfully-enqueued upload (one toast per `jobId` returned by `files.upl
 
 - **WHEN** the user drops 5 files, `files.upload` dispatches 5 jobs, and 1 terminal-fails while 4 succeed
 - **THEN** 4 green success toasts appear and auto-dismiss; 1 red failure toast remains with a Retry action; no aggregate "3 of 5 failed" summary toast appears; each file has exactly one toast at any time
+
+### Requirement: Invalid-datasource Reconnect runs in-place via `startConsent` and refreshes on completion
+
+The `<InvalidDatasourceState>` component's `Reconnect` button SHALL call `window.api.datasources.startConsent({ providerId, datasourceId })` directly, capture the returned `sessionId`, and subscribe to consent events scoped to that `sessionId` via the existing `useConsentSession(sessionId)` hook. While `sessionState.status === "pending"`, BOTH action buttons (Reconnect and Remove) SHALL be disabled and the Reconnect button's label SHALL swap to "Connecting…" (no animated spinner — `animate-spin` is forbidden in feature code by the `scripts/motion-budget.test.ts` guardrail per `ui-ux-design` Decision 10; the label-swap matches the existing `AuthErrorBanner` pattern). On `sessionState.status === "completed"`, the component SHALL invoke its parent's `onReconnectSucceeded` callback (which the file-explorer wires to `store.retryLoad()` so `useExplorerData` re-dispatches `files:list`); on a successful subsequent list, the explorer naturally transitions out of the `<InvalidDatasourceState>` arm. On `sessionState.status ∈ {"cancelled", "failed", "timeout"}`, both buttons SHALL re-enable and an inline error line ("Reconnect failed — please try again.") SHALL render below the buttons; the user MAY click Reconnect again to start a fresh session.
+
+The component SHALL NOT route the user back to the dashboard at any point; the Reconnect lifecycle stays inside the file-explorer view.
+
+The `providerId: string` value SHALL be threaded from the route layer (where `summary.providerId` is in scope) through a sibling `providerId?: string` prop on `<FileExplorer>` to the state component. When `providerId` is unavailable (e.g., a test renders the component in isolation without it), the Reconnect button SHALL be disabled with `aria-disabled="true"` and a tooltip "Provider information unavailable — return to the dashboard to reconnect"; this guards against attempting `startConsent` with a missing `providerId`.
+
+#### Scenario: Reconnect button starts a scoped consent session and disables both buttons during pending
+
+- **WHEN** a test renders `<InvalidDatasourceState providerId="google-drive" datasourceId="ds-1" ... />`, clicks the Reconnect button, and `window.api.datasources.startConsent` resolves with `{ sessionId: "sess-1" }`
+- **THEN** `startConsent` is called exactly once with `{ providerId: "google-drive", datasourceId: "ds-1" }`, the `sessionId` is recorded, both Reconnect and Remove buttons report `disabled === true` (or `aria-disabled="true"`), and the Reconnect button's visible label swaps to "Connecting…"
+
+#### Scenario: Successful consent triggers `onReconnectSucceeded` callback
+
+- **WHEN** the consent session reaches `status === "completed"` (simulated via the `useConsentSession` mock)
+- **THEN** the component's `onReconnectSucceeded()` prop is invoked exactly once; the parent (file-explorer) wires this to `store.retryLoad()`, which bumps `refetchToken` and triggers `useExplorerData` to re-dispatch `files:list`
+
+#### Scenario: Cancelled / failed / timeout re-enables the buttons and shows an error line
+
+- **WHEN** the consent session reaches `status === "cancelled"` (or `"failed"` / `"timeout"`)
+- **THEN** both Reconnect and Remove buttons re-enable, the Reconnect button's label returns to "Reconnect", and an inline `<p>` element with text "Reconnect failed — please try again." is rendered below the buttons; clicking Reconnect again starts a fresh `startConsent` flow with a new `sessionId`
+
+#### Scenario: Reconnect button is disabled when providerId is unavailable
+
+- **WHEN** a test renders `<InvalidDatasourceState datasourceId="ds-1" ... />` without the `providerId` prop
+- **THEN** the Reconnect button has `aria-disabled="true"`, its tooltip reads "Provider information unavailable — return to the dashboard to reconnect", and clicking it does NOT invoke `startConsent`
+
+### Requirement: Invalid-datasource Remove flows through a shared confirm dialog
+
+The `<InvalidDatasourceState>` component's `Remove datasource` button SHALL open a shared `<ConfirmRemoveDatasourceDialog>` (shadcn `Dialog`) before invoking `window.api.datasources.remove({ datasourceId })`. The dialog SHALL display the headline "Remove this datasource?" and body "This deletes the local registry entry; cloud files are not deleted." with a Cancel button and a destructive Remove button. The destructive Remove button SHALL be the focus target on dialog open, and pressing Escape SHALL cancel without removing.
+
+On successful Remove (the IPC call resolves and a `datasource-removed` event arrives), the file-explorer route SHALL navigate back to `/` because the underlying datasource no longer exists; the `<InvalidDatasourceState>` component does NOT need explicit cleanup logic — the route unmounts the explorer.
+
+The same `<ConfirmRemoveDatasourceDialog>` SHALL be reused by the dashboard card's invalid-datasource banner Remove button (per the `datasources-ui` capability spec) so destructive removal goes through one consistent confirm flow.
+
+#### Scenario: Remove button opens the confirm dialog without invoking the IPC
+
+- **WHEN** a test renders `<InvalidDatasourceState ... />` and clicks the "Remove datasource" button
+- **THEN** the `<ConfirmRemoveDatasourceDialog>` opens (visible / `aria-hidden="false"`), `window.api.datasources.remove` has NOT been called yet, the destructive Remove button inside the dialog has focus, and pressing Escape closes the dialog without dispatching any IPC
+
+#### Scenario: Confirming Remove dispatches the datasources.remove IPC
+
+- **WHEN** the confirm dialog is open and the user clicks the destructive Remove button
+- **THEN** `window.api.datasources.remove({ datasourceId })` is called exactly once with the component's `datasourceId` prop value; the dialog closes; subsequent navigation to `/` is driven by the route layer (out of scope for this component)
+

@@ -22,7 +22,8 @@
 //     must have a corresponding registry entry — else `createClientFactory`
 //     throws `DatasourceError tag="unsupported"`.
 //
-// Unknown `providerId` at `create` time throws `DatasourceError tag="unsupported"`.
+// Unknown `providerId` at `create` time throws `DatasourceError tag="invalid-datasource"`
+// (per add-invalid-datasource-state Decision 2 — misconfigured datasource).
 //
 // Design note — return-type generic:
 //   Public `ClientFactory.create<P>` is generic in the provider id and returns
@@ -34,7 +35,11 @@
 //   tightens `ProviderMetadata<T>` in `@ft5/ipc-contracts`.
 
 import type { ProviderId, StoredCredentials } from "@ft5/ipc-contracts";
-import { DatasourceError, providers } from "@ft5/ipc-contracts";
+import {
+  DatasourceError,
+  DatasourceErrorTag,
+  providers,
+} from "@ft5/ipc-contracts";
 
 import type {
   BaseClientContext,
@@ -44,9 +49,18 @@ import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
 // Provider strategies. Phases 6, 7, and 8 delivered the real S3, OneDrive,
 // and Google Drive strategies respectively.
-import { createS3Client } from "./strategies/s3-client.js";
-import { createOneDriveClientForRegistry } from "./strategies/onedrive-client.js";
-import { createGoogleDriveClientForRegistry } from "./strategies/googledrive-client.js";
+import {
+  createS3Client,
+  validateS3CredentialShape,
+} from "./strategies/s3-client.js";
+import {
+  createOneDriveClientForRegistry,
+  validateOneDriveCredentialShape,
+} from "./strategies/onedrive-client.js";
+import {
+  createGoogleDriveClientForRegistry,
+  validateGoogleDriveCredentialShape,
+} from "./strategies/googledrive-client.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -87,10 +101,44 @@ export type ProviderFactoryFn<P extends ProviderId = ProviderId> = (
 ) => DatasourceClient<P>;
 
 /**
- * Map of ProviderId → factory fn, pinned per-key: the entry at key `P` must
- * return a `DatasourceClient<P>`. Must cover every `ProviderId`.
+ * Per-provider credential-shape validator. Invoked by `factory.create`
+ * BEFORE the strategy factory runs (per add-invalid-datasource-state
+ * Decision 2 — single choke point). MUST throw `DatasourceError({ tag:
+ * "invalid-datasource", retryable: false, datasourceId, message:
+ * "<provider> credential is missing <field>" })` when the supplied
+ * credentials do not satisfy the provider's expected shape; MUST
+ * return without throwing on success.
+ *
+ * The validator receives `datasourceId` so the thrown error carries the
+ * real id (rather than the `FACTORY_CONSTRUCTION_DS_ID` sentinel) — the
+ * sync-service `normalizeFilesError` and the dashboard banner both
+ * consume the id to identify which datasource needs reconfiguring.
  */
-export type ProviderRegistry = { [P in ProviderId]: ProviderFactoryFn<P> };
+export type CredentialShapeValidator = (
+  creds: StoredCredentials,
+  datasourceId: string,
+) => void;
+
+/**
+ * A single registry entry: bundles the strategy factory function with the
+ * credential-shape validator that gates it. Adding a new provider means
+ * exporting both functions from the strategy module and adding one entry
+ * here — no edits to `factory.create` itself.
+ */
+export interface ProviderRegistryEntry<
+  P extends ProviderId = ProviderId,
+> {
+  readonly create: ProviderFactoryFn<P>;
+  readonly validateCredentialShape: CredentialShapeValidator;
+}
+
+/**
+ * Map of ProviderId → registry entry, pinned per-key: the entry at key
+ * `P` must return a `DatasourceClient<P>`. Must cover every `ProviderId`.
+ */
+export type ProviderRegistry = {
+  [P in ProviderId]: ProviderRegistryEntry<P>;
+};
 
 export interface ClientFactory {
   /**
@@ -103,8 +151,9 @@ export interface ClientFactory {
    * Generic in `P` so callers that pass a literal `providerId` get a
    * correspondingly narrow `DatasourceClient<P>` back with no casts.
    *
-   * @throws DatasourceError `tag="unsupported"` if `providerId` is not in
-   *   the registry.
+   * @throws DatasourceError `tag="invalid-datasource"` if `providerId` is
+   *   not in the registry (the datasource's stored providerId does not
+   *   match any known provider strategy).
    */
   create<P extends ProviderId>(
     providerId: P,
@@ -169,7 +218,7 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
       const entry = registry[providerId];
       if (entry === undefined) {
         throw new DatasourceError({
-          tag: "unsupported",
+          tag: DatasourceErrorTag.InvalidDatasource,
           datasourceType: providerId,
           datasourceId,
           retryable: false,
@@ -177,6 +226,13 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
           message: `No strategy registered for provider '${providerId}'`,
         });
       }
+      // Per-provider credential-shape validation BEFORE strategy
+      // construction (per add-invalid-datasource-state Decision 2).
+      // The validator throws DatasourceError({ tag: InvalidDatasource,
+      // datasourceId }) with a field-naming message on shape failure;
+      // success returns void. Passing `datasourceId` so the thrown
+      // error carries the real id rather than the construction-sentinel.
+      entry.validateCredentialShape(credentials, datasourceId);
       const descriptor = providers[providerId];
       // Construct a fresh BaseClientContext per call — the descriptor is
       // per-provider, so it cannot live inside the EngineContext.
@@ -185,13 +241,12 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
         credentialStore: ctx.credentialStore,
         providerDescriptor: descriptor,
       };
-      // `registry[providerId]` is typed as `ProviderFactoryFn<P>` via the
-      // mapped type, so the call returns `DatasourceClient<P>` directly.
+      // `entry.create` is typed as `ProviderFactoryFn<P>` via the mapped
+      // type, so the call returns `DatasourceClient<P>` directly.
       // NOTE: callers are responsible for calling `.dispose()` on returned
       // clients when they discard them — strategies that subscribe to the
-      // bus (e.g., OneDriveClient) leak the subscription otherwise. Phase 10
-      // will own the cross-IPC lifecycle.
-      return entry(datasourceId, credentials, baseCtx);
+      // bus (e.g., OneDriveClient) leak the subscription otherwise.
+      return entry.create(datasourceId, credentials, baseCtx);
     },
   };
 }
@@ -211,8 +266,17 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
  */
 export function createDefaultProviderRegistry(): ProviderRegistry {
   return {
-    "amazon-s3": createS3Client,
-    "google-drive": createGoogleDriveClientForRegistry,
-    onedrive: createOneDriveClientForRegistry,
+    "amazon-s3": {
+      create: createS3Client,
+      validateCredentialShape: validateS3CredentialShape,
+    },
+    "google-drive": {
+      create: createGoogleDriveClientForRegistry,
+      validateCredentialShape: validateGoogleDriveCredentialShape,
+    },
+    onedrive: {
+      create: createOneDriveClientForRegistry,
+      validateCredentialShape: validateOneDriveCredentialShape,
+    },
   };
 }

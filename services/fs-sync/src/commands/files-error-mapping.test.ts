@@ -100,6 +100,37 @@ describe("normalizeFilesError", () => {
     });
   });
 
+  it("maps invalid-datasource DatasourceError 1:1 (Decision 2)", () => {
+    // Per add-invalid-datasource-state §6 — the engine + service-side
+    // `resolveClient` choke point throws `DatasourceError({ tag:
+    // "invalid-datasource" })` for misconfigured datasources. The
+    // envelope tag must surface this as `"invalid-datasource"` (not
+    // collapsed to `"other"`) so the renderer's
+    // `<InvalidDatasourceState>` and `<InvalidDatasourceBanner>` can
+    // render the actionable Reconnect / Remove affordances.
+    const err = new DatasourceError({
+      tag: "invalid-datasource",
+      datasourceType: "google-drive",
+      datasourceId: "ds-misconfigured",
+      retryable: false,
+      message: "Credentials are missing — reconnect this datasource",
+    });
+    expect(normalizeFilesError(err)).toEqual({
+      tag: "invalid-datasource",
+      message: "Credentials are missing — reconnect this datasource",
+      retryable: false,
+    });
+  });
+
+  it("non-DatasourceError thrown values still map to 'other' after invalid-datasource branch lands", () => {
+    // Regression guard — the new `invalid-datasource` branch must NOT
+    // accidentally catch plain throws (Error, string, object). Those
+    // continue to surface as `tag: "other"` per the existing contract.
+    expect(normalizeFilesError(new Error("pipe broken")).tag).toBe("other");
+    expect(normalizeFilesError("bare string").tag).toBe("other");
+    expect(normalizeFilesError({ shape: "neither" }).tag).toBe("other");
+  });
+
   it("omits retryAfterMs when the DatasourceError did not carry one", () => {
     const err = new DatasourceError({
       tag: "rate-limited",

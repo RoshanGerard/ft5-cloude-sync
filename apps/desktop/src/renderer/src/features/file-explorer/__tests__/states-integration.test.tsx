@@ -21,6 +21,7 @@ import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { FileExplorer } from "../file-explorer";
 import { __resetExplorerStoreCacheForTests } from "../store";
+import { DatasourcesProvider } from "@/features/datasources/store";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -44,10 +45,17 @@ function installApi(listImpl: (req: { path: string }) => Promise<unknown>) {
     datasources: {
       list: vi.fn().mockResolvedValue({ datasources: [] }),
       add: vi.fn(),
-      remove: vi.fn(),
+      remove: vi.fn().mockResolvedValue({ ok: true }),
       action: vi.fn(),
+      startConsent: vi.fn().mockResolvedValue({ sessionId: "sess-1" }),
+      cancelConsent: vi.fn(),
       upload: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
+      // The DatasourcesProvider attaches an `onEvent` listener for consent
+      // events (store.tsx:672-691). Tests that wrap the explorer in the
+      // provider need this stub so the provider mounts cleanly. Tests that
+      // do not wrap simply ignore it.
+      onEvent: vi.fn().mockImplementation(() => () => {}),
     },
     files: {
       list: listMock,
@@ -216,6 +224,49 @@ describe("FileExplorer — state branch integration", () => {
     );
     expect(
       screen.queryByTestId("file-explorer-state-syncing"),
+    ).toBeNull();
+  });
+
+  it("renders InvalidDatasourceState when files.list rejects with tag:'invalid-datasource'", async () => {
+    // §9.1 — new arm. The invalid-datasource branch reaches into
+    // `useDatasourceActions` (for the shared confirm-remove dialog) and
+    // <InvalidDatasourceState> hits `useConsentSession`, so this render
+    // must be inside <DatasourcesProvider>. Other arms above stay
+    // unwrapped because they never instantiate either hook.
+    installApi(async () => ({
+      ok: false,
+      error: {
+        tag: "invalid-datasource",
+        message: "Credentials are missing — reconnect this datasource",
+        retryable: false,
+      },
+    }));
+
+    render(
+      <DatasourcesProvider>
+        <FileExplorer
+          datasourceId="ds-state-7"
+          providerId="google-drive"
+          providerStatus="error"
+        />
+      </DatasourcesProvider>,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("file-explorer-state-invalid-datasource"),
+      ).toBeInTheDocument(),
+    );
+    // Other state components not present.
+    expect(
+      screen.queryByTestId("file-explorer-state-disconnected"),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId("file-explorer-state-auth-revoked"),
+    ).toBeNull();
+    expect(screen.queryByTestId("file-explorer-state-empty")).toBeNull();
+    expect(
+      screen.queryByTestId("file-explorer-error"),
     ).toBeNull();
   });
 });
