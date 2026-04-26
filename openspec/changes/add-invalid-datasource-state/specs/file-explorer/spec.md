@@ -38,7 +38,7 @@ When the datasource is not in a state that permits browsing — `disconnected`, 
 
 ### Requirement: Invalid-datasource Reconnect runs in-place via `startConsent` and refreshes on completion
 
-The `<InvalidDatasourceState>` component's `Reconnect` button SHALL call `window.api.datasources.startConsent({ providerId, datasourceId })` directly, capture the returned `sessionId`, and subscribe to consent events scoped to that `sessionId` via the existing `useConsentSession(sessionId)` hook. While `sessionState.status === "pending"`, BOTH action buttons (Reconnect and Remove) SHALL be disabled and the Reconnect button SHALL render an inline `Loader2` spinner (`animate-spin`) with the visible label "Connecting…". On `sessionState.status === "succeeded"`, the component SHALL invoke its parent's `onReconnectSucceeded` callback (which the file-explorer wires to `store.retryLoad()` so `useExplorerData` re-dispatches `files:list`); on a successful subsequent list, the explorer naturally transitions out of the `<InvalidDatasourceState>` arm. On `sessionState.status ∈ {"cancelled", "failed", "timeout"}`, both buttons SHALL re-enable and an inline error line ("Reconnect failed — please try again.") SHALL render below the buttons; the user MAY click Reconnect again to start a fresh session.
+The `<InvalidDatasourceState>` component's `Reconnect` button SHALL call `window.api.datasources.startConsent({ providerId, datasourceId })` directly, capture the returned `sessionId`, and subscribe to consent events scoped to that `sessionId` via the existing `useConsentSession(sessionId)` hook. While `sessionState.status === "pending"`, BOTH action buttons (Reconnect and Remove) SHALL be disabled and the Reconnect button SHALL render an inline `Loader2` spinner (`animate-spin`) with the visible label "Connecting…". On `sessionState.status === "completed"`, the component SHALL invoke its parent's `onReconnectSucceeded` callback (which the file-explorer wires to `store.retryLoad()` so `useExplorerData` re-dispatches `files:list`); on a successful subsequent list, the explorer naturally transitions out of the `<InvalidDatasourceState>` arm. On `sessionState.status ∈ {"cancelled", "failed", "timeout"}`, both buttons SHALL re-enable and an inline error line ("Reconnect failed — please try again.") SHALL render below the buttons; the user MAY click Reconnect again to start a fresh session.
 
 The component SHALL NOT route the user back to the dashboard at any point; the Reconnect lifecycle stays inside the file-explorer view.
 
@@ -51,7 +51,7 @@ The `providerId: string` value SHALL be threaded from the route layer (where `su
 
 #### Scenario: Successful consent triggers `onReconnectSucceeded` callback
 
-- **WHEN** the consent session reaches `status === "succeeded"` (simulated via the `useConsentSession` mock)
+- **WHEN** the consent session reaches `status === "completed"` (simulated via the `useConsentSession` mock)
 - **THEN** the component's `onReconnectSucceeded()` prop is invoked exactly once; the parent (file-explorer) wires this to `store.retryLoad()`, which bumps `refetchToken` and triggers `useExplorerData` to re-dispatch `files:list`
 
 #### Scenario: Cancelled / failed / timeout re-enables the buttons and shows an error line

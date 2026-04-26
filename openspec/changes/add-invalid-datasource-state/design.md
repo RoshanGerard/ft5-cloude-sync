@@ -156,7 +156,7 @@ directly (mirroring the dashboard `AuthErrorBanner` lifecycle in
 `card.tsx:283-326`). Capture `sessionId`; subscribe via
 `useConsentSession(sessionId)`. While `status === "pending"`, render a
 spinner + "Connecting…" copy and disable both action buttons. On
-`status === "succeeded"`, call `store.retryLoad()` so
+`status === "completed"`, call `store.retryLoad()` so
 `useExplorerData` re-dispatches `files:list`; the engine now resolves
 the credential successfully, the response is `ok: true`, and the
 component naturally transitions out of the state. On
@@ -182,23 +182,33 @@ user's workflow, no new route surface.
 `FileExplorer` (alongside the existing `providerKind` prop). Passed
 in from the route layer where `summary.providerId` is in scope.
 Forwarded to the new `<InvalidDatasourceState>` component so it can
-construct the `startConsent` request.
+construct the `startConsent` request directly — mirroring the
+existing `AuthErrorBanner` pattern in `card.tsx:283-326`, which
+also owns its `startConsent` call inline. The component takes
+`providerId?: string`, `datasourceId: string`,
+`onReconnectSucceeded: () => void` (parent wires this to
+`store.retryLoad()` so the explorer transitions out of the state),
+and `onRequestRemove: () => void` (parent owns the shared
+`<ConfirmRemoveDatasourceDialog>` instance per Decision 5).
 
 **Alternatives considered:**
 
 - **Pull `providerId` from the datasources store via a hook in the
-  state component.** Rejected — state components are presentational;
-  pulling external state via hooks couples the component to the
-  store and complicates testing.
-- **Make the state component receive a fully-formed `onReconnect`
-  closure from the parent.** This is what we DO — the state
-  component takes `onReconnect: () => void` and the parent
-  (`file-explorer.tsx`) does the `startConsent` call. The
-  `providerId` prop only needs to reach the parent, not the
-  component.
+  state component.** Rejected — coupling a state component to the
+  store complicates rendering it in isolation in tests.
+- **Have the parent do the `startConsent` call and pass an
+  `onReconnect: () => void` closure.** Rejected — diverges from the
+  established `AuthErrorBanner` pattern, which is the explicit
+  visual / behavioural sibling per Decision 3, and the
+  `useConsentSession` lifecycle is naturally co-located with the
+  component that owns the spinner / disabled-state rendering.
+  Splitting it across parent and component for a single button
+  click introduces avoidable indirection.
 
-**Why:** Keeps the state component pure / presentational; parent
-owns the side-effects.
+**Why:** Symmetry with `AuthErrorBanner`; the lifecycle hook and
+its rendered side-effects (spinner, button-disable, inline error
+line) live together. The `providerId` guard for "test renders the
+component without it" stays internal to the component.
 
 ### Decision 5: Shared `<ConfirmRemoveDatasourceDialog>` for both surfaces
 

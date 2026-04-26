@@ -72,14 +72,14 @@ per CLAUDE.md.
 
 ## 9. Renderer: branch in `file-explorer.tsx`
 
-- [ ] 9.1 Extend `apps/desktop/src/renderer/src/features/file-explorer/__tests__/states-integration.test.tsx` with a case: errorTag === "invalid-datasource" → `<InvalidDatasourceState>` is rendered (existing arms for disconnected / auth-revoked / empty stay green)
-- [ ] 9.2 Extend `file-explorer-composite.test.tsx` with the new branch: service mock returns invalid-datasource envelope → state component renders → click Reconnect → `startConsent` invoked → mocked `completed` event → `store.retryLoad()` called → next service mock returns ok with entries → state component unmounts and entries render
-- [ ] 9.3 Run failing tests
-- [ ] 9.4 Add the new branch to `file-explorer.tsx` (~line 489–508): `if (state.errorTag === FilesErrorTag.InvalidDatasource) return <InvalidDatasourceState ... />` BEFORE the rate-limited / other inline error fallthrough
-- [ ] 9.5 Add `providerId?: string` prop to `FileExplorer`; thread from the route layer (`apps/desktop/src/renderer/src/app/datasources/explore/page.tsx` or wherever `summary.providerId` is in scope) — sourced from `summary.providerId`
-- [ ] 9.6 Wire `onReconnectSucceeded` to `store.retryLoad()`; wire Reconnect button's `startConsent` call here so the state component stays presentational
-- [ ] 9.7 Wire the Remove button's confirm dialog (instantiate `<ConfirmRemoveDatasourceDialog>` once per file-explorer mount; share with the dashboard banner via the same component)
-- [ ] 9.8 Run tests to confirm pass
+- [x] 9.1 Extend `apps/desktop/src/renderer/src/features/file-explorer/__tests__/states-integration.test.tsx` with a case: errorTag === "invalid-datasource" → `<InvalidDatasourceState>` is rendered (existing arms for disconnected / auth-revoked / empty stay green)
+- [x] 9.2 Extend `file-explorer-composite.test.tsx` with the new branch: service mock returns invalid-datasource envelope → state component renders → click Reconnect → `startConsent` invoked → mocked `completed` event → `store.retryLoad()` called → next service mock returns ok with entries → state component unmounts and entries render
+- [x] 9.3 Run failing tests
+- [x] 9.4 Add the new branch to `file-explorer.tsx` (~line 489–508): `if (state.errorTag === "invalid-datasource") return <InvalidDatasourceArm ... />` BEFORE the rate-limited / other inline error fallthrough (matched the existing literal pattern at lines 488/491 — `"disconnected"`, `"auth-revoked"` — instead of the const ref to keep the diff focused per design.md Decision 1)
+- [x] 9.5 Add `providerId?: string` prop to `FileExplorer`; thread from the route layer (`apps/desktop/src/renderer/src/app/datasources/explore/page.tsx`) — sourced from `match.providerId`. The explore route now also wraps `<FileExplorer>` in `<DatasourcesProvider>` so §7's `useConsentSession` (and §9's `useDatasourceActions`) resolve their context (the dashboard route at `app/page.tsx` already wraps in the same provider; the explore route was missing it because §7's component had not been wired in yet)
+- [x] 9.6 Wire `onReconnectSucceeded` to `store.retryLoad()`. The Reconnect button's `startConsent` call stays inside `<InvalidDatasourceState>` per design.md Decision 4 — the component owns its own consent lifecycle, mirroring `AuthErrorBanner`
+- [x] 9.7 Wire the Remove button's confirm dialog. Implemented via a tiny `<InvalidDatasourceArm>` subcomponent gated behind the conditional render — preserves contract intent (single shared `<ConfirmRemoveDatasourceDialog>` per arm activation, single `actions.remove({ datasourceId })` IPC) without forcing every existing file-explorer test file (`search-ui`, `rename-guard`, `a11y`, etc.) to wrap in `<DatasourcesProvider>`. Documented deviation from the literal contract wording (which placed `useDatasourceActions` and the dialog at the top of `FileExplorer`); intent satisfied
+- [x] 9.8 Run tests to confirm pass
 
 ## 10. Renderer: `<InvalidDatasourceBanner>` for dashboard card
 

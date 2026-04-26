@@ -57,8 +57,12 @@ import {
   getOrCreateExplorerStore,
 } from "../store.js";
 import { seedEntry } from "./test-utils.js";
+import { DatasourcesProvider } from "@/features/datasources/store";
 
 let filesListMock: Mock;
+let startConsentMock: Mock;
+let removeMock: Mock;
+let onEventCapture: ((event: unknown) => void) | null = null;
 
 interface InstallOptions {
   // Optional canned responses per path call; default is "empty". The inner
@@ -73,12 +77,17 @@ interface InstallOptions {
   // A deferred promise the test can resolve manually — useful for the
   // cancellation / loading-state cases.
   defer?: boolean;
+  // Custom impl for `files.list`, used by the §9.2 invalid-datasource arm
+  // which needs to flip the response between successive calls.
+  listImpl?: (req: { path: string }) => Promise<unknown>;
 }
 
 function installApiMock(options: InstallOptions = {}): void {
   filesListMock = vi.fn();
   if (options.reject) {
     filesListMock.mockRejectedValue(options.reject);
+  } else if (options.listImpl) {
+    filesListMock.mockImplementation(options.listImpl);
   } else if (options.defer) {
     // Defer-mode: each call returns a fresh, never-auto-resolving promise.
     // Tests that care about ordering grab promises out of the mock.
@@ -98,15 +107,27 @@ function installApiMock(options: InstallOptions = {}): void {
     });
   }
 
+  startConsentMock = vi.fn().mockResolvedValue({ sessionId: "sess-inv-1" });
+  removeMock = vi.fn().mockResolvedValue({ ok: true });
+  onEventCapture = null;
+
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
     datasources: {
       list: vi.fn().mockResolvedValue({ datasources: [] }),
       add: vi.fn(),
-      remove: vi.fn(),
+      remove: removeMock,
       action: vi.fn(),
+      startConsent: startConsentMock,
+      cancelConsent: vi.fn(),
       upload: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
+      onEvent: vi.fn().mockImplementation((cb: (e: unknown) => void) => {
+        onEventCapture = cb;
+        return () => {
+          onEventCapture = null;
+        };
+      }),
     },
     files: {
       list: filesListMock,
@@ -368,5 +389,104 @@ describe("FileExplorer composite (Subagent P)", () => {
     expect(
       document.querySelector('[data-entry-id="r1"]'),
     ).not.toBeNull();
+  });
+
+  // §9.2 — invalid-datasource branch round-trip. The first list() call returns
+  // an `invalid-datasource` error envelope, prompting the explorer to render
+  // <InvalidDatasourceState>. Clicking Reconnect calls `startConsent`; emitting
+  // a `consent-completed` event drives `useConsentSession` to the completed
+  // state, which fires the component's `onReconnectSucceeded` → the explorer
+  // wires this to `store.retryLoad()`. The next list() call returns a real
+  // entry; the explorer transitions out of the invalid-datasource arm and the
+  // entry rows render. <DatasourcesProvider> is required because both
+  // <InvalidDatasourceState> (useConsentSession) and the file-explorer's
+  // invalid-datasource arm (useDatasourceActions) read context.
+  it("invalid-datasource → Reconnect → consent-completed → entries render", async () => {
+    let phase: "invalid" | "ok" = "invalid";
+    installApiMock({
+      listImpl: async () => {
+        if (phase === "invalid") {
+          return {
+            ok: false as const,
+            error: {
+              tag: "invalid-datasource",
+              message: "Credentials are missing — reconnect this datasource",
+              retryable: false,
+            },
+          };
+        }
+        return {
+          ok: true as const,
+          value: {
+            entries: [
+              seedEntry({
+                id: "x1",
+                name: "after.txt",
+                path: "/after.txt",
+              }),
+            ],
+            truncated: false,
+          },
+        };
+      },
+    });
+
+    render(
+      <DatasourcesProvider>
+        <FileExplorer
+          datasourceId="ds-invalid-1"
+          providerId="google-drive"
+        />
+      </DatasourcesProvider>,
+    );
+
+    // The state component renders.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("file-explorer-state-invalid-datasource"),
+      ).toBeInTheDocument(),
+    );
+
+    // Click Reconnect → startConsent({providerId, datasourceId}) is called.
+    fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
+    await waitFor(() => {
+      expect(startConsentMock).toHaveBeenCalledTimes(1);
+    });
+    expect(startConsentMock.mock.calls[0]![0]).toEqual({
+      providerId: "google-drive",
+      datasourceId: "ds-invalid-1",
+    });
+
+    // Flip the next list response to ok BEFORE emitting consent-completed
+    // so the retryLoad fetch lands the success branch.
+    phase = "ok";
+
+    // Drive the consent-completed event via the captured onEvent listener
+    // (mirrors the card-auth-error-banner.test.tsx harness). This pushes
+    // `useConsentSession` into the `completed` state, the
+    // <InvalidDatasourceState> fires its `onReconnectSucceeded` callback,
+    // which the explorer wires to `store.retryLoad()`.
+    expect(onEventCapture).not.toBeNull();
+    act(() => {
+      onEventCapture!({
+        event: "consent-completed",
+        sessionId: "sess-inv-1",
+        datasourceId: "ds-invalid-1",
+      });
+    });
+
+    // The state component unmounts and the entry from the second list()
+    // response renders.
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("file-explorer-state-invalid-datasource"),
+      ).toBeNull();
+    });
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll('[data-testid="explorer-row"]').length,
+      ).toBe(1);
+    });
+    expect(document.querySelector('[data-entry-id="x1"]')).not.toBeNull();
   });
 });

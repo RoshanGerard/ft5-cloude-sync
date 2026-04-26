@@ -60,7 +60,7 @@ Activating the Reconnect button SHALL call `window.api.datasources.startConsent(
 
 The container element SHALL carry `data-testid="invalid-datasource-banner"` and `aria-label="Reconfiguration required"`. Tab order SHALL be banner-copy → Reconnect → Remove → next card element.
 
-The Reconnect button SHALL call `window.api.datasources.startConsent({ providerId, datasourceId })` and follow the same `useConsentSession` lifecycle as `AuthErrorBanner` (pending → "Connecting…" with spinner; succeeded → banner unmounts via summary refresh; failed/cancelled/timeout → banner re-enables with "Reconnect failed — please try again." inline).
+The Reconnect button SHALL call `window.api.datasources.startConsent({ providerId, datasourceId })` and follow the same `useConsentSession` lifecycle as `AuthErrorBanner` (pending → "Connecting…" with spinner; completed → banner unmounts via summary refresh; failed/cancelled/timeout → banner re-enables with "Reconnect failed — please try again." inline).
 
 The Remove button SHALL open the shared `<ConfirmRemoveDatasourceDialog>` defined by the `file-explorer` capability (the same component used by the explorer state's Remove button) before dispatching `window.api.datasources.remove({ datasourceId })`. On a successful Remove, the card unmounts via the existing `datasource-removed` event flow.
 
