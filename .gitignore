@@ -29,3 +29,6 @@ Thumbs.db
 
 # Visual brainstorming companion sessions
 .superpowers/
+
+# Per-machine Claude Code permissions (contains operator-specific allow/deny lists)
+.claude/settings.local.json
