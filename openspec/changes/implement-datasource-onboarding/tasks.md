@@ -87,9 +87,9 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 10. Service — real `handleAuthenticateComplete`
 
-- [ ] 10.1 Replace the stub. Write failing tests covering: credentials-form happy path (consumes correlation, runs `intent.submit(values)`, emits `credential-persisted` + `auth-completed`); `correlation-expired` returns the typed error; `intent-kind-mismatch` returns the typed error (e.g., a credentials-form completion arrives for an oauth-kind intent); engine `submit` rejection emits `auth-failed`
-- [ ] 10.2 Implement the real handler. Note this handler is invoked ONLY for credentials-form completions — OAuth completions arrive via the loopback HTTP callback inside the broker, not via this command
-- [ ] 10.3 Run the test file → all green
+- [x] 10.1 Replace the stub. Failing tests in `authenticate-complete.test.ts`: credentials-form happy path; correlation-expired; intent-kind-mismatch (oauth intent + credentials-form completion); engine submit rejection (auth-failed emitted, no credential-persisted)
+- [x] 10.2 Implement at `services/fs-sync/src/commands/authenticate-complete.ts` (factory `makeAuthenticateCompleteHandler`). Reads `(datasourceId, providerId)` metadata from `correlationStore.consumeEntry(...)` (added to AuthCorrelationStore in this commit). Builds `DatasourceSummary` from providerId metadata. Engine's `decorateIntent` writes credentials via the strategy's injected store on `intent.submit(values)` resolution
+- [x] 10.3 Run the test file → 4 new green; 42 total green across §9/§10 + broker + correlation-store
 
 ## 11. Service — `handleAuthenticateCancel`
 

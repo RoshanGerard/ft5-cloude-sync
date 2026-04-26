@@ -224,7 +224,12 @@ export function makeAuthenticateStartHandler(
 
     // Stash the live intent under our pre-minted correlationId. The §10
     // handler will consume it when the renderer submits the form values.
-    deps.correlationStore.createWith(correlationId, intent);
+    // Carry (datasourceId, providerId) as metadata so §10 can build the
+    // response summary without a separate registry lookup.
+    deps.correlationStore.createWith(correlationId, intent, {
+      datasourceId,
+      providerId,
+    });
 
     // Emit auth-initiated — the renderer hook starts watching here.
     deps.bus.emit("auth-initiated", {
