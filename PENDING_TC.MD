@@ -258,3 +258,160 @@ the browser tab idle for 5 min 5 s, observe the dialog. Click Retry,
 complete the second consent normally.
 
 **Owner:** unassigned. Pair with §12.3 in a single bench session.
+
+---
+
+## add-invalid-datasource-state — §13.1 missing credential → Reconnect → entries appear
+
+**Scenario** (per `openspec/changes/add-invalid-datasource-state/tasks.md` §13.1):
+
+With a connected real-GCP Google Drive datasource (id `ds-X`),
+manually delete its credential from the fs-sync-service credential
+file (`~/ft5/sync_app/credentials.json`, or the `--dev` equivalent).
+Open the Explore page for `ds-X`. The file-explorer should render
+`<InvalidDatasourceState>` (red `AlertTriangle` icon, headline "This
+datasource needs reconfiguring", body "Its connection details are
+missing or invalid…", neutral primary `Reconnect` button, ghost
+destructive `Remove datasource` button). Click `Reconnect`. The
+system browser opens to Google's consent page. Complete consent. The
+state component should unmount and the file entries should appear
+without a manual page refresh.
+
+**Status:** PENDING — visually unconfirmed; gated on a real GCP
+credential pipeline.
+
+**Why deferred:** Requires the prerequisite `add-drive-oauth-browser-consent`
+§1 (HUMAN ops: real GCP client + Actions secrets + `.env.local`) AND
+the gap-closing change `implement-datasource-onboarding` (so
+credential persistence actually reaches the fs-sync service). Without
+the latter, even a successful Reconnect leaves the credentials in the
+no-op store and the explorer would re-enter the same invalid-datasource
+state on retry. The renderer + main + sync paths for THIS change are
+unit-test covered:
+
+- `apps/desktop/src/renderer/src/features/file-explorer/states/__tests__/invalid-datasource.test.tsx`
+  — 10 tests: render structure, role/aria; pending/completed/failed
+  /cancelled/timeout lifecycle; providerId guard; Remove button → callback.
+- `apps/desktop/src/renderer/src/features/file-explorer/__tests__/file-explorer-composite.test.tsx`
+  — composite arm: list rejects with `tag:"invalid-datasource"` →
+  state renders → Reconnect → `startConsent` → mocked `consent-completed`
+  → `store.retryLoad()` → entries render.
+- `services/fs-sync/src/main/__tests__/resolve-client.test.ts` —
+  proves missing-credential path throws `DatasourceError({tag:"invalid-datasource",retryable:false})`.
+- `services/fs-sync/src/commands/files-error-mapping.test.ts` —
+  proves engine `invalid-datasource` → envelope `invalid-datasource`.
+
+**Re-verification command:** With `add-drive-oauth-browser-consent` §1 done
+AND `implement-datasource-onboarding` merged, boot the dev build, add
+a Google Drive datasource, manually delete `~/ft5/sync_app/credentials.json`
+for that id (or its `--dev` equivalent), open the Explore page,
+observe `data-testid="file-explorer-state-invalid-datasource"`,
+click Reconnect, complete browser consent, observe entries.
+
+**Owner:** unassigned. Pair with `implement-datasource-onboarding` env
+loop.
+
+---
+
+## add-invalid-datasource-state — §13.2 corrupt credential → Remove → datasource gone
+
+**Scenario** (per tasks.md §13.2):
+
+With a connected real-GCP Google Drive datasource (id `ds-X`),
+manually corrupt its credential JSON (e.g. overwrite `accessToken`
+with the empty string in `~/ft5/sync_app/credentials.json`). Open the
+Explore page for `ds-X`. The file-explorer should render
+`<InvalidDatasourceState>` (the engine's `factory.create` rejects the
+credential shape via the per-provider `validateCredentialShape` helper
+introduced in §3.7). Click `Remove datasource`. The shared
+`<ConfirmRemoveDatasourceDialog>` opens with the destructive Remove
+button focused. Confirm. The route navigates back to the dashboard;
+the card for `ds-X` is gone.
+
+**Status:** PENDING — visually unconfirmed; gated on a real GCP
+credential pipeline.
+
+**Why deferred:** Same prereqs as §13.1 — real GCP credentials and
+`implement-datasource-onboarding` for the onboarding side, though the
+remove path itself does not depend on the onboarding fix. Without
+real credentials, the `factory.create` shape-validator is exercised
+via unit tests but not against the live JSON-on-disk path.
+
+Unit coverage for the Remove path:
+- `apps/desktop/src/renderer/src/features/datasources/__tests__/confirm-remove-dialog.test.tsx`
+  — 10 tests: visibility, copy, destructive Remove focus on open,
+  Escape cancels, click Cancel/Remove → onCancel/onConfirm.
+- `apps/desktop/src/renderer/src/features/file-explorer/__tests__/file-explorer-composite.test.tsx`
+  — composite arm: Remove button click opens dialog; confirm dialog
+  dispatches `actions.remove({datasourceId})`.
+- Wrong-shape credential rejection in `packages/fs-datasource-engine/src/__tests__/factory-invalid-datasource.test.ts`
+  — proves S3-shape credentials passed to a `google-drive` providerId
+  surface as `tag:"invalid-datasource"` from `factory.create`.
+
+**Re-verification command:** Boot dev build, add a Drive datasource,
+edit the credential JSON to break it (truncate the token, set it to
+""), open Explore, click Remove datasource, confirm the dialog,
+observe dashboard card removal.
+
+**Owner:** unassigned. Pair with `implement-datasource-onboarding` env
+loop.
+
+---
+
+## add-invalid-datasource-state — §13.3 dashboard banner → Reconnect → banner unmounts
+
+**Scenario** (per tasks.md §13.3):
+
+With a misconfigured real-GCP datasource (registry row exists but
+credentials missing — same setup as §13.1), open the dashboard
+WITHOUT navigating into the file-explorer. The `DatasourceCard`
+should render the new `<InvalidDatasourceBanner>` inline below the
+meta row: copy "Datasource needs reconfiguring — credentials are
+missing or invalid.", `Reconnect` (variant=outline) + `Remove`
+(variant=outline, destructive-tinted). The bare error paragraph
+should NOT render. Click `Reconnect`. The browser opens to Google's
+consent page. Complete consent. As `summary.status` flips back to
+`connected` via the dashboard's existing event-stream refresh, the
+banner unmounts naturally.
+
+**Status:** PENDING — visually unconfirmed; gated on a real GCP
+credential pipeline.
+
+**Why deferred:** Same `implement-datasource-onboarding` dependency
+as §13.1. The banner's render-and-unmount path is unit-tested:
+
+- `apps/desktop/src/renderer/src/features/datasources/__tests__/card-invalid-datasource-banner.test.tsx`
+  — 11 tests: banner renders iff `errorKind === "invalid-datasource"`;
+  Reconnect → `startConsent({providerId, datasourceId})` once;
+  Remove → confirm dialog opens; confirm → `remove({datasourceId})`
+  once; consent-completed → banner unmounts via `DatasourcesDashboard`
+  summary refresh; non-invalid `errorKind` does NOT render the banner;
+  structural a11y assertions (aria-label, accessible names, tab
+  order). `jest-axe` / `vitest-axe` is not a dev-dep on this package
+  per the `features/datasources/__tests__/a11y.test.tsx` convention;
+  structural assertions stand in for the axe sweep.
+
+**Re-verification command:** Boot dev build, induce the
+invalid-datasource state (delete credential), open the dashboard,
+observe `data-testid="invalid-datasource-banner"` on the card without
+opening Explore, click Reconnect, complete consent, observe banner
+unmount as the card flips to `connected`.
+
+**Owner:** unassigned. Pair with `implement-datasource-onboarding` env
+loop.
+
+---
+
+## add-invalid-datasource-state — §13.4 dependency note
+
+§13.1 and §13.2 both require **`add-drive-oauth-browser-consent` §1**
+(HUMAN ops: real GCP OAuth client, Actions secrets,
+`apps/desktop/.env.local` populated) per the existing PENDING_TC entry
+above titled "add-drive-oauth-browser-consent — §1 GCP OAuth client
++ Actions secrets + `.env.local` (HUMAN prerequisite)". Both also
+benefit from `implement-datasource-onboarding` to close the
+credential-persistence gap referenced in the §12.1 / §12.2 entries
+above; without that follow-up, even a successful Reconnect lands the
+credentials in `noopCredentialStore` and the next list call re-enters
+the invalid-datasource state. §13.3's dashboard-banner flow inherits
+the same dependencies because it shares the consent path with §13.1.

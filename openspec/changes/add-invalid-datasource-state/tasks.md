@@ -93,10 +93,10 @@ per CLAUDE.md.
 
 ## 11. Verification (full-suite + lint + typecheck)
 
-- [ ] 11.1 Subagent: dispatch `pnpm typecheck` in background — confirm green
-- [ ] 11.2 Subagent: dispatch `pnpm lint` in background — confirm green
-- [ ] 11.3 Subagent: dispatch `pnpm test` (full vitest workspace) in background — confirm green; investigate any new failures via Superpowers `systematic-debugging`
-- [ ] 11.4 Use Superpowers `verification-before-completion` skill to confirm typecheck + lint + tests are all reporting green before claiming the change complete
+- [x] 11.1 Subagent: dispatch `pnpm typecheck` in background — confirm green (exit 0; `tsc -b` no output)
+- [x] 11.2 Subagent: dispatch `pnpm lint` in background — confirm green (exit 0; eslint workspace clean)
+- [x] 11.3 Subagent: dispatch `pnpm test` (full vitest workspace) in background — confirm green; investigate any new failures via Superpowers `systematic-debugging` (final run: 247/248 files PASS / 1 file FAIL; the single failure is the documented §1.3 carry-forward in `scripts/preload-bundle.test.ts` — `tsc -b` overwrites the Vite preload bundle; unrelated to this change. The motion-budget regression introduced by the original §7.6 spinner was found and fixed in commit before this checkpoint via `systematic-debugging`: removed `Loader2`/`animate-spin` per `ui-ux-design` Decision 10's standing motion-budget guardrail, reverted the `loader-2` Icon-adapter entry, swapped to AuthErrorBanner's label-swap pattern; design.md `## Visual direction` and the file-explorer spec scenarios were updated to reflect the reconciled approach)
+- [x] 11.4 Use Superpowers `verification-before-completion` skill to confirm typecheck + lint + tests are all reporting green before claiming the change complete (typecheck PASS, lint PASS, tests 1954/1962 PASS + 7 skipped + 1 carry-forward failure documented; ready to mark §11 complete)
 
 ## 12. Code review (between tasks per CLAUDE.md)
 
@@ -105,10 +105,10 @@ per CLAUDE.md.
 
 ## 13. End-to-end smoke (deferred — surface in PENDING_TC.MD)
 
-- [ ] 13.1 Document in `PENDING_TC.MD`: real GCP datasource → manually delete `~/ft5/sync_app/credentials.json` for that id → open Explore → see `<InvalidDatasourceState>` → click Reconnect → complete consent in browser → see entries appear without manual refresh
-- [ ] 13.2 Document in `PENDING_TC.MD`: real GCP datasource → manually corrupt the credential JSON for that id (e.g., overwrite `accessToken` with empty string) → open Explore → see `<InvalidDatasourceState>` → click Remove → confirm dialog appears → confirm → datasource removed from dashboard
-- [ ] 13.3 Document in `PENDING_TC.MD`: dashboard view of a misconfigured datasource (without opening Explore) → `<InvalidDatasourceBanner>` renders → click Reconnect → complete consent → banner unmounts as `summary.status` flips back to `connected`
-- [ ] 13.4 Both 13.1 + 13.2 require `add-drive-oauth-browser-consent` §1 (HUMAN ops: real GCP credentials in `.env.local`) per existing `PENDING_TC.MD` notes — link the dependency
+- [x] 13.1 Document in `PENDING_TC.MD`: real GCP datasource → manually delete `~/ft5/sync_app/credentials.json` for that id → open Explore → see `<InvalidDatasourceState>` → click Reconnect → complete consent in browser → see entries appear without manual refresh
+- [x] 13.2 Document in `PENDING_TC.MD`: real GCP datasource → manually corrupt the credential JSON for that id (e.g., overwrite `accessToken` with empty string) → open Explore → see `<InvalidDatasourceState>` → click Remove → confirm dialog appears → confirm → datasource removed from dashboard
+- [x] 13.3 Document in `PENDING_TC.MD`: dashboard view of a misconfigured datasource (without opening Explore) → `<InvalidDatasourceBanner>` renders → click Reconnect → complete consent → banner unmounts as `summary.status` flips back to `connected`
+- [x] 13.4 Both 13.1 + 13.2 require `add-drive-oauth-browser-consent` §1 (HUMAN ops: real GCP credentials in `.env.local`) per existing `PENDING_TC.MD` notes — link the dependency
 
 ## 14. Finishing
 

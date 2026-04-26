@@ -143,14 +143,6 @@ export function InvalidDatasourceState({
             void handleReconnect();
           }}
         >
-          {isWaiting ? (
-            <Icon
-              name="loader-2"
-              data-testid="invalid-datasource-spinner"
-              className="size-4 animate-spin"
-              aria-hidden="true"
-            />
-          ) : null}
           {reconnectLabel}
         </Button>
         <Button

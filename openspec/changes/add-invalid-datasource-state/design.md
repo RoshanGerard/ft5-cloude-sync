@@ -315,9 +315,17 @@ focused.
 - **Spacing:** 48px top / 48px bottom padding, 10px gap between
   icon/headline/body/buttons. Matches existing
   `disconnected.tsx` / `auth-revoked.tsx`.
-- **Motion:** No motion in the static state. The Reconnect button's
-  pending spinner uses the same `Loader2` + `animate-spin` pattern as
-  the existing `AuthErrorBanner` "Connecting…" state.
+- **Motion:** No motion in the static state. While consent is pending,
+  the Reconnect button's label swaps to "Connecting…" and the button
+  is disabled (matches the existing `AuthErrorBanner` pattern in
+  `card.tsx:316-324`). No animated spinner — Decision 10 of the
+  `ui-ux-design` change pins the renderer's motion vocabulary to the
+  three whitelisted classes (`animate-skeleton-shimmer`,
+  `animate-sync-pulse`, `animate-sync-ripple`); `animate-spin` is
+  forbidden in feature code by the `scripts/motion-budget.test.ts`
+  guardrail. Reconciled here vs. an earlier draft that mandated
+  `Loader2` + `animate-spin` — the standing motion budget overrides;
+  the disabled label-swap carries the same visual semantics.
 - **Accessibility:**
   - File-explorer state component:
     `<div role="alert" aria-live="polite" data-testid="file-explorer-state-invalid-datasource">`

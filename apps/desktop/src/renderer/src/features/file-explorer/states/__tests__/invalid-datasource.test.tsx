@@ -5,7 +5,10 @@
 // 7.1: Render structure — icon, headline, body, both buttons; role="alert",
 //      aria-live="polite", data-testid="file-explorer-state-invalid-datasource";
 //      AlertTriangle icon carries `text-destructive` and `aria-hidden="true"`.
-// 7.2: useConsentSession lifecycle — pending → spinner + buttons disabled;
+// 7.2: useConsentSession lifecycle — pending → buttons disabled + label
+//      "Connecting…" (no animate-spin spinner — Decision 10 motion budget
+//      forbids `animate-spin` in feature code; mirrors AuthErrorBanner
+//      label-swap pattern in card.tsx);
 //      completed → onReconnectSucceeded() fires exactly once;
 //      cancelled / failed / timeout → buttons re-enable + inline error line.
 // 7.3: providerId guard — undefined providerId disables Reconnect with
@@ -32,7 +35,6 @@ import {
   render,
   screen,
   waitFor,
-  within,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
@@ -140,7 +142,7 @@ describe("InvalidDatasourceState — 7.1: render structure", () => {
 // ---------------------------------------------------------------------------
 
 describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
-  it("pending: both buttons disabled and Reconnect renders a spinner with 'Connecting…' label", async () => {
+  it("pending: both buttons disabled and Reconnect label switches to 'Connecting…'", async () => {
     mockSessionState = { status: "pending" };
 
     const { rerender } = render(
@@ -154,7 +156,7 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
 
     // Click Reconnect to assign the local sessionId; once startConsent
     // resolves, the component switches into "waiting" mode using
-    // mockSessionState (still "pending") to drive the spinner.
+    // mockSessionState (still "pending") to drive the disabled+label state.
     fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
     await waitFor(() => expect(startConsentMock).toHaveBeenCalledTimes(1));
 
@@ -170,16 +172,10 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
 
     const reconnectBtn = screen.getByRole("button", { name: /connecting/i });
     expect(reconnectBtn).toBeDisabled();
+    expect(reconnectBtn.textContent).toContain("Connecting…");
 
     const removeBtn = screen.getByRole("button", { name: /remove datasource/i });
     expect(removeBtn).toBeDisabled();
-
-    // Spinner: an svg with the `animate-spin` class is present in the
-    // Reconnect button.
-    const spinner = within(reconnectBtn).getByTestId(
-      "invalid-datasource-spinner",
-    );
-    expect(spinner.classList.toString()).toContain("animate-spin");
   });
 
   it("completed: invokes onReconnectSucceeded exactly once", async () => {
@@ -236,7 +232,7 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
     ],
     ["timeout", { status: "timeout" } as ConsentSessionState],
   ])(
-    "%s: re-enables both buttons, removes spinner, and shows inline 'Reconnect failed' line",
+    "%s: re-enables both buttons and shows inline 'Reconnect failed' line",
     async (_label, terminalState) => {
       mockSessionState = { status: "pending" };
 
@@ -265,16 +261,12 @@ describe("InvalidDatasourceState — 7.2: useConsentSession lifecycle", () => {
 
       const reconnectBtn = screen.getByRole("button", { name: /reconnect/i });
       expect(reconnectBtn).not.toBeDisabled();
+      expect(reconnectBtn.textContent).toContain("Reconnect");
 
       const removeBtn = screen.getByRole("button", {
         name: /remove datasource/i,
       });
       expect(removeBtn).not.toBeDisabled();
-
-      // Spinner gone.
-      expect(
-        screen.queryByTestId("invalid-datasource-spinner"),
-      ).not.toBeInTheDocument();
 
       // Inline error message visible.
       expect(
