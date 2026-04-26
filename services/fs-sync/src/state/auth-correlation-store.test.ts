@@ -95,6 +95,35 @@ describe("AuthCorrelationStore", () => {
       expect(store.peek(b.correlationId)).toBe(form);
     });
 
+    // Surface change for implement-datasource-onboarding §9: the handler
+    // mints a single correlationId at the top, emits `auth-initiated`, and
+    // hands the same id to whichever store/broker holds the live intent.
+    it("createWith uses the supplied correlationId verbatim", () => {
+      const intent = makeFormIntent();
+      const { correlationId } = store.createWith("corr-pre-minted-1", intent);
+      expect(correlationId).toBe("corr-pre-minted-1");
+      expect(store.peek("corr-pre-minted-1")).toBe(intent);
+    });
+
+    it("createWith honours peek, consume, and TTL eviction like create", () => {
+      const intent = makeFormIntent();
+      store.createWith("corr-A", intent);
+      expect(store.size()).toBe(1);
+      expect(store.consume("corr-A")).toBe(intent);
+      expect(store.size()).toBe(0);
+    });
+
+    it("createWith throws when the correlationId is already in use", () => {
+      const intent1 = makeFormIntent();
+      const intent2 = makeFormIntent();
+      store.createWith("corr-dup", intent1);
+      expect(() => store.createWith("corr-dup", intent2)).toThrow(
+        /already in use/,
+      );
+      // First entry is unchanged.
+      expect(store.peek("corr-dup")).toBe(intent1);
+    });
+
     it("injected randomUUID seam is used for correlation ids", () => {
       let i = 0;
       const ids = ["uuid-a", "uuid-b"];

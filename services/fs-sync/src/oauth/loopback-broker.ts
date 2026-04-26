@@ -86,6 +86,13 @@ export interface BrokerStartOptions {
    *  omitted, the broker mints a new id via `mintDatasourceId` (or a
    *  fallback). */
   datasourceId?: string;
+  /** Optional pre-minted correlation id. Used by the §9
+   *  `sync:authenticate-start` handler so a single id flows through the
+   *  whole authenticate session — `auth-initiated` (emitted by handler)
+   *  → `oauth-open-url` (emitted by broker) → `auth-completed`. When
+   *  omitted (e.g. legacy / direct-broker tests) the broker mints
+   *  internally via `randomUUID()`. */
+  correlationId?: string;
 }
 
 export interface BrokerStartResult {
@@ -262,8 +269,9 @@ export function createOAuthLoopbackBroker(
             hasWarned = true;
             options.warnOnce?.();
           }
-          // Synthetic correlationId — never crosses into the engine.
-          const correlationId = randomUUID();
+          // Use the supplied correlationId when given (handler-driven path);
+          // otherwise synthesize one for direct-broker callers.
+          const correlationId = opts.correlationId ?? randomUUID();
           const datasourceId =
             opts.datasourceId ??
             options.mintDatasourceId?.() ??
@@ -287,7 +295,10 @@ export function createOAuthLoopbackBroker(
       }
 
       // ---- Normal browser flow -------------------------------------------
-      const correlationId = randomUUID();
+      // Use the supplied correlationId when given (so the handler's
+      // `auth-initiated` and the broker's `oauth-open-url` carry the same
+      // id); otherwise mint internally for direct-broker callers.
+      const correlationId = opts.correlationId ?? randomUUID();
       const state = randomBytes(32).toString("base64url");
 
       // Bind the loopback FIRST so we know the port (the strategy needs
@@ -377,30 +388,43 @@ export function createOAuthLoopbackBroker(
       const port = (server.address() as AddressInfo).port;
       const redirectUri = `http://127.0.0.1:${port}/callback`;
 
-      // Resolve the OAuth app config (clientId / clientSecret /
-      // redirectUri). The closure wraps ServiceConfigStore.
-      const oauthAppConfig = await options.getOAuthAppConfig(
-        opts.providerId,
-        redirectUri,
-      );
-
-      // Construct the engine client + acquire the AuthIntent.
-      const client = options.factory.createForAuth(
-        opts.providerId,
-        oauthAppConfig,
-        options.engineContext,
-        opts.datasourceId,
-      );
-      const intent = await client.authenticate();
-
-      if (intent.kind !== "oauth") {
-        // Defensive — credentials-form intents should never reach the
-        // loopback broker (the §9 handler dispatches them via the
-        // request/response complete path instead).
-        server.close();
-        throw new Error(
-          `OAuthLoopbackBroker.start: expected oauth intent but got '${intent.kind}'`,
+      // From here through `intent` resolution, any throw must close the
+      // bound server before propagating — otherwise the §9 spec scenario
+      // "Service-config-missing on OAuth start: no loopback server is
+      // bound" is violated (server leaks into the post-throw state).
+      let intent: OAuthIntent;
+      try {
+        // Resolve the OAuth app config (clientId / clientSecret /
+        // redirectUri). The closure wraps ServiceConfigStore.
+        const oauthAppConfig = await options.getOAuthAppConfig(
+          opts.providerId,
+          redirectUri,
         );
+
+        // Construct the engine client + acquire the AuthIntent.
+        const client = options.factory.createForAuth(
+          opts.providerId,
+          oauthAppConfig,
+          options.engineContext,
+          opts.datasourceId,
+        );
+        const acquired = await client.authenticate();
+
+        if (acquired.kind !== "oauth") {
+          // Defensive — credentials-form intents should never reach the
+          // loopback broker (the §9 handler dispatches them via the
+          // request/response complete path instead).
+          throw new Error(
+            `OAuthLoopbackBroker.start: expected oauth intent but got '${acquired.kind}'`,
+          );
+        }
+        intent = acquired;
+      } catch (err) {
+        // Close the bound server before propagating so the post-throw
+        // state observable to the §9 handler is "no listener bound for
+        // this attempt".
+        server.close();
+        throw err;
       }
 
       // Append CSRF state to the authorize URL.

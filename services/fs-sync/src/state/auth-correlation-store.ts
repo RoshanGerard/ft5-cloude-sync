@@ -34,6 +34,20 @@ const DEFAULT_TTL_MS = 300_000; // 5 minutes — see design.md Decision 10.
 
 export interface AuthCorrelationStore {
   create(intent: AuthIntent): { correlationId: string };
+  /**
+   * Like `create`, but uses the caller-supplied `correlationId` instead of
+   * minting a fresh one. Used by the §9 `sync:authenticate-start` handler
+   * so the same id flows through `auth-initiated` (handler emit) and
+   * `auth-completed` (handler emit on §10) without two competing minters.
+   *
+   * Throws when the supplied id is already in use — the handler MUST
+   * supply a unique id (it mints once and uses it for either the OAuth
+   * broker OR this store, never both).
+   */
+  createWith(
+    correlationId: string,
+    intent: AuthIntent,
+  ): { correlationId: string };
   peek(correlationId: string): AuthIntent | undefined;
   consume(correlationId: string): AuthIntent | undefined;
   size(): number;
@@ -61,7 +75,18 @@ export function createAuthCorrelationStore(
   const entries = new Map<string, Entry>();
 
   function create(intent: AuthIntent): { correlationId: string } {
-    const correlationId = randomUUID();
+    return createWith(randomUUID(), intent);
+  }
+
+  function createWith(
+    correlationId: string,
+    intent: AuthIntent,
+  ): { correlationId: string } {
+    if (entries.has(correlationId)) {
+      throw new Error(
+        `AuthCorrelationStore.createWith: correlationId already in use: ${correlationId}`,
+      );
+    }
     const timer = setTimeout(() => {
       // Silent eviction; no logging, no events. If the entry was already
       // consumed before this fired, `delete` on a missing key is a no-op.
@@ -96,5 +121,5 @@ export function createAuthCorrelationStore(
     return entries.size;
   }
 
-  return { create, peek, consume, size };
+  return { create, createWith, peek, consume, size };
 }
