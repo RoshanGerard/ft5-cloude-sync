@@ -6,19 +6,17 @@
 //
 // See design.md D2+D3 and the base spec "IPC command surface" requirement.
 
-import type { CredentialsSchema } from "../datasources.js";
+import type {
+  CredentialsSchema,
+  DatasourceSummary,
+  ProviderId,
+} from "../datasources.js";
 import type {
   EntryKind,
   FileEntry,
   FilesErrorTag,
   FilesRemoveEntryResult,
 } from "../files.js";
-import type {
-  AuthIntent,
-  AuthResult,
-  DatasourceType,
-  SerializedDatasourceError,
-} from "../fs-datasource-engine.js";
 import type { ErrorShape } from "./frames.js";
 
 export type ConflictPolicy = "overwrite" | "duplicate" | "skip";
@@ -180,83 +178,113 @@ interface GetRetryPolicyCommand {
   readonly error: NotFoundErrorShape;
 }
 
-interface AuthenticateCommand {
-  readonly command: "sync:authenticate";
-  readonly params: {
-    readonly datasourceId: string;
-    readonly type: DatasourceType;
-    readonly intent: AuthIntent;
-  };
-  readonly result: { readonly authResult: AuthResult };
-  readonly error:
-    | ValidationErrorShape
-    | {
-        readonly tag: "authentication-failed";
-        readonly message: string;
-        readonly details: SerializedDatasourceError<DatasourceType>;
-      };
-}
-
-// ---- Authenticate split (design.md Decision 10) --------------------------
+// ---- Authenticate (implement-datasource-onboarding) ----------------------
 //
-// `AuthIntent` carries closures (`completeWith` / `submit`) that cannot cross
-// the JSON-over-socket wire or the Electron structured-clone IPC boundary.
-// The split pair replaces the single-shot `sync:authenticate` with:
-//   1. `sync:authenticate-start` — service runs `engine.authenticate`, stashes
-//      the live intent in an in-memory correlation map, returns a pure-data
-//      descriptor.
-//   2. `sync:authenticate-complete` — caller supplies the correlation id and
-//      the user's response (OAuth code / form values); service looks up the
-//      stashed intent and dispatches on its kind.
-// The old `AuthenticateCommand` stays live until the atomic swap in the
-// section-5 handler / registration replacement.
+// The `wire-fs-sync-service` change shipped a stub authenticate-split. The
+// `implement-datasource-onboarding` change reshapes the wire surface into
+// its real shape:
+//
+//   * The retired single-shot `sync:authenticate` command is gone — every
+//     authenticate flow goes through the three-command split.
+//   * `sync:authenticate-start` returns a pure-data result keyed on `kind`
+//     (`oauth` | `credentials-form`). The OAuth result carries only a
+//     correlationId — the loopback HTTP listener inside the service drives
+//     the `code → tokens` exchange via its own out-of-band events. The
+//     credentials-form result carries the form schema the renderer needs to
+//     render the field set.
+//   * `sync:authenticate-complete` accepts ONLY `kind: "credentials-form"`
+//     completions on the wire — OAuth completions arrive via the loopback
+//     callback inside the service, not through the renderer.
+//   * `sync:authenticate-cancel` is the symmetric idempotent cancel.
+//   * The `not-implemented` stub variants are removed from both error
+//     unions per design.md Decision 9.
+//
+// See `openspec/changes/implement-datasource-onboarding/design.md`
+// Decisions 7 + 9 + 12.
 
 /**
- * Wire-safe view of {@link AuthIntent}: the same discriminated union with
- * the function fields stripped, leaving only data that JSON-serializes.
+ * Wire-safe view of an auth intent — the renderer needs to know whether the
+ * server-side flow is OAuth (browser-driven) or credentials-form (renderer
+ * collects values and posts them back). For credentials-form the renderer
+ * uses `formSchema` to pick the right form component.
  */
 export type SerializableAuthIntent =
   | { readonly kind: "oauth"; readonly authorizeUrl: string }
   | { readonly kind: "credentials-form"; readonly schema: CredentialsSchema };
 
 /**
- * Wire-safe payload the caller sends with `sync:authenticate-complete` —
- * whichever response the user produced for the intent they were shown.
+ * Wire-safe payload the renderer sends with `sync:authenticate-complete`.
+ * Only credentials-form completions cross the wire — OAuth completions land
+ * on the service's loopback HTTP listener and are processed in-process.
  */
-export type SerializableAuthCompletion =
-  | { readonly kind: "oauth"; readonly code: string }
+export type SerializableAuthCompletion = {
+  readonly kind: "credentials-form";
+  readonly values: Record<string, unknown>;
+};
+
+/**
+ * Discriminated error union for `sync:authenticate-start`. See design.md
+ * Decision 9 (stub-tag removal) and the new `service-config-missing`
+ * requirement on `fs-sync-service`.
+ */
+export type SyncAuthenticateStartError =
+  | ValidationErrorShape
   | {
-      readonly kind: "credentials-form";
-      readonly values: Record<string, unknown>;
+      readonly tag: "service-config-missing";
+      readonly path: string;
+      readonly providerId: string;
+      readonly message?: string;
+    }
+  | {
+      readonly tag: "unknown-provider";
+      readonly providerId: string;
+      readonly message?: string;
+    }
+  | {
+      readonly tag: "engine-error";
+      readonly message: string;
     };
 
 interface AuthenticateStartCommand {
   readonly command: "sync:authenticate-start";
   readonly params: {
-    readonly datasourceId: string;
-    readonly type: DatasourceType;
+    readonly providerId: ProviderId;
+    readonly datasourceId?: string;
   };
-  readonly result: {
-    readonly correlationId: string;
-    readonly intent: SerializableAuthIntent;
-  };
-  readonly error:
-    | ValidationErrorShape
+  readonly result:
     | {
-        readonly tag: "authentication-failed";
-        readonly message: string;
-        readonly details: SerializedDatasourceError<DatasourceType>;
+        readonly correlationId: string;
+        readonly kind: "oauth";
       }
     | {
-        // Present while the service-side handler ships as a stub (see
-        // openspec design.md Decision 11). The follow-up change
-        // `implement-datasource-onboarding` removes this variant; callers
-        // should treat it defensively as "service does not yet support
-        // this operation" rather than as a domain error.
-        readonly tag: "not-implemented";
-        readonly message: string;
+        readonly correlationId: string;
+        readonly kind: "credentials-form";
+        readonly formSchema: CredentialsSchema;
       };
+  readonly error: SyncAuthenticateStartError;
 }
+
+/**
+ * Discriminated error union for `sync:authenticate-complete`. The
+ * `not-implemented` stub variant was retired in this change.
+ */
+export type SyncAuthenticateCompleteError =
+  | ValidationErrorShape
+  | {
+      readonly tag: "correlation-expired";
+      readonly correlationId: string;
+      readonly message?: string;
+    }
+  | {
+      readonly tag: "intent-kind-mismatch";
+      readonly expected: "oauth" | "credentials-form";
+      readonly actual: "oauth" | "credentials-form";
+      readonly message?: string;
+    }
+  | {
+      readonly tag: "engine-error";
+      readonly message: string;
+    };
 
 interface AuthenticateCompleteCommand {
   readonly command: "sync:authenticate-complete";
@@ -264,36 +292,113 @@ interface AuthenticateCompleteCommand {
     readonly correlationId: string;
     readonly completion: SerializableAuthCompletion;
   };
-  readonly result: { readonly authResult: AuthResult };
-  readonly error:
-    | ValidationErrorShape
-    | {
-        readonly tag: "authentication-failed";
-        readonly message: string;
-        readonly details: SerializedDatasourceError<DatasourceType>;
-      }
-    | {
-        readonly tag: "correlation-expired";
-        readonly message: string;
-        readonly details?: unknown;
-      }
-    | {
-        readonly tag: "correlation-kind-mismatch";
-        readonly message: string;
-        readonly details: {
-          readonly expectedKind: "oauth" | "credentials-form";
-          readonly receivedKind: "oauth" | "credentials-form";
-        };
-      }
-    | {
-        // Present while the service-side handler ships as a stub (see
-        // openspec design.md Decision 11). The follow-up change
-        // `implement-datasource-onboarding` removes this variant; callers
-        // should treat it defensively as "service does not yet support
-        // this operation" rather than as a domain error.
-        readonly tag: "not-implemented";
-        readonly message: string;
-      };
+  readonly result: {
+    readonly datasourceId: string;
+    readonly summary: DatasourceSummary;
+  };
+  readonly error: SyncAuthenticateCompleteError;
+}
+
+/**
+ * Discriminated error union for `sync:authenticate-cancel`. Cancel is
+ * idempotent — a second cancel against the same correlationId returns
+ * `{ ok: true, result: { cancelled: false } }`. The error path fires only
+ * when the correlationId was malformed; absence is not an error.
+ */
+export type SyncAuthenticateCancelError =
+  | ValidationErrorShape
+  | {
+      readonly tag: "correlation-not-found";
+      readonly correlationId: string;
+      readonly message?: string;
+    };
+
+interface AuthenticateCancelCommand {
+  readonly command: "sync:authenticate-cancel";
+  readonly params: {
+    readonly correlationId: string;
+  };
+  readonly result: {
+    readonly cancelled: boolean;
+  };
+  readonly error: SyncAuthenticateCancelError;
+}
+
+// ---- Service config (sync:get-config / sync:set-config) -------------------
+//
+// Per-provider OAuth app config (clientId / clientSecret) is sourced from a
+// service-owned JSON file (`~/ft5/sync_app/config.json`) per design.md
+// Decision 4. These commands expose that file to the desktop for a future
+// settings UI; the renderer does NOT consume them in this change.
+
+/**
+ * Schema-versioned per-provider OAuth app config. The file ships at
+ * `services/fs-sync/config.example.json` and is read by `ServiceConfigStore`
+ * at `sync:authenticate-start` time. `redirectUri` is computed by the
+ * loopback broker at session-start (the OS-allocated ephemeral port lands
+ * inside the URL) — it is NOT persisted in the file.
+ */
+export type ServiceConfig = {
+  readonly schemaVersion: 1;
+  readonly providers: Readonly<
+    Partial<
+      Record<
+        ProviderId,
+        { readonly clientId: string; readonly clientSecret: string }
+      >
+    >
+  >;
+};
+
+export type SyncGetConfigError =
+  | ValidationErrorShape
+  | {
+      readonly tag: "io-error";
+      readonly message: string;
+    };
+
+interface GetConfigCommand {
+  readonly command: "sync:get-config";
+  readonly params: Record<string, never>;
+  readonly result: { readonly config: ServiceConfig };
+  readonly error: SyncGetConfigError;
+}
+
+export type SyncSetConfigError =
+  | ValidationErrorShape
+  | {
+      readonly tag: "io-error";
+      readonly message: string;
+    };
+
+interface SetConfigCommand {
+  readonly command: "sync:set-config";
+  readonly params: { readonly config: ServiceConfig };
+  readonly result: { readonly ok: true };
+  readonly error: SyncSetConfigError;
+}
+
+// ---- Credential cleanup (sync:delete-credentials) -------------------------
+//
+// Symmetric counterpart of authenticate per design.md Decision 12. The
+// desktop's `datasources:remove` IPC handler calls this command after
+// `registry.remove` succeeds so the per-user credential entry at
+// `~/ft5/sync_app/credentials.json` is cleaned up alongside the registry
+// row. Best-effort cleanup — most failures still return
+// `{ ok: true, result: { deleted: false } }` per the service handler spec.
+
+export type SyncDeleteCredentialsError =
+  | ValidationErrorShape
+  | {
+      readonly tag: "io-error";
+      readonly message: string;
+    };
+
+interface DeleteCredentialsCommand {
+  readonly command: "sync:delete-credentials";
+  readonly params: { readonly datasourceId: string };
+  readonly result: { readonly deleted: boolean };
+  readonly error: SyncDeleteCredentialsError;
 }
 
 interface GetStatusCommand {
@@ -424,9 +529,12 @@ export interface CommandMap {
   "sync:unsubscribe-events": UnsubscribeEventsCommand;
   "sync:set-retry-policy": SetRetryPolicyCommand;
   "sync:get-retry-policy": GetRetryPolicyCommand;
-  "sync:authenticate": AuthenticateCommand;
   "sync:authenticate-start": AuthenticateStartCommand;
   "sync:authenticate-complete": AuthenticateCompleteCommand;
+  "sync:authenticate-cancel": AuthenticateCancelCommand;
+  "sync:get-config": GetConfigCommand;
+  "sync:set-config": SetConfigCommand;
+  "sync:delete-credentials": DeleteCredentialsCommand;
   "sync:get-status": GetStatusCommand;
   "files:list": FilesListCommand;
   "files:stat": FilesStatCommand;
@@ -453,9 +561,12 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "sync:unsubscribe-events",
   "sync:set-retry-policy",
   "sync:get-retry-policy",
-  "sync:authenticate",
   "sync:authenticate-start",
   "sync:authenticate-complete",
+  "sync:authenticate-cancel",
+  "sync:get-config",
+  "sync:set-config",
+  "sync:delete-credentials",
   "sync:get-status",
   "files:list",
   "files:stat",
