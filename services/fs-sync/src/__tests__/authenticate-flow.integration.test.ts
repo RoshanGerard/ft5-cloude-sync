@@ -447,8 +447,15 @@ describe("authenticate flow integration — credentials-form (amazon-s3) start+c
           },
         });
         const completeRes = await cli.waitForResponse("complete");
+        if (!completeRes.ok) {
+          // Surface the wire error so a test failure is diagnosable —
+          // the assertion below would otherwise just print "expected
+          // false to be true".
+          throw new Error(
+            `complete failed: ${JSON.stringify(completeRes.error)}`,
+          );
+        }
         expect(completeRes.ok).toBe(true);
-        if (!completeRes.ok) return;
         const completeResult = completeRes.result as {
           datasourceId: string;
           summary: { id: string; providerId: string; status: string };

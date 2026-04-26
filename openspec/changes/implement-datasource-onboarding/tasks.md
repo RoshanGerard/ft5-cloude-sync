@@ -113,14 +113,14 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 - [x] 14.1 Extend `services/fs-sync/src/main/bootstrap.test.ts` order assertion to include the two new stages (`construct-service-config-store` was added in §6.4; `construct-loopback-broker` added in this commit between `construct-network-probe` and `recover-running-jobs`). Test description updated from "11 bootstrap stages" → "13 bootstrap stages"
 - [x] 14.2 Run the order-assertion test → green (covered by §14.1's bootstrap.test.ts update; 13-stage assertion already in place)
-- [ ] 14.3 Add an integration test (`services/fs-sync/src/__tests__/authenticate-flow.integration.test.ts`) that boots a full service runtime against scratch dirs, sends `sync:authenticate-start { providerId: "google-drive" }` through a real IPC client, asserts the response carries a correlationId + `kind: "oauth"`, asserts the bus emits `oauth-open-url` + `auth-initiated`, then calls `sync:authenticate-cancel { correlationId }` and asserts `auth-cancelled` fires
-- [ ] 14.4 Same integration test, separate arm: credentials-form flow for `amazon-s3` → start → complete with valid stub values → assert `credential-persisted` + `auth-completed`; assert `credentials.json` contains a new entry for the minted datasourceId
+- [x] 14.3 Add an integration test (`services/fs-sync/src/__tests__/authenticate-flow.integration.test.ts`) that boots a full service runtime against scratch dirs, sends `sync:authenticate-start { providerId: "google-drive" }` through a real IPC client, asserts the response carries a correlationId + `kind: "oauth"`, asserts the bus emits `oauth-open-url` + `auth-initiated`, then calls `sync:authenticate-cancel { correlationId }` and asserts `auth-cancelled` fires (also covers the service-config-missing-no-event arm)
+- [x] 14.4 Same integration test, separate arm: credentials-form flow for `amazon-s3` → start → complete with valid stub values → assert `credential-persisted` + `auth-completed`; assert `credentials.json` contains a new entry for the minted datasourceId. Required `vi.mock("@aws-sdk/client-s3", …)` so the `HeadBucket` verification at `intent.submit(values)` resolves locally; service package took a test-only devDep on `@aws-sdk/client-s3` (`^3.1032.0`, pinned to engine) so vitest's pnpm-strict module resolution finds the same path as the engine's import — without that, the mock silently no-ops. Test infrastructure note added to `design.md`.
 
 ## 15. Service — SIGINT shutdown cancels active OAuth sessions
 
-- [ ] 15.1 Extend `signals.test.ts` to cover: service has one active OAuth session; SIGINT fires; broker.dispose runs before process exit; loopback HTTP server is no longer listening
+- [x] 15.1 Extend `signals.test.ts` to cover: service has one active OAuth session; SIGINT fires; broker.dispose runs before process exit; loopback HTTP server is no longer listening (asserts (A) shutdown ≤5s, (B) `_getPendingSessionForTests` returns undefined post-dispose, (C) TCP connect to the formerly-bound port refused, (D) PID file removed)
 - [x] 15.2 Update `services/fs-sync/src/main/signals.ts` to call `broker.dispose()` during shutdown (already wired: `signals.ts` calls `runtime.stop()` which disposes the broker FIRST per `bootstrap.ts:380`; no signals.ts edit needed)
-- [ ] 15.3 Rerun the test → green
+- [x] 15.3 Rerun the test → green (full fs-sync-service suite: 322 pass / 0 fail / 9 skip / 0 type errors)
 
 ## 16. Desktop main — bridge subscriptions for `oauth-open-url` + `credential-persisted`
 

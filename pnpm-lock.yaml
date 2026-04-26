@@ -169,6 +169,9 @@ importers:
         specifier: 0.45.2
         version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.9.0)
     devDependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.1032.0
+        version: 3.1032.0
       '@ft5/fs-datasource-engine':
         specifier: workspace:*
         version: link:../../packages/fs-datasource-engine

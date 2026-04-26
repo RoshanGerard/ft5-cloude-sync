@@ -305,6 +305,10 @@ The renderer has ~6 test files that mock the `datasources.onEvent` channel for c
 
 The `wire-fs-sync-service` design said callers "should handle defensively as a non-domain error." A grep confirms no caller in the renderer or desktop main does so. The contract change is type-only — TypeScript narrowing surfaces any missed call site at compile time. Risk: zero callers, zero runtime exposure.
 
+## Test infrastructure
+
+- `services/fs-sync/package.json` takes a `devDependencies` entry on `@aws-sdk/client-s3` (matching the engine's `^3.1032.0` pin) so the §14.4 integration test (`services/fs-sync/src/__tests__/authenticate-flow.integration.test.ts`) can `vi.mock("@aws-sdk/client-s3", ...)` to stub the S3 strategy's `HeadBucket` verification call. Without the dep on the test package, vitest in pnpm strict mode resolves the mock path differently from the engine's import path and the interception silently fails. No production import of `@aws-sdk/client-s3` exists from `services/fs-sync/src/` — the dep is test-only.
+
 ## Migration Plan
 
 This change is internally complete (no rolling-deploy concern — the desktop and service ship together as one Electron installer). Implementation proceeds in TDD-disciplined phases per `tasks.md`:
