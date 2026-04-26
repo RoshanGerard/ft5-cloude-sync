@@ -10,6 +10,9 @@ import type {
 
 describe("sync-service event contract", () => {
   it("enumerates every event the spec requires", () => {
+    // The auth-* event family + bridge-only `oauth-open-url` /
+    // `credential-persisted` events were added by the
+    // `implement-datasource-onboarding` change per design.md Decision 7.
     type Expected =
       | "job-enqueued"
       | "job-started"
@@ -21,7 +24,14 @@ describe("sync-service event contract", () => {
       | "sync-completed"
       | "source-unavailable"
       | "network-available"
-      | "credential-store-permission-violation";
+      | "credential-store-permission-violation"
+      | "auth-initiated"
+      | "auth-completed"
+      | "auth-cancelled"
+      | "auth-failed"
+      | "auth-timeout"
+      | "oauth-open-url"
+      | "credential-persisted";
     expectTypeOf<EventName>().toEqualTypeOf<Expected>();
   });
 

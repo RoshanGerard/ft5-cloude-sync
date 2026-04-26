@@ -84,8 +84,27 @@ export class DatasourceRegistry {
     this.listStmt = db.prepare(
       "SELECT id, provider_id, display_name, item_count, last_sync_at, status, error_reason, error_kind, paused, created_at, updated_at FROM datasources ORDER BY created_at ASC, id ASC",
     );
+    // Idempotent insert per implement-datasource-onboarding §17 + design
+    // Decision 8 — when a row with the same id already exists, refresh the
+    // user-visible columns (display_name, status, error_*). Columns NOT
+    // updated on conflict:
+    //   - `created_at` is preserved (audit-stable; first-seen timestamp)
+    //   - `paused` is left untouched (a user-set flag must not be cleared
+    //     by a service-redelivered credential-persisted event)
+    //   - `item_count` / `last_sync_at` are NOT clobbered with first-add
+    //     defaults (a row with real sync history must not regress to 0/null
+    //     just because the credential was re-persisted)
+    // Effect: a redelivered `credential-persisted` event for a known id is
+    // a safe upsert; the bridge subscriber (§16) can ignore the
+    // distinction between first-create and re-emit without orphaning state.
     this.insertStmt = db.prepare(
-      "INSERT INTO datasources (id, provider_id, display_name, item_count, last_sync_at, status, error_reason, error_kind, paused, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+      "INSERT INTO datasources (id, provider_id, display_name, item_count, last_sync_at, status, error_reason, error_kind, paused, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) "
+        + "ON CONFLICT(id) DO UPDATE SET "
+        + "display_name = excluded.display_name, "
+        + "status = excluded.status, "
+        + "error_reason = excluded.error_reason, "
+        + "error_kind = excluded.error_kind, "
+        + "updated_at = excluded.updated_at",
     );
     this.removeRowStmt = db.prepare(
       "DELETE FROM datasources WHERE id = ?",

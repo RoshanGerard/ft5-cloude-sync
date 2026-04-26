@@ -162,8 +162,8 @@ const wrappers: ReadonlyArray<{
     expectedCommand: SYNC_CHANNELS.authenticateStart,
     invoke: (c) =>
       c.authenticateStart({
+        providerId: "amazon-s3",
         datasourceId: "ds-1",
-        type: "amazon-s3",
       }),
   },
   {
@@ -172,7 +172,10 @@ const wrappers: ReadonlyArray<{
     invoke: (c) =>
       c.authenticateComplete({
         correlationId: "corr-1",
-        completion: { kind: "oauth", code: "noop" },
+        completion: {
+          kind: "credentials-form",
+          values: { accessKeyId: "x", secretAccessKey: "y" },
+        },
       }),
   },
   {

@@ -9,11 +9,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 
 import type {
-  AuthResult,
-  DatasourceType,
-  AuthIntent,
-} from "../fs-datasource-engine.js";
-import type {
   JobStatus,
   JobSummary,
   RetryPolicy,
@@ -34,8 +29,6 @@ import type {
   SyncEnqueueMirrorResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
-  SyncAuthenticateRequest,
-  SyncAuthenticateResponse,
   SyncGetStatusRequest,
   SyncGetStatusResponse,
   SyncGetRetryPolicyRequest,
@@ -142,21 +135,10 @@ describe("sync-service-desktop cancelJob request/response", () => {
   });
 });
 
-describe("sync-service-desktop authenticate request/response", () => {
-  it("authenticate request carries datasourceId + type + intent", () => {
-    expectTypeOf<SyncAuthenticateRequest>().toEqualTypeOf<{
-      readonly datasourceId: string;
-      readonly type: DatasourceType;
-      readonly intent: AuthIntent;
-    }>();
-  });
-
-  it("authenticate response is a flat { authResult } (happy-path only)", () => {
-    expectTypeOf<SyncAuthenticateResponse>().toEqualTypeOf<{
-      readonly authResult: AuthResult;
-    }>();
-  });
-});
+// The retired single-shot `SyncAuthenticate*` request/response pair was
+// removed by `implement-datasource-onboarding` per design.md Decision 9.
+// Coverage of the replacement three-command split lives in
+// `sync-service-desktop/authenticate-split.test-d.ts`.
 
 describe("sync-service-desktop getStatus request/response", () => {
   it("getStatus request is void", () => {

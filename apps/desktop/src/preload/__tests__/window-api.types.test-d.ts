@@ -1,13 +1,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 
-import type {
-  AnyDatasourceEvent,
-  ConsentEvent,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
-} from "@ft5/ipc-contracts";
+import type { AnyDatasourceEvent } from "@ft5/ipc-contracts";
 import type {
   SyncEvent,
   SyncListJobsResponse,
@@ -64,47 +57,37 @@ describe("window.api.sync type declarations", () => {
 });
 
 // ---------------------------------------------------------------------------
-// add-drive-oauth-browser-consent — Group 2 task 2.1
-// Asserts symmetric presence of startConsent / cancelConsent on
-// `window.api.datasources` with the exact contract types. Paired with the
-// `DatasourcesStartConsentRequest` / `Response` type checks in
-// `packages/ipc-contracts/src/__tests__/datasources.test-d.ts` — here we
-// verify the surface binding, there we verify the contract types themselves.
+// implement-datasource-onboarding §19 + spec scenario "startConsent and
+// cancelConsent are absent from the surface". The renderer migrates fully
+// to `window.api.sync.authenticateStart` / `authenticateCancel` for the
+// authenticate flow (per design.md Decision 3); the desktop's datasources
+// surface no longer carries `startConsent` / `cancelConsent` keys.
 // ---------------------------------------------------------------------------
 
 type DatasourcesSurface = Window["api"]["datasources"];
 
-describe("window.api.datasources consent surface (task 2.1)", () => {
+describe("window.api.datasources surface (post-§19)", () => {
   it("window.api.datasources is NOT any (guard: catches missing datasources declaration)", () => {
     expectTypeOf<DatasourcesSurface>().not.toBeAny();
   });
 
-  it("window.api.datasources.startConsent has the contract request/response shape", () => {
-    expectTypeOf<DatasourcesSurface["startConsent"]>().toEqualTypeOf<
-      (
-        req: DatasourcesStartConsentRequest,
-      ) => Promise<DatasourcesStartConsentResponse>
-    >();
+  it("startConsent is absent from window.api.datasources", () => {
+    // After §19, the surface no longer carries `startConsent`. A compile-
+    // time absence assertion catches accidental re-additions.
+    expectTypeOf<keyof DatasourcesSurface>().not.toEqualTypeOf<"startConsent">();
   });
 
-  it("window.api.datasources.cancelConsent returns Promise<void>", () => {
-    expectTypeOf<DatasourcesSurface["cancelConsent"]>().toEqualTypeOf<
-      (
-        req: DatasourcesCancelConsentRequest,
-      ) => Promise<DatasourcesCancelConsentResponse>
-    >();
-    // Explicit: the IPC-handler-wrapped response is Promise<void>.
-    expectTypeOf<DatasourcesSurface["cancelConsent"]>().returns.toEqualTypeOf<
-      Promise<void>
-    >();
+  it("cancelConsent is absent from window.api.datasources", () => {
+    expectTypeOf<keyof DatasourcesSurface>().not.toEqualTypeOf<"cancelConsent">();
   });
 
-  // Spec: "Consent events flow through the existing onEvent stream"
-  // (datasources-ui delta). Callback's event parameter must accept every
-  // ConsentEvent variant, not just AnyDatasourceEvent.
-  it("window.api.datasources.onEvent accepts ConsentEvent variants", () => {
+  it("onEvent only receives AnyDatasourceEvent (consent variants moved to sync.onEvent)", () => {
+    // Authentication lifecycle events (auth-*) flow exclusively on the sync
+    // event stream now per design Decision 7. The datasources onEvent
+    // callback's parameter is plain `AnyDatasourceEvent` with no
+    // `| ConsentEvent` widening.
     expectTypeOf<DatasourcesSurface["onEvent"]>().toEqualTypeOf<
-      (cb: (event: AnyDatasourceEvent | ConsentEvent) => void) => () => void
+      (cb: (event: AnyDatasourceEvent) => void) => () => void
     >();
   });
 });

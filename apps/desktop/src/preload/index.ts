@@ -7,14 +7,10 @@ import type {
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
@@ -34,6 +30,8 @@ import type {
 } from "@ft5/ipc-contracts";
 import { SYNC_CHANNELS } from "@ft5/ipc-contracts/sync-service-desktop";
 import type {
+  SyncAuthenticateCancelRequest,
+  SyncAuthenticateCancelResponse,
   SyncAuthenticateCompleteRequest,
   SyncAuthenticateCompleteResponse,
   SyncAuthenticateStartRequest,
@@ -93,14 +91,6 @@ const api = {
     // void-request pattern above.
     pickFilesToUpload: (): Promise<DatasourcesPickFilesResponse> =>
       ipcRenderer.invoke(DATASOURCES_CHANNELS.pickFilesToUpload),
-    startConsent: (
-      req: DatasourcesStartConsentRequest,
-    ): Promise<DatasourcesStartConsentResponse> =>
-      ipcRenderer.invoke(DATASOURCES_CHANNELS.startConsent, req),
-    cancelConsent: (
-      req: DatasourcesCancelConsentRequest,
-    ): Promise<DatasourcesCancelConsentResponse> =>
-      ipcRenderer.invoke(DATASOURCES_CHANNELS.cancelConsent, req),
     onUploadProgress: (
       transactionId: string,
       callback: (event: DatasourcesUploadProgressEvent) => void,
@@ -198,6 +188,10 @@ const api = {
       req: SyncAuthenticateCompleteRequest,
     ): Promise<SyncAuthenticateCompleteResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.authenticateComplete, req),
+    authenticateCancel: (
+      req: SyncAuthenticateCancelRequest,
+    ): Promise<SyncAuthenticateCancelResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.authenticateCancel, req),
     // `getStatus` has a void request type — invoke with channel only,
     // mirroring the `ping()` pattern above.
     getStatus: (): Promise<SyncGetStatusResponse> =>

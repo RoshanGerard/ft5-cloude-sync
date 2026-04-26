@@ -304,6 +304,33 @@ export class SyncClient {
     return this.request("sync:authenticate-complete", params, opts);
   }
 
+  /**
+   * Symmetric idempotent cancel for an in-flight authenticate session
+   * (implement-datasource-onboarding design Decision 7). Cancel is
+   * best-effort: a second call against the same `correlationId` returns
+   * `{ ok: true, result: { cancelled: false } }` rather than erroring.
+   */
+  authenticateCancel(
+    params: CommandParams<"sync:authenticate-cancel">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:authenticate-cancel">> {
+    return this.request("sync:authenticate-cancel", params, opts);
+  }
+
+  /**
+   * Symmetric counterpart to authenticate per design Decision 12 — invoked
+   * by the desktop's `datasources:remove` IPC handler after `registry.remove`
+   * succeeds so the per-user credential entry on the service side is
+   * cleaned up alongside the desktop registry row. Best-effort: callers
+   * MUST NOT block their local-success path on a rejection (Risks §1).
+   */
+  deleteCredentials(
+    params: CommandParams<"sync:delete-credentials">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:delete-credentials">> {
+    return this.request("sync:delete-credentials", params, opts);
+  }
+
   getStatus(
     params: CommandParams<"sync:get-status">,
     opts?: { timeoutMs?: number },

@@ -18,6 +18,12 @@ import type {
 describe("sync-service command contract", () => {
   it("enumerates every command the spec requires", () => {
     // If a command is added to the spec, add it here too and to CommandMap.
+    // The retired single-shot `sync:authenticate` command was removed by
+    // `implement-datasource-onboarding` per design.md Decision 9; the
+    // three-command authenticate split (`-start` / `-complete` / `-cancel`)
+    // is the only path that writes credentials. `sync:get-config` /
+    // `sync:set-config` / `sync:delete-credentials` were added by the same
+    // change.
     type Expected =
       | "sync:enqueue-upload"
       | "sync:enqueue-mirror"
@@ -28,9 +34,12 @@ describe("sync-service command contract", () => {
       | "sync:unsubscribe-events"
       | "sync:set-retry-policy"
       | "sync:get-retry-policy"
-      | "sync:authenticate"
       | "sync:authenticate-start"
       | "sync:authenticate-complete"
+      | "sync:authenticate-cancel"
+      | "sync:get-config"
+      | "sync:set-config"
+      | "sync:delete-credentials"
       | "sync:get-status"
       | "files:list"
       | "files:stat"

@@ -6,7 +6,12 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { DatasourceClient } from "@ft5/fs-datasource-engine";
+import type {
+  ClientFactory,
+  CredentialStore,
+  DatasourceClient,
+  EngineContext,
+} from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
 
 import type {
@@ -19,12 +24,19 @@ import type { EventBus } from "../events/event-bus.js";
 import { PolicyStore } from "../retry/policy-store.js";
 import type Database from "better-sqlite3";
 
-import { handleAuthenticateStart } from "./authenticate-start.js";
-import { handleAuthenticateComplete } from "./authenticate-complete.js";
+import { makeAuthenticateStartHandler } from "./authenticate-start.js";
+import { makeAuthenticateCompleteHandler } from "./authenticate-complete.js";
+import { makeAuthenticateCancelHandler } from "./authenticate-cancel.js";
+import { makeGetConfigHandler } from "./get-config.js";
+import { makeSetConfigHandler } from "./set-config.js";
+import { makeDeleteCredentialsHandler } from "./delete-credentials.js";
 import { makeFilesListHandler } from "./files-list.js";
 import { makeFilesStatHandler } from "./files-stat.js";
 import { makeFilesSearchHandler } from "./files-search.js";
 import { makeFilesRemoveHandler } from "./files-remove.js";
+import type { ServiceConfigStore } from "../config/service-config-store.js";
+import type { AuthCorrelationStore } from "../state/auth-correlation-store.js";
+import type { OAuthLoopbackBroker } from "../oauth/loopback-broker.js";
 
 export interface HandlersDeps {
   readonly db: Database.Database;
@@ -39,6 +51,21 @@ export interface HandlersDeps {
   readonly resolveClient?: (
     datasourceId: string,
   ) => Promise<DatasourceClient<DatasourceType>>;
+  /**
+   * Auth dependencies — added by implement-datasource-onboarding §9-§13.
+   * When ANY of the auth deps are absent, ALL `sync:authenticate-*`,
+   * `sync:get-config`, `sync:set-config`, and `sync:delete-credentials`
+   * handlers are omitted from the returned map. This keeps existing
+   * tests that build `HandlersDeps` without auth wiring (`handlers.test.ts`,
+   * `no-auto-sync.test.ts`) compiling unchanged. Production bootstrap
+   * always supplies the full bundle.
+   */
+  readonly correlationStore?: AuthCorrelationStore;
+  readonly configStore?: ServiceConfigStore;
+  readonly factory?: ClientFactory;
+  readonly engineContext?: EngineContext;
+  readonly loopbackBroker?: OAuthLoopbackBroker;
+  readonly credentialStore?: CredentialStore;
 }
 
 export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
@@ -232,12 +259,46 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       result: { unsubscribed: true },
     }),
 
-    // Stubs per Decision 11 (see openspec/changes/wire-fs-sync-service/design.md).
-    // The real handlers in the follow-up change will need the AuthCorrelationStore
-    // + engine factory threaded through HandlersDeps.
-    "sync:authenticate-start": handleAuthenticateStart,
-
-    "sync:authenticate-complete": handleAuthenticateComplete,
+    // Authenticate + config + delete-credentials handlers — wired only
+    // when the full auth bundle is supplied (correlationStore +
+    // configStore + factory + engineContext + loopbackBroker +
+    // credentialStore). Older tests that build handlers without auth
+    // deps still type-check; production bootstrap always supplies all.
+    ...(deps.correlationStore &&
+    deps.configStore &&
+    deps.factory &&
+    deps.engineContext &&
+    deps.loopbackBroker &&
+    deps.credentialStore
+      ? {
+          "sync:authenticate-start": makeAuthenticateStartHandler({
+            bus: deps.bus,
+            correlationStore: deps.correlationStore,
+            factory: deps.factory,
+            configStore: deps.configStore,
+            loopbackBroker: deps.loopbackBroker,
+            engineContext: deps.engineContext,
+          }),
+          "sync:authenticate-complete": makeAuthenticateCompleteHandler({
+            bus: deps.bus,
+            correlationStore: deps.correlationStore,
+          }),
+          "sync:authenticate-cancel": makeAuthenticateCancelHandler({
+            bus: deps.bus,
+            correlationStore: deps.correlationStore,
+            loopbackBroker: deps.loopbackBroker,
+          }),
+          "sync:get-config": makeGetConfigHandler({
+            configStore: deps.configStore,
+          }),
+          "sync:set-config": makeSetConfigHandler({
+            configStore: deps.configStore,
+          }),
+          "sync:delete-credentials": makeDeleteCredentialsHandler({
+            credentialStore: deps.credentialStore,
+          }),
+        }
+      : {}),
 
     // files:* handlers — wired only when a resolveClient is supplied so
     // older tests that build handlers without engine deps keep compiling.

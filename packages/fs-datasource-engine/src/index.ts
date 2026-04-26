@@ -47,6 +47,14 @@ export type {
 // depends on Electron; the engine package stays framework-agnostic.
 export type { CredentialStore } from "./credential-store.js";
 
+// implement-datasource-onboarding §2: OAuth application registration config.
+// `OAuthAppConfig` is the canonical shape consumed by the
+// `factory.createForAuth(...)` path (§3) and the per-strategy
+// `preAuth?: PreAuthConfig` constructor slot (§2.4-§2.7). `PreAuthConfig`
+// is a structural alias of `OAuthAppConfig` used at the strategy
+// constructor parameter site to clarify intent.
+export type { OAuthAppConfig, PreAuthConfig } from "./auth-types.js";
+
 // ProviderRegistry + ClientFactory. The factory is stateless — each
 // `create` call returns a fresh DatasourceClient — and validates registry
 // integrity eagerly at construction. `createDefaultProviderRegistry` wires
@@ -62,6 +70,7 @@ export type {
   ClientFactory,
   CredentialShapeValidator,
   EngineContext,
+  PreAuthFactoryFn,
   ProviderFactoryFn,
   ProviderRegistry,
   ProviderRegistryEntry,

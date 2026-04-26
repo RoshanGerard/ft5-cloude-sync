@@ -5,19 +5,14 @@
 // types through the preload's `.d.ts`.
 import type {
   AnyDatasourceEvent,
-  ConsentEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
@@ -36,6 +31,12 @@ import type {
   PingResponse,
 } from "@ft5/ipc-contracts";
 import type {
+  SyncAuthenticateCancelRequest,
+  SyncAuthenticateCancelResponse,
+  SyncAuthenticateCompleteRequest,
+  SyncAuthenticateCompleteResponse,
+  SyncAuthenticateStartRequest,
+  SyncAuthenticateStartResponse,
   SyncEvent,
   SyncListJobsRequest,
   SyncListJobsResponse,
@@ -55,19 +56,11 @@ declare global {
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
         pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
-        startConsent(
-          req: DatasourcesStartConsentRequest,
-        ): Promise<DatasourcesStartConsentResponse>;
-        cancelConsent(
-          req: DatasourcesCancelConsentRequest,
-        ): Promise<DatasourcesCancelConsentResponse>;
         onUploadProgress(
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,
         ): () => void;
-        onEvent(
-          callback: (event: AnyDatasourceEvent | ConsentEvent) => void,
-        ): () => void;
+        onEvent(callback: (event: AnyDatasourceEvent) => void): () => void;
       };
       files: {
         list(req: FilesListRequest): Promise<FilesListResponse>;
@@ -89,6 +82,15 @@ declare global {
       sync: {
         onEvent(callback: (event: SyncEvent) => void): () => void;
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
+        authenticateStart(
+          req: SyncAuthenticateStartRequest,
+        ): Promise<SyncAuthenticateStartResponse>;
+        authenticateComplete(
+          req: SyncAuthenticateCompleteRequest,
+        ): Promise<SyncAuthenticateCompleteResponse>;
+        authenticateCancel(
+          req: SyncAuthenticateCancelRequest,
+        ): Promise<SyncAuthenticateCancelResponse>;
       };
       // Electron 32+ removed `File.path`. Drag-drop reads each dropped
       // File's absolute filesystem path via this contextBridge wrapper

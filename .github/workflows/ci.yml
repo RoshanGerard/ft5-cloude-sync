@@ -64,35 +64,29 @@ jobs:
         shell: bash
         run: pnpm -w test
 
+      # FT5_GOOGLE_OAUTH_* env injection was removed in
+      # implement-datasource-onboarding (§18.5) — the desktop's
+      # electron.vite.config.ts no longer defines those constants. OAuth
+      # app config is now read at runtime from ~/ft5/sync_app/config.json
+      # by the fs-sync service. The matching GitHub repo secrets remain
+      # provisioned but unused; cleanup is a separate housekeeping task.
       - name: Build desktop (main + preload + renderer)
         shell: bash
-        env:
-          FT5_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_ID }}
-          FT5_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_SECRET }}
         run: pnpm --filter @ft5/desktop build:all
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
         shell: bash
-        env:
-          FT5_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_ID }}
-          FT5_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_SECRET }}
         run: pnpm --filter @ft5/desktop package:mac
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        env:
-          FT5_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_ID }}
-          FT5_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_SECRET }}
         run: pnpm --filter @ft5/desktop package:win
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
-        env:
-          FT5_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_ID }}
-          FT5_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.FT5_GOOGLE_OAUTH_CLIENT_SECRET }}
         run: pnpm --filter @ft5/desktop package:linux
 
       # Playwright e2e — Section 9 of the setup-project change will add the

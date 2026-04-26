@@ -2,7 +2,6 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type { DatasourceErrorTag } from "../fs-datasource-engine.js";
 import type {
-  ConsentEvent,
   CredentialsSchema,
   DatasourceAction,
   DatasourceStatus,
@@ -12,16 +11,12 @@ import type {
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
   DatasourcesListRequest,
   DatasourcesListResponse,
   DatasourcesPickFilesRequest,
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   ErroredDatasourceSummary,
   ProviderCapabilities,
@@ -262,13 +257,19 @@ describe("ipc-contracts datasources request/response pairs", () => {
 });
 
 describe("ipc-contracts datasources channel names", () => {
-  it("DATASOURCES_CHANNELS exposes exactly the expected channels (incl. consent), excludes retired upload", () => {
+  it("DATASOURCES_CHANNELS exposes exactly the expected channels, excludes retired consent + upload", () => {
     // The legacy `upload` channel slot was retired by
     // `add-file-explorer-drag-drop-upload` — the renderer now dispatches
     // uploads through `files.upload`. `uploadProgress` stays: it's still the
     // transport for per-job progress events. `pickFilesToUpload` takes the
-    // retired slot. `add-drive-oauth-browser-consent` adds `startConsent`
-    // and `cancelConsent` for the OAuth browser-consent broker.
+    // retired slot.
+    //
+    // The `startConsent` / `cancelConsent` slots were retired by
+    // `implement-datasource-onboarding` — the renderer's authenticate flow
+    // now goes through the service's `sync:authenticate-{start,cancel}`
+    // commands. Authentication lifecycle events flow as `auth-*` on the
+    // service's `sync:event` stream, NOT as `consent-*` on
+    // `datasources:event`.
     expect(DATASOURCES_CHANNELS.list).toBe("datasources:list");
     expect(DATASOURCES_CHANNELS.add).toBe("datasources:add");
     expect(DATASOURCES_CHANNELS.remove).toBe("datasources:remove");
@@ -280,39 +281,50 @@ describe("ipc-contracts datasources channel names", () => {
       "datasources:upload:progress",
     );
     expect(DATASOURCES_CHANNELS.event).toBe("datasources:event");
-    expect(DATASOURCES_CHANNELS.startConsent).toBe("datasources:start-consent");
-    expect(DATASOURCES_CHANNELS.cancelConsent).toBe(
-      "datasources:cancel-consent",
-    );
     expect(Object.keys(DATASOURCES_CHANNELS).sort()).toEqual(
       [
         "action",
         "add",
-        "cancelConsent",
         "event",
         "list",
         "pickFilesToUpload",
         "remove",
-        "startConsent",
         "uploadProgress",
       ].sort(),
     );
-    // `upload` MUST NOT be a member of the channel surface.
+    // `upload`, `startConsent`, `cancelConsent` MUST NOT be members of
+    // the channel surface.
     expect(
       Object.prototype.hasOwnProperty.call(DATASOURCES_CHANNELS, "upload"),
     ).toBe(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        DATASOURCES_CHANNELS,
+        "startConsent",
+      ),
+    ).toBe(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        DATASOURCES_CHANNELS,
+        "cancelConsent",
+      ),
+    ).toBe(false);
   });
 
-  it("DATASOURCES_CHANNELS key set (type-level) excludes 'upload'", () => {
-    // Type-level guard: `"upload"` must NOT be assignable to the key union.
-    // `extends` check: the expression below is `never` iff `"upload"` is
-    // absent from the keys (distributive conditional over a single literal
-    // reduces to the same `never` either way). `toEqualTypeOf<never>` is
-    // the canonical way to assert a conditional type collapsed to `never`.
+  it("DATASOURCES_CHANNELS key set (type-level) excludes 'upload', 'startConsent', 'cancelConsent'", () => {
+    // Type-level guard: removed keys must NOT be assignable to the key union.
     type HasUpload = "upload" extends keyof typeof DATASOURCES_CHANNELS
       ? true
       : never;
     expectTypeOf<HasUpload>().toEqualTypeOf<never>();
+
+    type HasStartConsent =
+      "startConsent" extends keyof typeof DATASOURCES_CHANNELS ? true : never;
+    expectTypeOf<HasStartConsent>().toEqualTypeOf<never>();
+
+    type HasCancelConsent =
+      "cancelConsent" extends keyof typeof DATASOURCES_CHANNELS ? true : never;
+    expectTypeOf<HasCancelConsent>().toEqualTypeOf<never>();
 
     type HasPickFilesToUpload =
       "pickFilesToUpload" extends keyof typeof DATASOURCES_CHANNELS
@@ -325,99 +337,16 @@ describe("ipc-contracts datasources channel names", () => {
 // ---------------------------------------------------------------------------
 // add-drive-oauth-browser-consent — Group 2 (tasks 2.1–2.4)
 // ---------------------------------------------------------------------------
-
-describe("ipc-contracts datasources startConsent / cancelConsent request-response (task 2.1, 2.2)", () => {
-  it("DatasourcesStartConsentRequest is exactly { providerId: string; datasourceId?: string }", () => {
-    expectTypeOf<DatasourcesStartConsentRequest>().toEqualTypeOf<{
-      providerId: string;
-      datasourceId?: string;
-    }>();
-  });
-
-  it("DatasourcesStartConsentResponse is exactly { sessionId: string }", () => {
-    expectTypeOf<DatasourcesStartConsentResponse>().toEqualTypeOf<{
-      sessionId: string;
-    }>();
-  });
-
-  it("DatasourcesCancelConsentRequest is exactly { sessionId: string }", () => {
-    expectTypeOf<DatasourcesCancelConsentRequest>().toEqualTypeOf<{
-      sessionId: string;
-    }>();
-  });
-
-  it("DatasourcesCancelConsentResponse is void", () => {
-    expectTypeOf<DatasourcesCancelConsentResponse>().toEqualTypeOf<void>();
-  });
-});
-
-describe("ipc-contracts ConsentEvent union (task 2.3)", () => {
-  it("ConsentEvent includes consent-started with optional datasourceId", () => {
-    const e: ConsentEvent = {
-      event: "consent-started",
-      sessionId: "sess-1",
-    };
-    const withId: ConsentEvent = {
-      event: "consent-started",
-      sessionId: "sess-1",
-      datasourceId: "ds-1",
-    };
-    expect(e.event).toBe("consent-started");
-    expect(withId.datasourceId).toBe("ds-1");
-  });
-
-  it("ConsentEvent includes consent-completed with REQUIRED datasourceId", () => {
-    const e: ConsentEvent = {
-      event: "consent-completed",
-      sessionId: "sess-1",
-      datasourceId: "ds-1",
-    };
-    expect(e.datasourceId).toBe("ds-1");
-    // Narrowing: when event === "consent-completed", datasourceId is required (not optional).
-    type CompletedVariant = Extract<ConsentEvent, { event: "consent-completed" }>;
-    expectTypeOf<CompletedVariant["datasourceId"]>().toEqualTypeOf<string>();
-  });
-
-  it("ConsentEvent includes consent-cancelled with only sessionId", () => {
-    const e: ConsentEvent = { event: "consent-cancelled", sessionId: "sess-1" };
-    expect(e.event).toBe("consent-cancelled");
-  });
-
-  it("ConsentEvent includes consent-failed with tag and optional message", () => {
-    const e: ConsentEvent = {
-      event: "consent-failed",
-      sessionId: "sess-1",
-      tag: "auth-revoked",
-    };
-    const withMsg: ConsentEvent = {
-      event: "consent-failed",
-      sessionId: "sess-1",
-      tag: "provider-error",
-      message: "token endpoint 500",
-    };
-    type FailedVariant = Extract<ConsentEvent, { event: "consent-failed" }>;
-    expectTypeOf<FailedVariant["tag"]>().toEqualTypeOf<DatasourceErrorTag>();
-    expectTypeOf<FailedVariant["message"]>().toEqualTypeOf<string | undefined>();
-    expect(e.tag).toBe("auth-revoked");
-    expect(withMsg.message).toBe("token endpoint 500");
-  });
-
-  it("ConsentEvent includes consent-timeout with only sessionId", () => {
-    const e: ConsentEvent = { event: "consent-timeout", sessionId: "sess-1" };
-    expect(e.event).toBe("consent-timeout");
-  });
-
-  it("ConsentEvent discriminates on `event` across all five variants", () => {
-    type Events = ConsentEvent["event"];
-    expectTypeOf<Events>().toEqualTypeOf<
-      | "consent-started"
-      | "consent-completed"
-      | "consent-cancelled"
-      | "consent-failed"
-      | "consent-timeout"
-    >();
-  });
-});
+//
+// The startConsent / cancelConsent / ConsentEvent surface that previously
+// covered tasks 2.1–2.3 was retired by `implement-datasource-onboarding`.
+// Coverage of the replacement surface (`SyncAuthenticate{Start,Complete,
+// Cancel}*` plus the `auth-*` event taxonomy on the `sync:event` stream)
+// lives in:
+//   * `packages/ipc-contracts/src/sync-service/authenticate-onboarding.test-d.ts`
+//   * `packages/ipc-contracts/src/sync-service/auth-events.test-d.ts`
+//   * `packages/ipc-contracts/src/__tests__/consent-removed.test-d.ts`
+// ---------------------------------------------------------------------------
 
 describe("ipc-contracts DatasourceSummary.errorKind (task 2.4)", () => {
   it("errorKind is a required field typed as DatasourceErrorTag | null", () => {

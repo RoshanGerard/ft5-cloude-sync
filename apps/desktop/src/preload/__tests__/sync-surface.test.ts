@@ -30,6 +30,8 @@ import type {
   SyncEnqueueMirrorResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
+  SyncAuthenticateCancelRequest,
+  SyncAuthenticateCancelResponse,
   SyncAuthenticateStartRequest,
   SyncAuthenticateStartResponse,
   SyncAuthenticateCompleteRequest,
@@ -49,6 +51,7 @@ type ExposedSync = {
   cancelJob: (req: SyncCancelJobRequest) => Promise<SyncCancelJobResponse>;
   authenticateStart: (req: SyncAuthenticateStartRequest) => Promise<SyncAuthenticateStartResponse>;
   authenticateComplete: (req: SyncAuthenticateCompleteRequest) => Promise<SyncAuthenticateCompleteResponse>;
+  authenticateCancel: (req: SyncAuthenticateCancelRequest) => Promise<SyncAuthenticateCancelResponse>;
   getStatus: () => Promise<SyncGetStatusResponse>;
   getRetryPolicy: (req: SyncGetRetryPolicyRequest) => Promise<SyncGetRetryPolicyResponse>;
   setRetryPolicy: (req: SyncSetRetryPolicyRequest) => Promise<SyncSetRetryPolicyResponse>;
@@ -74,12 +77,13 @@ describe("preload sync surface", () => {
     vi.clearAllMocks();
   });
 
-  it("exposes a sync object with exactly 11 members (10 commands + onEvent), no authenticate", async () => {
+  it("exposes a sync object with exactly 12 members (11 commands + onEvent), no legacy `authenticate`", async () => {
     const exposed = await loadExposed();
 
     expect(typeof exposed.sync).toBe("object");
     expect(Object.keys(exposed.sync).sort()).toEqual(
       [
+        "authenticateCancel",
         "authenticateComplete",
         "authenticateStart",
         "cancelJob",
@@ -93,7 +97,7 @@ describe("preload sync surface", () => {
         "setRetryPolicy",
       ].sort(),
     );
-    // authenticate (legacy, dormant) must NOT be exposed
+    // legacy single-shot `authenticate` must NOT be exposed
     expect("authenticate" in exposed.sync).toBe(false);
   });
 
@@ -182,15 +186,14 @@ describe("preload sync surface", () => {
     it("authenticateStart(req) invokes SYNC_CHANNELS.authenticateStart with req and returns the resolved value", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
       const response: SyncAuthenticateStartResponse = {
-        correlationId: "corr-1",
-        intent: { kind: "oauth", providerName: "google-drive", authorizeUrl: "https://example.com/auth" },
+        ok: true,
+        result: { correlationId: "corr-1", kind: "oauth" },
       };
       invokeMock.mockResolvedValue(response);
 
       const exposed = await loadExposed();
       const req: SyncAuthenticateStartRequest = {
-        datasourceId: "ds-1",
-        type: "google-drive",
+        providerId: "google-drive",
       };
       const result = await exposed.sync.authenticateStart(req);
 
@@ -202,7 +205,21 @@ describe("preload sync surface", () => {
     it("authenticateComplete(req) invokes SYNC_CHANNELS.authenticateComplete with req and returns the resolved value", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
       const response: SyncAuthenticateCompleteResponse = {
-        authResult: { kind: "success" },
+        ok: true,
+        result: {
+          datasourceId: "ds-1",
+          summary: {
+            id: "ds-1",
+            providerId: "amazon-s3",
+            displayName: "S3",
+            status: "connected",
+            errorReason: null,
+            errorKind: null,
+            paused: false,
+            lastSyncAt: null,
+            itemCount: 0,
+          },
+        },
       };
       invokeMock.mockResolvedValue(response);
 
@@ -210,15 +227,34 @@ describe("preload sync surface", () => {
       const req: SyncAuthenticateCompleteRequest = {
         correlationId: "corr-1",
         completion: {
-          kind: "oauth",
-          code: "auth-code",
-          state: "state-value",
+          kind: "credentials-form",
+          values: { accessKeyId: "x", secretAccessKey: "y" },
         },
       };
       const result = await exposed.sync.authenticateComplete(req);
 
       expect(invokeMock).toHaveBeenCalledTimes(1);
       expect(invokeMock.mock.calls[0]).toEqual([SYNC_CHANNELS.authenticateComplete, req]);
+      expect(result).toBe(response);
+    });
+
+    it("authenticateCancel(req) invokes SYNC_CHANNELS.authenticateCancel with req and returns the resolved value", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response: SyncAuthenticateCancelResponse = {
+        ok: true,
+        result: { cancelled: true },
+      };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req: SyncAuthenticateCancelRequest = { correlationId: "corr-1" };
+      const result = await exposed.sync.authenticateCancel(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        SYNC_CHANNELS.authenticateCancel,
+        req,
+      ]);
       expect(result).toBe(response);
     });
 

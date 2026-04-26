@@ -26,6 +26,7 @@ import {
 import { createResolveClient } from "./resolve-client.js";
 
 import { buildCommandHandlers } from "../commands/handlers.js";
+import { ServiceConfigStore } from "../config/service-config-store.js";
 import { ConfigFileCredentialStore } from "../credential-store/config-file.js";
 import { applyMigrations } from "../db/migrations.js";
 import { openDatabase } from "../db/open.js";
@@ -35,6 +36,7 @@ import {
   resolveDataDir,
   resolveDbPath,
   resolvePidPath,
+  resolveServiceConfigPath,
   resolveSocketPath,
 } from "../env/paths.js";
 import { createEventBus, type EventBus } from "../events/event-bus.js";
@@ -46,8 +48,10 @@ import {
   type RunningServer,
 } from "../ipc/server.js";
 import { createSubscriptionRegistry } from "../ipc/subscriptions.js";
+import { createOAuthLoopbackBroker } from "../oauth/loopback-broker.js";
 import { NetworkProbe } from "../retry/network-probe.js";
 import { Scheduler } from "../scheduler/scheduler.js";
+import { createAuthCorrelationStore } from "../state/auth-correlation-store.js";
 import {
   acquirePidGuardSync,
   AlreadyRunningError,
@@ -60,10 +64,12 @@ export type BootstrapStage =
   | "integrity-ok"
   | "acquire-pid-guard"
   | "construct-credential-store"
+  | "construct-service-config-store"
   | "construct-provider-registry"
   | "construct-client-factory"
   | "construct-scheduler"
   | "construct-network-probe"
+  | "construct-loopback-broker"
   | "recover-running-jobs"
   | "ipc-listen";
 
@@ -113,12 +119,30 @@ export interface BootstrapOptions {
   readonly pidPath?: string;
   readonly dbPath?: string;
   readonly credentialsPath?: string;
+  // Path seam for the service-owned OAuth-app config file. Optional so
+  // tests can scope to a scratch dir; production resolves via
+  // `resolveServiceConfigPath`. The store does NOT auto-create this file —
+  // the user copies `services/fs-sync/config.example.json` into place per
+  // README §Provider OAuth registration.
+  readonly configPath?: string;
 }
 
 export interface Runtime {
   readonly socketPath: string;
   readonly db: Database.Database;
   readonly scheduler: Scheduler;
+  // Available so the §9 authenticate-start handler (and the §12 get/set-config
+  // handlers) can reach the same instance that bootstrap composed. Service
+  // owns the single source of truth for OAuth app config during process
+  // lifetime per design.md Decision 4.
+  readonly serviceConfigStore: ServiceConfigStore;
+  /**
+   * The OAuth loopback broker — exposed so the §15 SIGINT signal handler
+   * can call `broker.dispose()` to close every active loopback HTTP
+   * server before the IPC listener tears down. Per spec scenario "SIGINT
+   * cancels active OAuth sessions before exit".
+   */
+  readonly loopbackBroker: import("../oauth/loopback-broker.js").OAuthLoopbackBroker;
   readonly stop: () => Promise<void>;
 }
 
@@ -133,6 +157,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
   const socketPath = options.socketPath ?? resolveSocketPath(pathOpts, env);
   const credentialsPath =
     options.credentialsPath ?? resolveCredentialsPath(pathOpts, env);
+  const configPath =
+    options.configPath ?? resolveServiceConfigPath(pathOpts, env);
 
   // Data directory must exist with the right mode BEFORE anything else
   // touches it (openDatabase will create sync.db inside). This is setup,
@@ -177,6 +203,18 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     await credentialStore.cleanupOrphanTmp();
     observer?.onStage("construct-credential-store");
 
+    // 5b. construct-service-config-store
+    // Per design.md Decision 4: service owns the per-provider OAuth app
+    // config. The store does NOT touch disk at construction time; reads are
+    // lazy at `sync:authenticate-start` time so a missing/invalid file does
+    // not break the boot path — it surfaces as the typed
+    // `service-config-missing` wire error inline in the renderer's oauth-form
+    // failure state instead.
+    const serviceConfigStore = new ServiceConfigStore({
+      filePath: configPath,
+    });
+    observer?.onStage("construct-service-config-store");
+
     // 6. construct-provider-registry
     const registry: ProviderRegistry = createDefaultProviderRegistry();
     observer?.onStage("construct-provider-registry");
@@ -211,6 +249,36 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     probe = new NetworkProbe({ db, bus });
     observer?.onStage("construct-network-probe");
 
+    // 9b. construct-loopback-broker
+    // Per implement-datasource-onboarding §9 + design.md Decision 2 —
+    // service owns the OAuth loopback HTTP listener. The broker resolves
+    // OAuthAppConfig (via the closure here that wraps
+    // ServiceConfigStore.getOAuthAppConfig), binds 127.0.0.1:0 on
+    // start(), constructs the engine client via factory.createForAuth,
+    // emits auth-initiated + oauth-open-url, owns the live OAuthIntent
+    // until completeWith resolves OR cancel/timeout fires. The §15
+    // SIGINT path will dispose every active session via broker.dispose().
+    const correlationStore = createAuthCorrelationStore();
+    const engineContext = { bus: engineBus, credentialStore };
+    const loopbackBroker = createOAuthLoopbackBroker({
+      bus,
+      engineContext,
+      factory,
+      getOAuthAppConfig: (providerId, redirectUri) =>
+        serviceConfigStore.getOAuthAppConfig(providerId, redirectUri),
+      dataDir,
+      // FT5_DEV_CREDENTIALS=1 short-circuits the browser flow per the
+      // ADDED Requirement "Development builds may bypass authenticate
+      // via FT5_DEV_CREDENTIALS (service-side)".
+      isDevOverride: env.FT5_DEV_CREDENTIALS === "1",
+      warnOnce: () => {
+        logger?.info?.(
+          "FT5_DEV_CREDENTIALS active — browser consent bypassed",
+        );
+      },
+    });
+    observer?.onStage("construct-loopback-broker");
+
     // 10. recover-running-jobs — re-queue anything stuck in `running` from a
     //     prior crash. Runs AFTER the scheduler is constructed but BEFORE
     //     the IPC listener is bound so no client can observe half-state.
@@ -228,6 +296,15 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       serviceVersion: options.serviceVersion ?? "0.0.0",
       serviceUuid: options.serviceUuid ?? "",
       resolveClient,
+      // implement-datasource-onboarding §9-§13 auth bundle. With all six
+      // present, buildCommandHandlers wires authenticate-{start,
+      // complete, cancel}, get-config, set-config, delete-credentials.
+      correlationStore,
+      configStore: serviceConfigStore,
+      factory,
+      engineContext,
+      loopbackBroker,
+      credentialStore,
     });
     const subscribeHandler: CommandHandler<"sync:subscribe-events"> = async (
       _params,
@@ -285,13 +362,25 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     const runtimeServer = server;
     const runtimeRelease = releasePid;
     const runtimeDb: Database.Database = db;
+    const runtimeBroker = loopbackBroker;
     return {
       socketPath,
       db: runtimeDb,
       scheduler: runtimeScheduler,
+      serviceConfigStore,
+      loopbackBroker: runtimeBroker,
       async stop(): Promise<void> {
-        // Shutdown: probe → scheduler → server → db → PID. Swallow
-        // per-step errors so later steps still run.
+        // Shutdown: broker → probe → scheduler → server → db → PID.
+        // Broker first so any in-flight loopback HTTP server is closed
+        // before the rest of the runtime tears down (§15 will move this
+        // call into the SIGINT handler proper, but disposing here on
+        // explicit stop() is the safe default).
+        // Swallow per-step errors so later steps still run.
+        try {
+          runtimeBroker.dispose();
+        } catch {
+          /* tolerated */
+        }
         try {
           await runtimeProbe.stop();
         } catch {

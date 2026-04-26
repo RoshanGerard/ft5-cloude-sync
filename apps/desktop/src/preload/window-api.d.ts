@@ -1,18 +1,13 @@
 import type {
   AnyDatasourceEvent,
-  ConsentEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
@@ -31,6 +26,8 @@ import type {
   PingResponse,
 } from "@ft5/ipc-contracts";
 import type {
+  SyncAuthenticateCancelRequest,
+  SyncAuthenticateCancelResponse,
   SyncAuthenticateCompleteRequest,
   SyncAuthenticateCompleteResponse,
   SyncAuthenticateStartRequest,
@@ -78,19 +75,11 @@ declare global {
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
         pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
-        startConsent(
-          req: DatasourcesStartConsentRequest,
-        ): Promise<DatasourcesStartConsentResponse>;
-        cancelConsent(
-          req: DatasourcesCancelConsentRequest,
-        ): Promise<DatasourcesCancelConsentResponse>;
         onUploadProgress(
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,
         ): () => void;
-        onEvent(
-          callback: (event: AnyDatasourceEvent | ConsentEvent) => void,
-        ): () => void;
+        onEvent(callback: (event: AnyDatasourceEvent) => void): () => void;
       };
       files: {
         list(req: FilesListRequest): Promise<FilesListResponse>;
@@ -117,6 +106,9 @@ declare global {
         authenticateComplete(
           req: SyncAuthenticateCompleteRequest,
         ): Promise<SyncAuthenticateCompleteResponse>;
+        authenticateCancel(
+          req: SyncAuthenticateCancelRequest,
+        ): Promise<SyncAuthenticateCancelResponse>;
         // `getStatus` has a void request type — no argument, mirrors ping().
         getStatus(): Promise<SyncGetStatusResponse>;
         getRetryPolicy(

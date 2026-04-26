@@ -1,18 +1,19 @@
 "use client";
 
 //
-// add-invalid-datasource-state §7 — file-explorer Pattern-A full-replace
+// implement-datasource-onboarding §27 — file-explorer Pattern-A full-replace
 // state for a misconfigured datasource (registry drift / missing credentials
 // / wrong-shape credential JSON). Mirrors the visual scaffolding of
-// `auth-revoked.tsx` and the consent-session lifecycle of `AuthErrorBanner`
+// `auth-revoked.tsx` and the auth-session lifecycle of `AuthErrorBanner`
 // in `features/datasources/card.tsx`.
 //
 // Per design.md Decision 3 + Decision 4, this component owns its own
-// `startConsent` call inline (not delegated to the parent) so the spinner /
-// disabled-state rendering co-locates with the lifecycle subscription. The
-// parent wires `onReconnectSucceeded` to `store.retryLoad()` so the
-// explorer's `useExplorerData` re-dispatches `files:list` once consent
-// completes, and the component naturally transitions out of this arm.
+// `sync.authenticateStart` call inline (not delegated to the parent) so
+// the spinner / disabled-state rendering co-locates with the lifecycle
+// subscription. The parent wires `onReconnectSucceeded` to
+// `store.retryLoad()` so the explorer's `useExplorerData` re-dispatches
+// `files:list` once authentication completes, and the component naturally
+// transitions out of this arm.
 //
 // Per design.md Decision 6, the Reconnect button uses the neutral
 // `bg-primary` styling (constructive default) — the red sentiment is carried
@@ -22,23 +23,25 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { ProviderId } from "@ft5/ipc-contracts";
+
 import { Icon } from "@/components/icon";
 import { Button } from "@/components/ui/button";
-import { useConsentSession } from "@/features/datasources/store";
+import { useAuthSession } from "@/features/datasources/store";
 
 export interface InvalidDatasourceStateProps {
   /**
    * The provider key (`google-drive`, `onedrive`, `amazon-s3`, ...) needed
-   * to construct the `startConsent` request. Threaded from the route layer
-   * via `summary.providerId`. When undefined (test renders the component in
-   * isolation), the Reconnect button is disabled with `aria-disabled="true"`
-   * and a tooltip explaining the missing context.
+   * to construct the `sync.authenticateStart` request. Threaded from the
+   * route layer via `summary.providerId`. When undefined (test renders the
+   * component in isolation), the Reconnect button is disabled with
+   * `aria-disabled="true"` and a tooltip explaining the missing context.
    */
   providerId?: string;
   /** The datasource whose credentials need re-registering. */
   datasourceId: string;
   /**
-   * Invoked exactly once after the consent session reaches
+   * Invoked exactly once after the auth session reaches
    * `status === "completed"`. Parent wires this to
    * `useFileExplorerStore().retryLoad()` so the explorer re-dispatches
    * `files:list` and the engine resolves the freshly-registered credential.
@@ -58,16 +61,16 @@ export function InvalidDatasourceState({
   onReconnectSucceeded,
   onRequestRemove,
 }: InvalidDatasourceStateProps) {
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
   // Pass a sentinel when no session is active so the hook always returns
   // a well-defined `{ status: "pending" }` for the unused slot, matching
-  // the `AuthErrorBanner` pattern in `card.tsx:285`.
-  const sessionState = useConsentSession(sessionId ?? "__none__");
+  // the `AuthErrorBanner` pattern in `card.tsx`.
+  const sessionState = useAuthSession(correlationId ?? "__none__");
 
   const isWaiting =
-    sessionId !== null && sessionState.status === "pending";
+    correlationId !== null && sessionState.status === "pending";
   const isFailed =
-    sessionId !== null &&
+    correlationId !== null &&
     (sessionState.status === "cancelled" ||
       sessionState.status === "failed" ||
       sessionState.status === "timeout");
@@ -75,25 +78,28 @@ export function InvalidDatasourceState({
   // Single-fire guard: even if the parent does not immediately remount us
   // when `onReconnectSucceeded` triggers `store.retryLoad()`, multiple
   // re-renders with the same `completed` state must not fire the callback
-  // twice. A ref-tracked sessionId is the simplest barrier — once we've
-  // notified for a given sessionId, we don't notify again.
+  // twice. A ref-tracked correlationId is the simplest barrier — once we've
+  // notified for a given correlationId, we don't notify again.
   const succeededFiredFor = useRef<string | null>(null);
   useEffect(() => {
-    if (sessionId === null) return;
+    if (correlationId === null) return;
     if (sessionState.status !== "completed") return;
-    if (succeededFiredFor.current === sessionId) return;
-    succeededFiredFor.current = sessionId;
+    if (succeededFiredFor.current === correlationId) return;
+    succeededFiredFor.current = correlationId;
     onReconnectSucceeded();
-  }, [sessionId, sessionState, onReconnectSucceeded]);
+  }, [correlationId, sessionState, onReconnectSucceeded]);
 
   const handleReconnect = useCallback(async () => {
     if (providerId === undefined) return;
     if (isWaiting) return;
-    const res = await window.api.datasources.startConsent({
-      providerId,
+    const res = await window.api.sync.authenticateStart({
+      providerId: providerId as ProviderId,
       datasourceId,
     });
-    setSessionId(res.sessionId);
+    if (res.ok && res.result.kind === "oauth") {
+      setCorrelationId(res.result.correlationId);
+    }
+    // On res.ok === false the button re-enables; the user can retry.
   }, [providerId, datasourceId, isWaiting]);
 
   const reconnectDisabled = providerId === undefined;

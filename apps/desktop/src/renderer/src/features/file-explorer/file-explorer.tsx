@@ -573,12 +573,12 @@ export function FileExplorer({
             }
             if (state.errorTag === "invalid-datasource") {
               // Pattern-A full-replace state for misconfigured datasources.
-              // Reconnect lifecycle (startConsent + useConsentSession) lives
-              // inside <InvalidDatasourceState>; the shared
-              // <ConfirmRemoveDatasourceDialog> + actions.remove dispatch
-              // live inside <InvalidDatasourceArm> per design.md Decisions
-              // 4 + 5. `onReconnectSucceeded` re-runs files:list via
-              // store.retryLoad(); on success the engine resolves the
+              // Reconnect lifecycle (sync.authenticateStart +
+              // useAuthSession) lives inside <InvalidDatasourceState>; the
+              // shared <ConfirmRemoveDatasourceDialog> + actions.remove
+              // dispatch live inside <InvalidDatasourceArm> per design.md
+              // Decisions 4 + 5. `onReconnectSucceeded` re-runs files:list
+              // via store.retryLoad(); on success the engine resolves the
               // freshly-registered credential and the explorer naturally
               // transitions out of this branch.
               return (

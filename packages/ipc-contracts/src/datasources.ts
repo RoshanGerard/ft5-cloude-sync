@@ -143,94 +143,23 @@ export interface DatasourcesPickFilesResponse {
 }
 
 // ---------------------------------------------------------------------------
-// OAuth consent — added by add-drive-oauth-browser-consent
+// OAuth consent — RETIRED by `implement-datasource-onboarding`.
+//
+// The `add-drive-oauth-browser-consent` change shipped a
+// main-process-hosted consent broker plus a `startConsent` /
+// `cancelConsent` IPC pair plus a `consent-*` event taxonomy on the
+// `datasources:event` stream. The `implement-datasource-onboarding`
+// change relocates the OAuth loopback HTTP listener into the fs-sync
+// service (design.md Decisions 1 + 2) and migrates the renderer's
+// authenticate flow onto the service's `sync:authenticate-{start,
+// complete,cancel}` commands plus the `auth-*` event taxonomy on the
+// `sync:event` stream (design.md Decision 7).
+//
+// Consequently the entire consent surface — `DatasourcesStartConsent*`,
+// `DatasourcesCancelConsent*`, and `ConsentEvent` — is removed from
+// the IPC contract surface, along with the `startConsent` /
+// `cancelConsent` keys on `DATASOURCES_CHANNELS`.
 // ---------------------------------------------------------------------------
-
-/**
- * Request payload for `window.api.datasources.startConsent`. Starts a
- * browser-based OAuth consent session for the given provider. `datasourceId`
- * is OPTIONAL — supplied only for the reconnect path (existing card in the
- * `auth-revoked` / `auth-expired` state) where the id already exists and
- * the main process re-uses it on `consent-completed`. Omit for the add-new
- * path; the main process mints a fresh id on `consent-completed`.
- */
-export interface DatasourcesStartConsentRequest {
-  providerId: string;
-  datasourceId?: string;
-}
-
-/**
- * Response payload for `startConsent`. Carries the `sessionId` the
- * renderer uses to filter the `consent-*` event stream down to its own
- * session (the event channel is shared across all active consent
- * sessions in the process). The `sessionId` is an opaque broker-local
- * identifier; it is NOT persisted nor surfaced to the user.
- */
-export interface DatasourcesStartConsentResponse {
-  sessionId: string;
-}
-
-/** Request payload for `window.api.datasources.cancelConsent`. */
-export interface DatasourcesCancelConsentRequest {
-  sessionId: string;
-}
-
-/**
- * Response shape for `cancelConsent`. The handler is fire-and-forget at the
- * contract level — the `consent-cancelled` event on the datasources event
- * stream is the authoritative terminal signal. Idempotent: cancelling a
- * session that is already terminated is a no-op (no error, no duplicate
- * event).
- *
- * At the IPC handler site the method is wrapped in `Promise<void>`; this
- * type names the inner `void` so consumers can `expectTypeOf<...>()
- * .toEqualTypeOf<void>()` against the contract.
- */
-export type DatasourcesCancelConsentResponse = void;
-
-/**
- * Discriminated union of consent lifecycle events. Flows through the same
- * `DATASOURCES_CHANNELS.event` stream as the engine's generic
- * `AnyDatasourceEvent` — the preload's `onEvent` callback sees the union
- * of the two (see `DatasourcesStreamEvent`).
- *
- * This union is deliberately FLAT and non-generic: consent is a
- * main-process-owned session that does not belong to any particular
- * datasource type yet (the `datasourceId` is only known on successful
- * completion for the add-new path). Keeping it flat avoids forcing a
- * synthetic `datasourceType` / `payload` envelope onto events that
- * genuinely carry neither.
- *
- * `consent-completed.datasourceId` is REQUIRED — the renderer needs the id
- * to subscribe the new card to engine events.
- * `consent-started.datasourceId` is OPTIONAL — present only on the reconnect
- * path where the id pre-existed.
- */
-export type ConsentEvent =
-  | {
-      event: "consent-started";
-      sessionId: string;
-      datasourceId?: string;
-    }
-  | {
-      event: "consent-completed";
-      sessionId: string;
-      datasourceId: string;
-    }
-  | {
-      event: "consent-cancelled";
-      sessionId: string;
-    }
-  | {
-      event: "consent-failed";
-      sessionId: string;
-      tag: DatasourceErrorTag;
-      message?: string;
-    }
-  | {
-      event: "consent-timeout";
-      sessionId: string;
-    };
 
 export const DATASOURCES_CHANNELS = {
   list: "datasources:list",
@@ -246,11 +175,9 @@ export const DATASOURCES_CHANNELS = {
   // emitted by the FS Datasource Engine's bus. Wired up by the event bridge
   // in Phase 10 of `openspec/changes/add-fs-datasource-engine`; declared here
   // in Phase 1 so contract consumers can name the channel without reaching
-  // into a later-phase file.
+  // into a later-phase file. The `consent-*` event family that previously
+  // flowed alongside the engine's events on this channel was retired by
+  // `implement-datasource-onboarding`; authenticate lifecycle events now
+  // flow as `auth-*` on the service's `sync:event` stream.
   event: "datasources:event",
-  // OAuth consent request/response channels (add-drive-oauth-browser-consent).
-  // The `consent-*` lifecycle events flow through the existing `event`
-  // channel alongside the engine's generic events (see `ConsentEvent`).
-  startConsent: "datasources:start-consent",
-  cancelConsent: "datasources:cancel-consent",
 } as const;

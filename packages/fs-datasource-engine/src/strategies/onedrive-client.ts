@@ -72,10 +72,12 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
+import type { PreAuthConfig } from "../auth-types.js";
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
+  type PreAuthFactoryFn,
 } from "../factory.js";
 
 // ---------------------------------------------------------------------------
@@ -322,7 +324,26 @@ export interface OneDriveClientOptions {
 export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   readonly type = "onedrive" as const;
 
-  private creds: OneDriveCredsMeta;
+  /**
+   * Per-user credentials. `null` only on the createForAuth path
+   * (implement-datasource-onboarding §2 / §3) where the strategy is
+   * constructed BEFORE any user has authenticated and `preAuth` carries
+   * the OAuth app config instead. Every code path that consumes
+   * `this.creds` for OAuth-app-config fields must go through
+   * `getOAuthAppConfig()` so the precedence (preAuth → creds → throw)
+   * is applied uniformly.
+   */
+  private creds: OneDriveCredsMeta | null;
+  /**
+   * Optional OAuth app config seeded at construction. Populated on the
+   * createForAuth path; `undefined` on the legacy createOneDriveClient
+   * path that carries the config via `creds.authResult.meta` (preserved
+   * during the transition; tracked for deletion in §22.x). The
+   * constructor parameter accepts `null` as an alias for `undefined`
+   * so the factory.createForAuth contract (`OAuthAppConfig | null`)
+   * lands here without a boundary translation step.
+   */
+  private preAuth: PreAuthConfig | undefined;
   private readonly graphFactory: GraphFactory;
   private readonly fetchImpl: typeof fetch;
   private readonly lruCap: number;
@@ -344,11 +365,15 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
 
   constructor(
     init: { datasourceId: string; ctx: BaseClientContext },
-    creds: OneDriveCredsMeta,
+    creds: OneDriveCredsMeta | null,
     options: OneDriveClientOptions = {},
+    preAuth?: PreAuthConfig | null,
   ) {
     super(init);
     this.creds = creds;
+    // Normalise null → undefined so internal precedence checks compare
+    // against a single sentinel.
+    this.preAuth = preAuth ?? undefined;
     this.graphFactory = options.graphFactory ?? createDefaultGraphFactory();
     this.fetchImpl = options.fetchImpl ?? ((globalThis as { fetch: typeof fetch }).fetch).bind(globalThis);
     this.lruCap = options.lruCap ?? 512;
@@ -441,11 +466,88 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   }
 
   // -------------------------------------------------------------------------
+  // OAuth app config + creds helpers (preAuth → creds → throw)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Resolve the OAuth app config + tenant authority at call time with
+   * precedence: (a) `preAuth` if seeded at construction (the createForAuth
+   * path; defaults `tenantId` to `"common"` per design.md Decision 13's
+   * OneDrive clarification — `OAuthAppConfig` deliberately omits
+   * `tenantId`); (b) the legacy `creds.authResult.meta` shape (transitional
+   * path; reads `tenantId` from meta as before); (c) throw
+   * `DatasourceError(invalid-datasource)` when neither source is available.
+   *
+   * Centralised here so the four call sites (authorize-URL build,
+   * token-exchange POST, parseTokenResponse meta write, refresh-token POST)
+   * apply the same precedence.
+   */
+  private getOAuthAppConfig(): {
+    clientId: string;
+    clientSecret: string | undefined;
+    tenantId: string;
+    redirectUri: string;
+  } {
+    if (this.preAuth !== undefined) {
+      return {
+        clientId: this.preAuth.clientId,
+        clientSecret: this.preAuth.clientSecret,
+        // OAuthAppConfig deliberately omits tenantId; default to the
+        // multi-tenant authority on the preAuth path.
+        tenantId: "common",
+        redirectUri: this.preAuth.redirectUri,
+      };
+    }
+    if (this.creds !== null) {
+      return {
+        clientId: this.creds.clientId,
+        // Legacy creds shape does not surface clientSecret on OneDrive's
+        // OneDriveCredsMeta — its OAuth flow does not require one for the
+        // public-client (PKCE-style) authorize/exchange path. Returned as
+        // `undefined` so callers can omit it from request bodies.
+        clientSecret: undefined,
+        tenantId: this.creds.tenantId,
+        redirectUri: this.creds.redirectUri,
+      };
+    }
+    throw new DatasourceError<"onedrive">({
+      tag: DatasourceErrorTag.InvalidDatasource,
+      datasourceType: "onedrive",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      raw: "onedrive-missing-oauth-app-config",
+      message:
+        "onedrive client constructed with neither creds nor preAuth — cannot resolve OAuth app config",
+    });
+  }
+
+  /**
+   * Assert that user-side credentials are present. Used by every operation
+   * other than `authenticate()` (which is reachable on the createForAuth
+   * path with `creds: null`). Throws a typed `invalid-datasource` error
+   * when missing — clearer than a raw TypeError downstream.
+   */
+  private requireCreds(): OneDriveCredsMeta {
+    if (this.creds === null) {
+      throw new DatasourceError<"onedrive">({
+        tag: DatasourceErrorTag.InvalidDatasource,
+        datasourceType: "onedrive",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: "onedrive-missing-creds",
+        message:
+          "onedrive operation requires user credentials, but client was constructed without them",
+      });
+    }
+    return this.creds;
+  }
+
+  // -------------------------------------------------------------------------
   // Graph client access (re-built after token refresh)
   // -------------------------------------------------------------------------
 
   private graph(): GraphClientLike {
-    return this.graphFactory(this.creds.accessToken);
+    return this.graphFactory(this.requireCreds().accessToken);
   }
 
   // -------------------------------------------------------------------------
@@ -466,7 +568,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   // -------------------------------------------------------------------------
 
   protected override async doAuthenticateImpl(): Promise<AuthIntent> {
-    const { clientId, tenantId, redirectUri } = this.creds;
+    const { clientId, tenantId, redirectUri } = this.getOAuthAppConfig();
     const params = new URLSearchParams({
       client_id: clientId,
       response_type: "code",
@@ -486,7 +588,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   }
 
   private async exchangeCodeForTokens(code: string): Promise<AuthResult> {
-    const { clientId, tenantId, redirectUri } = this.creds;
+    const { clientId, tenantId, redirectUri } = this.getOAuthAppConfig();
     const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
     const body = new URLSearchParams({
       client_id: clientId,
@@ -538,12 +640,17 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         statusCode: resp.status,
       });
     }
+    // Sourced via the same precedence used by doAuthenticateImpl /
+    // exchangeCodeForTokens — the AuthResult.meta carries the app config
+    // forward so subsequent operations (and the legacy meta-reading
+    // factory.create path) keep functioning.
+    const oauthApp = this.getOAuthAppConfig();
     const result: AuthResult = {
       accessToken,
       meta: {
-        clientId: this.creds.clientId,
-        tenantId: this.creds.tenantId,
-        redirectUri: this.creds.redirectUri,
+        clientId: oauthApp.clientId,
+        tenantId: oauthApp.tenantId,
+        redirectUri: oauthApp.redirectUri,
       },
     };
     if (typeof refreshToken === "string") {
@@ -553,14 +660,24 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       result.expiresAt = Date.now() + expiresIn * 1000;
     }
     // Update in-memory creds so subsequent Graph calls use the new token.
-    // The base's withRefresh cycle persists via CredentialStore.put — we
-    // keep the in-memory copy synced here so a caller that never invokes
-    // withRefresh still sees post-auth state.
-    this.creds = {
-      ...this.creds,
-      accessToken,
-      ...(typeof refreshToken === "string" ? { refreshToken } : {}),
-    };
+    // On the createForAuth path (creds: null at construction), seed a
+    // fresh OneDriveCredsMeta from the AuthResult + preAuth-sourced OAuth
+    // app config; on the legacy path, merge into the existing creds.
+    if (this.creds === null) {
+      this.creds = {
+        clientId: oauthApp.clientId,
+        tenantId: oauthApp.tenantId,
+        redirectUri: oauthApp.redirectUri,
+        accessToken,
+        refreshToken: typeof refreshToken === "string" ? refreshToken : "",
+      };
+    } else {
+      this.creds = {
+        ...this.creds,
+        accessToken,
+        ...(typeof refreshToken === "string" ? { refreshToken } : {}),
+      };
+    }
     return result;
   }
 
@@ -825,7 +942,11 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   // -------------------------------------------------------------------------
 
   protected override async refreshTokenImpl(): Promise<AuthResult> {
-    const { clientId, tenantId, refreshToken, redirectUri } = this.creds;
+    // OAuth app config (clientId / tenantId / redirectUri) flows through
+    // the preAuth-aware helper; the refresh token itself is per-user
+    // state sourced from `creds`.
+    const { clientId, tenantId, redirectUri } = this.getOAuthAppConfig();
+    const { refreshToken } = this.requireCreds();
     if (!refreshToken) {
       throw new DatasourceError<"onedrive">({
         tag: "auth-revoked",
@@ -1054,6 +1175,22 @@ export const createOneDriveClientForRegistry: ProviderFactoryFn<"onedrive"> = (
   ctx,
 ) => {
   return createOneDriveClient(datasourceId, credentials, ctx);
+};
+
+/**
+ * Canonical `PreAuthFactoryFn` entry for `factory.createForAuth(...)` —
+ * implement-datasource-onboarding §3.4. Constructs the strategy without
+ * `StoredCredentials` (creds=null) and threads the `OAuthAppConfig` into
+ * the `preAuth` constructor slot. The strategy defaults `tenantId` to
+ * `"common"` on the preAuth path (per design.md Decision 13's OneDrive
+ * clarification — `OAuthAppConfig` deliberately omits `tenantId`).
+ */
+export const createOneDriveClientForAuth: PreAuthFactoryFn<"onedrive"> = (
+  datasourceId,
+  preAuth,
+  ctx,
+) => {
+  return new OneDriveClient({ datasourceId, ctx }, null, {}, preAuth);
 };
 
 /**

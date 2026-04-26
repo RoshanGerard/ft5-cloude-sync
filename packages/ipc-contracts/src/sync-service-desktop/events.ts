@@ -24,6 +24,12 @@
 
 import type { JobSummary } from "../sync-service/commands.js";
 import type {
+  AuthCancelledPayload,
+  AuthCompletedPayload,
+  AuthFailedPayload,
+  AuthFailedTag,
+  AuthInitiatedPayload,
+  AuthTimeoutPayload,
   JobCancelledPayload,
   JobCompletedPayload,
   JobEnqueuedPayload,
@@ -39,7 +45,17 @@ import type {
 // Re-export the wire-contract payload shapes so downstream consumers can
 // import them from the renderer-facing subpath without reaching into the
 // wire contract. Re-exports mirror the import list above — keep them in sync.
+//
+// `oauth-open-url` and `credential-persisted` are intentionally NOT
+// re-exported — they are bridge-only events filtered out of the renderer
+// forward path per implement-datasource-onboarding design Decision 7.
 export type {
+  AuthCancelledPayload,
+  AuthCompletedPayload,
+  AuthFailedPayload,
+  AuthFailedTag,
+  AuthInitiatedPayload,
+  AuthTimeoutPayload,
   JobCancelledPayload,
   JobCompletedPayload,
   JobEnqueuedPayload,
@@ -98,6 +114,15 @@ export interface SyncEventPayloadMap {
   "network-available": NetworkAvailablePayload;
   "service-disconnected": ServiceDisconnectedPayload;
   "service-reconnected": ServiceReconnectedPayload;
+  // Authenticate lifecycle (implement-datasource-onboarding design
+  // Decision 7). The bridge filters out `oauth-open-url` and
+  // `credential-persisted` before forwarding, so the renderer-facing
+  // map contains only the five renderer-bound variants.
+  "auth-initiated": AuthInitiatedPayload;
+  "auth-completed": AuthCompletedPayload;
+  "auth-cancelled": AuthCancelledPayload;
+  "auth-failed": AuthFailedPayload;
+  "auth-timeout": AuthTimeoutPayload;
 }
 
 export type SyncEventKind = keyof SyncEventPayloadMap;
@@ -128,4 +153,9 @@ export const SYNC_EVENT_KINDS: ReadonlyArray<SyncEventKind> = [
   "network-available",
   "service-disconnected",
   "service-reconnected",
+  "auth-initiated",
+  "auth-completed",
+  "auth-cancelled",
+  "auth-failed",
+  "auth-timeout",
 ] as const;

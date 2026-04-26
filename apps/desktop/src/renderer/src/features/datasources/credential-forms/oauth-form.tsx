@@ -1,28 +1,39 @@
 "use client";
 
 //
-// OAuth credential form — real consent-broker flow.
+// OAuth credential form — implement-datasource-onboarding §22.
 //
-// Replaces the mocked `delayMs` fake from ui-ux-design with the actual
-// `window.api.datasources.startConsent` / `useConsentSession` wiring:
+// Drives the service-side authenticate flow:
 //
-//   1. User clicks Connect → `startConsent({providerId, datasourceId?})`.
-//   2. Main process opens the system browser at the Google authorization URL.
-//   3. Consent events arrive via the datasources event channel into the store.
+//   1. User clicks Connect → window.api.sync.authenticateStart({providerId,
+//      datasourceId?}) returns { ok: true, result: { correlationId,
+//      kind: "oauth" } } or { ok: false, error: SyncAuthenticateStartError }.
+//   2. The desktop main's sync event-bridge intercepts the service-emitted
+//      `oauth-open-url` event and calls shell.openExternal(authorizeUrl).
+//      The renderer is URL-blind — it never sees the authorize URL.
+//   3. Auth lifecycle events arrive on window.api.sync.onEvent and the
+//      `useAuthSession(correlationId)` hook surfaces the per-correlation
+//      state to this component.
 //   4. Terminal events update the form:
-//        - consent-completed → call onSubmit to signal success to the dialog
-//        - consent-cancelled / consent-failed / consent-timeout → inline error
-//          with Retry button (resets session and calls startConsent again).
+//        - auth-completed → onSubmit({_authCompleted: "completed",
+//          datasourceId}) so the parent dialog refreshes + closes.
+//        - auth-cancelled / auth-failed / auth-timeout → inline copy with a
+//          Retry button that re-invokes authenticateStart with the same
+//          providerId.
 //
-// Shape: `{ providerId, datasourceId?, onSubmit, onBack }`.
-//   - `datasourceId` is present only on the reconnect path (card Reconnect
-//     button). Absent on the add-new-datasource path.
-//   - `delayMs` prop removed — was only needed for the mocked flow.
+// `service-config-missing` arrives via the start-call's response envelope
+// (`{ok: false, error: {tag: "service-config-missing", path}}`) NOT via an
+// auth-failed event — the failure is a typed error class per design.md
+// Decision 7. The form renders inline copy with `<code>{path}</code>` and
+// a README pointer; Retry is available but will surface the same error
+// until the user fixes the file.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { ProviderId } from "@ft5/ipc-contracts";
+
 import { Button } from "@/components/ui/button";
-import { useConsentSession } from "../store";
+import { useAuthSession } from "../store";
 
 export interface OAuthFormProps {
   providerId: string;
@@ -33,6 +44,11 @@ export interface OAuthFormProps {
   onBack: () => void;
 }
 
+interface ConfigMissingError {
+  readonly tag: "service-config-missing";
+  readonly path: string;
+}
+
 export function OAuthForm({
   providerId,
   providerDisplayName,
@@ -40,44 +56,86 @@ export function OAuthForm({
   onSubmit,
   onBack,
 }: OAuthFormProps) {
-  // sessionId is null until startConsent resolves.
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  // correlationId is null until authenticateStart resolves with ok: true.
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Set when authenticateStart's response is `{ ok: false, error }` — the
+  // typed error class for `service-config-missing` is surfaced inline as
+  // its own failed-state branch alongside auth-failed events.
+  const [configMissing, setConfigMissing] = useState<ConfigMissingError | null>(
+    null,
+  );
+  // Capture a non-config-missing error on the start path so the user gets
+  // some inline feedback (engine-error / unknown-provider) when the start
+  // call rejects before any event fires.
+  const [startError, setStartError] = useState<string | null>(null);
 
-  const sessionState = useConsentSession(sessionId ?? "__none__");
+  const sessionState = useAuthSession(correlationId ?? "__none__");
 
-  // D7 invariant — closing the dialog mid-OAuth must terminate the broker
-  // session so completeWith / addToRegistry never run for an abandoned flow.
-  // Without this, the broker keeps its loopback HTTP server bound; if the user
-  // already clicked Continue in the browser before closing the dialog, the
-  // callback still arrives and a registry row materialises in the dashboard
-  // for a session the user thought they cancelled.
+  // Closing the dialog mid-authentication MUST terminate the service-side
+  // session so the loopback HTTP server tears down and the broker does not
+  // resolve a callback for an abandoned flow.
   //
-  // Holds the latest sessionId so the unmount cleanup (with empty deps) sees
-  // the live value without re-subscribing every time sessionId changes.
-  const sessionIdRef = useRef<string | null>(null);
+  // Holds the latest correlationId so the unmount cleanup (with empty deps)
+  // sees the live value without re-subscribing every time correlationId
+  // changes.
+  const correlationIdRef = useRef<string | null>(null);
   useEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
+    correlationIdRef.current = correlationId;
+  }, [correlationId]);
   useEffect(() => {
     return () => {
-      const sid = sessionIdRef.current;
-      if (sid !== null) {
-        // broker.cancel() is idempotent — safe to call after a terminal state.
-        void window.api.datasources.cancelConsent({ sessionId: sid });
+      const cid = correlationIdRef.current;
+      if (cid !== null) {
+        // service.authenticateCancel is idempotent — safe to call after a
+        // terminal state.
+        void window.api.sync.authenticateCancel({ correlationId: cid });
       }
     };
   }, []);
 
   const startSession = useCallback(async () => {
     setStarting(true);
+    setStartError(null);
+    setConfigMissing(null);
     try {
+      // The form receives `providerId: string` from the dialog's
+      // descriptor-based dispatch; the IPC surface narrows to `ProviderId`.
+      // The dialog only routes registered providers to the OAuthForm so the
+      // cast is safe at the call site.
+      const pid = providerId as ProviderId;
       const req =
         datasourceId !== undefined
-          ? { providerId, datasourceId }
-          : { providerId };
-      const res = await window.api.datasources.startConsent(req);
-      setSessionId(res.sessionId);
+          ? { providerId: pid, datasourceId }
+          : { providerId: pid };
+      const res = await window.api.sync.authenticateStart(req);
+      if (res.ok) {
+        if (res.result.kind === "oauth") {
+          setCorrelationId(res.result.correlationId);
+        } else {
+          // Defensive: a credentials-form provider was somehow routed through
+          // the OAuth form. This should be unreachable per the dialog's
+          // descriptor-based dispatch, but surface inline rather than crash.
+          setStartError(
+            "Provider configuration mismatch — expected OAuth flow.",
+          );
+        }
+      } else {
+        if (res.error.tag === "service-config-missing") {
+          setConfigMissing({
+            tag: "service-config-missing",
+            path: res.error.path,
+          });
+        } else {
+          // engine-error / unknown-provider / validation-error — render the
+          // tag + message so the user has something to read.
+          const msg =
+            "message" in res.error && res.error.message
+              ? res.error.message
+              : `Authentication failed (${res.error.tag}).`;
+          setStartError(msg);
+        }
+      }
     } finally {
       setStarting(false);
     }
@@ -88,21 +146,40 @@ export function OAuthForm({
   }, [startSession]);
 
   const handleRetry = useCallback(() => {
-    // Reset session so the useConsentSession hook goes back to "pending".
-    setSessionId(null);
+    // Reset correlationId so useAuthSession goes back to "pending".
+    setCorrelationId(null);
     void startSession();
   }, [startSession]);
 
-  // Terminal state transitions.
-  if (sessionId !== null && sessionState.status === "completed") {
-    onSubmit({ _oauthConsent: "completed", datasourceId: sessionState.datasourceId });
-  }
+  // Single-fire guard — useAuthSession may return the same `completed`
+  // state across multiple renders before the parent unmounts the form;
+  // a ref-tracked correlationId barrier prevents calling onSubmit twice.
+  const completedFiredFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (correlationId === null) return;
+    if (sessionState.status !== "completed") return;
+    if (completedFiredFor.current === correlationId) return;
+    completedFiredFor.current = correlationId;
+    onSubmit({
+      _authCompleted: "completed",
+      datasourceId: sessionState.datasourceId,
+    });
+  }, [correlationId, sessionState, onSubmit]);
 
-  const isWaiting = starting || (sessionId !== null && sessionState.status === "pending");
-  const isCancelled = sessionId !== null && sessionState.status === "cancelled";
-  const isFailed = sessionId !== null && sessionState.status === "failed";
-  const isTimeout = sessionId !== null && sessionState.status === "timeout";
-  const hasError = isCancelled || isFailed || isTimeout;
+  const isWaiting =
+    starting || (correlationId !== null && sessionState.status === "pending");
+  const isCancelled =
+    correlationId !== null && sessionState.status === "cancelled";
+  const isFailed =
+    correlationId !== null && sessionState.status === "failed";
+  const isTimeout =
+    correlationId !== null && sessionState.status === "timeout";
+  const hasFailureCopy =
+    isCancelled ||
+    isFailed ||
+    isTimeout ||
+    configMissing !== null ||
+    startError !== null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -120,7 +197,7 @@ export function OAuthForm({
         >
           {starting
             ? `Opening ${providerDisplayName} sign-in…`
-            : `Waiting for consent in your browser…`}
+            : `Waiting for authentication in your browser…`}
         </p>
       )}
 
@@ -131,7 +208,7 @@ export function OAuthForm({
           className="text-muted-foreground text-sm"
           data-testid="oauth-cancelled"
         >
-          Consent cancelled — you can try again.
+          Authentication cancelled — you can try again.
         </p>
       )}
 
@@ -142,18 +219,41 @@ export function OAuthForm({
           className="text-muted-foreground text-sm"
           data-testid="oauth-timeout"
         >
-          Consent timed out — please try again.
+          Authentication timed out — please try again.
         </p>
       )}
 
-      {isFailed && (
+      {configMissing !== null && (
         <p
-          role="status"
-          aria-live="polite"
+          role="alert"
           className="text-destructive text-sm"
           data-testid="oauth-failed"
         >
-          {sessionState.message ?? "Authorization failed — please try again."}
+          Service configuration missing. Add OAuth credentials to{" "}
+          <code>{configMissing.path}</code>. See README §Provider OAuth
+          registration.
+        </p>
+      )}
+
+      {isFailed && configMissing === null && (
+        <p
+          role="alert"
+          className="text-destructive text-sm"
+          data-testid="oauth-failed"
+        >
+          {sessionState.status === "failed" && sessionState.message
+            ? sessionState.message
+            : "Authentication failed — please try again."}
+        </p>
+      )}
+
+      {startError !== null && configMissing === null && !isFailed && (
+        <p
+          role="alert"
+          className="text-destructive text-sm"
+          data-testid="oauth-failed"
+        >
+          {startError}
         </p>
       )}
 
@@ -168,7 +268,7 @@ export function OAuthForm({
           Back
         </Button>
 
-        {hasError ? (
+        {hasFailureCopy ? (
           <Button type="button" size="sm" onClick={handleRetry}>
             Retry
           </Button>

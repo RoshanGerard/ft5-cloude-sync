@@ -34,6 +34,8 @@
 //   factories (Phases 6-8) from needing unsafe widening casts when Phase 6
 //   tightens `ProviderMetadata<T>` in `@ft5/ipc-contracts`.
 
+import { randomUUID } from "node:crypto";
+
 import type { ProviderId, StoredCredentials } from "@ft5/ipc-contracts";
 import {
   DatasourceError,
@@ -41,6 +43,7 @@ import {
   providers,
 } from "@ft5/ipc-contracts";
 
+import type { OAuthAppConfig, PreAuthConfig } from "./auth-types.js";
 import type {
   BaseClientContext,
   DatasourceClient,
@@ -51,14 +54,17 @@ import type { EventBus } from "./event-bus.js";
 // and Google Drive strategies respectively.
 import {
   createS3Client,
+  createS3ClientForAuth,
   validateS3CredentialShape,
 } from "./strategies/s3-client.js";
 import {
   createOneDriveClientForRegistry,
+  createOneDriveClientForAuth,
   validateOneDriveCredentialShape,
 } from "./strategies/onedrive-client.js";
 import {
   createGoogleDriveClientForRegistry,
+  createGoogleDriveClientForAuth,
   validateGoogleDriveCredentialShape,
 } from "./strategies/googledrive-client.js";
 
@@ -101,6 +107,33 @@ export type ProviderFactoryFn<P extends ProviderId = ProviderId> = (
 ) => DatasourceClient<P>;
 
 /**
+ * Pre-auth factory signature — the no-credentials counterpart to
+ * `ProviderFactoryFn`. Used by `factory.createForAuth(...)` to construct a
+ * strategy BEFORE any user-side credentials exist (the very first call to
+ * `engine.authenticate()` for a brand-new datasource). The `preAuth`
+ * argument is the typed `PreAuthConfig` slot the strategy reads at
+ * `doAuthenticateImpl()` time:
+ *
+ *   - OAuth-class providers (`google-drive`, `onedrive`) receive a non-null
+ *     `PreAuthConfig` carrying `clientId` / `clientSecret` / `redirectUri`.
+ *   - Credentials-form providers (`amazon-s3`) receive `null` — the
+ *     strategy is constructed with stub-empty credentials and the
+ *     `preAuth` slot is ignored.
+ *
+ * The factory itself enforces the OAuth-vs-credentials-form contract via
+ * each registry entry's `authKind` declaration (see `ProviderRegistryEntry`).
+ *
+ * See `openspec/changes/implement-datasource-onboarding/design.md`
+ * Decision 5 for the rationale (separate factory method vs overloading
+ * `create`).
+ */
+export type PreAuthFactoryFn<P extends ProviderId = ProviderId> = (
+  datasourceId: string,
+  preAuth: PreAuthConfig | null,
+  ctx: BaseClientContext,
+) => DatasourceClient<P>;
+
+/**
  * Per-provider credential-shape validator. Invoked by `factory.create`
  * BEFORE the strategy factory runs (per add-invalid-datasource-state
  * Decision 2 — single choke point). MUST throw `DatasourceError({ tag:
@@ -121,15 +154,32 @@ export type CredentialShapeValidator = (
 
 /**
  * A single registry entry: bundles the strategy factory function with the
- * credential-shape validator that gates it. Adding a new provider means
- * exporting both functions from the strategy module and adding one entry
- * here — no edits to `factory.create` itself.
+ * credential-shape validator that gates it, plus the pre-auth factory and
+ * the `authKind` discriminator used by `factory.createForAuth(...)`.
+ *
+ * `authKind` declares whether the provider is OAuth-class (consumes an
+ * `OAuthAppConfig` at authenticate-time) or credentials-form-class (the
+ * user types credentials directly into a form, no app config needed).
+ * `factory.createForAuth(providerId, oauthAppConfig, ctx)` validates the
+ * shape of `oauthAppConfig` against this declaration:
+ *
+ *   - `authKind: "oauth"` + `oauthAppConfig: null` → throw
+ *     `DatasourceError(invalid-datasource)`
+ *   - `authKind: "credentials-form"` + `oauthAppConfig != null` → throw
+ *     same shape
+ *
+ * Adding a new provider means exporting `create`, `createForAuth`, and
+ * `validateCredentialShape` from the strategy module, declaring `authKind`,
+ * and adding one entry here — no edits to `factory.create` /
+ * `factory.createForAuth` themselves.
  */
 export interface ProviderRegistryEntry<
   P extends ProviderId = ProviderId,
 > {
   readonly create: ProviderFactoryFn<P>;
+  readonly createForAuth: PreAuthFactoryFn<P>;
   readonly validateCredentialShape: CredentialShapeValidator;
+  readonly authKind: "oauth" | "credentials-form";
 }
 
 /**
@@ -160,6 +210,47 @@ export interface ClientFactory {
     datasourceId: string,
     credentials: StoredCredentials,
     ctx: EngineContext,
+  ): DatasourceClient<P>;
+
+  /**
+   * Construct a DatasourceClient for the no-credentials authenticate flow —
+   * implement-datasource-onboarding §3 / spec scenario "Factory exposes
+   * `createForAuth` for no-credentials authenticate flows".
+   *
+   * Sibling to `create`. Used exclusively when the caller has no
+   * `StoredCredentials` yet (the very first call to `engine.authenticate()`
+   * for a brand-new datasource, or a reconnect for a datasource whose
+   * credentials were deleted). The credential store is NOT consulted.
+   *
+   * Per registry-entry `authKind` declaration:
+   *   - OAuth-class provider (`authKind: "oauth"`): `oauthAppConfig` MUST
+   *     be non-null. The strategy is constructed with `creds: null` and
+   *     `preAuth: oauthAppConfig`. `doAuthenticateImpl()` reads clientId /
+   *     clientSecret / redirectUri from the preAuth slot.
+   *   - Credentials-form provider (`authKind: "credentials-form"`):
+   *     `oauthAppConfig` MUST be null. The strategy is constructed with
+   *     stub-empty credentials and `preAuth: null`. `doAuthenticateImpl()`
+   *     returns a `CredentialsFormIntent` whose `submit()` validates and
+   *     persists the user-supplied values.
+   *
+   * `datasourceId` is optional — when omitted, the factory mints a
+   * temporary id (`"pre-auth-${randomUUID()}"`) so the strategy's
+   * event-bus subscription has a stable key during construction. Callers
+   * with an existing id (e.g. the renderer's Reconnect path) SHOULD pass
+   * it through so events about the in-flight auth flow are addressable.
+   *
+   * @throws DatasourceError `tag="invalid-datasource"` if:
+   *   - `providerId` is not in the registry (unknown provider), OR
+   *   - `providerId`'s `authKind` is `"oauth"` but `oauthAppConfig` is
+   *     `null`, OR
+   *   - `providerId`'s `authKind` is `"credentials-form"` but
+   *     `oauthAppConfig` is non-null.
+   */
+  createForAuth<P extends ProviderId>(
+    providerId: P,
+    oauthAppConfig: OAuthAppConfig | null,
+    ctx: EngineContext,
+    datasourceId?: string,
   ): DatasourceClient<P>;
 }
 
@@ -248,6 +339,69 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
       // bus (e.g., OneDriveClient) leak the subscription otherwise.
       return entry.create(datasourceId, credentials, baseCtx);
     },
+
+    createForAuth<P extends ProviderId>(
+      providerId: P,
+      oauthAppConfig: OAuthAppConfig | null,
+      ctx: EngineContext,
+      datasourceId?: string,
+    ): DatasourceClient<P> {
+      // Mint a temporary id when the caller did not supply one. The
+      // strategy's bus subscription is keyed on this id; a stable value
+      // matters for the lifetime of this single authenticate flow.
+      const effectiveDatasourceId =
+        datasourceId ?? `pre-auth-${randomUUID()}`;
+
+      const entry = registry[providerId];
+      if (entry === undefined) {
+        throw new DatasourceError({
+          tag: DatasourceErrorTag.InvalidDatasource,
+          datasourceType: providerId,
+          datasourceId: effectiveDatasourceId,
+          retryable: false,
+          raw: "unknown-provider",
+          message: `No strategy registered for provider '${providerId}' (createForAuth)`,
+        });
+      }
+
+      // §3.5 — validate the oauthAppConfig argument against the entry's
+      // declared `authKind`. Mismatch throws invalid-datasource so the
+      // caller surfaces the misuse at IPC boundary rather than letting it
+      // ride through to a confused strategy at authenticate-time.
+      if (entry.authKind === "oauth" && oauthAppConfig === null) {
+        throw new DatasourceError({
+          tag: DatasourceErrorTag.InvalidDatasource,
+          datasourceType: providerId,
+          datasourceId: effectiveDatasourceId,
+          retryable: false,
+          raw: "createForAuth-missing-oauth-app-config",
+          message: `createForAuth: provider '${providerId}' is OAuth-class but oauthAppConfig was null — missing OAuth app config (clientId / clientSecret / redirectUri)`,
+        });
+      }
+      if (entry.authKind === "credentials-form" && oauthAppConfig !== null) {
+        throw new DatasourceError({
+          tag: DatasourceErrorTag.InvalidDatasource,
+          datasourceType: providerId,
+          datasourceId: effectiveDatasourceId,
+          retryable: false,
+          raw: "createForAuth-unexpected-oauth-app-config",
+          message: `createForAuth: provider '${providerId}' is a credentials-form provider — does not consume an OAuth app config; pass null instead (misuse)`,
+        });
+      }
+
+      const descriptor = providers[providerId];
+      const baseCtx: BaseClientContext = {
+        bus: ctx.bus,
+        credentialStore: ctx.credentialStore,
+        providerDescriptor: descriptor,
+      };
+      // `entry.createForAuth` is typed as `PreAuthFactoryFn<P>` via the
+      // mapped type, so the call returns `DatasourceClient<P>` directly.
+      // The strategy receives `preAuth` exactly as supplied — null for
+      // credentials-form, non-null for OAuth — and routes via its own
+      // internal precedence (see e.g. GoogleDriveClient.getOAuthAppConfig).
+      return entry.createForAuth(effectiveDatasourceId, oauthAppConfig, baseCtx);
+    },
   };
 }
 
@@ -268,15 +422,21 @@ export function createDefaultProviderRegistry(): ProviderRegistry {
   return {
     "amazon-s3": {
       create: createS3Client,
+      createForAuth: createS3ClientForAuth,
       validateCredentialShape: validateS3CredentialShape,
+      authKind: "credentials-form",
     },
     "google-drive": {
       create: createGoogleDriveClientForRegistry,
+      createForAuth: createGoogleDriveClientForAuth,
       validateCredentialShape: validateGoogleDriveCredentialShape,
+      authKind: "oauth",
     },
     onedrive: {
       create: createOneDriveClientForRegistry,
+      createForAuth: createOneDriveClientForAuth,
       validateCredentialShape: validateOneDriveCredentialShape,
+      authKind: "oauth",
     },
   };
 }

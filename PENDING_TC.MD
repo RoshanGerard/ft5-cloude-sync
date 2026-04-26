@@ -9,6 +9,41 @@ verification pass.
 
 ---
 
+## NOTE — `implement-datasource-onboarding` shipped (supersedes several blockers below)
+
+The change `implement-datasource-onboarding` (merged on the feature branch
+`feature/implement-datasource-onboarding`) closes the credential-persistence
+gap that blocked the following entries below:
+
+- **add-drive-oauth-browser-consent §12.1** ("fresh add + real GCP client smoke") — was BLOCKED on this change. **Now PENDING** — testable once the (renamed) `§1 HUMAN ops` entry is complete.
+- **add-drive-oauth-browser-consent §12.2** ("revoke + reconnect smoke") — same.
+- **add-invalid-datasource-state §13.1** ("missing credential → Reconnect → entries appear") — same.
+- **add-invalid-datasource-state §13.2** ("corrupt credential → Remove → datasource gone") — same. The Remove path now also cleans up the per-user credential entry via the new `sync:delete-credentials` handler.
+- **add-invalid-datasource-state §13.3** ("dashboard banner → Reconnect → banner unmounts") — same.
+
+**Updated `§1 HUMAN ops` instructions** (originally `add-drive-oauth-browser-consent §1.1–1.3`):
+The OAuth app config no longer lives at `apps/desktop/.env.local` (build-time inlined). It now lives at `~/ft5/sync_app/config.json` (service-owned, manual copy + edit).
+
+Updated steps:
+1. Register a "Desktop app" OAuth 2.0 client in the org-owned GCP project + the equivalent in Azure for OneDrive (full step-by-step in `README.md` § "Provider OAuth registration (one-time setup)").
+2. `cp services/fs-sync/config.example.json ~/ft5/sync_app/config.json` (or PowerShell equivalent on Windows; full command in `README.md`).
+3. Edit the file and populate `clientId` + `clientSecret` for each provider intended to be used.
+4. The previous GitHub Actions secrets `FT5_GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` are obsolete (the build-time defines were removed in this change). Repo secrets stay provisioned-but-unused per design.md Decision 4 (deferred housekeeping).
+
+**Re-verification commands** for §12.x / §13.x: with the new `~/ft5/sync_app/config.json` populated, run `pnpm -F @ft5/desktop dev` and follow each scenario's existing manual flow. The credentials persistence path is now real (service writes via `ConfigFileCredentialStore.put` on every successful authenticate) and the §13.5 "missing-credential surface" arms now reach `<InvalidDatasourceState>` end-to-end.
+
+**Owner:** unassigned (HUMAN). To do during the next environment-loop pass.
+
+---
+
+## implement-datasource-onboarding — §33.1–§33.7 manual smoke (rollover from this change)
+
+The seven §33 subtasks defined in this change's `tasks.md` are HUMAN-only manual smoke flows requiring real GCP/Azure credentials and browser interaction. Marked done in `tasks.md` with the rationale "deferred to PENDING_TC.MD" since per-scenario unit + integration coverage is in place. They overlap heavily with the §12.x and §13.x entries above (which they unblock); confirming any of those entries is sufficient to confirm the equivalent §33 subtask. The §33.7 cancel-mid-consent and 5-min-timeout flows match `add-drive-oauth-browser-consent §12.3` and `§12.4` (already PENDING-testable today entries).
+
+**Owner:** unassigned (HUMAN). Pair with the `§1 HUMAN ops` setup pass.
+
+---
+
 ## add-file-explorer-drag-drop-upload — §11.6 mid-batch network failure with Retry
 
 **Scenario** (per `openspec/changes/add-file-explorer-drag-drop-upload/tasks.md` §11.6):

@@ -60,9 +60,9 @@ import { seedEntry } from "./test-utils.js";
 import { DatasourcesProvider } from "@/features/datasources/store";
 
 let filesListMock: Mock;
-let startConsentMock: Mock;
+let authenticateStartMock: Mock;
 let removeMock: Mock;
-let onEventCapture: ((event: unknown) => void) | null = null;
+let syncOnEventCapture: ((event: unknown) => void) | null = null;
 
 interface InstallOptions {
   // Optional canned responses per path call; default is "empty". The inner
@@ -107,9 +107,12 @@ function installApiMock(options: InstallOptions = {}): void {
     });
   }
 
-  startConsentMock = vi.fn().mockResolvedValue({ sessionId: "sess-inv-1" });
+  authenticateStartMock = vi.fn().mockResolvedValue({
+    ok: true,
+    result: { correlationId: "corr-inv-1", kind: "oauth" },
+  });
   removeMock = vi.fn().mockResolvedValue({ ok: true });
-  onEventCapture = null;
+  syncOnEventCapture = null;
 
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
@@ -118,16 +121,23 @@ function installApiMock(options: InstallOptions = {}): void {
       add: vi.fn(),
       remove: removeMock,
       action: vi.fn(),
-      startConsent: startConsentMock,
-      cancelConsent: vi.fn(),
-      upload: vi.fn(),
+      pickFilesToUpload: vi.fn(),
       onUploadProgress: vi.fn().mockReturnValue(() => {}),
+      onEvent: vi.fn().mockReturnValue(() => {}),
+    },
+    sync: {
+      listJobs: vi.fn().mockResolvedValue({ jobs: [] }),
       onEvent: vi.fn().mockImplementation((cb: (e: unknown) => void) => {
-        onEventCapture = cb;
+        syncOnEventCapture = cb;
         return () => {
-          onEventCapture = null;
+          syncOnEventCapture = null;
         };
       }),
+      authenticateStart: authenticateStartMock,
+      authenticateComplete: vi.fn(),
+      authenticateCancel: vi
+        .fn()
+        .mockResolvedValue({ ok: true, result: { cancelled: true } }),
     },
     files: {
       list: filesListMock,
@@ -391,17 +401,18 @@ describe("FileExplorer composite (Subagent P)", () => {
     ).not.toBeNull();
   });
 
-  // §9.2 — invalid-datasource branch round-trip. The first list() call returns
-  // an `invalid-datasource` error envelope, prompting the explorer to render
-  // <InvalidDatasourceState>. Clicking Reconnect calls `startConsent`; emitting
-  // a `consent-completed` event drives `useConsentSession` to the completed
-  // state, which fires the component's `onReconnectSucceeded` → the explorer
-  // wires this to `store.retryLoad()`. The next list() call returns a real
-  // entry; the explorer transitions out of the invalid-datasource arm and the
-  // entry rows render. <DatasourcesProvider> is required because both
-  // <InvalidDatasourceState> (useConsentSession) and the file-explorer's
+  // §9.2 — invalid-datasource branch round-trip (post §27 migration). The
+  // first list() call returns an `invalid-datasource` error envelope,
+  // prompting the explorer to render <InvalidDatasourceState>. Clicking
+  // Reconnect calls `sync.authenticateStart`; emitting an `auth-completed`
+  // SyncEvent drives `useAuthSession` to the completed state, which fires
+  // the component's `onReconnectSucceeded` → the explorer wires this to
+  // `store.retryLoad()`. The next list() call returns a real entry; the
+  // explorer transitions out of the invalid-datasource arm and the entry
+  // rows render. <DatasourcesProvider> is required because both
+  // <InvalidDatasourceState> (useAuthSession) and the file-explorer's
   // invalid-datasource arm (useDatasourceActions) read context.
-  it("invalid-datasource → Reconnect → consent-completed → entries render", async () => {
+  it("invalid-datasource → Reconnect → auth-completed → entries render", async () => {
     let phase: "invalid" | "ok" = "invalid";
     installApiMock({
       listImpl: async () => {
@@ -447,31 +458,43 @@ describe("FileExplorer composite (Subagent P)", () => {
       ).toBeInTheDocument(),
     );
 
-    // Click Reconnect → startConsent({providerId, datasourceId}) is called.
+    // Click Reconnect → sync.authenticateStart({providerId, datasourceId}).
     fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
     await waitFor(() => {
-      expect(startConsentMock).toHaveBeenCalledTimes(1);
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
     });
-    expect(startConsentMock.mock.calls[0]![0]).toEqual({
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
       providerId: "google-drive",
       datasourceId: "ds-invalid-1",
     });
 
-    // Flip the next list response to ok BEFORE emitting consent-completed
-    // so the retryLoad fetch lands the success branch.
+    // Flip the next list response to ok BEFORE emitting auth-completed so
+    // the retryLoad fetch lands the success branch.
     phase = "ok";
 
-    // Drive the consent-completed event via the captured onEvent listener
-    // (mirrors the card-auth-error-banner.test.tsx harness). This pushes
-    // `useConsentSession` into the `completed` state, the
+    // Drive the auth-completed sync event via the captured sync.onEvent
+    // listener. This pushes `useAuthSession` into the `completed` state,
     // <InvalidDatasourceState> fires its `onReconnectSucceeded` callback,
     // which the explorer wires to `store.retryLoad()`.
-    expect(onEventCapture).not.toBeNull();
+    expect(syncOnEventCapture).not.toBeNull();
     act(() => {
-      onEventCapture!({
-        event: "consent-completed",
-        sessionId: "sess-inv-1",
-        datasourceId: "ds-invalid-1",
+      syncOnEventCapture!({
+        kind: "auth-completed",
+        payload: {
+          correlationId: "corr-inv-1",
+          datasourceId: "ds-invalid-1",
+          summary: {
+            id: "ds-invalid-1",
+            providerId: "google-drive",
+            displayName: "ds",
+            status: "connected",
+            errorReason: null,
+            errorKind: null,
+            paused: false,
+            lastSyncAt: null,
+            itemCount: 0,
+          },
+        },
       });
     });
 

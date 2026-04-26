@@ -1,7 +1,7 @@
 "use client";
 
 //
-// AddDatasourceDialog (tasks 6.1 / 6.2 / 6.3) — the add-datasource flow.
+// AddDatasourceDialog — the add-datasource flow.
 //
 // Two internal steps:
 //   1. Provider picker  → `<ProviderPicker />` from the frozen registry.
@@ -11,11 +11,13 @@
 //      (add-dialog-extensibility.test.tsx) regex-scans the source to enforce
 //      this.
 //
-// On submit: call `actions.add({providerId, credentials})`. On success, close
-// the dialog via `onOpenChange(false)`; Radix restores focus to the element
-// that opened the dialog (the toolbar trigger). On error, surface an inline
-// error message in the dialog (no toast — the renderer does not currently
-// mount a `<Toaster />`).
+// implement-datasource-onboarding §22+§23+§24: the credential forms now
+// drive the service-side authenticate flow themselves (OAuth via
+// `sync.authenticateStart` + `auth-completed` events; credentials-form via
+// `sync.authenticate{Start,Complete}` inline). Each form signals completion
+// via the `_authCompleted: "completed"` sentinel; the dialog refreshes the
+// datasource list and closes. The dialog itself NEVER calls
+// `actions.add()` — that codepath is dead for the add-dialog flow.
 //
 // Filename note: the radii-ceiling guardrail permits `rounded-lg` only on
 // files whose basename contains `dialog` — `add-dialog.tsx` qualifies. The
@@ -64,14 +66,12 @@ export function AddDatasourceDialog({
     null,
   );
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const actions = useDatasourceActions();
 
   const resetInternal = useCallback(() => {
     setStep("pick");
     setSelectedProviderId(null);
     setSubmitError(null);
-    setSubmitting(false);
   }, []);
 
   const handleOpenChange = useCallback(
@@ -101,34 +101,31 @@ export function AddDatasourceDialog({
   }, []);
 
   const handleCredentialsSubmit = useCallback(
-    async (credentials: Record<string, unknown>) => {
+    (credentials: Record<string, unknown>) => {
       if (selectedProviderId === null) return;
       setSubmitError(null);
-      setSubmitting(true);
 
-      // OAuth forms signal completion via a sentinel key. The consent broker
-      // has already registered the datasource in the main process, so we
-      // refresh the list instead of calling add().
-      if (credentials._oauthConsent === "completed") {
-        setSubmitting(false);
+      // Each credential form drives the service-side authenticate flow
+      // itself and signals completion via the `_authCompleted` sentinel
+      // (renamed from `_oauthConsent` in §24 to cover both OAuth and
+      // credentials-form paths uniformly). The service has already
+      // persisted credentials and the desktop event-bridge has called
+      // `registry.add(summary)` by the time the sentinel fires; we just
+      // refresh the list and close the dialog.
+      if (credentials._authCompleted === "completed") {
         void actions.refresh();
         handleOpenChange(false);
         return;
       }
 
-      try {
-        await actions.add({ providerId: selectedProviderId, credentials });
-        setSubmitting(false);
-        // Close via the controlled prop; Radix restores focus to the opener.
-        handleOpenChange(false);
-      } catch (err) {
-        setSubmitting(false);
-        const message =
-          err instanceof Error
-            ? err.message
-            : "Failed to add datasource. Please try again.";
-        setSubmitError(message);
-      }
+      // The dialog no longer reaches `actions.add(...)` for any provider —
+      // §22+§23 retired that codepath in favour of the service-side
+      // authenticate flow per design Decision 3. Falling through here
+      // means a form forgot to send the sentinel; surface inline so the
+      // user has feedback rather than silently swallowing the submit.
+      setSubmitError(
+        "Form did not signal completion. Please try again or contact support.",
+      );
     },
     [actions, selectedProviderId, handleOpenChange],
   );
@@ -162,10 +159,9 @@ export function AddDatasourceDialog({
         ) : descriptor ? (
           <CredentialStep
             descriptor={descriptor}
-            submitting={submitting}
             submitError={submitError}
             onSubmit={(credentials) => {
-              void handleCredentialsSubmit(credentials);
+              handleCredentialsSubmit(credentials);
             }}
             onBack={handleBack}
           />
@@ -177,7 +173,6 @@ export function AddDatasourceDialog({
 
 interface CredentialStepProps {
   descriptor: ProviderDescriptor;
-  submitting: boolean;
   submitError: string | null;
   onSubmit: (credentials: Record<string, unknown>) => void;
   onBack: () => void;
@@ -185,7 +180,6 @@ interface CredentialStepProps {
 
 function CredentialStep({
   descriptor,
-  submitting,
   submitError,
   onSubmit,
   onBack,
@@ -203,15 +197,6 @@ function CredentialStep({
         onSubmit={onSubmit}
         onBack={onBack}
       />
-      {submitting ? (
-        <p
-          role="status"
-          aria-live="polite"
-          className="text-muted-foreground text-sm"
-        >
-          Saving datasource&hellip;
-        </p>
-      ) : null}
       {submitError ? (
         <p role="alert" className="text-destructive text-sm">
           {submitError}

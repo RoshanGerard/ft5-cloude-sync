@@ -6,12 +6,9 @@ import {
   SYNC_CHANNELS,
 } from "@ft5/ipc-contracts";
 import type {
-  ConsentEvent,
   DatasourcesActionRequest,
   DatasourcesAddRequest,
-  DatasourcesCancelConsentRequest,
   DatasourcesRemoveRequest,
-  DatasourcesStartConsentRequest,
   FilesDownloadRequest,
   FilesListRequest,
   FilesRemoveRequest,
@@ -21,6 +18,7 @@ import type {
   FilesUploadRequest,
 } from "@ft5/ipc-contracts";
 import type {
+  SyncAuthenticateCancelRequest,
   SyncAuthenticateCompleteRequest,
   SyncAuthenticateStartRequest,
   SyncCancelJobRequest,
@@ -34,12 +32,9 @@ import type {
 
 import { handleDatasourcesAction } from "./datasources/action.js";
 import { handleDatasourcesAdd } from "./datasources/add.js";
-import { handleDatasourcesCancelConsent } from "./datasources/cancel-consent.js";
 import { handleDatasourcesList } from "./datasources/list.js";
 import { handlePickFilesToUpload } from "./datasources/pick-files-to-upload.js";
 import { handleDatasourcesRemove } from "./datasources/remove.js";
-import { handleDatasourcesStartConsent } from "./datasources/start-consent.js";
-import type { OAuthConsentBroker } from "../oauth/consent-broker.js";
 import { handleFilesDownload } from "./files/download.js";
 import { handleFilesList } from "./files/list.js";
 import { handleFilesRemove } from "./files/remove.js";
@@ -48,6 +43,7 @@ import { handleFilesSearch } from "./files/search.js";
 import { handleFilesStat } from "./files/stat.js";
 import { handleFilesUpload } from "./files/upload.js";
 import { handlePing } from "./ping.js";
+import { handleSyncAuthenticateCancel } from "./sync/authenticate-cancel.js";
 import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js";
 import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
 import { handleSyncCancelJob } from "./sync/cancel-job.js";
@@ -63,9 +59,15 @@ import { handleSyncSetRetryPolicy } from "./sync/set-retry-policy.js";
 // `app.whenReady()`. Keeping the `ipcMain.handle` calls here (rather than
 // beside each handler) isolates the Electron import from the pure handlers,
 // so those handlers can be unit-tested under plain Node.
+//
+// Note: `datasources:start-consent` / `datasources:cancel-consent` channels
+// were retired in implement-datasource-onboarding §19. The renderer now
+// drives the OAuth flow through the service via `sync:authenticate-{start,
+// complete,cancel}` (per design.md Decision 3). The desktop main no longer
+// hosts an OAuth consent broker; `registerIpcHandlers` no longer takes a
+// broker argument.
 export function registerIpcHandlers(
   targetWindow: BrowserWindow | null = null,
-  broker?: OAuthConsentBroker,
 ): void {
   ipcMain.handle("ping", () => handlePing());
 
@@ -189,6 +191,11 @@ export function registerIpcHandlers(
     async (_event, req: SyncAuthenticateCompleteRequest) =>
       handleSyncAuthenticateComplete(req),
   );
+  ipcMain.handle(
+    SYNC_CHANNELS.authenticateCancel,
+    async (_event, req: SyncAuthenticateCancelRequest) =>
+      handleSyncAuthenticateCancel(req),
+  );
   ipcMain.handle(SYNC_CHANNELS.getStatus, () => handleSyncGetStatus());
   ipcMain.handle(
     SYNC_CHANNELS.getRetryPolicy,
@@ -211,27 +218,4 @@ export function registerIpcHandlers(
   ipcMain.handle("clipboard:writeText", (_event, text: string) => {
     clipboard.writeText(text);
   });
-
-  // OAuth consent handlers — registered only when the broker is available
-  // (i.e., build-time OAuth credentials were provided). In packaged builds the
-  // broker is always present; in dev it is present when .env.local is populated.
-  if (broker) {
-    const sendToWindows = (event: ConsentEvent): void => {
-      if (targetWindow && !targetWindow.isDestroyed()) {
-        targetWindow.webContents.send(DATASOURCES_CHANNELS.event, event);
-      }
-    };
-
-    ipcMain.handle(
-      DATASOURCES_CHANNELS.startConsent,
-      async (_event, req: DatasourcesStartConsentRequest) =>
-        handleDatasourcesStartConsent(req, { broker, sendToWindows }),
-    );
-
-    ipcMain.handle(
-      DATASOURCES_CHANNELS.cancelConsent,
-      async (_event, req: DatasourcesCancelConsentRequest) =>
-        handleDatasourcesCancelConsent(req, { broker }),
-    );
-  }
 }

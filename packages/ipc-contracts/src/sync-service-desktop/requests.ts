@@ -15,10 +15,10 @@
 // service commands").
 
 import type {
-  AuthIntent,
-  AuthResult,
-  DatasourceType,
-} from "../fs-datasource-engine.js";
+  CredentialsSchema,
+  DatasourceSummary,
+  ProviderId,
+} from "../datasources.js";
 import type {
   BackoffStrategy,
   ConflictPolicy,
@@ -28,8 +28,14 @@ import type {
   RetryPolicy,
   RetryPolicyScope,
   SerializableAuthCompletion,
-  SerializableAuthIntent,
+  ServiceConfig,
   SyncAlreadyRunningErrorShape,
+  SyncAuthenticateCancelError,
+  SyncAuthenticateCompleteError,
+  SyncAuthenticateStartError,
+  SyncDeleteCredentialsError,
+  SyncGetConfigError,
+  SyncSetConfigError,
 } from "../sync-service/commands.js";
 
 // Re-export the wire-safe descriptors so renderer + preload can import
@@ -38,6 +44,7 @@ import type {
 export type {
   SerializableAuthCompletion,
   SerializableAuthIntent,
+  ServiceConfig,
 } from "../sync-service/commands.js";
 
 // ---- listJobs ------------------------------------------------------------
@@ -104,45 +111,97 @@ export type SyncCancelJobResponse =
   | { readonly cancelled: true }
   | { readonly error: NotCancelableErrorShape };
 
-// ---- authenticate --------------------------------------------------------
-
-export interface SyncAuthenticateRequest {
-  readonly datasourceId: string;
-  readonly type: DatasourceType;
-  readonly intent: AuthIntent;
-}
-
-export interface SyncAuthenticateResponse {
-  readonly authResult: AuthResult;
-}
-
-// ---- authenticateStart / authenticateComplete (design.md Decision 10) ----
+// ---- authenticateStart / authenticateComplete / authenticateCancel -------
 //
-// The original single-shot `authenticate` call shipped an `AuthIntent` with
-// closures, which could not survive the wire or Electron structured-clone
-// IPC. The split pair replaces it: `authenticateStart` returns a pure-data
-// descriptor plus a correlation id; `authenticateComplete` posts the user's
-// response against that correlation id. Both response shapes are flat —
-// errors throw, matching the existing `SyncAuthenticateResponse` style.
+// Per `implement-datasource-onboarding` design.md Decisions 7 + 9, the
+// renderer's authenticate flow is the three-command split. The retired
+// single-shot `SyncAuthenticate*` request/response pair is gone. OAuth
+// completions land via the loopback HTTP listener inside the service, so
+// the wire's `authenticate-complete` handler is credentials-form only.
+//
+// Each fallible call returns the discriminated `{ ok: true, result } |
+// { ok: false, error }` union — distinct from the older
+// `enqueueMirror`-style hybrid because the renderer's failure-state UI
+// needs to branch on `error.tag` (e.g., `service-config-missing` shows
+// the dedicated copy in `oauth-form.tsx`).
 
 export interface SyncAuthenticateStartRequest {
-  readonly datasourceId: string;
-  readonly type: DatasourceType;
+  readonly providerId: ProviderId;
+  readonly datasourceId?: string;
 }
 
-export interface SyncAuthenticateStartResponse {
-  readonly correlationId: string;
-  readonly intent: SerializableAuthIntent;
-}
+export type SyncAuthenticateStartResponse =
+  | {
+      readonly ok: true;
+      readonly result:
+        | { readonly correlationId: string; readonly kind: "oauth" }
+        | {
+            readonly correlationId: string;
+            readonly kind: "credentials-form";
+            readonly formSchema: CredentialsSchema;
+          };
+    }
+  | { readonly ok: false; readonly error: SyncAuthenticateStartError };
 
 export interface SyncAuthenticateCompleteRequest {
   readonly correlationId: string;
   readonly completion: SerializableAuthCompletion;
 }
 
-export interface SyncAuthenticateCompleteResponse {
-  readonly authResult: AuthResult;
+export type SyncAuthenticateCompleteResponse =
+  | {
+      readonly ok: true;
+      readonly result: {
+        readonly datasourceId: string;
+        readonly summary: DatasourceSummary;
+      };
+    }
+  | { readonly ok: false; readonly error: SyncAuthenticateCompleteError };
+
+export interface SyncAuthenticateCancelRequest {
+  readonly correlationId: string;
 }
+
+export type SyncAuthenticateCancelResponse =
+  | { readonly ok: true; readonly result: { readonly cancelled: boolean } }
+  | { readonly ok: false; readonly error: SyncAuthenticateCancelError };
+
+// ---- getConfig / setConfig (design.md Decision 4) -----------------------
+//
+// Round-trip for the per-provider OAuth app config (`~/ft5/sync_app/
+// config.json`). The renderer does NOT call these in this change — they
+// exist for a future settings UI. Round-trip coverage proves the contract
+// surface from the desktop test client.
+
+export type SyncGetConfigRequest = void;
+
+export type SyncGetConfigResponse =
+  | { readonly ok: true; readonly result: { readonly config: ServiceConfig } }
+  | { readonly ok: false; readonly error: SyncGetConfigError };
+
+export interface SyncSetConfigRequest {
+  readonly config: ServiceConfig;
+}
+
+export type SyncSetConfigResponse =
+  | { readonly ok: true; readonly result: { readonly ok: true } }
+  | { readonly ok: false; readonly error: SyncSetConfigError };
+
+// ---- deleteCredentials (design.md Decision 12) --------------------------
+//
+// Symmetric counterpart of authenticate. The desktop's `datasources:remove`
+// IPC handler calls this command after `registry.remove` succeeds so the
+// per-user credential entry at `~/ft5/sync_app/credentials.json` is cleaned
+// up alongside the registry row. Best-effort cleanup — most failures still
+// return `{ ok: true, result: { deleted: false } }`.
+
+export interface SyncDeleteCredentialsRequest {
+  readonly datasourceId: string;
+}
+
+export type SyncDeleteCredentialsResponse =
+  | { readonly ok: true; readonly result: { readonly deleted: boolean } }
+  | { readonly ok: false; readonly error: SyncDeleteCredentialsError };
 
 // ---- getStatus -----------------------------------------------------------
 

@@ -94,10 +94,12 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
+import type { PreAuthConfig } from "../auth-types.js";
 import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
+  type PreAuthFactoryFn,
 } from "../factory.js";
 
 // ESM shim. This package is "type": "module", so bare `require` is not in
@@ -358,7 +360,26 @@ export interface GoogleDriveClientOptions {
 export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   readonly type = "google-drive" as const;
 
-  private creds: GoogleDriveCredsMeta;
+  /**
+   * Per-user credentials. `null` only on the createForAuth path
+   * (implement-datasource-onboarding §2 / §3) where the strategy is
+   * constructed BEFORE any user has authenticated and `preAuth` carries
+   * the OAuth app config instead. Every code path that consumes
+   * `this.creds` for OAuth-app-config fields must go through
+   * `getOAuthAppConfig()` so the precedence (preAuth → creds → throw) is
+   * applied uniformly.
+   */
+  private creds: GoogleDriveCredsMeta | null;
+  /**
+   * Optional OAuth app config seeded at construction. Populated on the
+   * createForAuth path; `undefined` on the legacy createGoogleDriveClient
+   * path that carries the config via `creds.authResult.meta` (preserved
+   * during the transition; tracked for deletion in §22.x). The
+   * constructor parameter accepts `null` as an alias for `undefined` so
+   * the factory.createForAuth contract (`OAuthAppConfig | null`) lands
+   * here without a boundary translation step.
+   */
+  private preAuth: PreAuthConfig | undefined;
   private readonly driveFactory: DriveFactory;
   private readonly fetchImpl: typeof fetch;
   private readonly lruCap: number;
@@ -383,11 +404,15 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
 
   constructor(
     init: { datasourceId: string; ctx: BaseClientContext },
-    creds: GoogleDriveCredsMeta,
+    creds: GoogleDriveCredsMeta | null,
     options: GoogleDriveClientOptions = {},
+    preAuth?: PreAuthConfig | null,
   ) {
     super(init);
     this.creds = creds;
+    // Normalise null → undefined so internal precedence checks compare
+    // against a single sentinel.
+    this.preAuth = preAuth ?? undefined;
     this.driveFactory = options.driveFactory ?? createDefaultDriveFactory();
     this.fetchImpl =
       options.fetchImpl ??
@@ -464,11 +489,78 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   }
 
   // -------------------------------------------------------------------------
+  // OAuth app config helper (preAuth → creds → throw)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Resolve the OAuth app config (clientId / clientSecret / redirectUri) at
+   * call time with precedence: (a) `preAuth` if seeded at construction (the
+   * createForAuth path); (b) the legacy `creds.authResult.meta` shape
+   * (transitional path); (c) throw `DatasourceError(invalid-datasource)`
+   * when neither source is available — this only happens when a strategy
+   * is constructed with `creds: null` AND `preAuth: undefined`, which
+   * indicates a programmer error at the createForAuth call site.
+   *
+   * Centralised here so the three call sites (authorize-URL build,
+   * token-exchange POST, refresh-token POST) all apply the same precedence.
+   */
+  private getOAuthAppConfig(): {
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+  } {
+    if (this.preAuth !== undefined) {
+      return {
+        clientId: this.preAuth.clientId,
+        clientSecret: this.preAuth.clientSecret,
+        redirectUri: this.preAuth.redirectUri,
+      };
+    }
+    if (this.creds !== null) {
+      return {
+        clientId: this.creds.clientId,
+        clientSecret: this.creds.clientSecret,
+        redirectUri: this.creds.redirectUri,
+      };
+    }
+    throw new DatasourceError<"google-drive">({
+      tag: DatasourceErrorTag.InvalidDatasource,
+      datasourceType: "google-drive",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      raw: "google-drive-missing-oauth-app-config",
+      message:
+        "google-drive client constructed with neither creds nor preAuth — cannot resolve OAuth app config",
+    });
+  }
+
+  /**
+   * Assert that user-side credentials are present. Used by every operation
+   * other than `authenticate()` (which is reachable on the createForAuth
+   * path with `creds: null`). Throws a typed `invalid-datasource` error
+   * when missing — clearer than a raw TypeError downstream.
+   */
+  private requireCreds(): GoogleDriveCredsMeta {
+    if (this.creds === null) {
+      throw new DatasourceError<"google-drive">({
+        tag: DatasourceErrorTag.InvalidDatasource,
+        datasourceType: "google-drive",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: "google-drive-missing-creds",
+        message:
+          "google-drive operation requires user credentials, but client was constructed without them",
+      });
+    }
+    return this.creds;
+  }
+
+  // -------------------------------------------------------------------------
   // Drive client access (rebuilt after token refresh)
   // -------------------------------------------------------------------------
 
   private drive(): GoogleDriveClientLike {
-    return this.driveFactory(this.creds.accessToken);
+    return this.driveFactory(this.requireCreds().accessToken);
   }
 
   // -------------------------------------------------------------------------
@@ -665,10 +757,11 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
    * scope, updates the in-memory credential, and persists it best-effort via
    * the credential store. After the scope is known, evaluates sufficiency. */
   private async checkScopeSufficiency(): Promise<void> {
-    let scope = this.creds.scope;
+    const creds = this.requireCreds();
+    let scope = creds.scope;
     if (scope === undefined) {
       scope = await this.fetchTokenScope();
-      this.creds = { ...this.creds, scope };
+      this.creds = { ...creds, scope };
       await this.persistScope(scope);
     }
     if (!isScopeSufficient(scope)) {
@@ -687,7 +780,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
    * access token. Used only for legacy credentials that pre-date scope
    * capture (Work Unit E backfill). */
   private async fetchTokenScope(): Promise<string> {
-    const url = `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(this.creds.accessToken)}`;
+    const url = `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(this.requireCreds().accessToken)}`;
     let resp: Response;
     try {
       resp = await this.fetchImpl(url, { method: "GET" });
@@ -762,7 +855,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   // -------------------------------------------------------------------------
 
   protected override async doAuthenticateImpl(): Promise<AuthIntent> {
-    const { clientId, redirectUri } = this.creds;
+    const { clientId, redirectUri } = this.getOAuthAppConfig();
     // PKCE (RFC 7636, S256). Generate a fresh `code_verifier` per consent
     // attempt — 48 random bytes base64url-encoded → 64 URL-safe characters
     // — and a matching `code_challenge = base64url(SHA256(verifier))`. The
@@ -803,7 +896,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     code: string,
     codeVerifier: string,
   ): Promise<AuthResult> {
-    const { clientId, clientSecret, redirectUri } = this.creds;
+    const { clientId, clientSecret, redirectUri } = this.getOAuthAppConfig();
     const body = new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
@@ -857,10 +950,15 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         status: resp.status,
       });
     }
+    // Sourced via the same precedence used by doAuthenticateImpl /
+    // exchangeCodeForTokens — the AuthResult.meta carries the app config
+    // forward so subsequent operations (and the legacy meta-reading
+    // factory.create path) keep functioning.
+    const oauthApp = this.getOAuthAppConfig();
     const meta: Record<string, unknown> = {
-      clientId: this.creds.clientId,
-      clientSecret: this.creds.clientSecret,
-      redirectUri: this.creds.redirectUri,
+      clientId: oauthApp.clientId,
+      clientSecret: oauthApp.clientSecret,
+      redirectUri: oauthApp.redirectUri,
     };
     if (typeof issuedScope === "string") {
       meta.scope = issuedScope;
@@ -875,12 +973,27 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     if (typeof expiresIn === "number") {
       result.expiresAt = Date.now() + expiresIn * 1000;
     }
-    this.creds = {
-      ...this.creds,
-      accessToken,
-      ...(typeof refreshToken === "string" ? { refreshToken } : {}),
-      ...(typeof issuedScope === "string" ? { scope: issuedScope } : {}),
-    };
+    // Update in-memory creds so subsequent SDK calls use the new token.
+    // On the createForAuth path (creds: null at construction), seed a
+    // fresh GoogleDriveCredsMeta from the AuthResult + preAuth-sourced
+    // OAuth app config; on the legacy path, merge into the existing creds.
+    if (this.creds === null) {
+      this.creds = {
+        clientId: oauthApp.clientId,
+        clientSecret: oauthApp.clientSecret,
+        redirectUri: oauthApp.redirectUri,
+        accessToken,
+        refreshToken: typeof refreshToken === "string" ? refreshToken : "",
+        ...(typeof issuedScope === "string" ? { scope: issuedScope } : {}),
+      };
+    } else {
+      this.creds = {
+        ...this.creds,
+        accessToken,
+        ...(typeof refreshToken === "string" ? { refreshToken } : {}),
+        ...(typeof issuedScope === "string" ? { scope: issuedScope } : {}),
+      };
+    }
     return result;
   }
 
@@ -1092,7 +1205,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       sessionResp = await this.fetchImpl(DRIVE_UPLOAD_SESSION_URL, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${this.creds.accessToken}`,
+          Authorization: `Bearer ${this.requireCreds().accessToken}`,
           "Content-Type": "application/json; charset=UTF-8",
           "X-Upload-Content-Type": mimeType ?? "application/octet-stream",
           ...(total > 0 ? { "X-Upload-Content-Length": String(total) } : {}),
@@ -1300,7 +1413,11 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   // -------------------------------------------------------------------------
 
   protected override async refreshTokenImpl(): Promise<AuthResult> {
-    const { clientId, clientSecret, refreshToken } = this.creds;
+    // OAuth app config (clientId / clientSecret) flows through the
+    // preAuth-aware helper; the refresh token itself is per-user state
+    // sourced from `creds`.
+    const { clientId, clientSecret } = this.getOAuthAppConfig();
+    const { refreshToken } = this.requireCreds();
     if (!refreshToken) {
       throw new DatasourceError<"google-drive">({
         tag: "auth-revoked",
@@ -1491,6 +1608,23 @@ export const createGoogleDriveClientForRegistry: ProviderFactoryFn<"google-drive
   (datasourceId, credentials, ctx) => {
     return createGoogleDriveClient(datasourceId, credentials, ctx);
   };
+
+/**
+ * Canonical `PreAuthFactoryFn` entry for `factory.createForAuth(...)` —
+ * implement-datasource-onboarding §3.4. Constructs the strategy without
+ * `StoredCredentials` (creds=null) and threads the `OAuthAppConfig` into
+ * the `preAuth` constructor slot so `doAuthenticateImpl()` can read
+ * clientId / clientSecret / redirectUri without the legacy
+ * `creds.authResult.meta` pathway. The factory itself enforces the
+ * contract (non-null preAuth for OAuth-class providers; see §3.5).
+ */
+export const createGoogleDriveClientForAuth: PreAuthFactoryFn<"google-drive"> = (
+  datasourceId,
+  preAuth,
+  ctx,
+) => {
+  return new GoogleDriveClient({ datasourceId, ctx }, null, {}, preAuth);
+};
 
 /**
  * Per-provider credential-shape validator (per
