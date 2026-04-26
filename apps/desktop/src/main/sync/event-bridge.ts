@@ -58,10 +58,12 @@
 // Refs: design.md Decision 5, Decision 8, Decision 12; tasks.md 7.1–7.9.
 
 import type { BrowserWindow } from "electron";
+import { shell } from "electron";
 
 import type { EventFrame } from "@ft5/ipc-contracts/sync-service";
 import {
   DATASOURCES_CHANNELS,
+  type DatasourceSummary,
   type DatasourcesUploadProgressEvent,
 } from "@ft5/ipc-contracts";
 import {
@@ -79,9 +81,16 @@ import type { SupervisorHandle } from "./supervisor.js";
 const ACTIVE_STATUSES = new Set(["running", "queued", "waiting-network"]);
 
 /**
- * Minimal registry surface used by the bridge. Narrowed to just
- * `setStatus` so tests can inject a stub without mocking the whole
- * `DatasourceRegistry` (which pulls in `better-sqlite3`).
+ * Minimal registry surface used by the bridge. Narrowed to the methods
+ * the bridge actually invokes so tests can inject a stub without mocking
+ * the whole `DatasourceRegistry` (which pulls in `better-sqlite3`).
+ *
+ * `add` accepts a full `DatasourceSummary` and is called by the
+ * `credential-persisted` subscription introduced in
+ * `implement-datasource-onboarding` §16. The registry's `add` is
+ * idempotent — see §17 + `DatasourceRegistry.add` doc — so a redelivered
+ * `credential-persisted` event for an already-known id is a safe no-op
+ * (or update if columns differ).
  */
 export interface BridgeRegistry {
   setStatus(
@@ -90,16 +99,26 @@ export interface BridgeRegistry {
     errorReason?: string | null,
     errorKind?: string | null,
   ): void;
+  add(summary: DatasourceSummary): DatasourceSummary;
 }
 
 export interface SyncEventBridgeDeps {
   /**
-   * Registry the bridge mutates on `job-completed` to clear any stale
-   * `error_reason` / `status='error'` on the datasource row. Optional for
+   * Registry the bridge mutates on `job-completed` (clear stale error)
+   * AND on `credential-persisted` (insert/update the row). Optional for
    * testability — production leaves this unset and the bridge falls back
-   * to `getEngine().registry`. See `event-bridge.error-healing.test.ts`.
+   * to `getEngine().registry`. See `event-bridge.error-healing.test.ts`
+   * and `event-bridge.auth.test.ts`.
    */
   registry?: BridgeRegistry;
+  /**
+   * Browser-launching seam — used to fulfill the `oauth-open-url`
+   * bridge-only event by delegating to Electron's `shell.openExternal`.
+   * Optional for testability; production wiring leaves this unset and
+   * the bridge falls back to the imported `shell.openExternal`.
+   * See design.md Decision 6 (browser-open A1).
+   */
+  openExternal?: (url: string) => void | Promise<void>;
 }
 
 export interface SyncEventBridgeHandle {
@@ -149,11 +168,17 @@ export function _createBridge(
   let currentUnsubscribeEvents: (() => void) | null = null;
 
   // Registry resolver — lazy so test invocations without `initEngine()`
-  // still succeed as long as the test never triggers `job-completed`.
-  // Production callers leave `deps.registry` unset and hit `getEngine()`.
+  // still succeed as long as the test never triggers `job-completed` or
+  // `credential-persisted`. Production callers leave `deps.registry`
+  // unset and hit `getEngine()`.
   function resolveRegistry(): BridgeRegistry {
     return deps?.registry ?? getEngine().registry;
   }
+
+  // Browser-launcher resolver — production hits Electron's `shell.openExternal`;
+  // tests inject a stub via `deps.openExternal`.
+  const openExternal: (url: string) => void | Promise<void> =
+    deps?.openExternal ?? ((url) => shell.openExternal(url));
 
   // F-2: buffer the first sync-state-seed until a window registers.
   // Once delivered to ≥1 window, this is set to null and never replayed.
@@ -334,6 +359,54 @@ export function _createBridge(
           };
           broadcastUploadProgress(uploadProgress);
         }
+      }
+
+      // implement-datasource-onboarding §16 — bridge-only auth events.
+      //
+      // `oauth-open-url` drives `shell.openExternal(authorizeUrl)` and is
+      // NEVER delivered to the renderer. Per design.md Decision 6 (browser-
+      // open A1), the renderer is URL-blind; the desktop main is the
+      // shell.openExternal trampoline.
+      //
+      // `credential-persisted` drives `registry.add(summary)` (idempotent —
+      // see §17) and is NEVER delivered to the renderer. The paired
+      // user-facing event is `auth-completed`, which DOES travel onward to
+      // the renderer per the same decision.
+      //
+      // Both events return AFTER their side effect — the relay below MUST
+      // NOT see them. See specs/datasources-ui/spec.md "Desktop main-process
+      // bridge translates service authenticate events into local actions".
+      if (name === "oauth-open-url" && payload) {
+        const authorizeUrl = payload["authorizeUrl"] as string | undefined;
+        if (typeof authorizeUrl === "string" && authorizeUrl.length > 0) {
+          try {
+            void openExternal(authorizeUrl);
+          } catch (err) {
+            console.warn(
+              "[sync-event-bridge] shell.openExternal failed:",
+              err,
+            );
+          }
+        }
+        return; // do NOT forward to renderer
+      }
+      if (name === "credential-persisted" && payload) {
+        const summary = payload["summary"] as DatasourceSummary | undefined;
+        if (summary) {
+          try {
+            resolveRegistry().add(summary);
+          } catch (err) {
+            // §16 design — orphan-credentials window. Log a structured
+            // warning matching Risks §1's `bridge-registry-add-failed`
+            // diagnostic; do NOT throw (the event stream must keep
+            // flowing).
+            console.warn(
+              "[sync-event-bridge] bridge-registry-add-failed:",
+              { datasourceId: summary.id, errorMessage: (err as Error).message },
+            );
+          }
+        }
+        return; // do NOT forward to renderer
       }
 
       // Relay every service event to the renderer (name → kind translation).

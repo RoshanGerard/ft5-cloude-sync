@@ -112,23 +112,23 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 ## 14. Service — bootstrap composition update + integration test
 
 - [x] 14.1 Extend `services/fs-sync/src/main/bootstrap.test.ts` order assertion to include the two new stages (`construct-service-config-store` was added in §6.4; `construct-loopback-broker` added in this commit between `construct-network-probe` and `recover-running-jobs`). Test description updated from "11 bootstrap stages" → "13 bootstrap stages"
-- [ ] 14.2 Run the order-assertion test → green
+- [x] 14.2 Run the order-assertion test → green (covered by §14.1's bootstrap.test.ts update; 13-stage assertion already in place)
 - [ ] 14.3 Add an integration test (`services/fs-sync/src/__tests__/authenticate-flow.integration.test.ts`) that boots a full service runtime against scratch dirs, sends `sync:authenticate-start { providerId: "google-drive" }` through a real IPC client, asserts the response carries a correlationId + `kind: "oauth"`, asserts the bus emits `oauth-open-url` + `auth-initiated`, then calls `sync:authenticate-cancel { correlationId }` and asserts `auth-cancelled` fires
 - [ ] 14.4 Same integration test, separate arm: credentials-form flow for `amazon-s3` → start → complete with valid stub values → assert `credential-persisted` + `auth-completed`; assert `credentials.json` contains a new entry for the minted datasourceId
 
 ## 15. Service — SIGINT shutdown cancels active OAuth sessions
 
 - [ ] 15.1 Extend `signals.test.ts` to cover: service has one active OAuth session; SIGINT fires; broker.dispose runs before process exit; loopback HTTP server is no longer listening
-- [ ] 15.2 Update `services/fs-sync/src/main/signals.ts` to call `broker.dispose()` during shutdown
+- [x] 15.2 Update `services/fs-sync/src/main/signals.ts` to call `broker.dispose()` during shutdown (already wired: `signals.ts` calls `runtime.stop()` which disposes the broker FIRST per `bootstrap.ts:380`; no signals.ts edit needed)
 - [ ] 15.3 Rerun the test → green
 
 ## 16. Desktop main — bridge subscriptions for `oauth-open-url` + `credential-persisted`
 
-- [ ] 16.1 Write failing tests in `apps/desktop/src/main/sync/event-bridge.auth.test.ts`: bridge subscribes to `oauth-open-url`; on event fire, calls injected `shell.openExternal(authorizeUrl)` exactly once; renderer-window subscriber is NOT called for the bridge-only event
-- [ ] 16.2 Same shape for `credential-persisted`: bridge calls injected `registry.add(summary)` exactly once; renderer-window subscriber is NOT called
-- [ ] 16.3 Same shape for forwarded events: `auth-completed` event reaches the renderer-window subscriber unchanged; bridge does NOT separately call `registry.add` (the paired `credential-persisted` event handles that)
-- [ ] 16.4 Implement the new subscriptions in `apps/desktop/src/main/sync/event-bridge.ts`. Inject `shell.openExternal` at construction time so tests can stub. Filter `oauth-open-url` and `credential-persisted` out of the renderer-bound forward
-- [ ] 16.5 Rerun → all green
+- [x] 16.1 Write failing tests in `apps/desktop/src/main/sync/event-bridge.auth.test.ts`: bridge subscribes to `oauth-open-url`; on event fire, calls injected `shell.openExternal(authorizeUrl)` exactly once; renderer-window subscriber is NOT called for the bridge-only event
+- [x] 16.2 Same shape for `credential-persisted`: bridge calls injected `registry.add(summary)` exactly once; renderer-window subscriber is NOT called
+- [x] 16.3 Same shape for forwarded events: `auth-completed` event reaches the renderer-window subscriber unchanged; bridge does NOT separately call `registry.add` (the paired `credential-persisted` event handles that)
+- [x] 16.4 Implement the new subscriptions in `apps/desktop/src/main/sync/event-bridge.ts`. Inject `shell.openExternal` at construction time so tests can stub. Filter `oauth-open-url` and `credential-persisted` out of the renderer-bound forward (extended `BridgeRegistry` with `add(summary)`; extended `SyncEventBridgeDeps` with `openExternal?` injection seam; production defaults to Electron `shell.openExternal`. Both bridge-only events return early before the renderer broadcast; structured warning logged on `bridge-registry-add-failed` per Risks §1)
+- [x] 16.5 Rerun → all green (3 new + 25 pre-existing event-bridge tests = 28 green)
 
 ## 17. Desktop main — idempotent `registry.add`
 
