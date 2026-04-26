@@ -67,16 +67,16 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 8. Service — `OAuthLoopbackBroker` (port from desktop)
 
-- [ ] 8.1 Copy `apps/desktop/src/main/oauth/__tests__/consent-broker.test.ts` to `services/fs-sync/src/oauth/__tests__/loopback-broker.test.ts`; rename `OAuthConsentBroker` → `OAuthLoopbackBroker`, `sessionId` → `correlationId`, `consent-*` event names → `auth-*` / `oauth-open-url` / `credential-persisted` per design.md Decision 7. Run the suite — every test fails (file does not exist yet)
-- [ ] 8.2 Repeat for `consent-broker-dev-override.test.ts` → `loopback-broker-dev-override.test.ts`
-- [ ] 8.3 Implement `services/fs-sync/src/oauth/loopback-broker.ts` to pass the ported tests. Surface differences from the desktop original:
+- [x] 8.1 Copy `apps/desktop/src/main/oauth/__tests__/consent-broker.test.ts` to `services/fs-sync/src/oauth/__tests__/loopback-broker.test.ts`; rename `OAuthConsentBroker` → `OAuthLoopbackBroker`, `sessionId` → `correlationId`, `consent-*` event names → `auth-*` / `oauth-open-url` / `credential-persisted` per design.md Decision 7. Run the suite — every test fails (file does not exist yet)
+- [x] 8.2 Repeat for `consent-broker-dev-override.test.ts` → `loopback-broker-dev-override.test.ts`
+- [x] 8.3 Implement `services/fs-sync/src/oauth/loopback-broker.ts` to pass the ported tests. Surface differences from the desktop original:
   - keys on `correlationId` (not `sessionId`)
   - emits service events (`oauth-open-url`, `auth-completed`, `credential-persisted`, `auth-cancelled`, `auth-failed`, `auth-timeout`) via the engine bus
   - consults the engine's existing `ConfigFileCredentialStore` directly (no `noopCredentialStore`)
   - reads `clientId`/`clientSecret` from a `ServiceConfigStore` injection (no build-time constants)
   - dev-override reads `<dataDir>/dev-credentials.json` (service path, not Electron userData)
-- [ ] 8.4 Implement `OAuthLoopbackBroker.dispose()` to close every active session's HTTP server + clear every timer (used by SIGINT shutdown per fs-sync-service Modified Requirement "Service bootstrap composes the full runtime")
-- [ ] 8.5 Run the broker test file standalone; all green
+- [x] 8.4 Implement `OAuthLoopbackBroker.dispose()` to close every active session's HTTP server + clear every timer (used by SIGINT shutdown per fs-sync-service Modified Requirement "Service bootstrap composes the full runtime")
+- [x] 8.5 Run the broker test file standalone; all green
 
 ## 9. Service — real `handleAuthenticateStart`
 

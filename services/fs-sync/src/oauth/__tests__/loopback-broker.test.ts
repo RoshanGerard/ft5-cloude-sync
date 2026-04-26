@@ -30,7 +30,6 @@ import type {
   AuthResult,
   DatasourceSummary,
   ProviderId,
-  StoredCredentials,
 } from "@ft5/ipc-contracts";
 import type {
   ClientFactory,
@@ -678,10 +677,3 @@ describe("OAuthLoopbackBroker", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Make StoredCredentials reachable for the dev-override file (other test
-// file imports it; keep the type referenced here so tsc doesn't drop it).
-// ---------------------------------------------------------------------------
-
-const _typeAnchor: StoredCredentials | null = null;
-void _typeAnchor;
