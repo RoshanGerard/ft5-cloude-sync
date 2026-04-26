@@ -9,6 +9,7 @@ import {
   resolveDbPath,
   resolveLogPath,
   resolvePidPath,
+  resolveServiceConfigPath,
   resolveSocketPath,
 } from "./paths.js";
 
@@ -56,6 +57,22 @@ describe("file-path helpers", () => {
     expect(resolvePidPath(DEV, {})).toBe(
       path.join(ROOT, "dev", "service-dev.pid"),
     );
+  });
+
+  it("resolveServiceConfigPath joins config.json onto the data dir (prod + dev)", () => {
+    expect(resolveServiceConfigPath(PROD, {})).toBe(
+      path.join(ROOT, "config.json"),
+    );
+    expect(resolveServiceConfigPath(DEV, {})).toBe(
+      path.join(ROOT, "dev", "config.json"),
+    );
+  });
+
+  it("resolveServiceConfigPath honours FT5_SYNC_DATA_DIR override", () => {
+    const override = path.join(os.tmpdir(), "ft5-cfg-test");
+    expect(
+      resolveServiceConfigPath(PROD, { FT5_SYNC_DATA_DIR: override }),
+    ).toBe(path.join(override, "config.json"));
   });
 });
 

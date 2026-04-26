@@ -38,6 +38,21 @@ export function resolveCredentialsPath(
   return path.join(resolveDataDir(options, env), "credentials.json");
 }
 
+/**
+ * OAuth-app config path used by `ServiceConfigStore`. The config file holds
+ * per-provider `clientId`/`clientSecret` for OAuth-class providers (see
+ * `services/fs-sync/config.example.json` for the canonical schema). Lives
+ * alongside `credentials.json` under the same data dir so the user's
+ * `~/ft5/sync_app/` (or dev `~/ft5/sync_app/dev/`) holds a single co-located
+ * configuration surface.
+ */
+export function resolveServiceConfigPath(
+  options: PathOptions,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(resolveDataDir(options, env), "config.json");
+}
+
 export function resolveDbPath(
   options: PathOptions,
   env?: NodeJS.ProcessEnv,
