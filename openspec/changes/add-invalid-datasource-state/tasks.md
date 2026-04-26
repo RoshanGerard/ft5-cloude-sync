@@ -55,25 +55,25 @@ per CLAUDE.md.
 
 ## 7. Renderer: `<InvalidDatasourceState>` component
 
-- [ ] 7.1 Write component tests (`apps/desktop/src/renderer/src/features/file-explorer/states/__tests__/invalid-datasource.test.tsx`, modeled on `auth-revoked.test.tsx`) covering: render structure (icon, headline, body, both buttons), `role="alert"`, `aria-live="polite"`, `data-testid="file-explorer-state-invalid-datasource"`
-- [ ] 7.2 Add tests for the `useConsentSession` lifecycle (mock the hook): pending → spinner + buttons disabled; succeeded → `onReconnectSucceeded()` callback fires; failed/cancelled/timeout → buttons re-enable + inline error line
-- [ ] 7.3 Add a test for the `providerId` guard: when prop is undefined, Reconnect has `aria-disabled="true"` and clicking does NOT call `startConsent`
-- [ ] 7.4 Add a test for the Remove button → opens the confirm dialog (just the open-trigger; the dialog itself is a separate component tested in §8)
-- [ ] 7.5 Run failing tests to confirm
-- [ ] 7.6 Implement `apps/desktop/src/renderer/src/features/file-explorer/states/invalid-datasource.tsx` per design.md Visual direction (red AlertTriangle icon, neutral primary Reconnect button, ghost-destructive Remove button, accessibility attrs)
-- [ ] 7.7 Run tests to confirm pass
+- [x] 7.1 Write component tests (`apps/desktop/src/renderer/src/features/file-explorer/states/__tests__/invalid-datasource.test.tsx`, modeled on `auth-revoked.test.tsx`) covering: render structure (icon, headline, body, both buttons), `role="alert"`, `aria-live="polite"`, `data-testid="file-explorer-state-invalid-datasource"`
+- [x] 7.2 Add tests for the `useConsentSession` lifecycle (mock the hook): pending → spinner + buttons disabled; completed → `onReconnectSucceeded()` callback fires; failed/cancelled/timeout → buttons re-enable + inline error line
+- [x] 7.3 Add a test for the `providerId` guard: when prop is undefined, Reconnect has `aria-disabled="true"` and clicking does NOT call `startConsent`
+- [x] 7.4 Add a test for the Remove button → opens the confirm dialog (just the open-trigger; the dialog itself is a separate component tested in §8) — implemented as `onRequestRemove` callback firing exactly once on click; the parent wires the actual `<ConfirmRemoveDatasourceDialog>` instance per Decision 5
+- [x] 7.5 Run failing tests to confirm
+- [x] 7.6 Implement `apps/desktop/src/renderer/src/features/file-explorer/states/invalid-datasource.tsx` per design.md Visual direction (red AlertTriangle icon, neutral primary Reconnect button, ghost-destructive Remove button, accessibility attrs); also added `loader-2` to the `<Icon>` adapter (the only sanctioned path for `Loader2` in feature code per the standing lucide-react forbidden-import guardrail)
+- [x] 7.7 Run tests to confirm pass — 10 new tests + full apps/desktop renderer suite (78 files / 710 tests) green
 
 ## 8. Renderer: shared `<ConfirmRemoveDatasourceDialog>` component
 
-- [ ] 8.1 Write tests (`apps/desktop/src/renderer/src/features/datasources/__tests__/confirm-remove-dialog.test.tsx`): dialog opens / closes; destructive Remove button has focus on open; Escape cancels without dispatching `onConfirm`; clicking destructive Remove fires `onConfirm` exactly once
-- [ ] 8.2 Run failing tests
-- [ ] 8.3 Implement `apps/desktop/src/renderer/src/features/datasources/confirm-remove-dialog.tsx` using shadcn `Dialog` primitives — copy "Remove this datasource? This deletes the local registry entry; cloud files are not deleted." with Cancel + destructive Remove buttons
-- [ ] 8.4 Run tests to confirm pass
+- [x] 8.1 Write tests (`apps/desktop/src/renderer/src/features/datasources/__tests__/confirm-remove-dialog.test.tsx`): dialog opens / closes; destructive Remove button has focus on open; Escape cancels without dispatching `onConfirm`; clicking destructive Remove fires `onConfirm` exactly once
+- [x] 8.2 Run failing tests
+- [x] 8.3 Implement `apps/desktop/src/renderer/src/features/datasources/confirm-remove-dialog.tsx` using shadcn `Dialog` primitives — copy "Remove this datasource? This deletes the local registry entry; cloud files are not deleted." with Cancel + destructive Remove buttons
+- [x] 8.4 Run tests to confirm pass
 
 ## 9. Renderer: branch in `file-explorer.tsx`
 
 - [ ] 9.1 Extend `apps/desktop/src/renderer/src/features/file-explorer/__tests__/states-integration.test.tsx` with a case: errorTag === "invalid-datasource" → `<InvalidDatasourceState>` is rendered (existing arms for disconnected / auth-revoked / empty stay green)
-- [ ] 9.2 Extend `file-explorer-composite.test.tsx` with the new branch: service mock returns invalid-datasource envelope → state component renders → click Reconnect → `startConsent` invoked → mocked `succeeded` event → `store.retryLoad()` called → next service mock returns ok with entries → state component unmounts and entries render
+- [ ] 9.2 Extend `file-explorer-composite.test.tsx` with the new branch: service mock returns invalid-datasource envelope → state component renders → click Reconnect → `startConsent` invoked → mocked `completed` event → `store.retryLoad()` called → next service mock returns ok with entries → state component unmounts and entries render
 - [ ] 9.3 Run failing tests
 - [ ] 9.4 Add the new branch to `file-explorer.tsx` (~line 489–508): `if (state.errorTag === FilesErrorTag.InvalidDatasource) return <InvalidDatasourceState ... />` BEFORE the rate-limited / other inline error fallthrough
 - [ ] 9.5 Add `providerId?: string` prop to `FileExplorer`; thread from the route layer (`apps/desktop/src/renderer/src/app/datasources/explore/page.tsx` or wherever `summary.providerId` is in scope) — sourced from `summary.providerId`

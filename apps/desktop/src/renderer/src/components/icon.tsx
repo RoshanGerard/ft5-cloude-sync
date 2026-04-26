@@ -42,6 +42,7 @@ import {
   HomeIcon,
   KeyRoundIcon,
   LaptopIcon,
+  Loader2Icon,
   MonitorIcon,
   MoonIcon,
   PauseIcon,
@@ -124,6 +125,13 @@ export type IconName =
   // state reuses `refresh-cw`; empty reuses `folder-open`.
   | "cloud-off"
   | "key-round"
+  // add-invalid-datasource-state §7 — `<InvalidDatasourceState>` Reconnect
+  // button's pending spinner uses the `Loader2` glyph + `animate-spin` to
+  // mirror the design.md `## Visual direction` "Loader2 + animate-spin"
+  // pattern. Feature code can't import lucide-react directly per the
+  // standing forbidden-import guardrail; the adapter is the only sanctioned
+  // path.
+  | "loader-2"
 
 const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   sun: SunIcon,
@@ -163,6 +171,7 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "wifi-off": WifiOffIcon,
   "cloud-off": CloudOffIcon,
   "key-round": KeyRoundIcon,
+  "loader-2": Loader2Icon,
 }
 
 // Every name registered in the adapter. Consumers that need to validate a
