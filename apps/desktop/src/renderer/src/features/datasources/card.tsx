@@ -68,6 +68,7 @@ import {
   ConflictResolutionDialog,
   useConflictResolutionDialog,
 } from "@/features/file-explorer/conflict-resolution-dialog";
+import { ConfirmRemoveDatasourceDialog } from "./confirm-remove-dialog";
 
 export interface DatasourceCardProps {
   summary: DatasourceSummary;
@@ -236,6 +237,12 @@ export function DatasourceCard({ summary }: DatasourceCardProps) {
           providerId={summary.providerId}
           datasourceId={summary.id}
         />
+      ) : summary.status === "error" &&
+        summary.errorKind === "invalid-datasource" ? (
+        <InvalidDatasourceBanner
+          providerId={summary.providerId}
+          datasourceId={summary.id}
+        />
       ) : summary.status === "error" && summary.errorReason ? (
         <p
           data-testid="error-reason-text"
@@ -323,6 +330,98 @@ function AuthErrorBanner({
         {isWaiting ? "Connecting…" : "Reconnect"}
       </Button>
     </div>
+  );
+}
+
+// Invalid-datasource banner shown when `errorKind === "invalid-datasource"`.
+// Mirrors AuthErrorBanner's lifecycle (`useConsentSession` → spinner +
+// disabled-state while pending, terminal-state inline error on
+// cancelled/failed/timeout). Adds a Remove action that opens the shared
+// <ConfirmRemoveDatasourceDialog> before dispatching the IPC, per
+// design.md Decision 5 (one shared destructive flow).
+function InvalidDatasourceBanner({
+  providerId,
+  datasourceId,
+}: {
+  providerId: string;
+  datasourceId: string;
+}) {
+  const actions = useDatasourceActions();
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const sessionState = useConsentSession(sessionId ?? "__none__");
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+
+  const handleReconnect = useCallback(async () => {
+    const res = await window.api.datasources.startConsent({
+      providerId,
+      datasourceId,
+    });
+    setSessionId(res.sessionId);
+  }, [providerId, datasourceId]);
+
+  const handleRequestRemove = useCallback(() => {
+    setRemoveDialogOpen(true);
+  }, []);
+
+  const handleCancelRemove = useCallback(() => {
+    setRemoveDialogOpen(false);
+  }, []);
+
+  const handleConfirmRemove = useCallback(() => {
+    setRemoveDialogOpen(false);
+    void actions.remove({ datasourceId });
+  }, [actions, datasourceId]);
+
+  const isWaiting =
+    sessionId !== null && sessionState.status === "pending";
+  const isFailed =
+    sessionId !== null &&
+    (sessionState.status === "cancelled" ||
+      sessionState.status === "failed" ||
+      sessionState.status === "timeout");
+
+  return (
+    <>
+      <div
+        data-testid="invalid-datasource-banner"
+        aria-label="Reconfiguration required"
+        className="flex items-center justify-between gap-2"
+      >
+        <p className="text-destructive text-xs">
+          {isFailed
+            ? "Reconnect failed — please try again."
+            : "Datasource needs reconfiguring — credentials are missing or invalid."}
+        </p>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={isWaiting}
+            onClick={() => {
+              void handleReconnect();
+            }}
+          >
+            {isWaiting ? "Connecting…" : "Reconnect"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="text-destructive"
+            disabled={isWaiting}
+            onClick={handleRequestRemove}
+          >
+            Remove
+          </Button>
+        </div>
+      </div>
+      <ConfirmRemoveDatasourceDialog
+        open={removeDialogOpen}
+        onConfirm={handleConfirmRemove}
+        onCancel={handleCancelRemove}
+      />
+    </>
   );
 }
 

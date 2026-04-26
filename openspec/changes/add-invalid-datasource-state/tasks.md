@@ -83,13 +83,13 @@ per CLAUDE.md.
 
 ## 10. Renderer: `<InvalidDatasourceBanner>` for dashboard card
 
-- [ ] 10.1 Write tests (`apps/desktop/src/renderer/src/features/datasources/__tests__/card-invalid-datasource-banner.test.tsx`, modeled on `card-auth-error-banner.test.tsx`) covering: banner renders iff `summary.status === "error" && summary.errorKind === "invalid-datasource"`; Reconnect → `startConsent`; Remove → confirm dialog; on `consent-completed` event the banner unmounts via summary refresh
-- [ ] 10.2 Add a test asserting the banner does NOT render for other errorKinds (`network-error` etc. continue to show bare `<p>` text); auth-revoked still shows `<AuthErrorBanner>`
-- [ ] 10.3 Add a jest-axe test on the new banner (no axe violations)
-- [ ] 10.4 Run failing tests
-- [ ] 10.5 Implement `<InvalidDatasourceBanner>` as a sibling of `<AuthErrorBanner>` inside `card.tsx` (or extract to a new sibling file if `card.tsx` is getting long — design.md does NOT require extraction, leave inline if comfortable)
-- [ ] 10.6 Update `DatasourceCard` render block (~line 232–246) to dispatch on `errorKind`: auth-class → `<AuthErrorBanner>`, `invalid-datasource` → `<InvalidDatasourceBanner>`, anything else → bare `<p>` (existing behavior)
-- [ ] 10.7 Run tests to confirm pass
+- [x] 10.1 Write tests (`apps/desktop/src/renderer/src/features/datasources/__tests__/card-invalid-datasource-banner.test.tsx`, modeled on `card-auth-error-banner.test.tsx`) covering: banner renders iff `summary.status === "error" && summary.errorKind === "invalid-datasource"`; Reconnect → `startConsent`; Remove → confirm dialog; on `consent-completed` event the banner unmounts via summary refresh
+- [x] 10.2 Add a test asserting the banner does NOT render for other errorKinds (`network-error` etc. continue to show bare `<p>` text); auth-revoked still shows `<AuthErrorBanner>`
+- [x] 10.3 Add a jest-axe test on the new banner (no axe violations) — DEVIATION: project convention rejects jest-axe / vitest-axe (see `features/datasources/__tests__/a11y.test.tsx` header). Used structural a11y assertions instead: non-empty `aria-label`, both buttons have non-empty accessible names, DOM order Reconnect → Remove (= tab order without explicit tabIndex)
+- [x] 10.4 Run failing tests
+- [x] 10.5 Implement `<InvalidDatasourceBanner>` as a sibling of `<AuthErrorBanner>` inside `card.tsx` (or extract to a new sibling file if `card.tsx` is getting long — design.md does NOT require extraction, leave inline if comfortable)
+- [x] 10.6 Update `DatasourceCard` render block (~line 232–246) to dispatch on `errorKind`: auth-class → `<AuthErrorBanner>`, `invalid-datasource` → `<InvalidDatasourceBanner>`, anything else → bare `<p>` (existing behavior)
+- [x] 10.7 Run tests to confirm pass — 11 new tests + full apps/desktop datasources suite (18 files / 130 tests) green; broader desktop suite (139 files / 1048 tests) shows 1 unrelated failure in §9 territory (file-explorer states-integration.test.tsx — parallel agent's scope)
 
 ## 11. Verification (full-suite + lint + typecheck)
 
