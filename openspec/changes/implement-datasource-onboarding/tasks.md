@@ -18,7 +18,7 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 - [x] 2.2 Add `OAuthAppConfig` type to `packages/fs-datasource-engine/src/index.ts` (or a sibling `auth-types.ts`); rerun the typed test → green
 - [x] 2.3 Write a unit test for `GoogleDriveClient` accepting a `preAuth?: PreAuthConfig` constructor parameter and reading `clientId`/`clientSecret`/`redirectUri` from it at `doAuthenticateImpl` time when present (`packages/fs-datasource-engine/src/strategies/__tests__/googledrive-preauth.test.ts`); current test reads from `creds.authResult.meta` so the new test fails
 - [x] 2.4 Adapt `GoogleDriveClient` to accept and consult the new `preAuth` slot; existing `meta`-reading code path stays for backward compatibility during the transition (deletion of the `meta` path covered later by §22.x)
-- [ ] 2.5 Repeat 2.3/2.4 for `OneDriveClient` (`onedrive-preauth.test.ts` + adaptation in `onedrive-client.ts`)
+- [x] 2.5 Repeat 2.3/2.4 for `OneDriveClient` (`onedrive-preauth.test.ts` + adaptation in `onedrive-client.ts`)
 - [ ] 2.6 Write a unit test for `S3Client` accepting `preAuth: null` constructor param without errors; existing credentials-form intent path stays unchanged
 - [ ] 2.7 Adapt `S3Client` to accept `preAuth` (no-op for credentials-form providers); rerun test → green
 
