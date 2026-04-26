@@ -156,10 +156,10 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 20. Desktop main — `datasources:remove` calls `sync:delete-credentials`
 
-- [ ] 20.1 Write failing tests in `apps/desktop/src/main/ipc/datasources/__tests__/remove.test.ts`: when `datasources:remove` is invoked, the desktop calls `syncClient.deleteCredentials({datasourceId})` exactly once after `registry.remove` succeeds; `deleteCredentials` rejection logs a structured warning but does NOT block the local remove from succeeding (best-effort cleanup per spec)
-- [ ] 20.2 Modify `apps/desktop/src/main/ipc/datasources/remove.ts` to call `getSyncClient().deleteCredentials({datasourceId})` after `registry.remove`
-- [ ] 20.3 Add `deleteCredentials` method to `apps/desktop/src/main/sync/client.ts` (parallel to existing `authenticateStart`/`authenticateComplete`)
-- [ ] 20.4 Rerun → green
+- [x] 20.1 Extended `apps/desktop/src/main/ipc/datasources/__tests__/remove.test.ts` with 4 new TDD-red cases: (a) `deleteCredentials` called exactly once with `{datasourceId}`; (b) call ordering — `registry.remove` runs BEFORE `deleteCredentials`; (c) rejection logs a structured warning AND remove still resolves successfully (`{ok: true}`); (d) when registry.remove throws, deleteCredentials is NOT called
+- [x] 20.2 Modified `apps/desktop/src/main/ipc/datasources/remove.ts` to call `client.deleteCredentials({datasourceId})` after `registry.remove`. The whole credential-cleanup branch (including `getSyncClient()` resolution) is wrapped in try/catch so a missing supervisor / disconnected client / IPC rejection never blocks the user-facing remove; structured warning logs the datasourceId + errorMessage. The handler signature accepts an optional `client` parameter (parallel to `handleSyncAuthenticateStart`) so tests inject without mocking the supervisor holder
+- [x] 20.3 Added `deleteCredentials` method to `apps/desktop/src/main/sync/client.ts` mirroring the existing `authenticateStart`/`authenticateComplete` patterns. Documents the best-effort contract per design Decision 12 + Risks §1
+- [x] 20.4 Rerun → green: 8 tests pass (4 pre-existing + 4 new) in remove.test.ts; 10 tests pass in client.typed-methods.test.ts (no regressions on the typed-method surface)
 
 ## 21. Renderer — `useAuthSession` hook (replaces `useConsentSession`)
 
