@@ -7,14 +7,10 @@ import type {
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
@@ -93,14 +89,6 @@ const api = {
     // void-request pattern above.
     pickFilesToUpload: (): Promise<DatasourcesPickFilesResponse> =>
       ipcRenderer.invoke(DATASOURCES_CHANNELS.pickFilesToUpload),
-    startConsent: (
-      req: DatasourcesStartConsentRequest,
-    ): Promise<DatasourcesStartConsentResponse> =>
-      ipcRenderer.invoke(DATASOURCES_CHANNELS.startConsent, req),
-    cancelConsent: (
-      req: DatasourcesCancelConsentRequest,
-    ): Promise<DatasourcesCancelConsentResponse> =>
-      ipcRenderer.invoke(DATASOURCES_CHANNELS.cancelConsent, req),
     onUploadProgress: (
       transactionId: string,
       callback: (event: DatasourcesUploadProgressEvent) => void,

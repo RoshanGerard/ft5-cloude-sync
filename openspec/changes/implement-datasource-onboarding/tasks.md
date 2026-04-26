@@ -147,12 +147,12 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 19. Desktop main — delete `datasources:start-consent` / `cancel-consent` IPC handlers
 
-- [ ] 19.1 Delete `apps/desktop/src/main/ipc/datasources/start-consent.ts` and `cancel-consent.ts`
-- [ ] 19.2 Delete the corresponding test files
-- [ ] 19.3 Update `apps/desktop/src/main/ipc/index.ts` to remove the `ipcMain.handle` registrations for these channels and remove the `broker` constructor argument from `registerIpcHandlers`
-- [ ] 19.4 Update `apps/desktop/src/preload/index.ts` to remove the `startConsent` and `cancelConsent` `contextBridge` exposures
-- [ ] 19.5 Update `apps/desktop/src/renderer/src/lib/api.d.ts` (or wherever the `window.api.datasources` type lives) to remove the methods
-- [ ] 19.6 Run typecheck → expect compile errors at every renderer call site of `window.api.datasources.startConsent` / `cancelConsent`; collect the list (will be addressed in Phase 22+)
+- [x] 19.1 Deleted `apps/desktop/src/main/ipc/datasources/start-consent.ts` and `cancel-consent.ts`
+- [x] 19.2 Deleted the corresponding test files (`__tests__/start-consent.test.ts`, `__tests__/cancel-consent.test.ts`)
+- [x] 19.3 Updated `apps/desktop/src/main/ipc/index.ts`: removed `ipcMain.handle` registrations for `DATASOURCES_CHANNELS.startConsent` / `cancelConsent` (those channel keys were already removed from the contracts in §5.4); removed the `broker` parameter from `registerIpcHandlers`; removed `OAuthConsentBroker` import + the four consent-handler imports + the `ConsentEvent` / `Datasources*ConsentRequest` type imports
+- [x] 19.4 Updated `apps/desktop/src/preload/index.ts`: removed the `startConsent` and `cancelConsent` `contextBridge` exposures + the four `Datasources*Consent*` type imports
+- [x] 19.5 Updated `apps/desktop/src/preload/window-api.d.ts`: removed `startConsent` / `cancelConsent` methods from the `datasources` type; removed `ConsentEvent` from the `onEvent` callback parameter union (now only `AnyDatasourceEvent` per the new "Renderer subscribes to the sync event stream for authenticate lifecycle" requirement). Renamed window-api.types.test-d.ts assertions: `startConsent` / `cancelConsent` flipped from presence-asserting to absence-asserting (compile-time guards on the spec scenario "startConsent and cancelConsent are absent from the surface"). Updated exposed-api.test.ts: dropped the two `delegates to ipcRenderer.invoke(...startConsent...)` cases; replaced with a single absence assertion. Also DELETED `apps/desktop/src/main/__tests__/oauth-build-constants.test.ts` (it asserted the build-time `__FT5_GOOGLE_OAUTH_*__` constants must exist — those are gone post-§18.5)
+- [x] 19.6 Ran main-process + preload tests: 253 main + 53 preload = 306 green. Renderer breakage queue (17 files for §21+): `renderer/src/types/window-api.d.ts`, `features/file-explorer/states/invalid-datasource.tsx` (+ `__tests__/invalid-datasource.test.tsx`), `features/file-explorer/file-explorer.tsx` (+ `__tests__/file-explorer-composite.test.tsx`, `__tests__/states-integration.test.tsx`), `features/datasources/store.tsx`, `features/datasources/event-stream.ts`, `features/datasources/credential-forms/oauth-form.tsx`, `features/datasources/card.tsx`, `features/datasources/__tests__/{store-consent,oauth-form,card-invalid-datasource-banner,add-dialog,card-auth-error-banner}.test.tsx`, `app/datasources/explore/page.tsx` (+ `__tests__/page.test.tsx`)
 
 ## 20. Desktop main — `datasources:remove` calls `sync:delete-credentials`
 

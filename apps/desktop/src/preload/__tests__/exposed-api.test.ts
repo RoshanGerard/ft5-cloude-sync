@@ -30,8 +30,6 @@ type ExposedApi = {
     remove: (req: unknown) => Promise<unknown>;
     action: (req: unknown) => Promise<unknown>;
     pickFilesToUpload: () => Promise<unknown>;
-    startConsent: (req: unknown) => Promise<unknown>;
-    cancelConsent: (req: unknown) => Promise<unknown>;
     onUploadProgress: (
       transactionId: string,
       callback: (event: DatasourcesUploadProgressEvent) => void,
@@ -107,7 +105,7 @@ describe("preload exposed api", () => {
   });
 
   describe("datasources surface", () => {
-    it("exposes list/add/remove/action/pickFilesToUpload/startConsent/cancelConsent as functions and onUploadProgress/onEvent as functions", async () => {
+    it("exposes list/add/remove/action/pickFilesToUpload as functions and onUploadProgress/onEvent as functions", async () => {
       const exposed = await loadExposed();
 
       expect(typeof exposed.datasources.list).toBe("function");
@@ -115,10 +113,28 @@ describe("preload exposed api", () => {
       expect(typeof exposed.datasources.remove).toBe("function");
       expect(typeof exposed.datasources.action).toBe("function");
       expect(typeof exposed.datasources.pickFilesToUpload).toBe("function");
-      expect(typeof exposed.datasources.startConsent).toBe("function");
-      expect(typeof exposed.datasources.cancelConsent).toBe("function");
       expect(typeof exposed.datasources.onUploadProgress).toBe("function");
       expect(typeof exposed.datasources.onEvent).toBe("function");
+    });
+
+    // Spec scenario: "startConsent and cancelConsent are absent from the
+    // surface" (datasources-ui §"Datasource IPC surface is the single data
+    // path"). The renderer migrated to `window.api.sync.authenticateStart`
+    // / `authenticateCancel` per design Decision 3.
+    it("does NOT expose datasources.startConsent or datasources.cancelConsent (retired in §19)", async () => {
+      const exposed = await loadExposed();
+      const datasources = exposed.datasources as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(datasources.startConsent).toBeUndefined();
+      expect(datasources.cancelConsent).toBeUndefined();
+      expect(
+        Object.prototype.hasOwnProperty.call(datasources, "startConsent"),
+      ).toBe(false);
+      expect(
+        Object.prototype.hasOwnProperty.call(datasources, "cancelConsent"),
+      ).toBe(false);
     });
 
     it("does NOT expose datasources.upload — the legacy channel is retired in favor of files.upload + datasources.pickFilesToUpload", async () => {
@@ -213,39 +229,6 @@ describe("preload exposed api", () => {
         DATASOURCES_CHANNELS.pickFilesToUpload,
       ]);
       expect(result).toBe(response);
-    });
-
-    it("startConsent(req) delegates to ipcRenderer.invoke(DATASOURCES_CHANNELS.startConsent, req) and returns the sessionId", async () => {
-      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      const response = { sessionId: "sess-abc" };
-      invokeMock.mockResolvedValue(response);
-
-      const exposed = await loadExposed();
-      const req = { providerId: "google-drive" };
-      const result = await exposed.datasources.startConsent(req);
-
-      expect(invokeMock).toHaveBeenCalledTimes(1);
-      expect(invokeMock.mock.calls[0]).toEqual([
-        DATASOURCES_CHANNELS.startConsent,
-        req,
-      ]);
-      expect(result).toBe(response);
-    });
-
-    it("cancelConsent(req) delegates to ipcRenderer.invoke(DATASOURCES_CHANNELS.cancelConsent, req) and returns void", async () => {
-      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      invokeMock.mockResolvedValue(undefined);
-
-      const exposed = await loadExposed();
-      const req = { sessionId: "sess-abc" };
-      const result = await exposed.datasources.cancelConsent(req);
-
-      expect(invokeMock).toHaveBeenCalledTimes(1);
-      expect(invokeMock.mock.calls[0]).toEqual([
-        DATASOURCES_CHANNELS.cancelConsent,
-        req,
-      ]);
-      expect(result).toBeUndefined();
     });
 
     it("onUploadProgress registers a listener on the progress channel and filters by transactionId", async () => {

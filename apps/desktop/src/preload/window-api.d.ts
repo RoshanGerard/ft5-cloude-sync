@@ -1,18 +1,13 @@
 import type {
   AnyDatasourceEvent,
-  ConsentEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
   DatasourcesAddResponse,
-  DatasourcesCancelConsentRequest,
-  DatasourcesCancelConsentResponse,
   DatasourcesListResponse,
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesStartConsentRequest,
-  DatasourcesStartConsentResponse,
   DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
@@ -78,19 +73,11 @@ declare global {
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
         pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
-        startConsent(
-          req: DatasourcesStartConsentRequest,
-        ): Promise<DatasourcesStartConsentResponse>;
-        cancelConsent(
-          req: DatasourcesCancelConsentRequest,
-        ): Promise<DatasourcesCancelConsentResponse>;
         onUploadProgress(
           transactionId: string,
           callback: (event: DatasourcesUploadProgressEvent) => void,
         ): () => void;
-        onEvent(
-          callback: (event: AnyDatasourceEvent | ConsentEvent) => void,
-        ): () => void;
+        onEvent(callback: (event: AnyDatasourceEvent) => void): () => void;
       };
       files: {
         list(req: FilesListRequest): Promise<FilesListResponse>;
