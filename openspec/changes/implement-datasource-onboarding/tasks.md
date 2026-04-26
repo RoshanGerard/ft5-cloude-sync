@@ -82,7 +82,7 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 - [x] 9.1 Replace the stub at `services/fs-sync/src/commands/authenticate-start.ts` — first write the real implementation's failing tests in `authenticate-start.test.ts`. Covered: OAuth-class happy path (returns `kind: "oauth"`, broker dispatch); credentials-form happy path (returns `kind: "credentials-form"` with form schema, emits `auth-initiated`); `service-config-missing` propagation; reconnect-via-datasourceId path; unknown-provider mapping; engine-error mapping
 - [x] 9.2 Implement the real handler at `services/fs-sync/src/commands/authenticate-start.ts` (factory function `makeAuthenticateStartHandler`). Deps: `bus`, `correlationStore`, `factory`, `configStore`, `loopbackBroker`, `engineContext`. OAuth branch delegates the whole flow to the broker (broker resolves config, binds loopback, emits `auth-initiated` + `oauth-open-url` post-config-validation per design.md Decision 7 addendum). Credentials-form branch: `factory.createForAuth(providerId, null, ctx, datasourceId)` → `client.authenticate()` → `correlationStore.createWith(correlationId, intent)` → handler-side emit of `auth-initiated`
-- [ ] 9.3 Update `bootstrap.ts` to thread the new deps into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
+- [x] 9.3 Update `bootstrap.ts` to thread the new deps into `buildCommandHandlers` (done in handlers.ts + bootstrap.ts wiring commit)
 - [x] 9.4 Run the test file → 7 new green; loopback-broker tests updated and 10 green; auth-correlation-store tests 14 green
 
 ## 10. Service — real `handleAuthenticateComplete`
@@ -95,23 +95,23 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 - [x] 11.1 Failing tests in `authenticate-cancel.test.ts`: OAuth pending (broker.cancel called, broker emits auth-cancelled); credentials-form pending (handler emits auth-cancelled); idempotent (second cancel = `{cancelled: false}`, no event); unknown correlationId = `{cancelled: false}`, no event
 - [x] 11.2 Implement at `services/fs-sync/src/commands/authenticate-cancel.ts` (factory `makeAuthenticateCancelHandler`). Handler is branch-agnostic: subscribes to `auth-cancelled` BEFORE calling `broker.cancel(...)` so it can detect whether the broker emitted (OAuth path) vs no-op (id unknown to broker), then tries `correlationStore.consume(...)` for the credentials-form path. Emits `auth-cancelled` only when the broker did not (mutual exclusion in production)
-- [ ] 11.3 Wire into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
+- [x] 11.3 Wire into `buildCommandHandlers` (done in handlers.ts + bootstrap.ts wiring commit)
 
 ## 12. Service — `handleGetConfig` / `handleSetConfig`
 
 - [x] 12.1 Failing tests at `services/fs-sync/src/commands/{get-config,set-config}.test.ts`: get-config absent-file → empty default; round-trip set + get; set-config 0o600 on Unix; io-error propagation for both handlers
 - [x] 12.2 Implement at `services/fs-sync/src/commands/{get-config,set-config}.ts` (factories `makeGetConfigHandler`, `makeSetConfigHandler`). Thin wrappers around `ServiceConfigStore.getRaw()` / `setRaw(...)`. Throws map to `{tag: "io-error", message}`
-- [ ] 12.3 Wire into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
+- [x] 12.3 Wire into `buildCommandHandlers` (done in handlers.ts + bootstrap.ts wiring commit)
 
 ## 13. Service — `handleDeleteCredentials`
 
 - [x] 13.1 Failing tests at `services/fs-sync/src/commands/delete-credentials.test.ts`: delete-when-present → `{deleted: true}`; delete-when-absent → `{deleted: false}` and `delete` not called; delete-throws → structured warning `bridge-credential-delete-failed` + `{deleted: false}` (best-effort)
 - [x] 13.2 Implement at `services/fs-sync/src/commands/delete-credentials.ts` (factory `makeDeleteCredentialsHandler`). Pre-checks via `credentialStore.get(...)` to distinguish deleted-vs-absent (engine `CredentialStore.delete` is `Promise<void>` per the port contract — kept that way to preserve the engine port's idempotent semantics)
-- [ ] 13.3 Wire into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
+- [x] 13.3 Wire into `buildCommandHandlers` (done in handlers.ts + bootstrap.ts wiring commit)
 
 ## 14. Service — bootstrap composition update + integration test
 
-- [ ] 14.1 Extend `services/fs-sync/src/main/__tests__/bootstrap.test.ts` order assertion to include the two new stages (`construct-service-config-store` and `construct-loopback-broker`)
+- [x] 14.1 Extend `services/fs-sync/src/main/bootstrap.test.ts` order assertion to include the two new stages (`construct-service-config-store` was added in §6.4; `construct-loopback-broker` added in this commit between `construct-network-probe` and `recover-running-jobs`). Test description updated from "11 bootstrap stages" → "13 bootstrap stages"
 - [ ] 14.2 Run the order-assertion test → green
 - [ ] 14.3 Add an integration test (`services/fs-sync/src/__tests__/authenticate-flow.integration.test.ts`) that boots a full service runtime against scratch dirs, sends `sync:authenticate-start { providerId: "google-drive" }` through a real IPC client, asserts the response carries a correlationId + `kind: "oauth"`, asserts the bus emits `oauth-open-url` + `auth-initiated`, then calls `sync:authenticate-cancel { correlationId }` and asserts `auth-cancelled` fires
 - [ ] 14.4 Same integration test, separate arm: credentials-form flow for `amazon-s3` → start → complete with valid stub values → assert `credential-persisted` + `auth-completed`; assert `credentials.json` contains a new entry for the minted datasourceId

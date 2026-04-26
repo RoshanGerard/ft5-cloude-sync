@@ -47,7 +47,7 @@ afterEach(async () => {
 });
 
 describe("bootstrap ordering", () => {
-  it("fires the 11 bootstrap stages in the spec-mandated order", async () => {
+  it("fires the 13 bootstrap stages in the spec-mandated order", async () => {
     const observed: BootstrapStage[] = [];
     const pipePath = pipeFor("order");
 
@@ -69,8 +69,11 @@ describe("bootstrap ordering", () => {
     // `construct-service-config-store` was added by implement-datasource-
     // onboarding §6.4; it sits between credential-store and provider-registry
     // so the OAuth app config is available before any factory.createForAuth
-    // call. The §8/§14 follow-ups will add `construct-loopback-broker` after
-    // `construct-network-probe`; this test covers only the §6 stage.
+    // call. `construct-loopback-broker` was added by §9 (this commit); it
+    // sits between network-probe and recover-running-jobs so the broker has
+    // the engine context (factory + credential store) it needs at
+    // construction time, and the IPC listener binds AFTER the broker is
+    // ready to handle authenticate-start dispatches.
     const expected: BootstrapStage[] = [
       "open-database",
       "apply-migrations",
@@ -82,6 +85,7 @@ describe("bootstrap ordering", () => {
       "construct-client-factory",
       "construct-scheduler",
       "construct-network-probe",
+      "construct-loopback-broker",
       "recover-running-jobs",
       "ipc-listen",
     ];
