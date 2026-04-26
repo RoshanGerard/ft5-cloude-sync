@@ -80,10 +80,10 @@ per CLAUDE.md. Subagent dispatch per task per CLAUDE.md
 
 ## 9. Service — real `handleAuthenticateStart`
 
-- [ ] 9.1 Replace the stub at `services/fs-sync/src/commands/authenticate-start.ts` — first write the real implementation's failing tests in `authenticate-start.test.ts` (currently mostly stub-shape assertions). Cover: OAuth-class happy path (returns `kind: "oauth"`, emits `auth-initiated` + `oauth-open-url`); credentials-form happy path (returns `kind: "credentials-form"` with form schema, emits `auth-initiated` only); `service-config-missing` propagation; correlation store population; retry path (re-auth for an existing datasourceId)
-- [ ] 9.2 Implement the real handler. Wire it through `buildCommandHandlers` deps: add `correlationStore: AuthCorrelationStore`, `configStore: ServiceConfigStore`, `factory: ClientFactory`, `engineBus: EngineEventBus`, `loopbackBroker: OAuthLoopbackBroker`. For OAuth providers, calls `factory.createForAuth(providerId, configStore.getOAuthAppConfig(providerId), { bus: engineBus, credentialStore })` then `client.authenticate()` then `correlationStore.create(intent)` then `loopbackBroker.start({correlationId, providerId, datasourceId, intent})`. For credentials-form, calls `factory.createForAuth(providerId, null, ...)` and returns the form schema.
-- [ ] 9.3 Update `bootstrap.ts` to thread the new deps into `buildCommandHandlers`
-- [ ] 9.4 Run the test file → all green
+- [x] 9.1 Replace the stub at `services/fs-sync/src/commands/authenticate-start.ts` — first write the real implementation's failing tests in `authenticate-start.test.ts`. Covered: OAuth-class happy path (returns `kind: "oauth"`, broker dispatch); credentials-form happy path (returns `kind: "credentials-form"` with form schema, emits `auth-initiated`); `service-config-missing` propagation; reconnect-via-datasourceId path; unknown-provider mapping; engine-error mapping
+- [x] 9.2 Implement the real handler at `services/fs-sync/src/commands/authenticate-start.ts` (factory function `makeAuthenticateStartHandler`). Deps: `bus`, `correlationStore`, `factory`, `configStore`, `loopbackBroker`, `engineContext`. OAuth branch delegates the whole flow to the broker (broker resolves config, binds loopback, emits `auth-initiated` + `oauth-open-url` post-config-validation per design.md Decision 7 addendum). Credentials-form branch: `factory.createForAuth(providerId, null, ctx, datasourceId)` → `client.authenticate()` → `correlationStore.createWith(correlationId, intent)` → handler-side emit of `auth-initiated`
+- [ ] 9.3 Update `bootstrap.ts` to thread the new deps into `buildCommandHandlers` (deferred to handlers.ts wiring commit)
+- [x] 9.4 Run the test file → 7 new green; loopback-broker tests updated and 10 green; auth-correlation-store tests 14 green
 
 ## 10. Service — real `handleAuthenticateComplete`
 

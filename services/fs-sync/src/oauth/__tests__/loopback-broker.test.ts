@@ -223,6 +223,20 @@ describe("OAuthLoopbackBroker", () => {
     }
     expect(probeResponse.status).toBeGreaterThanOrEqual(100);
 
+    // ASSERT 4a: `auth-initiated` was emitted exactly once for this
+    // correlationId — design.md Decision 7 + spec scenario "OAuth start
+    // returns kind=oauth and emits oauth-open-url" requires
+    // `auth-initiated` to PRECEDE `oauth-open-url` on the stream.
+    const initiatedIdx = events.findIndex((e) => e.name === "auth-initiated");
+    const openUrlIdx = events.findIndex((e) => e.name === "oauth-open-url");
+    expect(initiatedIdx).toBeGreaterThanOrEqual(0);
+    expect(openUrlIdx).toBeGreaterThanOrEqual(0);
+    expect(initiatedIdx).toBeLessThan(openUrlIdx);
+    const initiatedPayload = events[initiatedIdx]!.payload as
+      EventPayloadMap["auth-initiated"];
+    expect(initiatedPayload.correlationId).toBe(correlationId);
+    expect(initiatedPayload.providerId).toBe("google-drive");
+
     // ASSERT 4: an `oauth-open-url` event was emitted exactly once for
     // this correlation, and the URL's redirect_uri matches the bound port.
     const openUrlEvents = events.filter((e) => e.name === "oauth-open-url");
@@ -718,11 +732,12 @@ describe("OAuthLoopbackBroker", () => {
     await broker.cancel({ correlationId: preMinted });
   });
 
-  it("closes the bound HTTP server when getOAuthAppConfig throws (no leaked listener)", async () => {
+  it("closes the bound HTTP server when getOAuthAppConfig throws and emits no events (no leaked listener)", async () => {
     // The §9 spec scenario "Service-config-missing on OAuth start" requires
-    // post-condition "no loopback server is bound". The broker therefore must
-    // tear down the listener before propagating any throw between bind and
-    // intent-resolution.
+    // post-conditions: NO event is emitted; NO loopback server is bound;
+    // NO engine client is constructed. The broker therefore tears down the
+    // listener before propagating, and emits auth-initiated only AFTER
+    // config resolution succeeds.
     const { factory } = makeFakeFactory({ authResult: defaultAuthResult });
     const failingGetConfig = vi.fn(async () => {
       throw new Error("ServiceConfigMissingError stub");
@@ -734,24 +749,24 @@ describe("OAuthLoopbackBroker", () => {
       getOAuthAppConfig: failingGetConfig,
       dataDir: "/tmp/ft5-test-data-dir",
     });
+    const { events } = makeBusSpy(bus);
 
     // ACT: start should reject.
     await expect(
       broker.start({ providerId: "google-drive" }),
     ).rejects.toThrow(/ServiceConfigMissingError stub/);
 
-    // ASSERT: there is NO pending session (since start rejected).
-    // We can't easily probe arbitrary ports; the strongest assertion is
-    // the absence of any record. A broker that leaked the server but
-    // re-threw would also leave no `pending` entry — so verify the
-    // intent-failure case: a second start succeeds with a different id and
-    // no resource accumulation. (A leaked server only manifests as a
-    // detached listener; this test guards correctness via re-start
-    // health rather than direct port introspection.)
-    // factory.createForAuth was never called because getOAuthAppConfig
-    // threw first.
+    // ASSERT 1: getOAuthAppConfig was tried exactly once.
     expect(failingGetConfig).toHaveBeenCalledTimes(1);
+
+    // ASSERT 2: factory.createForAuth was NOT invoked — the config check
+    // ran before client construction.
     expect(factory.createForAuth).not.toHaveBeenCalled();
+
+    // ASSERT 3: NO event was emitted on the stream — no auth-initiated,
+    // no oauth-open-url. Spec scenario post-condition "no event is
+    // emitted" on service-config-missing.
+    expect(events).toHaveLength(0);
   });
 });
 

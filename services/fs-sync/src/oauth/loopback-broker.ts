@@ -392,14 +392,39 @@ export function createOAuthLoopbackBroker(
       // bound server before propagating — otherwise the §9 spec scenario
       // "Service-config-missing on OAuth start: no loopback server is
       // bound" is violated (server leaks into the post-throw state).
+      //
+      // Event-ordering note (design.md §9 / Decision 7 addendum):
+      // The broker emits BOTH `auth-initiated` and `oauth-open-url` for
+      // OAuth flows. The handler cannot emit `auth-initiated` itself
+      // because (a) it does not know the redirectUri until after bind,
+      // and (b) it must NOT emit ANY event when the config is missing.
+      // Resolving config FIRST inside the broker, then emitting
+      // auth-initiated, then constructing the intent + emitting
+      // oauth-open-url, satisfies the spec ordering "auth-initiated then
+      // oauth-open-url" while also satisfying "no event on
+      // service-config-missing".
       let intent: OAuthIntent;
       try {
         // Resolve the OAuth app config (clientId / clientSecret /
-        // redirectUri). The closure wraps ServiceConfigStore.
+        // redirectUri). The closure wraps ServiceConfigStore. A
+        // ServiceConfigMissingError propagates through the catch below
+        // — server is closed, NO event has been emitted yet.
         const oauthAppConfig = await options.getOAuthAppConfig(
           opts.providerId,
           redirectUri,
         );
+
+        // Config validated — emit `auth-initiated` so the renderer's
+        // `useAuthSession` hook knows the session has started. This is
+        // the FIRST event on the stream for this correlationId; the
+        // next is `oauth-open-url` after intent construction.
+        options.bus.emit("auth-initiated", {
+          correlationId,
+          providerId: opts.providerId,
+          ...(opts.datasourceId !== undefined
+            ? { datasourceId: opts.datasourceId }
+            : {}),
+        });
 
         // Construct the engine client + acquire the AuthIntent.
         const client = options.factory.createForAuth(
