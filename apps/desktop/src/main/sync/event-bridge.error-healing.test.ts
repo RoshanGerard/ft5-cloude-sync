@@ -70,7 +70,9 @@ describe("event-bridge — datasource error healing", () => {
 
   it("clears datasource error state when job-completed arrives", async () => {
     const h = makeHarness();
-    createSyncEventBridge(h.handle, { registry: { setStatus: h.setStatus } });
+    createSyncEventBridge(h.handle, {
+      registry: { setStatus: h.setStatus, add: vi.fn() },
+    });
     // Let the initial handshake microtask drain.
     await new Promise((r) => setTimeout(r, 0));
 
@@ -102,7 +104,9 @@ describe("event-bridge — datasource error healing", () => {
 
   it("does NOT clear on job-failed (preserves legitimate error state)", async () => {
     const h = makeHarness();
-    createSyncEventBridge(h.handle, { registry: { setStatus: h.setStatus } });
+    createSyncEventBridge(h.handle, {
+      registry: { setStatus: h.setStatus, add: vi.fn() },
+    });
     await new Promise((r) => setTimeout(r, 0));
 
     const jobId = "job-2";
@@ -138,7 +142,9 @@ describe("event-bridge — datasource error healing", () => {
 
   it("does NOT clear on job-cancelled", async () => {
     const h = makeHarness();
-    createSyncEventBridge(h.handle, { registry: { setStatus: h.setStatus } });
+    createSyncEventBridge(h.handle, {
+      registry: { setStatus: h.setStatus, add: vi.fn() },
+    });
     await new Promise((r) => setTimeout(r, 0));
 
     const jobId = "job-3";
@@ -171,7 +177,9 @@ describe("event-bridge — datasource error healing", () => {
     // for (e.g. out-of-order delivery before state-seed arrived) should
     // silently skip rather than throw.
     const h = makeHarness();
-    createSyncEventBridge(h.handle, { registry: { setStatus: h.setStatus } });
+    createSyncEventBridge(h.handle, {
+      registry: { setStatus: h.setStatus, add: vi.fn() },
+    });
     await new Promise((r) => setTimeout(r, 0));
 
     deliver(h.eventListeners, {
