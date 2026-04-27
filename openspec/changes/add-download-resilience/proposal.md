@@ -1,0 +1,116 @@
+# Proposal: Download stream resilience for transient network / provider errors
+
+**Status**: Stub. Spawned by Out-of-scope items in
+`add-engine-rename-download`'s `design.md` on 2026-04-27.
+
+## Why
+
+`add-engine-rename-download` ships single-shot file downloads with two
+narrow forms of mid-stream recovery:
+
+1. **Auth-expired during stream** — the engine refreshes the token and
+   re-issues a `Range: bytes=N-` GET, splicing the new source into the
+   same `Readable`. Consumer sees one continuous stream.
+2. **Desktop app close while service alive** — the fs-sync service is
+   detached and survives app close. On app reopen, the renderer queries
+   `downloads:list-active`, hydrates a Sonner toast per in-flight job,
+   and re-subscribes to its progress feed. The download itself never
+   pauses.
+
+Every other interruption mode in v1 surfaces as a `download-failed`
+toast with a `Retry` action that restarts from byte 0. Honest about
+scope but wasteful on the S3 raw-footage seeds (400MB+ files) where
+any sustained interruption costs real bandwidth.
+
+This change extends the partial-resume mechanism to cover the
+**environmental** interruption classes — failures the service cannot
+prevent regardless of code quality:
+
+- Network disconnect mid-stream (WiFi off / cable unplugged)
+- Provider 5xx mid-stream (transient backend hiccup)
+- Provider rate-limit mid-stream (rare but possible on long downloads)
+
+Service crashes are intentionally NOT in scope. Per the architectural
+boundary established in `add-engine-rename-download` (service owns the
+work, desktop is the indicator), service crashes are reliability bugs
+to fix in the service, not feature-flag away with disk-persisted
+state. The fs-sync service is detached and long-lived; if it dies,
+the in-flight download dies with it and the user retries.
+
+Mechanically, this change builds entirely on the in-memory registry +
+Range-resume engine that `add-engine-rename-download` already adds —
+no new persistence layer.
+
+## Out of scope
+
+- Service crash / kill recovery. The service is the durable owner;
+  reliability lives there, not behind a disk-persisted shim.
+- Resumable uploads. This change is download-only; uploads have a
+  separate upgrade path (Drive / OneDrive resumable session resume).
+- User-initiated pause/resume UI. Retry is automatic; cancel still
+  terminates outright.
+- Background-download throttling / bandwidth caps.
+
+## Open questions (resolve during `/opsx:propose`)
+
+1. **Retry budget for non-auth interruptions.** Hard cap (5 retries
+   per download), time budget (max 30 min total wall time), or
+   exponential backoff with no cap? Recommend: 5 retries with
+   exponential backoff (1s, 2s, 4s, 8s, 16s), AND a 30-min wall-time
+   ceiling, whichever first. Emit `download-failed { tag:
+   "exhausted-retries" }` on either limit.
+2. **Per-class retry classification.** Network errors (ECONNRESET,
+   ETIMEDOUT) → unconditional retry. Provider 5xx → retry. Provider
+   429 (rate-limit) → honor `Retry-After` then resume. 4xx other than
+   429 → fail (it's a real client-side problem). Recommend matching
+   the engine's existing `normalizeErrorImpl` taxonomy and not
+   inventing a new one.
+3. **Resume eligibility check.** When resuming with `Range:
+   bytes=N-`, providers occasionally return the full content (200 OK
+   instead of 206 Partial Content) if they don't support range on
+   that resource. The engine MUST detect this case and either
+   discard already-written bytes (rewrite from 0) or fail with
+   `tag: "range-not-supported"`. Recommend: rewrite from 0; emit
+   one `downloading { progress: 0 }` event so the UI rewinds.
+4. **Renderer UX during retry**. Does the toast flicker between
+   `downloading (60%)` → `retrying (attempt 2/5)` → back to
+   `downloading (61%)`? Or stays as steady "downloading" with a
+   quieter sub-status like "reconnecting…"? Recommend: the latter.
+   Minimize visual noise; expose retry count via toast tooltip.
+5. **Partial file disposition on terminal failure.** Browser convention
+   leaves the partial file on disk after a download fails (Chrome
+   `.crdownload`); the user can delete it manually or the next
+   download attempt with the same target path triggers the conflict
+   dialog. Recommend matching browser behavior. The engine emits
+   `download-failed { partialPath }` so a UI affordance "Delete
+   partial file" is wireable as a follow-up if telemetry shows users
+   want it.
+
+## Acceptance criteria (once promoted)
+
+- Engine's downloadFile-Readable wrapper resumes transparently across
+  network / 5xx / rate-limit interruptions per the chosen retry
+  policy. Per-strategy contract tests exercise each error class with
+  fault-injection.
+- The wrapper detects "range not supported" on resume (200 OK to a
+  Range request) and recovers correctly per Q3.
+- Retry budget exhausted → `download-failed { tag:
+  "exhausted-retries", cause: <original-error-tag> }`.
+- `downloading` events do not regress to "0%" mid-resume on a
+  successful 206 (T1 of `add-engine-rename-download`'s event taxonomy
+  remains untouched).
+- No new persistence layer. The in-memory registry from
+  `add-engine-rename-download` is sufficient.
+
+## Provenance
+
+- Spawned by `add-engine-rename-download` design.md
+  Out-of-scope on 2026-04-27.
+- Builds on the Range-resume engine and in-memory download registry
+  added by `add-engine-rename-download` (auth-resume only). This
+  change generalizes the resume mechanism to all environmental
+  interruption classes.
+- Architectural boundary set during brainstorming: "service owns the
+  work, desktop is the indicator." Service-crash recovery is
+  intentionally excluded — it would push state out of the durable
+  owner and into a disk-shim layer that violates the boundary.
