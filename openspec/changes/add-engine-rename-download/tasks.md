@@ -11,9 +11,9 @@ layer-skip allowed (per design.md Decision 5 / project layering rules).
 
 ## 1. Pre-flight & worktree
 
-- [ ] 1.1 Confirm with user where to put the worktree: in-place vs sibling (per CLAUDE.md `using-git-worktrees`); default to `.worktrees/add-engine-rename-download/` if no answer
-- [ ] 1.2 Create the worktree + branch via the `using-git-worktrees` skill (worktree at chosen path, branch `feature/add-engine-rename-download` off master HEAD; pnpm install in the worktree)
-- [ ] 1.3 Verify a clean baseline: run `pnpm typecheck` and the full vitest suite once in the worktree to confirm green-before-changes; capture any pre-existing flaky failures (e.g., the `scripts/preload-bundle.test.ts` flake noted in prior changes)
+- [x] 1.1 Confirm with user where to put the worktree: in-place vs sibling (per CLAUDE.md `using-git-worktrees`); default to `.worktrees/add-engine-rename-download/` if no answer
+- [x] 1.2 Create the worktree + branch via the `using-git-worktrees` skill (worktree at chosen path, branch `feature/add-engine-rename-download` off master HEAD; pnpm install in the worktree)
+- [x] 1.3 Verify a clean baseline: run `pnpm typecheck` and the full vitest suite once in the worktree to confirm green-before-changes; capture any pre-existing flaky failures (e.g., the `scripts/preload-bundle.test.ts` flake noted in prior changes). **Captured 2026-04-28**: typecheck clean (0 errors). vitest 270/271 file-level pass; 2115/2125 test-level pass (9 skipped); single pre-existing failure `scripts/preload-bundle.test.ts > preload bundle forbids runtime requires of workspace deps > compiled preload only requires allowed specifiers` — same flake the task itself anticipates. Baseline accepted.
 
 ## 2. Contracts — `FilesRenameRequest` extension + `Conflict` error tag
 
