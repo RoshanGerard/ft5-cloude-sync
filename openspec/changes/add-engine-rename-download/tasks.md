@@ -17,6 +17,14 @@ layer-skip allowed (per design.md Decision 5 / project layering rules).
 
 ## 2. Contracts — `FilesRenameRequest` extension + `Conflict` error tag
 
+### 2.0 Test-infra preconditions (resolves discovery 2026-04-28 #2)
+
+A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` files are silently NOT typechecked by vitest — `vitest.config.ts:70` points `typecheck.tsconfig` at `apps/desktop/tsconfig.test.json` which only `include`s the desktop preload tests + `packages/fs-datasource-engine/src/**/*.test-d.ts`. Effect: typed tests in ipc-contracts vacuously pass. Confirmed empirically with a `const __probe: number = "string"` insertion that compiled cleanly. The TDD red-green discipline for tasks 2.1–2.12 cannot work without this fix. A latent regression already lurks: `packages/ipc-contracts/src/__tests__/files.test-d.ts:145` asserts a 4-member `FilesErrorTag` union when the actual type now has 5 members (post-`add-invalid-datasource-state`'s `InvalidDatasource` addition).
+
+- [ ] 2.0a Extend `apps/desktop/tsconfig.test.json` `include` to cover `../../packages/ipc-contracts/src/**/*.test-d.ts` and `../../services/fs-sync/src/**/*.test-d.ts`; rerun `pnpm vitest run` to surface latent typed-test failures
+- [ ] 2.0b Fix the latent 4-vs-5 `FilesErrorTag` assertion at `packages/ipc-contracts/src/__tests__/files.test-d.ts:145` — the test should assert all 5 members (`AuthRevoked`, `Disconnected`, `RateLimited`, `Other`, `InvalidDatasource`); rerun → green
+- [ ] 2.0c Resolve any other latent typed-test failures the include-extension surfaces (mechanical fixes only — if a non-mechanical issue appears, STOP and report); rerun `pnpm vitest run packages/ipc-contracts` → green
+
 - [ ] 2.1 Write a typed test asserting `FilesRenameRequest` carries `conflictPolicy: "fail" | "overwrite" | "keep-both"` (the wire type is non-optional; default `"fail"` is enforced at the consumer layer); test fails until shape lands
 - [ ] 2.2 Add the field to `packages/ipc-contracts/src/files.ts`'s `FilesRenameRequest`; rerun typed test → green
 - [ ] 2.3 Write a typed test asserting `FilesErrorTag` includes `Conflict: "conflict"`; test fails
