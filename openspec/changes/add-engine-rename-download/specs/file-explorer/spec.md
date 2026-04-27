@@ -79,7 +79,7 @@ specific behaviors:
 #### Scenario: Download a file from S3
 
 - **WHEN** the user clicks Download on a file entry from an Amazon S3 datasource (with the default folder set, no Shift modifier, "Always ask" toggle off)
-- **THEN** the download orchestrator computes `toPath` as `<defaultFolder>/<fileName>`, dispatches `window.api.files.download({ datasourceId, path, toPath })`, opens a Sonner toast bound to the returned `transactionId`, subscribes to the progress feed; on completion the toast flips to the success variant with `[Show in folder]` and `[Open]` actions
+- **THEN** the download orchestrator computes `toPath` as `<defaultFolder>/<fileName>`, dispatches `window.api.files.download({ datasourceId, path, toPath })`, opens a Sonner toast bound to the returned `downloadJobId`, subscribes to the progress feed; on completion the toast flips to the success variant with `[Show in folder]` and `[Open]` actions
 
 #### Scenario: Rename conflict re-prompts via ConflictResolutionDialog
 
@@ -132,7 +132,7 @@ SHALL be dismissed silently.
 #### Scenario: Download failure shows Retry
 
 - **WHEN** a download fails (IPC reply `{ ok: false, error: { tag: "auth-revoked" | "other" | …, message } }`)
-- **THEN** the toast flips to red with copy "Download failed: <message>"; a Retry action button is present; activating Retry re-dispatches `window.api.files.download` with the original parameters and opens a new toast bound to the new transactionId
+- **THEN** the toast flips to red with copy "Download failed: <message>"; a Retry action button is present; activating Retry re-dispatches `window.api.files.download` with the original parameters and opens a new toast bound to the new downloadJobId
 
 ### Requirement: First-run downloads modal collects the default folder
 
@@ -257,7 +257,7 @@ The download orchestrator SHALL compute `toPath` for each download as:
 The desktop main process SHALL invoke `sync.request("downloads:list-active")` exactly once on the supervisor's first successful connect of an app session and forward the response to the renderer via a new event channel `window.api.files.onActiveDownloadsHydrate(callback)`. The renderer's
 file-explorer init effect SHALL subscribe to this channel and, on
 receipt, spawn one Sonner toast per `DownloadJob` in the snapshot, each
-bound to its `transactionId`'s progress feed.
+bound to its `downloadJobId`'s progress feed.
 
 The hydration SHALL fire exactly once per app session — on the first
 supervisor connect of the renderer's lifetime, NOT on every reconnect.
@@ -267,7 +267,7 @@ event subscriptions resume.
 #### Scenario: App reopen with one active download
 
 - **WHEN** the user closes the app while a download is in flight (service keeps running, registry has one entry); the user reopens the app; the supervisor establishes its first connect
-- **THEN** the desktop main process queries `downloads:list-active` exactly once; the response carries one `DownloadJob`; the renderer's file-explorer init effect spawns one Sonner toast at the current progress percentage and subscribes to the `transactionId`'s feed; subsequent `downloading` events update the toast in place; on terminal completion the toast flips to the success variant
+- **THEN** the desktop main process queries `downloads:list-active` exactly once; the response carries one `DownloadJob`; the renderer's file-explorer init effect spawns one Sonner toast at the current progress percentage and subscribes to the `downloadJobId`'s feed; subsequent `downloading` events update the toast in place; on terminal completion the toast flips to the success variant
 
 #### Scenario: App reopen with no active downloads
 

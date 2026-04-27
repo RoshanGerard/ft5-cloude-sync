@@ -28,10 +28,10 @@ layer-skip allowed (per design.md Decision 5 / project layering rules).
 
 ## 3. Contracts — `downloads:list-active` command + `downloading` event + cancel command
 
-- [ ] 3.1 Write a typed test asserting `DownloadsListActiveRequest` and `DownloadsListActiveResponse` are present in `@ft5/ipc-contracts/sync-service`; the response carries `{ ok: true, value: { jobs: DownloadJob[] } }` with `DownloadJob = { transactionId, datasourceId, sourcePath, targetPath, bytesDownloaded, contentLength, startedAt }`; test fails
+- [ ] 3.1 Write a typed test asserting `DownloadsListActiveRequest` and `DownloadsListActiveResponse` are present in `@ft5/ipc-contracts/sync-service`; the response carries `{ ok: true, value: { jobs: DownloadJob[] } }` with `DownloadJob = { downloadJobId, datasourceId, sourcePath, targetPath, bytesDownloaded, contentLength, startedAt }`; test fails
 - [ ] 3.2 Add the request/response types + `DownloadJob` shape to the sync-service contracts; add `"downloads:list-active"` to `COMMAND_NAMES`; rerun typed test → green
 - [ ] 3.3 Write a typed test asserting `DownloadingEvent`, `FileDownloadedEvent`, `DownloadCancelledEvent`, `DownloadFailedEvent` payload shapes are present in the engine event taxonomy; test fails (these are new bus events)
-- [ ] 3.4 Extend the event payload union types in `packages/ipc-contracts/src/events.ts` (or wherever the engine's `PayloadMap` lives); rerun → green
+- [ ] 3.4 Extend the event payload union types in `packages/ipc-contracts/src/fs-datasource-engine.ts` (where `PayloadMap` is defined at line 214); rerun → green
 - [ ] 3.5 Write a typed test asserting a new `EntryRenamedEvent { from: Target, to: DatasourceFileEntry<T> }` is present
 - [ ] 3.6 Add the event type; rerun → green
 - [ ] 3.7 Run the full ipc-contracts vitest suite; verify no regressions
@@ -114,7 +114,7 @@ layer-skip allowed (per design.md Decision 5 / project layering rules).
 
 ## 11. Service — `DownloadRegistry` module
 
-- [ ] 11.1 Write unit tests for `DownloadRegistry` at `services/fs-sync/src/downloads/__tests__/registry.test.ts`: `set` adds an entry; `update(transactionId, partial)` merges; `delete` removes; `snapshot()` returns the values ordered by `startedAt`; concurrent updates do not lose data
+- [ ] 11.1 Write unit tests for `DownloadRegistry` at `services/fs-sync/src/downloads/__tests__/registry.test.ts`: `set` adds an entry; `update(downloadJobId, partial)` merges; `delete` removes; `snapshot()` returns the values ordered by `startedAt`; concurrent updates do not lose data
 - [ ] 11.2 Implement `services/fs-sync/src/downloads/registry.ts` to pass the tests
 - [ ] 11.3 Add a tiny lifecycle integration test: registry events emitted by a fake engine update the registry exactly as the design specifies (start → bytesDownloaded updates → terminal removes)
 
@@ -212,14 +212,14 @@ layer-skip allowed (per design.md Decision 5 / project layering rules).
 
 ## 23. Renderer — download orchestrator
 
-- [ ] 23.1 Write unit tests for `apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-download-orchestrator.test.ts`: dispatches `files.download` with a `toPath` resolved per the store + modifier rules; on shiftKey opens `showSaveDialog` with the default-folder + filename pre-filled; on Always-ask similarly; on neither, computes `<defaultFolder>/<fileName>` directly; if the user cancels the save dialog, no IPC dispatch; on dispatch returns the `transactionId`
+- [ ] 23.1 Write unit tests for `apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-download-orchestrator.test.ts`: dispatches `files.download` with a `toPath` resolved per the store + modifier rules; on shiftKey opens `showSaveDialog` with the default-folder + filename pre-filled; on Always-ask similarly; on neither, computes `<defaultFolder>/<fileName>` directly; if the user cancels the save dialog, no IPC dispatch; on dispatch returns the `downloadJobId`
 - [ ] 23.2 Implement `use-download-orchestrator.ts` mirroring `use-upload-orchestrator.ts`; rerun → green
 - [ ] 23.3 Write unit tests for the orchestrator's first-download-modal integration: when `getDefaultFolder()` is null, opens the modal and queues the download; on modal commit, dispatches
 - [ ] 23.4 Implement the queueing; rerun → green
 
 ## 24. Renderer — download Sonner toaster
 
-- [ ] 24.1 Write unit tests for `apps/desktop/src/renderer/src/features/file-explorer/__tests__/download-job-toast.test.ts`: each dispatched download produces one toast bound to its `transactionId`; in-flight: progress bar updates from `downloading` events; on terminal `file-downloaded`: toast flips to the success variant with [Show in folder] + [Open] actions; on `download-failed`: red toast with Retry; on `download-cancelled`: silent dismiss
+- [ ] 24.1 Write unit tests for `apps/desktop/src/renderer/src/features/file-explorer/__tests__/download-job-toast.test.ts`: each dispatched download produces one toast bound to its `downloadJobId`; in-flight: progress bar updates from `downloading` events; on terminal `file-downloaded`: toast flips to the success variant with [Show in folder] + [Open] actions; on `download-failed`: red toast with Retry; on `download-cancelled`: silent dismiss
 - [ ] 24.2 Implement `download-job-toast.ts` mirroring `upload-job-toast.ts` (use `toast.custom()` for the dual-action success layout); rerun → green
 - [ ] 24.3 Write a unit test for app-init hydration: on `onActiveDownloadsHydrate(jobs)`, spawn one toast per job with the current `bytesDownloaded` / `contentLength` ratio as initial progress; subscribe each to its txId's progress feed; the existing toaster pattern handles subsequent updates
 - [ ] 24.4 Implement the hydration entry point in the file-explorer init effect; rerun → green

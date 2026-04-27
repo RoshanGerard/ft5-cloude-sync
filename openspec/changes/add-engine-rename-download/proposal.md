@@ -42,7 +42,7 @@ End-to-end correctness gaps the change resolves:
   provider context.
 - `files-download.ts` is the **orchestration layer** for downloads. It mints a service-level `downloadJobId`, creates an `AbortController`, and runs a retry loop calling `engine.downloadFile(target, { rangeStart, signal, onProgress })` against the local file's current size (`fs.stat(toPath).size`). On mid-stream auth-expired, the handler retries with the new `rangeStart`; the engine's `withRefresh` wrapper handles the credential refresh on the next call. The handler validates `contentRange.start === rangeStart` before resuming the local pipe (rejects range-not-honored 200 OK responses). On success, performs an integrity check against the provider's hash (Drive `md5Checksum`, OneDrive `quickXorHash`/`sha1Hash`, S3 `ETag` for non-multipart). Replies `{ savedPath, bytes }`. The `downloadJobId` is the canonical job key for cancel + progress correlation.
 - New in-memory `DownloadRegistry` module (`services/fs-sync/src/downloads/registry.ts`)
-  that holds `Map<transactionId, DownloadJob>` where `DownloadJob`
+  that holds `Map<downloadJobId, DownloadJob>` where `DownloadJob`
   carries `{ datasourceId, sourcePath, targetPath, bytesDownloaded,
   contentLength, startedAt }`. Updated on each `downloading` /
   `file-downloaded` / `download-failed` / `download-cancelled` event.
@@ -65,7 +65,7 @@ End-to-end correctness gaps the change resolves:
   fallback).
 - New commands `downloads:list-active` (request: empty; response: array
   of `DownloadJob`) and event `downloading` exposed to the renderer via
-  `window.api.files.onDownloadProgress(transactionId, callback)`.
+  `window.api.files.onDownloadProgress(downloadJobId, callback)`.
 
 **Desktop main — `apps/desktop/src/main`:**
 
@@ -96,7 +96,7 @@ End-to-end correctness gaps the change resolves:
   on click, resolves the toPath via the user's preferences (first-run
   modal, default folder, or showSaveDialog for "always ask" / Shift+Click),
   dispatches `window.api.files.download`, opens a Sonner toast bound to
-  the returned `transactionId`, subscribes to the progress feed.
+  the returned `downloadJobId`, subscribes to the progress feed.
 - Sonner success toast variant C: Open as primary CTA (filled blue
   button), "Show in folder" as secondary text link, auto-dismiss timer
   matching the upload toast's success duration.
@@ -114,7 +114,7 @@ End-to-end correctness gaps the change resolves:
   `Shift+Click` modifier and forwards to the IPC.
 - On app-init effect, fetch active downloads via
   `window.api.files.listActiveDownloads()`, hydrate one Sonner toast per
-  in-flight job, subscribe to each `transactionId`'s progress feed.
+  in-flight job, subscribe to each `downloadJobId`'s progress feed.
 
 **Mock-fs cleanup:**
 

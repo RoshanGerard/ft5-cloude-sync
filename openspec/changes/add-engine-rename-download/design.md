@@ -391,7 +391,7 @@ first connect of a session), the desktop main queries this and
 forwards the snapshot to the renderer via a new
 `window.api.files.listActiveDownloads()` exposure. The renderer's
 app-init effect spawns one Sonner toast per entry, subscribes to the
-progress feed for each `transactionId`, and resumes UI continuity.
+progress feed for each `downloadJobId`, and resumes UI continuity.
 
 **Why in-memory only, not disk-persisted.** Per the architectural
 boundary the user established during brainstorming: "service is the

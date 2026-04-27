@@ -167,7 +167,7 @@ via `new` directly by consumers.
 
 #### Scenario: Every concrete client conforms to the shared interface
 
-- **WHEN** a contract test in `packages/fs-datasource-engine/src/__tests__/strategy-contract.test.ts` enumerates every exported client class
+- **WHEN** a contract test in `packages/fs-datasource-engine/src/__tests__/strategy-contract.ts` enumerates every exported client class
 - **THEN** each class is `assignable` to `DatasourceClient<its provider type>`, every method on the interface (including the two added in this change) is present with the correct signature, and a shared suite of scenarios (list, search, upload, delete, error, rename, download with rangeStart, AbortSignal-driven cancel) passes against each
 
 #### Scenario: Consumers program to the interface, not the concrete class
