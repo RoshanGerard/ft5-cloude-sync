@@ -142,7 +142,12 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -164,7 +169,12 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -214,7 +224,12 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -290,18 +305,19 @@ describe("ipc-contracts files request/response pairs", () => {
           ok: true;
           value: {
             results: Array<
-              | { path: string; handle: string; ok: true }
+              | { readonly path: string; readonly handle: string; readonly ok: true }
               | {
-                  path: string;
-                  handle: string;
-                  ok: false;
-                  error: {
-                    tag:
+                  readonly path: string;
+                  readonly handle: string;
+                  readonly ok: false;
+                  readonly error: {
+                    readonly tag:
                       | "auth-revoked"
                       | "disconnected"
                       | "rate-limited"
-                      | "other";
-                    message: string;
+                      | "other"
+                      | "invalid-datasource";
+                    readonly message: string;
                   };
                 }
             >;
@@ -310,7 +326,12 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -376,7 +397,12 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
