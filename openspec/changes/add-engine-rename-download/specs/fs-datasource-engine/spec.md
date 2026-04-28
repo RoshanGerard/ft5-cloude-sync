@@ -31,7 +31,7 @@ downloadFile(
 
 When `options.rangeStart` is set, the strategy SHALL attach `Range: bytes=<rangeStart>-` to the provider request. The returned `contentRange` SHALL reflect the provider's response (parsed from the `Content-Range` header or SDK equivalent); when the response is 200 OK (full content rather than 206 Partial Content), `contentRange` SHALL be omitted so consumers can detect the range-not-honored case.
 
-When `options.onProgress` is set, the strategy SHALL invoke it with `(loaded, total)` as bytes flow during the response stream's lifetime. The engine does NOT emit `downloading` events on its bus; consumer-domain progress events are the consumer's responsibility.
+When `options.onProgress` is set, the strategy SHALL invoke it with `(loaded, total)` as bytes flow during the response stream's lifetime. The engine ALSO emits the four download lifecycle events on its broadcast bus (see "Engine bus emits download lifecycle events" below); the synchronous `onProgress` callback and the bus emissions fire from the same byte-flow source.
 
 #### Scenario: Every concrete strategy implements the new methods
 
@@ -115,6 +115,59 @@ Consumer-domain orchestration of resume — calling `downloadFile` again with `r
 
 - **WHEN** a `downloadFile` call returned a stream that successfully delivered N bytes, then the underlying provider request errored mid-stream with auth-expired (token expired during the response)
 - **THEN** the stream errors with `DatasourceError { tag: "auth-expired" }` reaching the consumer's pipe-to-disk; the engine does NOT refresh or splice internally; the consumer is responsible for deciding whether to call `downloadFile` again with `rangeStart=N` (which goes through `withRefresh` afresh and refreshes the credential)
+
+### Requirement: Engine bus emits download lifecycle events
+
+The engine bus SHALL emit four download lifecycle events during the
+lifetime of a `downloadFile` call. These events are raw vendor-API
+facts on the broadcast bus — fs-sync (the consumer that owns the
+DownloadRegistry) subscribes and applies a business-logic
+transformation before emitting its own desktop-facing events with
+different payload shapes (`downloadJobId`-keyed, business-decorated).
+The engine bus payload shapes are:
+
+```typescript
+"downloading":         { datasourceId, path, loaded: number, total: number };
+"file-downloaded":     { datasourceId, path, savedPath: string, bytes: number };
+"download-failed":     { datasourceId, path, error: SerializedDatasourceError<T> };
+"download-cancelled":  { datasourceId, path, bytesDownloaded: number, bytesTotal: number };
+```
+
+The `downloading` event is streaming-tagged (subject to the same
+coalescer the engine bus already applies to `uploading`). The three
+terminal events bypass the coalescer and fire exactly once per
+`downloadFile` invocation. `path` carries the request's `Target.path`
+so subscribers can correlate against an in-flight job. The
+synchronous `options.onProgress` callback continues to fire from the
+same byte-flow source — direct caller path is unchanged; the bus is
+the broadcast path consumed by fs-sync's subscription.
+
+When `downloadFile` is invoked again with `rangeStart > 0` (handler-
+driven retry-and-resume), the new invocation produces its own fresh
+sequence of events: a new `downloading` series whose `loaded` resets
+to the provider's response (typically `rangeStart` for a 206 Partial
+Content) and its own terminal event. The bus does NOT carry an
+invocation-id; subscribers correlate by `(datasourceId, path)`.
+
+#### Scenario: Successful download emits `downloading` then `file-downloaded`
+
+- **WHEN** `engine.downloadFile(target)` resolves and the consumer pipes the returned stream to disk to completion
+- **THEN** the bus observes one or more `downloading { datasourceId, path, loaded, total }` events as bytes flow (subject to streaming coalescing), followed by exactly one `file-downloaded { datasourceId, path, savedPath, bytes }` event when the consumer reports terminal success; no `download-failed` or `download-cancelled` event is emitted
+
+#### Scenario: Mid-stream error emits `downloading` then `download-failed`
+
+- **WHEN** `engine.downloadFile(target)` resolves and the returned stream errors mid-flight (auth-expired, network, 5xx, etc.) before the consumer reports terminal success
+- **THEN** the bus observes the `downloading` events that fired up to the failure point, followed by exactly one `download-failed { datasourceId, path, error: SerializedDatasourceError<T> }` event whose `error` carries the normalized `DatasourceError`; no `file-downloaded` or `download-cancelled` event is emitted
+
+#### Scenario: AbortSignal-driven cancel emits `downloading` then `download-cancelled`
+
+- **WHEN** the consumer invokes `engine.downloadFile(target, { signal })` and aborts the signal while bytes are flowing
+- **THEN** the bus observes the `downloading` events that fired up to the abort, followed by exactly one `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }` event; no `download-failed` event is emitted (cancel is the terminal classification, not failure); `bytesDownloaded` reflects the last `loaded` value the strategy reported and `bytesTotal` reflects the response's `contentLength` (or `0` if cancelled before the response advertised one)
+
+#### Scenario: Range-resume invocation emits a fresh event sequence
+
+- **WHEN** the consumer invokes `engine.downloadFile(target, { rangeStart: N })` after a prior invocation's terminal event already fired on the bus, and the provider returns 206 Partial Content
+- **THEN** the new invocation emits its own fresh `downloading` series (with `loaded` reflecting the provider's response progression — typically starting at `N`) and its own terminal event; the bus does NOT correlate the two invocations via an invocation-id; subscribers correlate by `(datasourceId, path)` if they need to track the resume relationship
 
 ### Requirement: Rename conflict surfaces `DatasourceError { tag: "conflict" }` when policy is "fail"
 

@@ -70,14 +70,19 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 
 ## 5. Engine — `downloadFile` primitive
 
-- [ ] 5.1 Write a unit test for `BaseDatasourceClient.downloadFile`: a minimal subclass implements `doDownloadFileImpl` (returns `{ stream, contentLength, contentRange? }`); calling `downloadFile(target)` returns the same shape unchanged via `withRefresh`; no transaction ID minted; no engine bus events emitted for download. Test fails
+- [ ] 5.1 Write a unit test for `BaseDatasourceClient.downloadFile`: a minimal subclass implements `doDownloadFileImpl` (returns `{ stream, contentLength, contentRange? }`); calling `downloadFile(target)` returns the same shape unchanged via `withRefresh`; no transaction ID minted; the engine bus DOES emit the four download lifecycle events on the happy path — assert that during a small fixture download the bus observes one or more `downloading { datasourceId, path, loaded, total }` events followed by exactly one `file-downloaded { datasourceId, path, savedPath, bytes }` (with no `download-failed` or `download-cancelled`). Test fails
 - [ ] 5.2 Add `downloadFile(target, options?: { rangeStart?, signal?, onProgress? })` returning `{ stream, contentLength, contentRange? }` + `doDownloadFileImpl(target, options)` abstract to base-client.ts. Wrap with `withRefresh` for one-shot auth-expired retry on the initial call. Forward `options` directly to the strategy; do NOT track per-download state in the base class. Rerun test → green
 - [ ] 5.3 Write a unit test for `rangeStart` propagation: a downstream call with `{ rangeStart: 1024 }` causes the strategy's `doDownloadFileImpl` to receive that value; the strategy responds with `contentRange: { start: 1024, end, total }`; the base passes it through unchanged. Test fails
 - [ ] 5.4 Implement; rerun → green
 - [ ] 5.5 Write a unit test for `signal` propagation: aborting the passed AbortSignal causes the strategy's underlying SDK call to error with AbortError (or normalized cancelled). Test fails
 - [ ] 5.6 Implement; rerun → green
-- [ ] 5.7 Write a unit test for `onProgress` propagation: as the strategy emits progress callbacks, the consumer's `onProgress` is invoked with `(loaded, total)`. The engine does NOT emit `downloading` events on its bus. Test fails
-- [ ] 5.8 Implement; rerun → green
+- [ ] 5.7 Write a unit test for `onProgress` propagation: as the strategy emits progress callbacks, the consumer's synchronous `onProgress` callback is invoked with `(loaded, total)`. Test fails
+- [ ] 5.7b Write a parallel unit test asserting the engine bus ALSO emits `downloading { datasourceId, path, loaded, total }` events from the same byte-flow source — the bus emission and the synchronous `onProgress` callback fire from the same hook, so for each `(loaded, total)` step the test observes both a callback invocation AND a bus event with matching `loaded` / `total` plus the standard `(datasourceId, path)` envelope. Test fails
+- [ ] 5.8 Implement both paths (synchronous callback + bus emission from a single byte-counting hook in the strategy); rerun → green
+- [ ] 5.9 Write a unit test for `download-failed` bus emission: a strategy whose `doDownloadFileImpl` resolves a stream that errors mid-flight observes a sequence of `downloading` events on the bus followed by exactly one `download-failed { datasourceId, path, error: SerializedDatasourceError<T> }` event whose `error` carries the normalized `DatasourceError`; no `file-downloaded` or `download-cancelled` is emitted. Test fails
+- [ ] 5.10 Implement the failure-path bus emission (the base class catches the stream error after invoking `normalizeErrorImpl` and emits `download-failed` before re-throwing to the consumer); rerun → green
+- [ ] 5.11 Write a unit test for `download-cancelled` bus emission: a strategy whose `doDownloadFileImpl` resolves a stream that aborts via `options.signal` observes the `downloading` events emitted up to the abort followed by exactly one `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }` event (NOT `download-failed`); `bytesDownloaded` reflects the last `loaded` reported and `bytesTotal` reflects the response's `contentLength`. Test fails
+- [ ] 5.12 Implement the cancel-path bus emission (the base class distinguishes AbortError / `tag: "cancelled"` from other failures and routes to `download-cancelled` instead of `download-failed`); rerun → green
 
 ## 7. Engine — Drive strategy
 
@@ -89,9 +94,9 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 - [ ] 7.6 Implement; rerun → green
 - [ ] 7.7 Write a unit test for `doDownloadFileImpl(target, options?)` issuing `files.get({ fileId, alt: "media" }, { responseType: "stream", headers: rangeStart > 0 ? { Range: \`bytes=${rangeStart}-\` } : {}, signal: options?.signal })`. Returns `{ stream: response.data, contentLength: parseInt(headers['content-length']), contentRange: parseContentRangeHeader(headers['content-range']) }`. The strategy hooks the stream's `data` events into `options.onProgress(loaded, total)` if provided. Test fails
 - [ ] 7.8 Implement; rerun → green
-- [ ] 7.9 Write a unit test for AbortSignal forwarding: aborting the passed signal aborts the underlying `googleapis` request, the returned stream errors with AbortError; the strategy's `normalizeErrorImpl` maps it to `tag: "cancelled"`. Test fails
+- [ ] 7.9 Write a unit test for AbortSignal forwarding: aborting the passed signal aborts the underlying `googleapis` request, the returned stream errors with AbortError; the strategy's `normalizeErrorImpl` maps it to `tag: "cancelled"`; the engine bus also emits exactly one `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }` event (NOT `download-failed`) carrying the byte counts at abort time. Test fails
 - [ ] 7.10 Implement; rerun → green
-- [ ] 7.11 Write a unit test for mid-stream auth-expired surfacing: an in-flight Drive stream errors with 401 mid-response; the strategy's `normalizeErrorImpl` maps it to `tag: "auth-expired"`; the consumer's pipeline rejects with that normalized error (no internal retry by the engine). Test fails
+- [ ] 7.11 Write a unit test for mid-stream auth-expired surfacing: an in-flight Drive stream errors with 401 mid-response; the strategy's `normalizeErrorImpl` maps it to `tag: "auth-expired"`; the consumer's pipeline rejects with that normalized error (no internal retry by the engine); the engine bus also emits exactly one `download-failed { datasourceId, path, error: SerializedDatasourceError<T> }` event whose `error.tag === "auth-expired"`. Test fails
 - [ ] 7.12 Implement; rerun → green
 
 ## 8. Engine — OneDrive strategy
@@ -101,8 +106,8 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 - [ ] 8.3 Write/implement directory-overwrite refusal (parallel to Drive's 7.5/7.6)
 - [ ] 8.4 Write/implement conflict detection in `normalizeErrorImpl` for Graph 409 errors (in case a race made the pre-check pass but the actual PATCH collided)
 - [ ] 8.5 Write/implement `doDownloadFileImpl(target, options?)` calling `fetch('/me/drive/items/{id}/content', { headers: rangeStart > 0 ? { Range: \`bytes=${rangeStart}-\` } : {}, signal: options?.signal })`. Read `Content-Length` and `Content-Range` from response headers; convert response.body Web ReadableStream to a Node Readable (or use the Microsoft Graph SDK's stream API if it returns Node streams natively). Hook progress callbacks into `options.onProgress` if provided.
-- [ ] 8.6 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10)
-- [ ] 8.7 Write/implement mid-stream auth-expired surfacing (parallel to Drive's 7.11-7.12)
+- [ ] 8.6 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — bus emits `download-cancelled` exactly once on abort
+- [ ] 8.7 Write/implement mid-stream auth-expired surfacing (parallel to Drive's 7.11-7.12) — bus emits `download-failed { error.tag: "auth-expired" }` exactly once on the surfaced 401
 
 ## 9. Engine — S3 strategy
 
@@ -122,8 +127,8 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 - [ ] 9.14 Implement; rerun → green
 - [ ] 9.15 Write a unit test for `doDownloadFileImpl(target, options?)` calling `GetObjectCommand({ Bucket, Key, Range: rangeStart > 0 ? \`bytes=${rangeStart}-\` : undefined })` with `{ abortSignal: options?.signal }` on the client invocation. Returns `{ stream: response.Body, contentLength: response.ContentLength, contentRange: parseContentRangeFromS3(response.ContentRange) }`. Hook S3 SDK progress events into `options.onProgress` if available, or count bytes manually on the stream.
 - [ ] 9.16 Implement; rerun → green
-- [ ] 9.17 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — S3 SDK's `abortSignal` parameter on the client invocation.
-- [ ] 9.18 Write/implement mid-stream auth-expired surfacing — S3's auth-expired manifests as an SDK error with a specific shape (e.g., `ExpiredToken`); the strategy's `normalizeErrorImpl` maps it to `tag: "auth-expired"`.
+- [ ] 9.17 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — S3 SDK's `abortSignal` parameter on the client invocation; bus emits `download-cancelled` exactly once on abort.
+- [ ] 9.18 Write/implement mid-stream auth-expired surfacing — S3's auth-expired manifests as an SDK error with a specific shape (e.g., `ExpiredToken`); the strategy's `normalizeErrorImpl` maps it to `tag: "auth-expired"`; bus emits `download-failed { error.tag: "auth-expired" }` exactly once on the surfaced error.
 
 ## 10. Engine — strategy-contract test sweep
 
@@ -143,6 +148,8 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 - [ ] 12.2 Implement the handler; thread through `commands/handlers.ts`; rerun → green
 
 ## 13. Service — `files-download` RPC handler (orchestration layer)
+
+The `files:download` handler is fs-sync's business-logic layer for download. It owns the retry loop (§13.5-13.6, design.md Decision 3), the integrity check (§13.13-13.14), `downloadJobId` minting + registry updates (§13.17-13.20), the engine-bus subscription that drives those updates (§13.21-13.24), and the desktop-facing event taxonomy. The events fs-sync emits to desktop are DERIVED from the engine bus's four download lifecycle events through a business-logic transformation — fs-sync events are NOT a re-broadcast of engine events. Engine bus events are `(datasourceId, path)`-keyed and carry raw vendor facts; fs-sync events are `downloadJobId`-keyed and carry business-decoration metadata.
 
 - [ ] 13.1 Write unit tests for `services/fs-sync/src/commands/files-download.ts` happy path: handler validates `toPath`, mints a `downloadJobId`, creates an `AbortController`, calls `engine.downloadFile(target, { rangeStart: 0, signal, onProgress })`, pipes the stream to `fs.createWriteStream(toPath, { flags: "w", start: 0 })`, on stream end reads `fs.stat(toPath).size === contentLength`, runs the integrity check, emits `file-downloaded`, replies `{ ok: true, value: { savedPath, bytes } }`. Test fails
 - [ ] 13.2 Implement the happy path; rerun → green
@@ -164,6 +171,12 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 - [ ] 13.18 Implement the throttle (reuse the upload bus coalescer if possible); rerun → green
 - [ ] 13.19 Write unit tests for **registry release on terminal events**: on file-downloaded / download-failed / download-cancelled, the registry entry is deleted. Test fails (probably already handled by the retry loop's finally block — verify)
 - [ ] 13.20 Implement / verify; rerun → green
+- [ ] 13.21 Write unit tests for **engine-bus subscription wiring**: at service startup, fs-sync subscribes to the engine bus's four download lifecycle events (`downloading`, `file-downloaded`, `download-failed`, `download-cancelled`); the subscription is keyed by event name (NOT per-job — one subscription handles all in-flight downloads). Each callback looks up the `downloadJobId` for `(datasourceId, path)` in the registry's reverse index. Test fails
+- [ ] 13.22 Implement the subscription wiring at the service-bootstrap level; rerun → green
+- [ ] 13.23 Write unit tests for **registry reverse index**: `(datasourceId, path) → downloadJobId`. The index updates when the handler sets the registry entry on download start and clears when the handler removes the entry on terminal. Lookups are O(1). v1 enforces at most one in-flight download per `(datasourceId, path)` — a second `files:download` request for an already-active `(datasourceId, path)` rejects with `{ ok: false, error: { tag: "other", message: "download already in progress for this entry", retryable: false } }` BEFORE any engine call. Test fails
+- [ ] 13.24 Implement the reverse-index + concurrent-rejection guard; rerun → green
+- [ ] 13.25 Write a unit test asserting that fs-sync's desktop-facing events (`downloading`, `file-downloaded`, `download-failed`, `download-cancelled`) are DERIVED from the engine bus subscription, not relayed: their payload shapes differ from engine bus payloads — fs-sync events carry `downloadJobId` (engine events carry only `(datasourceId, path)`), `downloading.progress` is the throttled 0-100 percentage (not raw `loaded`/`total`), `file-downloaded` includes only the desktop-relevant fields (no raw error envelope), `download-failed` carries `tag`/`message` (not `SerializedDatasourceError`), and `download-cancelled` carries `reason`. Test fails
+- [ ] 13.26 Implement the transformation at the bus-subscription callback (engine bus event → registry update → fs-sync IPC event emission); rerun → green
 
 ## 14. Service — `downloads:list-active` RPC handler
 
@@ -173,8 +186,10 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 
 ## 15. Service — `downloading` event forwarding
 
-- [ ] 15.1 Write a unit test for the existing event-stream subscription path delivering `downloading` events to a `sync:subscribe-events` client; assert throttling matches the upload coalescer
-- [ ] 15.2 If the path already covers events automatically (the engine bus is forwarded wholesale), this task is just a verification + documentation step; otherwise extend the bridge
+The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-FACING events (downloadJobId-keyed, business-decorated), NOT the raw engine bus events. The engine bus is consumed inside fs-sync (§13.21-§13.26); only fs-sync's transformed events cross the IPC channel to subscribers.
+
+- [ ] 15.1 Write a unit test for the event-stream subscription path delivering fs-sync's `downloading` events to a `sync:subscribe-events` client; assert throttling matches the upload coalescer; assert the payload shape is fs-sync's `{ downloadJobId, datasourceId, progress, path }` (NOT the engine bus's `{ datasourceId, path, loaded, total }`)
+- [ ] 15.2 Implement / verify the bridge applies the bus → fs-sync transformation (§13.25-§13.26) before forwarding; rerun → green
 
 ## 16. Service — full vitest suite
 

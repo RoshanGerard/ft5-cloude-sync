@@ -131,6 +131,24 @@ calls it repeatedly with `rangeStart` advancing on each retry to
 implement resume. AbortSignal propagation gives the consumer cancel
 control without needing a separate engine cancel API.
 
+The engine bus emits four download lifecycle events alongside the
+synchronous `options.onProgress` callback:
+
+- `downloading { datasourceId, path, loaded, total }`
+- `file-downloaded { datasourceId, path, savedPath, bytes }`
+- `download-failed { datasourceId, path, error: SerializedDatasourceError<T> }`
+- `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }`
+
+These events are raw vendor-API facts emitted on the engine's
+broadcast bus — the same shape and cadence regardless of provider.
+The `options.onProgress` callback remains the low-overhead
+synchronous hook for the direct caller (the fs-sync handler's
+pipe-to-disk loop); the bus is the broadcast path consumed by
+fs-sync's subscription that owns the registry and consumer-domain
+event taxonomy. Both paths fire from the same byte-flow lifecycle —
+the bus does not duplicate internal state, the strategy hooks
+`(loaded, total)` into both as bytes flow.
+
 `contentRange` is populated only when `rangeStart` is set; the
 strategy reads it from the provider's `Content-Range` response
 header (or SDK equivalent). The consumer SHALL validate that
@@ -384,6 +402,35 @@ removes the entry on terminal success / failure / cancellation. The
 handler also emits the consumer-domain events (`downloading`,
 `file-downloaded`, `download-failed`, `download-cancelled`) on the
 service's IPC event stream.
+
+**fs-sync events are derived, not relayed.** The events fs-sync
+emits to desktop are NOT a re-broadcast of engine bus events. They
+are the output of a business-logic transformation that fs-sync
+applies on top of its engine-bus subscription: mint
+`downloadJobId`, throttle progress, run integrity check
+post-pipe, apply retry policy, update the DownloadRegistry, then
+emit a desktop-facing event whose payload shape differs from the
+engine's bus event. Engine bus events are keyed by `(datasourceId,
+path)` and carry raw vendor facts; fs-sync events are keyed by
+`downloadJobId` and carry business-decoration metadata.
+
+The canonical illustration of this principle is the no-connection
+class of failure. The engine emits a raw `no-connection` bus event
+the moment the underlying SDK call fails. fs-sync subscribes to
+that, applies its retry policy, and emits its own desktop-facing
+`no-connection { retryAfter: 30, maxRetryCount: 5 }` event every
+30 seconds until the datasource is restored — different cadence,
+different payload, business-logic-decorated. The engine never
+emits a `retryAfter` field; that field is fs-sync's contribution.
+
+Engine = raw vendor-API facts on a broadcast bus. fs-sync = the
+layer that owns business logic and edge cases, transforming engine
+events into the desktop-facing event taxonomy. This change applies
+that principle to the four download lifecycle events: engine
+emits `(datasourceId, path)`-keyed raw events; fs-sync's
+subscription transforms them into `downloadJobId`-keyed
+desktop-facing events with throttling, integrity, and registry
+state baked in.
 
 A new RPC `downloads:list-active` returns a snapshot of the registry.
 On supervisor connect (specifically, on the desktop main process's
