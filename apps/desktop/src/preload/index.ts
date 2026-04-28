@@ -309,6 +309,15 @@ const api = {
   dialog: {
     showSaveDialog: (opts: unknown): Promise<unknown> =>
       ipcRenderer.invoke("dialog:showSaveDialog", opts),
+    // add-engine-rename-download §21 prerequisite — pass-through to
+    // Electron's `dialog.showOpenDialog`. Used by the first-run
+    // downloads modal's Browse button (§21) and the Settings dialog's
+    // Change… button (§22) for directory-pick. Same `unknown` wire
+    // shape as showSaveDialog; the renderer-scoped `window-api.d.ts`
+    // widens this to a structural subset of the OpenDialogOptions
+    // fields the renderer actually uses.
+    showOpenDialog: (opts: unknown): Promise<unknown> =>
+      ipcRenderer.invoke("dialog:showOpenDialog", opts),
   },
   // Electron 32+ removed `File.path`. The drag-drop upload flow needs
   // the absolute filesystem path of each dropped File so the main-

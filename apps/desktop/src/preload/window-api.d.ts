@@ -115,6 +115,23 @@ declare global {
             extensions: readonly string[];
           }>;
         }): Promise<{ canceled: boolean; filePath?: string }>;
+        // add-engine-rename-download §21 prerequisite — directory-pick
+        // surface for the first-run downloads modal's Browse button
+        // (§21) and the Settings dialog's Change… button (§22).
+        // Structural subset of Electron's `OpenDialogOptions` /
+        // `OpenDialogReturnValue`; properties is typed as a readonly
+        // string array — the renderer constrains the vocabulary at
+        // the call site to `['openDirectory', 'createDirectory']`.
+        showOpenDialog(opts: {
+          title?: string;
+          defaultPath?: string;
+          buttonLabel?: string;
+          properties?: readonly string[];
+          filters?: ReadonlyArray<{
+            name: string;
+            extensions: readonly string[];
+          }>;
+        }): Promise<{ canceled: boolean; filePaths: readonly string[] }>;
       };
       sync: {
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;

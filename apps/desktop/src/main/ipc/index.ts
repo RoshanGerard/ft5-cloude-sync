@@ -35,7 +35,12 @@ import { handleDatasourcesAdd } from "./datasources/add.js";
 import { handleDatasourcesList } from "./datasources/list.js";
 import { handlePickFilesToUpload } from "./datasources/pick-files-to-upload.js";
 import { handleDatasourcesRemove } from "./datasources/remove.js";
-import { handleDialogShowSaveDialog, type SaveDialogOptionsLike } from "./dialog.js";
+import {
+  handleDialogShowOpenDialog,
+  handleDialogShowSaveDialog,
+  type OpenDialogOptionsLike,
+  type SaveDialogOptionsLike,
+} from "./dialog.js";
 import { handleFilesDownload } from "./files/download.js";
 import { handleFilesList } from "./files/list.js";
 import {
@@ -296,6 +301,59 @@ export function registerIpcHandlers(
             ...(result.filePath !== undefined
               ? { filePath: result.filePath }
               : {}),
+          };
+        },
+      }),
+  );
+
+  // add-engine-rename-download §21 prerequisite — `dialog.showOpenDialog`
+  // pass-through. Used by the first-run downloads modal's Browse button
+  // (§21) and the Settings dialog's Change… button (§22). Mirrors the
+  // showSaveDialog binding above: targetWindow-aware, defensive copy of
+  // mutable Electron fields at the seam.
+  ipcMain.handle(
+    "dialog:showOpenDialog",
+    async (_event, opts: OpenDialogOptionsLike) =>
+      handleDialogShowOpenDialog(opts, {
+        showOpenDialog: async (o) => {
+          // Electron's `OpenDialogOptions.properties` is mutable (a
+          // string-union array); our handler-side type is readonly to
+          // keep the cross-process boundary safe. Defensive copy at
+          // the seam.
+          const electronOpts = {
+            ...(o.title !== undefined ? { title: o.title } : {}),
+            ...(o.defaultPath !== undefined
+              ? { defaultPath: o.defaultPath }
+              : {}),
+            ...(o.buttonLabel !== undefined
+              ? { buttonLabel: o.buttonLabel }
+              : {}),
+            ...(o.properties !== undefined
+              ? {
+                  // Cast at the seam: Electron's properties is a
+                  // string-union literal type, but we accept any
+                  // readonly string[] from the renderer. The renderer
+                  // pins the vocabulary at the call site.
+                  properties: [...o.properties] as Parameters<
+                    typeof dialog.showOpenDialog
+                  >[0]["properties"],
+                }
+              : {}),
+            ...(o.filters !== undefined
+              ? {
+                  filters: o.filters.map((f) => ({
+                    name: f.name,
+                    extensions: [...f.extensions],
+                  })),
+                }
+              : {}),
+          };
+          const result = targetWindow
+            ? await dialog.showOpenDialog(targetWindow, electronOpts)
+            : await dialog.showOpenDialog(electronOpts);
+          return {
+            canceled: result.canceled,
+            filePaths: result.filePaths,
           };
         },
       }),

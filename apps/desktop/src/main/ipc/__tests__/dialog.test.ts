@@ -10,7 +10,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { handleDialogShowSaveDialog } from "../dialog.js";
+import {
+  handleDialogShowOpenDialog,
+  handleDialogShowSaveDialog,
+} from "../dialog.js";
 
 describe("handleDialogShowSaveDialog — proxy over dialog.showSaveDialog", () => {
   it("delegates to deps.showSaveDialog with the renderer's opts verbatim and returns the result", async () => {
@@ -72,6 +75,61 @@ describe("handleDialogShowSaveDialog — proxy over dialog.showSaveDialog", () =
 
     await expect(
       handleDialogShowSaveDialog({ defaultPath: "/x" }, { showSaveDialog }),
+    ).rejects.toBe(boom);
+  });
+});
+
+// add-engine-rename-download §21 prerequisite — `dialog.showOpenDialog`
+// pass-through. Sibling of `handleDialogShowSaveDialog`, used by the
+// first-run downloads modal's Browse button and the Settings dialog's
+// Change… button to pick a default downloads folder. The handler is a
+// thin pass-through over Electron's `dialog.showOpenDialog`; the
+// renderer-supplied options (e.g.
+// `{ properties: ['openDirectory', 'createDirectory'] }`) are forwarded
+// verbatim.
+describe("handleDialogShowOpenDialog — proxy over dialog.showOpenDialog", () => {
+  it("delegates to deps.showOpenDialog with the renderer's opts verbatim and returns the result", async () => {
+    const expected = {
+      canceled: false,
+      filePaths: ["/Users/alice/Downloads/ft5"] as const,
+    };
+    const showOpenDialog = vi.fn().mockResolvedValue(expected);
+
+    const opts = {
+      title: "Choose downloads folder",
+      properties: ["openDirectory", "createDirectory"] as const,
+      defaultPath: "/Users/alice/Downloads/ft5",
+    };
+    const result = await handleDialogShowOpenDialog(opts, { showOpenDialog });
+
+    expect(showOpenDialog).toHaveBeenCalledTimes(1);
+    expect(showOpenDialog).toHaveBeenCalledWith(opts);
+    expect(result).toEqual(expected);
+  });
+
+  it("returns { canceled: true, filePaths: [] } when the user dismisses the dialog", async () => {
+    const showOpenDialog = vi.fn().mockResolvedValue({
+      canceled: true,
+      filePaths: [],
+    });
+
+    const result = await handleDialogShowOpenDialog(
+      { properties: ["openDirectory"] as const },
+      { showOpenDialog },
+    );
+
+    expect(result).toEqual({ canceled: true, filePaths: [] });
+  });
+
+  it("propagates dialog rejections as-is", async () => {
+    const boom = new Error("open dialog crashed");
+    const showOpenDialog = vi.fn().mockRejectedValue(boom);
+
+    await expect(
+      handleDialogShowOpenDialog(
+        { properties: ["openDirectory"] as const },
+        { showOpenDialog },
+      ),
     ).rejects.toBe(boom);
   });
 });

@@ -254,9 +254,9 @@ The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-F
 
 ## 21. Renderer — first-run downloads modal
 
-- [ ] 21.1 Write unit tests for `first-download-modal.tsx`: renders the title, body, pre-filled OS-default path, Browse button, single CTA; cannot be dismissed via Escape or backdrop click; on commit, persists the chosen folder via `setDefaultFolder` and invokes the `onCommit` callback; on Browse click, invokes `window.api.dialog.showOpenDialog` with `properties: ['openDirectory', 'createDirectory']` and updates the path on selection
-- [ ] 21.2 Implement; rerun → green
-- [ ] 21.3 Write integration tests for the modal-trigger flow: a Download click with `getDefaultFolder() === null` opens the modal; on commit, the deferred download dispatches against the now-set folder
+- [x] 21.1 Write unit tests for `first-download-modal.tsx`: renders the title, body, pre-filled OS-default path, Browse button, single CTA; cannot be dismissed via Escape or backdrop click; on commit, persists the chosen folder via `setDefaultFolder` and invokes the `onCommit` callback; on Browse click, invokes `window.api.dialog.showOpenDialog` with `properties: ['openDirectory', 'createDirectory']` and updates the path on selection
+- [x] 21.2 Implement; rerun → green
+- [x] 21.3 Write integration tests for the modal-trigger flow: a Download click with `getDefaultFolder() === null` opens the modal; on commit, the deferred download dispatches against the now-set folder. **Done 2026-04-28**: extended `dialog.ts` + preload + `window-api.d.ts` with `showOpenDialog` (3 IPC handler tests) as a §21 prerequisite (mirrors §18.7-§18.8's `showSaveDialog`). Modal blocks dismissal via `showCloseButton={false}` + `onEscapeKeyDown.preventDefault()` + `onPointerDownOutside.preventDefault()` + `onInteractOutside.preventDefault()`. Pre-fill is the v1 string fallback `~/Downloads/ft5` per the task description (no preload OS-default getter). 12 modal tests (10 unit + 2 integration via a stub `<TriggerHarness>` per the task's "exercise the contract via a mock orchestrator" guidance — orchestrator wiring lands in §23). apps/desktop 1122 → 1137 (+15 = 12 modal + 3 IPC handler). typecheck + lint clean.
 
 ## 22. Renderer — settings dialog Downloads section
 
