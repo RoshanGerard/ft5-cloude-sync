@@ -12,23 +12,25 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { FilesErrorTag } from "../files.js";
 
 describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
-  it("exposes a runtime const object with exactly the 5 documented members", () => {
+  it("exposes a runtime const object with exactly the 6 documented members", () => {
     expect(FilesErrorTag).toStrictEqual({
       AuthRevoked: "auth-revoked",
       Disconnected: "disconnected",
       RateLimited: "rate-limited",
       Other: "other",
       InvalidDatasource: "invalid-datasource",
+      Conflict: "conflict",
     });
   });
 
-  it("derived type is the documented 5-string union", () => {
+  it("derived type is the documented 6-string union", () => {
     expectTypeOf<FilesErrorTag>().toEqualTypeOf<
       | "auth-revoked"
       | "disconnected"
       | "rate-limited"
       | "other"
       | "invalid-datasource"
+      | "conflict"
     >();
   });
 
@@ -39,5 +41,15 @@ describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
     const tagFromLiteral: FilesErrorTag = "auth-revoked";
     expect(tagFromConst).toBe("invalid-datasource");
     expect(tagFromLiteral).toBe("auth-revoked");
+  });
+
+  it("includes Conflict tag for rename collisions (add-engine-rename-download)", () => {
+    // `Conflict: "conflict"` is added by add-engine-rename-download for
+    // rename's conflictPolicy: "fail" path. The subtype assertion below
+    // remains valid even if FilesErrorTag widens further (mirrors
+    // DatasourceErrorTag's same-named member at the engine layer).
+    expectTypeOf<"conflict">().toMatchTypeOf<FilesErrorTag>();
+    const fromConst: FilesErrorTag = FilesErrorTag.Conflict;
+    expect(fromConst).toBe("conflict");
   });
 });

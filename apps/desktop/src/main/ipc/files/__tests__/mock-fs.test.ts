@@ -180,9 +180,12 @@ describe("mock-fs: rename", () => {
       datasourceId: "ds-gdrive-personal",
       path: file.path,
       newName: "renamed-doc.pdf",
+      conflictPolicy: "fail",
     });
-    expect(result.entry.name).toBe("renamed-doc.pdf");
-    expect(result.entry.path.endsWith("/renamed-doc.pdf")).toBe(true);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok envelope");
+    expect(result.value.entry.name).toBe("renamed-doc.pdf");
+    expect(result.value.entry.path.endsWith("/renamed-doc.pdf")).toBe(true);
 
     // state is mutated: the original path is gone, the new one is present
     const refreshed = expectListOk({
@@ -190,7 +193,7 @@ describe("mock-fs: rename", () => {
       path: "/documents",
     }).entries;
     expect(refreshed.some((e) => e.path === file.path)).toBe(false);
-    expect(refreshed.some((e) => e.path === result.entry.path)).toBe(true);
+    expect(refreshed.some((e) => e.path === result.value.entry.path)).toBe(true);
   });
 
   it("rejects rename on a directory entry", () => {
@@ -201,24 +204,28 @@ describe("mock-fs: rename", () => {
     });
     const dir = entries.find((e) => e.kind === "directory")!;
     expect(dir).toBeTruthy();
-    expect(() =>
-      rename({
-        datasourceId: "ds-gdrive-personal",
-        path: dir.path,
-        newName: "nope",
-      }),
-    ).toThrow(/folder rename is not supported/i);
+    const result = rename({
+      datasourceId: "ds-gdrive-personal",
+      path: dir.path,
+      newName: "nope",
+      conflictPolicy: "fail",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error envelope");
+    expect(result.error.message).toMatch(/folder rename is not supported/i);
   });
 
   it("throws when the path does not exist", () => {
     resetMockFs();
-    expect(() =>
-      rename({
-        datasourceId: "ds-gdrive-personal",
-        path: "/nowhere.pdf",
-        newName: "x.pdf",
-      }),
-    ).toThrow(/not found/i);
+    const result = rename({
+      datasourceId: "ds-gdrive-personal",
+      path: "/nowhere.pdf",
+      newName: "x.pdf",
+      conflictPolicy: "fail",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error envelope");
+    expect(result.error.message).toMatch(/not found/i);
   });
 });
 
@@ -384,10 +391,13 @@ describe("mock-fs: download", () => {
     const response = download({
       datasourceId: "ds-gdrive-personal",
       path: file.path,
+      toPath: "",
     });
-    expect(typeof response.savedPath).toBe("string");
-    expect(response.savedPath).toContain("ft5-mock-downloads");
-    expect(response.savedPath.endsWith(file.name)).toBe(true);
+    expect(response.ok).toBe(true);
+    if (!response.ok) throw new Error("expected ok envelope");
+    expect(typeof response.value.savedPath).toBe("string");
+    expect(response.value.savedPath).toContain("ft5-mock-downloads");
+    expect(response.value.savedPath.endsWith(file.name)).toBe(true);
   });
 });
 
@@ -427,6 +437,7 @@ describe("mock-fs: resetMockFs", () => {
       datasourceId: "ds-gdrive-personal",
       path: file.path,
       newName: "renamed.pdf",
+      conflictPolicy: "fail",
     });
     resetMockFs();
     const after = expectListOk({

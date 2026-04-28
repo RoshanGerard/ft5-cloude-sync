@@ -451,11 +451,16 @@ describe("preload exposed api", () => {
 
     it("rename(req) delegates to ipcRenderer.invoke('files:rename', req)", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      const response = { entry: { id: "e1" } };
+      const response = { ok: true as const, value: { entry: { id: "e1" } } };
       invokeMock.mockResolvedValue(response);
 
       const exposed = await loadExposed();
-      const req = { datasourceId: "ds-1", path: "/a.txt", newName: "b.txt" };
+      const req = {
+        datasourceId: "ds-1",
+        path: "/a.txt",
+        newName: "b.txt",
+        conflictPolicy: "fail" as const,
+      };
       const result = await exposed.files.rename(req);
 
       expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -479,11 +484,14 @@ describe("preload exposed api", () => {
 
     it("download(req) delegates to ipcRenderer.invoke('files:download', req)", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      const response = { savedPath: "/tmp/a.txt" };
+      const response = {
+        ok: true as const,
+        value: { savedPath: "/tmp/a.txt", bytes: 0 },
+      };
       invokeMock.mockResolvedValue(response);
 
       const exposed = await loadExposed();
-      const req = { datasourceId: "ds-1", path: "/a.txt" };
+      const req = { datasourceId: "ds-1", path: "/a.txt", toPath: "/tmp/a.txt" };
       const result = await exposed.files.download(req);
 
       expect(invokeMock).toHaveBeenCalledTimes(1);

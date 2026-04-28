@@ -25,6 +25,11 @@ export const FilesErrorTag = {
   RateLimited: "rate-limited",
   Other: "other",
   InvalidDatasource: "invalid-datasource",
+  // `"conflict"` (per add-engine-rename-download design.md Decision 7)
+  // surfaces a rename collision when conflictPolicy === "fail". Paired
+  // with `existingPath` on the envelope so the renderer's
+  // ConflictResolutionDialog can prompt with the colliding sibling path.
+  Conflict: "conflict",
 } as const;
 export type FilesErrorTag =
   (typeof FilesErrorTag)[keyof typeof FilesErrorTag];
@@ -37,6 +42,12 @@ export interface FilesErrorEnvelope {
   // paired with `tag: "rate-limited"`. Absence means "unknown; use your own
   // policy", NOT "retry immediately".
   retryAfterMs?: number;
+  // Populated only when `tag === "conflict"` (per add-engine-rename-download
+  // design.md Decision 7) — surfaces the colliding remote sibling path so
+  // the renderer's ConflictResolutionDialog can show it. Flat-optional
+  // shape mirrors retryAfterMs (NOT a discriminated union) so callers can
+  // read the field without re-narrowing on tag.
+  existingPath?: string;
 }
 
 export type FilesEnvelope<T> =
@@ -107,13 +118,24 @@ export interface FilesRenameRequest {
   datasourceId: string;
   path: string;
   newName: string;
+  // Per add-engine-rename-download design.md Decision 7. The wire type is
+  // non-optional; the renderer's store.rename action defaults to "fail"
+  // when the user does not pick a policy via the conflict-resolution
+  // dialog. Distinct from upload's ConflictPolicy
+  // ("overwrite" | "duplicate" | "skip") because the rename UX has
+  // different semantics — "fail" surfaces a conflict tag for the dialog
+  // to re-prompt; "keep-both" auto-suffixes; "overwrite" replaces the
+  // colliding sibling.
+  conflictPolicy: "fail" | "overwrite" | "keep-both";
 }
-// `files:rename` is not part of the tagged-envelope rollout in
-// wire-file-explorer-to-service Section 1; it stays on the legacy shape
-// until a follow-up change widens it.
-export interface FilesRenameResponse {
+// Successful rename payload (per add-engine-rename-download §2.10:
+// migrated from the legacy bare `{ entry }` shape into the same tagged
+// envelope every other files:* response carries). The renderer pulls
+// the renamed entry off `value.entry` after narrowing on `ok: true`.
+export interface FilesRenameValue {
   entry: FileEntry;
 }
+export type FilesRenameResponse = FilesEnvelope<FilesRenameValue>;
 
 // Per-target outcome inside a `files:remove` response. The outer envelope
 // is `ok: true` whenever the service successfully ATTEMPTED all targets;
@@ -180,11 +202,25 @@ export type FilesRemoveResponse = FilesEnvelope<FilesRemoveValue>;
 export interface FilesDownloadRequest {
   datasourceId: string;
   path: string;
-  toPath?: string;
+  // Required as of add-engine-rename-download: the service handler
+  // validates and writes to this path. The renderer resolves it from
+  // user preferences (default folder + filename, or showSaveDialog) and
+  // forwards. The mock-fs era allowed `toPath?` so the main process
+  // could fall back to a "saved-to-mock-path" stub; that fallback no
+  // longer exists.
+  toPath: string;
 }
-export interface FilesDownloadResponse {
+// Successful download payload (per add-engine-rename-download §2.12:
+// migrated from the legacy bare `{ savedPath }` shape into the tagged
+// envelope). `bytes` is the post-pipe `fs.stat(toPath).size` value the
+// service handler asserts against `contentLength`; surfacing it lets
+// the renderer's success toast show the file size and lets test
+// fixtures check the byte count without re-statting on disk.
+export interface FilesDownloadValue {
   savedPath: string;
+  bytes: number;
 }
+export type FilesDownloadResponse = FilesEnvelope<FilesDownloadValue>;
 
 // `files:upload` is the renderer-facing upload command introduced by
 // `add-file-explorer-drag-drop-upload`. The main-process handler is a

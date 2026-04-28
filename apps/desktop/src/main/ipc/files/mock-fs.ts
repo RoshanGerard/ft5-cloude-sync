@@ -553,19 +553,60 @@ export function stat(req: FilesStatRequest): FileEntry {
 
 export function rename(req: FilesRenameRequest): FilesRenameResponse {
   const tree = trees[req.datasourceId];
-  if (!tree) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
+  if (!tree) {
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `not found: ${req.datasourceId}:${req.path}`,
+        retryable: false,
+      },
+    };
+  }
   const target = findEntry(tree, req.path);
-  if (!target) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
+  if (!target) {
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `not found: ${req.datasourceId}:${req.path}`,
+        retryable: false,
+      },
+    };
+  }
   if (target.kind === "directory") {
-    throw new Error("folder rename is not supported in this version");
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: "folder rename is not supported in this version",
+        retryable: false,
+      },
+    };
   }
 
   // Remove the old entry from its parent listing.
   const siblings = tree.byParent.get(target.parentPath);
-  if (!siblings) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
+  if (!siblings) {
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `not found: ${req.datasourceId}:${req.path}`,
+        retryable: false,
+      },
+    };
+  }
   const idx = siblings.findIndex((e) => e.path === target.path);
   if (idx === -1) {
-    throw new Error(`not found: ${req.datasourceId}:${req.path}`);
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `not found: ${req.datasourceId}:${req.path}`,
+        retryable: false,
+      },
+    };
   }
 
   const newPath = joinPath(target.parentPath, req.newName);
@@ -578,7 +619,7 @@ export function rename(req: FilesRenameRequest): FilesRenameResponse {
     mimeType: mimeTypeFor(req.newName),
   };
   siblings[idx] = renamed;
-  return { entry: cloneEntry(renamed) };
+  return { ok: true, value: { entry: cloneEntry(renamed) } };
 }
 
 export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
@@ -735,15 +776,43 @@ export function search(req: FilesSearchRequest): FilesSearchResponse {
 
 export function download(req: FilesDownloadRequest): FilesDownloadResponse {
   const tree = trees[req.datasourceId];
-  if (!tree) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
+  if (!tree) {
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `not found: ${req.datasourceId}:${req.path}`,
+        retryable: false,
+      },
+    };
+  }
   const target = findEntry(tree, req.path);
-  if (!target) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
+  if (!target) {
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: `not found: ${req.datasourceId}:${req.path}`,
+        retryable: false,
+      },
+    };
+  }
   if (target.kind !== "file") {
-    throw new Error("only file entries can be downloaded");
+    return {
+      ok: false,
+      error: {
+        tag: "other",
+        message: "only file entries can be downloaded",
+        retryable: false,
+      },
+    };
   }
   const basename = target.name;
-  const savedPath = req.toPath ?? `${MOCK_DOWNLOADS_ROOT}/${basename}`;
-  return { savedPath };
+  const savedPath = req.toPath !== "" ? req.toPath : `${MOCK_DOWNLOADS_ROOT}/${basename}`;
+  // TODO(add-engine-rename-download §13): the service-side download handler
+  // will populate `bytes` from the post-pipe `fs.stat(toPath).size`. Mock-fs
+  // has no real bytes to count, so return 0 here.
+  return { ok: true, value: { savedPath, bytes: 0 } };
 }
 
 export function enumerateSeededDirectorySizes(): Array<{

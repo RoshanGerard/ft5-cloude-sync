@@ -719,6 +719,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
                 datasourceId: string;
                 path: string;
                 newName: string;
+                conflictPolicy: "fail" | "overwrite" | "keep-both";
               }) => Promise<FilesRenameResponse>;
             };
           };
@@ -731,11 +732,15 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         datasourceId,
         path: entry.path,
         newName,
+        conflictPolicy: "fail",
       });
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
       const nextPending: Record<string, PendingOp> = { ...state.pendingOps };
       delete nextPending[entryId];
       const nextEntries = state.entries.map((e) =>
-        e.id === entryId ? response.entry : e,
+        e.id === entryId ? response.value.entry : e,
       );
       set(
         {
@@ -914,7 +919,10 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         throw new Error("window.api.files.download is unavailable");
       }
       const response = await api({ datasourceId, path: entry.path });
-      toast.success(`Downloaded to ${response.savedPath}`);
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      toast.success(`Downloaded to ${response.value.savedPath}`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       set({ ...state, lastError: { entryId, reason } }, false);

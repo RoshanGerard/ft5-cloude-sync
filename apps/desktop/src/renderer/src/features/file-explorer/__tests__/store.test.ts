@@ -889,10 +889,11 @@ describe("rename action", () => {
     const entry = makeEntry({ id: "e1", name: "old.txt", path: "/old.txt" });
     const renamed: FileEntry = { ...entry, name: "new.txt", path: "/new.txt" };
     // Deferred resolution so we can observe the pendingOp mid-flight.
-    let resolveRename: (value: { entry: FileEntry }) => void = () => {};
+    type RenameEnvelope = { ok: true; value: { entry: FileEntry } };
+    let resolveRename: (value: RenameEnvelope) => void = () => {};
     const renameFn = vi.fn(
       () =>
-        new Promise<{ entry: FileEntry }>((res) => {
+        new Promise<RenameEnvelope>((res) => {
           resolveRename = res;
         }),
     );
@@ -912,7 +913,7 @@ describe("rename action", () => {
       expect.objectContaining({ path: "/old.txt", newName: "new.txt" }),
     );
 
-    resolveRename({ entry: renamed });
+    resolveRename({ ok: true, value: { entry: renamed } });
     await promise;
 
     const after = snap(store);
@@ -1247,7 +1248,10 @@ describe("download action", () => {
   it("happy path: dispatches IPC once with entry path and toasts success with savedPath", async () => {
     const entry = makeEntry({ id: "e1", name: "file.pdf", path: "/file.pdf" });
     const downloadFn = vi.fn(() =>
-      Promise.resolve({ savedPath: "/path/to/saved/file.pdf" }),
+      Promise.resolve({
+        ok: true as const,
+        value: { savedPath: "/path/to/saved/file.pdf", bytes: 0 },
+      }),
     );
     installFilesDownloadApi(downloadFn);
 

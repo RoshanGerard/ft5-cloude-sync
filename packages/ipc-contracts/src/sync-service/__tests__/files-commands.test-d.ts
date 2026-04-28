@@ -44,13 +44,14 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<CommandMap["files:remove"]>().not.toBeNever();
   });
 
-  it("FilesErrorTag is the exact five-variant union", () => {
+  it("FilesErrorTag is the exact six-variant union", () => {
     expectTypeOf<FilesErrorTag>().toEqualTypeOf<
       | "auth-revoked"
       | "disconnected"
       | "rate-limited"
       | "other"
       | "invalid-datasource"
+      | "conflict"
     >();
   });
 

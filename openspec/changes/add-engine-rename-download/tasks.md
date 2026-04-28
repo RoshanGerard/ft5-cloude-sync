@@ -25,25 +25,25 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 - [x] 2.0b Fix the latent 4-vs-5 `FilesErrorTag` assertion at `packages/ipc-contracts/src/__tests__/files.test-d.ts:145` — the test should assert all 5 members (`AuthRevoked`, `Disconnected`, `RateLimited`, `Other`, `InvalidDatasource`); rerun → green. **Done 2026-04-28**: actual sites were `files-commands.test-d.ts:48-50` and 6 unions across `files.test-d.ts` (138, 163, 210, 313, 329, 379 in the new line numbering). Discovery line-number `:145` was approximate; commit log records the actual sites.
 - [x] 2.0c Resolve any other latent typed-test failures the include-extension surfaces (mechanical fixes only — if a non-mechanical issue appears, STOP and report); rerun `pnpm vitest run packages/ipc-contracts` → green. **Done 2026-04-28**: (a) `datasources-engine.test-d.ts:16` ProviderId import moved from `fs-datasource-engine.js` (re-export does not exist) to `datasources.js` (canonical export); (b) deleted three `toMatchTypeOf<Record<string, unknown>>` assertions on `PayloadMap[T]` (post-`add-fs-engine-cancellation` `"upload-cancelled": UploadCancelledPayload` tightening broke the `Record<string, unknown>` superset claim); (c) added `readonly` modifiers to `FilesRemoveResponse`'s per-path entry shape in the test mirror to match `FilesRemoveEntryResult`'s readonly fields. Final state: 42 test files / 415 tests / 0 type errors.
 
-- [ ] 2.1 Write a typed test asserting `FilesRenameRequest` carries `conflictPolicy: "fail" | "overwrite" | "keep-both"` (the wire type is non-optional; default `"fail"` is enforced at the consumer layer); test fails until shape lands
-- [ ] 2.2 Add the field to `packages/ipc-contracts/src/files.ts`'s `FilesRenameRequest`; rerun typed test → green
-- [ ] 2.3 Write a typed test asserting `FilesErrorTag` includes `Conflict: "conflict"`; test fails
-- [ ] 2.4 Extend `FilesErrorTag` in the contracts package + update the `FilesErrorTag` `as const` object; rerun typed test → green
-- [ ] 2.5 Write a typed test asserting `FilesErrorEnvelope` carries an optional `existingPath?: string` (flat-optional, matching the existing `retryAfterMs?` precedent — NOT a discriminated union); test fails
-- [ ] 2.6 Add `existingPath?: string` to `FilesErrorEnvelope`; rerun typed test → green
-- [ ] 2.7 Write a typed test asserting `FilesDownloadRequest.toPath` is non-optional `string` (was optional in the mock-fs era); test fails
-- [ ] 2.8 Update the type; rerun → green
+- [x] 2.1 Write a typed test asserting `FilesRenameRequest` carries `conflictPolicy: "fail" | "overwrite" | "keep-both"` (the wire type is non-optional; default `"fail"` is enforced at the consumer layer); test fails until shape lands
+- [x] 2.2 Add the field to `packages/ipc-contracts/src/files.ts`'s `FilesRenameRequest`; rerun typed test → green
+- [x] 2.3 Write a typed test asserting `FilesErrorTag` includes `Conflict: "conflict"`; test fails
+- [x] 2.4 Extend `FilesErrorTag` in the contracts package + update the `FilesErrorTag` `as const` object; rerun typed test → green
+- [x] 2.5 Write a typed test asserting `FilesErrorEnvelope` carries an optional `existingPath?: string` (flat-optional, matching the existing `retryAfterMs?` precedent — NOT a discriminated union); test fails
+- [x] 2.6 Add `existingPath?: string` to `FilesErrorEnvelope`; rerun typed test → green
+- [x] 2.7 Write a typed test asserting `FilesDownloadRequest.toPath` is non-optional `string` (was optional in the mock-fs era); test fails
+- [x] 2.8 Update the type; rerun → green
 
 ### Envelope migration for rename + download (resolves discovery 2026-04-28)
 
 `FilesRenameResponse` and `FilesDownloadResponse` are explicitly flagged in `files.ts` (line 111-114, 162-164) as awaiting envelope migration in `add-engine-rename-download`. Doing the migration now keeps `pnpm typecheck` green during this section. Section 17 still owns the deeper "delete mock-fs rename/download arms entirely once engine-backed path lands."
 
-- [ ] 2.9 Write a typed test asserting `FilesRenameResponse` is `FilesEnvelope<FilesRenameValue>` where `FilesRenameValue = { entry: FileEntry }`; test fails
-- [ ] 2.10 Migrate `FilesRenameResponse` to `FilesEnvelope<FilesRenameValue>`; export `FilesRenameValue`; rerun typed test → green
-- [ ] 2.11 Write a typed test asserting `FilesDownloadResponse` is `FilesEnvelope<FilesDownloadValue>` where `FilesDownloadValue = { savedPath: string; bytes: number }`; test fails
-- [ ] 2.12 Migrate `FilesDownloadResponse` to `FilesEnvelope<FilesDownloadValue>`; export `FilesDownloadValue`; rerun typed test → green
-- [ ] 2.13 Adapt consumers to the envelope shape (typecheck-green sweep, not a behavior change): (a) `apps/desktop/src/main/ipc/files/mock-fs.ts` rename/download return literals → wrap in `{ ok: true, value: ... }`; (b) `apps/desktop/src/renderer/src/features/file-explorer/store.ts` rename-response unwrap (`response.entry` → `response.ok ? response.value.entry : ...`); (c) renderer test fixtures constructing bare `{ entry }` rename responses (`features/file-explorer/__tests__/store.test.ts`, `inline-rename.test.tsx`, `ipc-round-trip.test.ts`) → envelope literals; (d) `ipc-round-trip.test.ts:253,265` add `toPath` to `FilesDownloadRequest` literals
-- [ ] 2.14 Run `pnpm typecheck` and `pnpm vitest run` for `packages/ipc-contracts` and `apps/desktop`; both clean modulo the known `scripts/preload-bundle.test.ts` flake; commit Section 2 in one go
+- [x] 2.9 Write a typed test asserting `FilesRenameResponse` is `FilesEnvelope<FilesRenameValue>` where `FilesRenameValue = { entry: FileEntry }`; test fails
+- [x] 2.10 Migrate `FilesRenameResponse` to `FilesEnvelope<FilesRenameValue>`; export `FilesRenameValue`; rerun typed test → green
+- [x] 2.11 Write a typed test asserting `FilesDownloadResponse` is `FilesEnvelope<FilesDownloadValue>` where `FilesDownloadValue = { savedPath: string; bytes: number }`; test fails
+- [x] 2.12 Migrate `FilesDownloadResponse` to `FilesEnvelope<FilesDownloadValue>`; export `FilesDownloadValue`; rerun typed test → green
+- [x] 2.13 Adapt consumers to the envelope shape (typecheck-green sweep, not a behavior change): (a) `apps/desktop/src/main/ipc/files/mock-fs.ts` rename/download return literals → wrap in `{ ok: true, value: ... }`; (b) `apps/desktop/src/renderer/src/features/file-explorer/store.ts` rename-response unwrap (`response.entry` → `response.ok ? response.value.entry : ...`); (c) renderer test fixtures constructing bare `{ entry }` rename responses (`features/file-explorer/__tests__/store.test.ts`, `inline-rename.test.tsx`, `ipc-round-trip.test.ts`) → envelope literals; (d) `ipc-round-trip.test.ts:253,265` add `toPath` to `FilesDownloadRequest` literals
+- [x] 2.14 Run `pnpm typecheck` and `pnpm vitest run` for `packages/ipc-contracts` and `apps/desktop`; both clean modulo the known `scripts/preload-bundle.test.ts` flake; commit Section 2 in one go. **Done 2026-04-28**: `pnpm -F @ft5/ipc-contracts build` clean; `pnpm typecheck` 0 errors; `pnpm vitest run packages/ipc-contracts apps/desktop services/fs-sync packages/fs-datasource-engine` → 255 files / 2028 passed / 9 skipped / 0 type errors; `pnpm lint` clean. Section 2 landed in one squashed commit covering §2.1–§2.13 contract widening + consumer cascade (§2.0 test-infra was already separately committed in `b695fd1` + `4a6a1a3`).
 
 ## 3. Contracts — `downloads:list-active` command + `downloading` event + cancel command
 
