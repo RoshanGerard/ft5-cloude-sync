@@ -72,6 +72,7 @@ import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
 import { UploadDialog } from "./upload-dialog";
 import { createUploadJobToaster } from "./upload-job-toast";
+import { createDownloadJobToaster } from "./download-job-toast";
 import { useExplorerData } from "./use-explorer-data";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { ViewModeSwitcher } from "./view-mode-switcher";
@@ -279,6 +280,57 @@ export function FileExplorer({
   // Kick off the data-loading effect. Re-fires whenever `currentPath`
   // on the store changes; stale-response guard lives in the hook.
   useExplorerData(store, datasourceId);
+
+  // add-engine-rename-download §24.4 — download toaster bootstrap.
+  //
+  // Spawn the per-job download toaster on mount + subscribe to the
+  // §18.9-§18.10 one-shot hydration channel so any in-flight downloads
+  // from a prior app session (or from a sibling renderer mount) get a
+  // resumed Sonner toast at the seeded progress. Live `downloading` /
+  // `file-downloaded` / `download-failed` / `download-cancelled` events
+  // arrive via `window.api.sync.onEvent` and are routed inside the
+  // toaster's event subscription (per design.md Decision 8 — the toast
+  // is decoupled from `dispatchDownload`'s return value because the
+  // FilesDownloadResponse contract carries only `{ savedPath, bytes }`,
+  // not a `downloadJobId`).
+  //
+  // The effect is defensive: it short-circuits when the preload bridge
+  // is unavailable (pre-§18 test harnesses, SSR-style mounts). The
+  // toaster's `dispose()` is wired into the cleanup so test mounts
+  // don't leak listeners across `cleanup()`.
+  useEffect(() => {
+    const apiBridge = (
+      globalThis as unknown as {
+        window?: {
+          api?: {
+            files?: {
+              onActiveDownloadsHydrate?: (
+                callback: (jobs: readonly unknown[]) => void,
+              ) => () => void;
+            };
+            sync?: { onEvent?: unknown };
+          };
+        };
+      }
+    ).window?.api;
+    const hydrate = apiBridge?.files?.onActiveDownloadsHydrate;
+    const syncOnEvent = apiBridge?.sync?.onEvent;
+    if (typeof hydrate !== "function" || typeof syncOnEvent !== "function") {
+      // Test harnesses without the §18 channel + the sync event stream
+      // skip the toaster bootstrap entirely. Production always has both.
+      return;
+    }
+    const toaster = createDownloadJobToaster();
+    const unsubscribeHydrate = hydrate((jobs) => {
+      toaster.hydrateActiveDownloads(
+        jobs as Parameters<typeof toaster.hydrateActiveDownloads>[0],
+      );
+    });
+    return () => {
+      unsubscribeHydrate();
+      toaster.dispose();
+    };
+  }, []);
 
   // Upload dialog state — opened by the toolbar Upload button (Task 6.4).
   // Dialog is controlled (not Radix-trigger-managed) so the file-explorer
