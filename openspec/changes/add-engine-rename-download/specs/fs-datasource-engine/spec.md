@@ -190,7 +190,10 @@ single-step).
 
 When `conflictPolicy: "keep-both"`, the engine SHALL append `-2` / `-3` /
 … suffix and retry until success or until 99 attempts (then fail with
-`tag: "other", message: "exhausted keep-both attempts"`).
+`tag: "provider-error", message: "exhausted keep-both attempts"`). The
+engine `DatasourceErrorTag` taxonomy does not include `"other"`; the
+service-side wire mapping at `services/fs-sync/src/commands/files-error-mapping`
+collapses `provider-error` → `tag: "other"` before the renderer sees it.
 
 #### Scenario: Rename to existing sibling with policy "fail"
 
