@@ -259,9 +259,16 @@ describe("createDownloadJobToaster (§24.1)", () => {
     );
   });
 
-  it("(d) terminal download-failed fires toast.error with richColors and a Retry action (Infinity duration)", () => {
+  it("(d) terminal download-failed fires toast.error with richColors and a Retry action (Infinity duration); Retry click invokes the registered callback", () => {
     toast.loading.mockReturnValueOnce("toast-A");
-    createDownloadJobToaster({ toast, eventApi });
+    const toaster = createDownloadJobToaster({ toast, eventApi });
+    const retry: Mock = vi.fn();
+
+    // Orchestrator-side: register the retry BEFORE dispatch, keyed on
+    // (datasourceId, sourcePath). The first `downloading` event for the
+    // resulting downloadJobId drains the registry entry into the
+    // ToastEntry's retry slot.
+    toaster.registerRetry("ds-1", "/welcome.pdf", retry);
 
     eventApi.emit(
       downloadingEvent("job-A", { progress: 10, path: "/welcome.pdf" }),
@@ -291,6 +298,35 @@ describe("createDownloadJobToaster (§24.1)", () => {
     expect(errorCall[1].richColors).toBe(true);
     expect(errorCall[1].action?.label).toMatch(/retry/i);
     expect(typeof errorCall[1].action?.onClick).toBe("function");
+
+    // Click Retry → toast dismisses AND the registered retry fires.
+    errorCall[1].action!.onClick();
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("(d2) when no retry was registered (failure preceded any downloading event), Retry click is dismiss-only", () => {
+    toast.error.mockReturnValueOnce("toast-X");
+    createDownloadJobToaster({ toast, eventApi });
+
+    // Failure as the FIRST event for this jobId — no `downloading`
+    // happened, so no correlation took place.
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-X",
+        datasourceId: "ds-1",
+        tag: "auth-revoked",
+        message: "auth-revoked",
+      },
+    });
+
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      { action?: { onClick: () => void } },
+    ];
+    errorCall[1].action!.onClick();
+    expect(toast.dismiss).toHaveBeenCalledTimes(1);
   });
 
   it("(e) terminal download-cancelled silently dismisses the toast", () => {

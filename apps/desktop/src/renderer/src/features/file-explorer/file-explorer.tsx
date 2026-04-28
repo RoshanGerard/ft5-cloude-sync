@@ -47,6 +47,7 @@ import {
 } from "./conflict-resolution-dialog";
 import { DetailsPane } from "./details-pane";
 import { DropZone, type DropZoneStatus } from "./drop-zone";
+import { FirstDownloadModal } from "./first-download-modal";
 import { HistoryButtons } from "./history-buttons";
 import { PropertiesModal } from "./properties-modal";
 import { ProviderKindContext } from "./provider-kind-context";
@@ -72,7 +73,11 @@ import { StatusRow } from "./status-row";
 import { Toolbar } from "./toolbar";
 import { UploadDialog } from "./upload-dialog";
 import { createUploadJobToaster } from "./upload-job-toast";
-import { createDownloadJobToaster } from "./download-job-toast";
+import {
+  createDownloadJobToaster,
+  type DownloadToaster,
+} from "./download-job-toast";
+import { useDownloadOrchestrator } from "./use-download-orchestrator";
 import { useExplorerData } from "./use-explorer-data";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { ViewModeSwitcher } from "./view-mode-switcher";
@@ -283,21 +288,29 @@ export function FileExplorer({
 
   // add-engine-rename-download §24.4 — download toaster bootstrap.
   //
-  // Spawn the per-job download toaster on mount + subscribe to the
-  // §18.9-§18.10 one-shot hydration channel so any in-flight downloads
-  // from a prior app session (or from a sibling renderer mount) get a
-  // resumed Sonner toast at the seeded progress. Live `downloading` /
-  // `file-downloaded` / `download-failed` / `download-cancelled` events
-  // arrive via `window.api.sync.onEvent` and are routed inside the
-  // toaster's event subscription (per design.md Decision 8 — the toast
-  // is decoupled from `dispatchDownload`'s return value because the
+  // Spawn the per-job download toaster once per mount + subscribe to
+  // the §18.9-§18.10 one-shot hydration channel so any in-flight
+  // downloads from a prior app session (or from a sibling renderer
+  // mount) get a resumed Sonner toast at the seeded progress. Live
+  // `downloading` / `file-downloaded` / `download-failed` /
+  // `download-cancelled` events arrive via `window.api.sync.onEvent`
+  // and are routed inside the toaster's event subscription (per
+  // design.md Decision 8 — the toast is decoupled from
+  // `dispatchDownload`'s return value because the
   // FilesDownloadResponse contract carries only `{ savedPath, bytes }`,
   // not a `downloadJobId`).
+  //
+  // The toaster instance is now held in a ref so the click handler
+  // (`handleDownload`) can call `toaster.registerRetry(...)` BEFORE
+  // dispatching the download — that's how the failure-toast's Retry
+  // button correlates back to a callable on the orchestrator (the
+  // post-§24-deviation fix; see design.md Decision 8).
   //
   // The effect is defensive: it short-circuits when the preload bridge
   // is unavailable (pre-§18 test harnesses, SSR-style mounts). The
   // toaster's `dispose()` is wired into the cleanup so test mounts
   // don't leak listeners across `cleanup()`.
+  const toasterRef = useRef<DownloadToaster | null>(null);
   useEffect(() => {
     const apiBridge = (
       globalThis as unknown as {
@@ -321,6 +334,7 @@ export function FileExplorer({
       return;
     }
     const toaster = createDownloadJobToaster();
+    toasterRef.current = toaster;
     const unsubscribeHydrate = hydrate((jobs) => {
       toaster.hydrateActiveDownloads(
         jobs as Parameters<typeof toaster.hydrateActiveDownloads>[0],
@@ -329,8 +343,19 @@ export function FileExplorer({
     return () => {
       unsubscribeHydrate();
       toaster.dispose();
+      toasterRef.current = null;
     };
   }, []);
+
+  // §23/§24 follow-up — renderer download orchestrator.
+  // Owns `toPath` resolution, the Save-as dialog flow, and the
+  // first-run-modal queueing. The orchestrator returns the
+  // FilesDownloadResponse envelope on dispatch (no `downloadJobId`),
+  // and the toaster's spawn is event-driven (design.md Decision 8).
+  // We register a retry callback on the toaster keyed on
+  // (datasourceId, sourcePath) BEFORE every dispatch so the
+  // failure-toast's Retry button can re-run the same dispatch.
+  const downloadOrchestrator = useDownloadOrchestrator();
 
   // Upload dialog state — opened by the toolbar Upload button (Task 6.4).
   // Dialog is controlled (not Radix-trigger-managed) so the file-explorer
@@ -482,9 +507,31 @@ export function FileExplorer({
     setConfirmOpen(false);
   };
 
-  // Context-menu Download fires the store's one-shot download action.
+  // Context-menu Download routes through the renderer download
+  // orchestrator (§23) → preload `window.api.files.download`. The
+  // orchestrator owns `toPath` resolution, the optional Save-as flow
+  // (Shift+Click or "Always ask" preference), and the first-run-modal
+  // queue. Per design.md Decision 8 the orchestrator does NOT spawn
+  // the toast directly — the toaster is event-driven via
+  // `window.api.sync.onEvent`. We pre-register a retry callback keyed
+  // on `(datasourceId, sourcePath)` so the failure-toast's Retry
+  // button can re-run this same dispatch with the original args.
+  //
+  // Modifier keys: the context-menu's `onDownload` plumbing is
+  // `(entry) => void` (no event), so we default `shiftKey: false`
+  // here. A future iteration could thread the click event through if
+  // Shift+Click-from-context-menu becomes a documented affordance.
   const handleDownload = (entry: FileEntry) => {
-    void store.download(entry.id);
+    if (entry.kind === "directory") return;
+    const retry = (): void => {
+      handleDownload(entry);
+    };
+    toasterRef.current?.registerRetry(datasourceId, entry.path, retry);
+    void downloadOrchestrator.dispatchDownload(
+      entry,
+      { shiftKey: false },
+      datasourceId,
+    );
   };
 
   // Click on a search result: remember the entry id + target parent path,
@@ -714,6 +761,19 @@ export function FileExplorer({
         count={pendingDeleteRef.current.length}
         onConfirm={handleConfirmDelete}
         onCancel={handleCancelDelete}
+      />
+      {/* First-run downloads modal (§21) — opens on the user's first
+          ever Download click when no default folder has been
+          persisted. The orchestrator queues the deferred dispatch and
+          flips `modalOpen` true; the modal persists the chosen folder
+          via `setDefaultFolder` and invokes `onCommit`, which the
+          orchestrator wires to the queued dispatch. Once the user
+          commits the folder, subsequent downloads silently use it
+          (Shift+Click + Always-ask preference still gate the
+          Save-as flow). */}
+      <FirstDownloadModal
+        open={downloadOrchestrator.modalOpen}
+        onCommit={downloadOrchestrator.onModalCommit}
       />
       {/* Conflict-resolution dialog (Task 7) — Radix portal, so visual
           placement is immaterial. The hook above owns its open/close

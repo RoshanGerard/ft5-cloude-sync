@@ -612,20 +612,38 @@ edge case of a sub-millisecond completion, the spawn-on-first-event
 path handles terminal-as-first events correctly (spawn-and-immediately-
 flip-to-success).
 
-**Retry deviation.** Spec line 134-135 (`scenarios/Download failure
-shows Retry`) calls for the Retry action to "re-dispatch
-`window.api.files.download` with the original parameters and open a
-new toast bound to the new downloadJobId." The §24 toaster's Retry
-action is a no-op-then-dismiss in v1: `DownloadFailedPayload` carries
-no `toPath` / `sourcePath`, so the toaster cannot reconstruct the
-original IPC arguments without coupling back to the orchestrator (or
-extending the wire contract — `packages/ipc-contracts` work that §24
-explicitly forbids). The toaster's failure path correctly sets up the
-Retry button shape (label + onClick) so the visual surface matches the
-spec; the click handler dismisses the failed toast and the user
-re-clicks Download from the file-explorer to retry. A future change
-that widens `DownloadFailedPayload` (or that re-couples toast spawn to
-orchestrator state) would close this gap; out of scope for v1.
+**Retry — pre-dispatch callback registry.** Spec line 134-135
+(`scenarios/Download failure shows Retry`) calls for the Retry action
+to "re-dispatch `window.api.files.download` with the original
+parameters and open a new toast bound to the new downloadJobId."
+`DownloadFailedPayload` carries no `toPath` / `sourcePath`, so the
+toaster cannot reconstruct the original IPC arguments from the
+failure event alone. The §23/§24 follow-up resolves this with a
+narrow callback registry on the toaster:
+
+- The toaster exposes `registerRetry(datasourceId, sourcePath, retry)`.
+- The file-explorer's `handleDownload` calls
+  `toaster.registerRetry(datasourceId, entry.path, () =>
+  handleDownload(entry))` BEFORE invoking
+  `orchestrator.dispatchDownload(...)`.
+- On the FIRST `downloading` event for a previously-unseen
+  `downloadJobId`, the toaster looks up
+  `(payload.datasourceId, payload.path)` in the registry, drains the
+  callback into the per-job `ToastEntry`, and removes the registry
+  slot.
+- The Retry button's `onClick` dismisses the failed toast AND invokes
+  the drained callback. The new dispatch produces a fresh
+  `downloadJobId` and a fresh toast bound to it via the same spawn
+  path — matching the spec's "open a new toast bound to the new
+  downloadJobId" wording without widening the wire contract.
+
+**Failure-before-any-downloading-event edge case.** If a download
+fails before any `downloading` event arrives (rare — instant
+auth-revoked / immediate validation reject inside the service), no
+correlation happens because the `downloading` event is the moment we
+drain the registry. In that case the failure toast renders correctly
+but the Retry button falls back to dismiss-only. Acceptable for v1;
+the user re-clicks Download from the row / context menu.
 
 ## Visual direction
 

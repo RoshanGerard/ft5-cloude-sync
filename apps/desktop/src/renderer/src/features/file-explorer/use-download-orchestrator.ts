@@ -109,34 +109,63 @@ function resolveApi(
   injected: DownloadOrchestratorApi | undefined,
 ): DownloadOrchestratorApi {
   if (injected) return injected;
-  // Production fallback — pull from the preload bridge. Lazy lookup so
-  // tests that never touch `window.api` still satisfy the type.
-  const bridge = (
-    globalThis as unknown as {
-      window?: {
-        api?: {
-          files?: {
-            download?: (
-              req: FilesDownloadRequest,
-            ) => Promise<FilesDownloadResponse>;
-          };
-          dialog?: {
-            showSaveDialog?: (
-              opts: SaveDialogOptions,
-            ) => Promise<SaveDialogResult>;
+  // Production fallback — pull from the preload bridge. Lookup is LAZY:
+  // we resolve the bridge fields at the moment `download` /
+  // `showSaveDialog` are actually invoked so that mounting the hook in
+  // a test harness without those bridge fields doesn't throw at hook-
+  // call time. Throwing at the call site keeps the failure mode
+  // diagnosable while making the hook safe to mount everywhere.
+  function resolveBridge(): {
+    download?: (
+      req: FilesDownloadRequest,
+    ) => Promise<FilesDownloadResponse>;
+    showSaveDialog?: (
+      opts: SaveDialogOptions,
+    ) => Promise<SaveDialogResult>;
+  } {
+    const bridge = (
+      globalThis as unknown as {
+        window?: {
+          api?: {
+            files?: {
+              download?: (
+                req: FilesDownloadRequest,
+              ) => Promise<FilesDownloadResponse>;
+            };
+            dialog?: {
+              showSaveDialog?: (
+                opts: SaveDialogOptions,
+              ) => Promise<SaveDialogResult>;
+            };
           };
         };
-      };
-    }
-  ).window?.api;
-  const download = bridge?.files?.download;
-  const showSaveDialog = bridge?.dialog?.showSaveDialog;
-  if (typeof download !== "function" || typeof showSaveDialog !== "function") {
-    throw new Error(
-      "useDownloadOrchestrator: no api provided and window.api.{files.download,dialog.showSaveDialog} are unavailable",
-    );
+      }
+    ).window?.api;
+    return {
+      download: bridge?.files?.download,
+      showSaveDialog: bridge?.dialog?.showSaveDialog,
+    };
   }
-  return { download, showSaveDialog };
+  return {
+    download: async (req) => {
+      const fn = resolveBridge().download;
+      if (typeof fn !== "function") {
+        throw new Error(
+          "useDownloadOrchestrator: window.api.files.download is unavailable",
+        );
+      }
+      return fn(req);
+    },
+    showSaveDialog: async (opts) => {
+      const fn = resolveBridge().showSaveDialog;
+      if (typeof fn !== "function") {
+        throw new Error(
+          "useDownloadOrchestrator: window.api.dialog.showSaveDialog is unavailable",
+        );
+      }
+      return fn(opts);
+    },
+  };
 }
 
 // --- Path joining ----------------------------------------------------

@@ -182,6 +182,15 @@ export interface ExplorerStore {
 
   // Download — one-shot IPC for a file entry; does NOT use pendingOps
   // (the entry stays in the list; the op is user-facing via toast only).
+  //
+  // @deprecated Superseded by `useDownloadOrchestrator` +
+  //   `createDownloadJobToaster` (`add-engine-rename-download` §23/§24).
+  //   The file-explorer composite no longer calls this — the orchestrator
+  //   resolves `toPath` (default folder + Shift / Always-ask), runs the
+  //   first-run modal, and dispatches `window.api.files.download` while
+  //   the toaster owns the per-job lifecycle UI. This method is kept
+  //   only because store-level tests at `__tests__/store.test.ts`
+  //   reference it directly; remove once those tests retire.
   download(entryId: string): Promise<void>;
 }
 

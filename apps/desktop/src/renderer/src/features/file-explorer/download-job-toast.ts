@@ -179,6 +179,24 @@ export interface DownloadToaster {
    * `useEffect(... onActiveDownloadsHydrate)`.
    */
   hydrateActiveDownloads(jobs: readonly DownloadJobSummary[]): void;
+  /**
+   * Register a retry callback keyed by `(datasourceId, sourcePath)`.
+   * The orchestrator calls this just before dispatching
+   * `window.api.files.download(...)` so the toaster can correlate the
+   * first `downloading` event back to a callable that re-runs the
+   * dispatch with the original args. On the toast's first
+   * `downloading` event for a previously-unseen `downloadJobId`, the
+   * toaster looks up the (datasourceId, payload.path) pair, attaches
+   * the callback to the toast entry, and removes it from the registry.
+   * If the download fails before any `downloading` event arrives (rare
+   * — instant auth-revoked / other), the failure toast falls back to
+   * dismiss-only because the correlation never happened.
+   */
+  registerRetry(
+    datasourceId: string,
+    sourcePath: string,
+    retry: () => void,
+  ): void;
   /** Tear down the event subscription. Most callers don't need this — the renderer's lifetime is the app's lifetime — but it's exposed for completeness + tests. */
   dispose(): void;
 }
@@ -307,6 +325,26 @@ function formatSeededRatio(
 interface ToastEntry {
   readonly toastId: string | number;
   readonly basename: string;
+  /**
+   * Retry callback correlated from the orchestrator's pre-dispatch
+   * `registerRetry(...)` on the FIRST `downloading` event for a new
+   * `downloadJobId`. Wired into the failure-toast's Retry button.
+   * Undefined when correlation hasn't happened yet (e.g. terminal-as-
+   * first-event paths, hydrated-from-disk jobs, or downloads not
+   * dispatched through this renderer's orchestrator).
+   */
+  readonly retry?: () => void;
+}
+
+/**
+ * Composite key for the orchestrator's pre-dispatch `registerRetry`.
+ * `datasourceId|sourcePath` is sufficient because the renderer never
+ * dispatches two simultaneous downloads for the same source on the
+ * same datasource (the second would race the first's IPC, and even if
+ * it did, both would correctly retry the same source).
+ */
+function retryKey(datasourceId: string, sourcePath: string): string {
+  return `${datasourceId}|${sourcePath}`;
 }
 
 export function createDownloadJobToaster(
@@ -321,6 +359,11 @@ export function createDownloadJobToaster(
   // (cached so terminal events that don't carry a path still know the
   // human label).
   const tracker = new Map<string, ToastEntry>();
+  // Pre-dispatch retry registry. Keyed on `(datasourceId, sourcePath)`
+  // because that pair is what the orchestrator knows BEFORE the first
+  // `downloading` event yields a `downloadJobId`. Drained into the
+  // ToastEntry on first event for a previously-unseen jobId.
+  const pendingRetries = new Map<string, () => void>();
   let nextLocalId = 1;
   function generateToastId(): string {
     const n = nextLocalId;
@@ -341,13 +384,21 @@ export function createDownloadJobToaster(
           { id: existing.toastId },
         );
       } else {
-        // Spawn new toast for this jobId.
+        // Spawn new toast for this jobId. If the orchestrator pre-
+        // registered a retry callback for `(datasourceId, sourcePath)`,
+        // drain it into the ToastEntry and remove the registry slot
+        // (the pairing is one-shot per dispatch).
         const initialId = generateToastId();
         const toastId = toast.loading(
           formatProgressMessage(basename, event.payload.progress),
           { id: initialId },
         );
-        tracker.set(downloadJobId, { toastId, basename });
+        const key = retryKey(event.payload.datasourceId, event.payload.path);
+        const retry = pendingRetries.get(key);
+        if (retry !== undefined) {
+          pendingRetries.delete(key);
+        }
+        tracker.set(downloadJobId, { toastId, basename, retry });
       }
       return;
     }
@@ -389,7 +440,13 @@ export function createDownloadJobToaster(
       const existing = tracker.get(downloadJobId);
       const basename = existing?.basename ?? "download";
       const toastId = existing?.toastId ?? generateToastId();
-      tracker.set(downloadJobId, { toastId, basename });
+      // Retry callback was correlated on the FIRST `downloading` event
+      // for this jobId (drained from `pendingRetries` into the
+      // ToastEntry). If failure preceded any `downloading` event (rare
+      // — instant auth-revoked / immediate validation reject), no
+      // correlation happened and Retry falls back to dismiss-only.
+      const retry = existing?.retry;
+      tracker.set(downloadJobId, { toastId, basename, retry });
       toast.error(`Download failed: ${event.payload.message}`, {
         id: toastId,
         duration: Number.POSITIVE_INFINITY,
@@ -397,15 +454,10 @@ export function createDownloadJobToaster(
         action: {
           label: "Retry",
           onClick: () => {
-            // Retry semantics for v1: dismiss the failed toast. The
-            // renderer's context-menu / row click will re-dispatch from
-            // byte 0 if the user wants to try again — there is no
-            // closured retry callback here because the toaster is
-            // decoupled from the orchestrator (design.md Decision 8).
-            // A future iteration could surface a UI-level retry by
-            // remembering `(datasourceId, sourcePath)` from the
-            // `downloading` events; out of scope for §24.
             toast.dismiss(toastId);
+            if (retry !== undefined) {
+              retry();
+            }
           },
         },
       });
@@ -448,11 +500,21 @@ export function createDownloadJobToaster(
     }
   }
 
+  function registerRetry(
+    datasourceId: string,
+    sourcePath: string,
+    retry: () => void,
+  ): void {
+    pendingRetries.set(retryKey(datasourceId, sourcePath), retry);
+  }
+
   return {
     hydrateActiveDownloads,
+    registerRetry,
     dispose: () => {
       unsubscribe();
       tracker.clear();
+      pendingRetries.clear();
     },
   };
 }
