@@ -206,8 +206,13 @@ describe("createDownloadJobToaster (§24.1)", () => {
       (id: string | number) => unknown,
       { id?: string | number; duration?: number } | undefined,
     ];
-    expect(opts?.id).toBe("toast-A");
-    expect(typeof opts?.duration).toBe("number");
+    // Post-archive 2026-04-28: the success toast spawns with a FRESH id
+    // (`<loadingId>-success`), NOT the loading id. Re-using the loading
+    // id raced Sonner's dismiss animation. Assert on the deterministic
+    // suffix.
+    expect(opts?.id).toBe("toast-A-success");
+    expect(opts?.id).not.toBe("toast-A");
+    expect(opts?.duration).toBe(Number.POSITIVE_INFINITY);
 
     // Render the custom toast and assert the action wiring. The render
     // function returns the React element tree; we don't mount it — we
@@ -216,14 +221,22 @@ describe("createDownloadJobToaster (§24.1)", () => {
     expect(tree).toBeDefined();
   });
 
-  it("(c-postsmoke) on file-downloaded after a prior loading toast, dismiss is called BEFORE custom (clears Sonner's loading-variant chrome incl. spinner)", () => {
-    // Post-archive smoke (2026-04-28): users reported the success toast
-    // mounting alongside a leftover spinner. Root cause: re-using the
-    // same toast id with `toast.custom(..., { id })` does NOT clear
-    // Sonner's loading-variant template — the spinner is part of the
-    // loading template, not our custom render. The fix is an explicit
-    // `toast.dismiss(toastId)` before the custom spawn so Sonner tears
-    // down the loading chrome before mounting the success render.
+  it("(c-postsmoke) on file-downloaded after a prior loading toast, dismiss is called BEFORE custom AND custom uses a FRESH id (avoids dismiss-animation race)", () => {
+    // Post-archive smoke #1 (2026-04-28 morning): users reported the
+    // success toast mounting alongside a leftover spinner. Root cause:
+    // re-using the same toast id with `toast.custom(..., { id })` does
+    // NOT clear Sonner's loading-variant template — the spinner is part
+    // of the loading template, not our custom render. Fix attempt #1
+    // added `toast.dismiss(toastId)` before the custom spawn.
+    //
+    // Post-archive smoke #2 (2026-04-28 afternoon): users then reported
+    // the success toast appearing for only ~400-500 ms instead of the
+    // configured duration. Root cause: when `toast.custom` is called
+    // with the SAME id while Sonner's dismiss animation (~300-400 ms)
+    // is still running, the new toast inherits the dismiss state and
+    // tears down. Fix #2 (this test): spawn the success on a FRESH id
+    // (`<loadingId>-success`) so Sonner has no animation state to
+    // inherit.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
 
@@ -240,10 +253,17 @@ describe("createDownloadJobToaster (§24.1)", () => {
       },
     });
 
-    // The dismiss for the loading toast must precede the custom spawn,
-    // ordered by invocation. Both calls reference the same toast id.
+    // The dismiss for the loading id must precede the custom spawn,
+    // ordered by invocation. The custom spawn uses a fresh id, distinct
+    // from the loading id, so Sonner cannot inherit dismiss-animation
+    // state.
     expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
     expect(toast.custom).toHaveBeenCalledTimes(1);
+    const customOpts = toast.custom.mock.calls[0]![1] as
+      | { id?: string | number }
+      | undefined;
+    expect(customOpts?.id).toBe("toast-A-success");
+    expect(customOpts?.id).not.toBe("toast-A");
     const dismissOrder = toast.dismiss.mock.invocationCallOrder[0]!;
     const customOrder = toast.custom.mock.invocationCallOrder[0]!;
     expect(dismissOrder).toBeLessThan(customOrder);
@@ -292,26 +312,22 @@ describe("createDownloadJobToaster (§24.1)", () => {
     expect(toast.custom).toHaveBeenCalledTimes(1);
   });
 
-  it("(c-duration) success toast auto-dismisses after the same duration as upload's success toast (Decision V2 / spec line 92)", () => {
-    // Spec contract (`specs/file-explorer/spec.md` § "Successful
-    // download surfaces Open + Show in folder"):
-    //   *"the toast auto-dismisses after the upload-toast success
-    //   duration."*
-    // The download success toast must pass an explicit, sufficient
-    // duration to `toast.custom` — otherwise Sonner falls back to its
-    // `toast.custom` default (~4000 ms, version-dependent), which is
-    // too short for the user to register the [Open] / [Show in folder]
-    // affordance before the toast disappears.
+  it("(c-duration) success toast is sticky (Number.POSITIVE_INFINITY) — the toast IS the affordance; auto-dismiss would defeat the dual-action layout", () => {
+    // Progression of the duration constant:
+    //   - Initial: 4000 ms (mirroring upload's fire-and-forget pattern).
+    //   - 2026-04-29: 8000 ms after user feedback that 4 s was too short
+    //     to register the toast and click an action.
+    //   - 2026-04-28 (this fix): Number.POSITIVE_INFINITY (sticky).
+    //     Rationale: download's success toast IS the affordance. The
+    //     dual-action layout (Show in folder + Open) explicitly invites
+    //     a user click; auto-dismissing it defeats the point. The user
+    //     dismisses it by clicking an action (handlers wired to
+    //     `toast.dismiss(successId)`) or via Sonner's close-button X
+    //     (sticky toasts surface it by default).
     //
-    // Per the 2026-04-29 product call (in-session UX feedback) the
-    // value is 8000 ms — deliberately longer than upload's 4000 ms.
-    // Upload uses `toast.success(...)` whose intent is "fire-and-forget
-    // ack"; download uses `toast.custom(...)` for its V2 dual-action
-    // layout that invites a user click. Different intents → different
-    // durations. The constant `SUCCESS_TOAST_DURATION_MS` is the
-    // exported value; this test pins (1) that the call carries an
-    // explicit `duration`, (2) it equals the exported constant, and
-    // (3) the constant itself equals the agreed 8000 ms.
+    // This test pins (1) the call carries an explicit `duration`,
+    // (2) it equals the exported constant, and (3) the constant is
+    // Number.POSITIVE_INFINITY.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
 
@@ -335,10 +351,151 @@ describe("createDownloadJobToaster (§24.1)", () => {
     ];
     expect(opts?.duration).toBeDefined();
     expect(opts?.duration).toBe(SUCCESS_TOAST_DURATION_MS);
-    // Defence-in-depth: pin the constant to the agreed product value
-    // so any silent bump surfaces here instead of in user-perceived
-    // UX.
-    expect(SUCCESS_TOAST_DURATION_MS).toBe(8000);
+    // Defence-in-depth: pin the constant to the sticky sentinel so any
+    // silent bump back to a finite value surfaces here instead of in
+    // user-perceived UX.
+    expect(SUCCESS_TOAST_DURATION_MS).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("(c-dismiss-on-open) clicking [Open] dismisses the success toast (clears the affordance once consumed)", () => {
+    // Sticky success toasts must self-dismiss when the user acts —
+    // otherwise a stale "Downloaded" toast hangs around after the user
+    // already opened the file. The handler calls
+    // `toast.dismiss(successId)` AFTER invoking the user-supplied
+    // bridge call.
+    toast.loading.mockReturnValueOnce("toast-A");
+    const openSavedPath: Mock = vi.fn(async () => {});
+    const showSavedInFolder: Mock = vi.fn(async () => {});
+
+    createDownloadJobToaster({
+      toast,
+      eventApi,
+      filesApi: { openSavedPath, showSavedInFolder },
+    });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "file-downloaded",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 2048,
+      },
+    });
+
+    const [, opts] = toast.custom.mock.calls[0] as [
+      unknown,
+      {
+        id?: string | number;
+        actions?: { onOpen: () => void; onShowInFolder: () => void };
+      },
+    ];
+    const successId = opts.id;
+    expect(successId).toBe("toast-A-success");
+
+    // Clear the dismiss recorded by the loading→success teardown so
+    // the assertion below pins the dismiss-on-action specifically.
+    toast.dismiss.mockClear();
+
+    opts.actions!.onOpen();
+    expect(openSavedPath).toHaveBeenCalledWith(
+      "/Users/alice/Downloads/ft5/welcome.pdf",
+    );
+    expect(toast.dismiss).toHaveBeenCalledWith(successId);
+  });
+
+  it("(c-dismiss-on-show) clicking [Show in folder] dismisses the success toast", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    const openSavedPath: Mock = vi.fn(async () => {});
+    const showSavedInFolder: Mock = vi.fn(async () => {});
+
+    createDownloadJobToaster({
+      toast,
+      eventApi,
+      filesApi: { openSavedPath, showSavedInFolder },
+    });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "file-downloaded",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 2048,
+      },
+    });
+
+    const [, opts] = toast.custom.mock.calls[0] as [
+      unknown,
+      {
+        id?: string | number;
+        actions?: { onOpen: () => void; onShowInFolder: () => void };
+      },
+    ];
+    const successId = opts.id;
+    toast.dismiss.mockClear();
+
+    opts.actions!.onShowInFolder();
+    expect(showSavedInFolder).toHaveBeenCalledWith(
+      "/Users/alice/Downloads/ft5/welcome.pdf",
+    );
+    expect(toast.dismiss).toHaveBeenCalledWith(successId);
+  });
+
+  it("(c-duplicate-terminal) duplicate file-downloaded for the same downloadJobId does NOT re-spawn the success toast (terminal-marker guard)", () => {
+    // Regression guard: the spawn-tracker marks the entry `terminal:
+    // true` after the first terminal event. A duplicate `file-
+    // downloaded` (or a late `download-failed`) for the same jobId
+    // must short-circuit instead of resurrecting a dismissed toast or
+    // racing Sonner's animation state.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "file-downloaded",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 2048,
+      },
+    });
+
+    expect(toast.custom).toHaveBeenCalledTimes(1);
+
+    // Duplicate file-downloaded — must be a no-op.
+    eventApi.emit({
+      kind: "file-downloaded",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 2048,
+      },
+    });
+    expect(toast.custom).toHaveBeenCalledTimes(1);
+
+    // Late download-failed for the same jobId — also a no-op (the
+    // tracker entry is terminal).
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "other",
+        message: "stale event",
+      },
+    });
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("(c2) the success toast's [Open] action invokes window.api.files.openSavedPath", () => {

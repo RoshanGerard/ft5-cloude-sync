@@ -296,20 +296,30 @@ function resolveFilesApi(
 // --- Constants -------------------------------------------------------
 
 /**
- * Auto-dismiss duration (ms) for the V2 success toast (Open + Show in
- * folder). Originally mirrored upload's inline `4000`; bumped to `8000`
- * on 2026-04-29 per user feedback that 4 s was too short for the user
- * to register the toast and click [Open] / [Show in folder] before it
- * disappeared. Download's success-toast UX intent is "user is invited
- * to take the next action on the saved file", which warrants more dwell
- * than upload's "fire-and-forget" success acknowledgement.
+ * Auto-dismiss duration for the V2 success toast (Open + Show in folder).
+ *
+ * Progression:
+ *   - Initial: `4000` (mirroring upload's fire-and-forget ack pattern).
+ *   - 2026-04-29: bumped to `8000` after user feedback that 4 s was too
+ *     short to register the toast and click an action.
+ *   - 2026-04-28 (this fix): `Number.POSITIVE_INFINITY` — sticky.
+ *
+ * Rationale for sticky: download's success toast IS the affordance.
+ * The dual-action layout (Show in folder + Open) explicitly invites a
+ * user click; auto-dismissing it defeats the point. The user dismisses
+ * the toast either by clicking one of the actions (handlers wired to
+ * call `toast.dismiss(successId)` after their side-effect) or via
+ * Sonner's close-button X (sticky toasts surface it by default).
+ *
+ * The constant name retains its `_DURATION_MS` suffix so existing test
+ * imports (`(c-duration)`) keep working. Upload's success toast still
+ * uses 4000 ms — its UX intent is fire-and-forget acknowledgement, not
+ * an invitation to act, so the divergence is deliberate.
  *
  * Pinned by test `(c-duration)` in
- * `__tests__/download-job-toast.test.ts`. Upload's value remains 4000
- * intentionally — bump them in lockstep only if a future product
- * decision unifies both. Today they are deliberately divergent.
+ * `__tests__/download-job-toast.test.ts`.
  */
-export const SUCCESS_TOAST_DURATION_MS = 8000;
+export const SUCCESS_TOAST_DURATION_MS = Number.POSITIVE_INFINITY;
 
 // --- Helpers ---------------------------------------------------------
 
@@ -352,6 +362,17 @@ interface ToastEntry {
    * dispatched through this renderer's orchestrator).
    */
   readonly retry?: () => void;
+  /**
+   * Marker set on terminal events (success / failure). When set, a
+   * subsequent duplicate event for the same `downloadJobId` is a no-op
+   * — the toast has already had its terminal render and re-spawning
+   * would resurrect a dismissed toast (or, worse, race Sonner's
+   * dismiss animation; see the post-archive 2026-04-28 fix that moved
+   * success to a fresh id). The orchestrator should never emit a
+   * duplicate terminal event for the same job, but the bridge / hydrate
+   * paths can plausibly race; this flag is the renderer-side guard.
+   */
+  readonly terminal?: boolean;
 }
 
 /**
@@ -423,57 +444,84 @@ export function createDownloadJobToaster(
 
     if (event.kind === "file-downloaded") {
       const existing = tracker.get(downloadJobId);
+      // Duplicate-terminal guard: if this jobId has already received a
+      // terminal event, do not re-spawn. (Defensive — see ToastEntry
+      // `terminal` docstring.)
+      if (existing?.terminal === true) {
+        return;
+      }
       const basename =
         existing?.basename ?? basenameFromPath(event.payload.savedPath);
-      // No prior loading toast — first event for this id is terminal.
-      // Mint a custom-toast id so the success render addresses
-      // something stable. Spawn-and-immediately-flip per design.md
-      // Decision 8.
-      const toastId =
-        existing?.toastId ?? generateToastId();
-      tracker.set(downloadJobId, { toastId, basename });
+      // Post-archive smoke (2026-04-28): the success toast must spawn
+      // with a FRESH id, NOT the loading toast's id. Re-using the
+      // loading id raced Sonner's dismiss animation — `toast.dismiss(id)`
+      // followed immediately by `toast.custom(render, { id })` caused
+      // the new toast to inherit the dismiss state and tear down after
+      // ~400 ms instead of living for `duration`. The earlier in-place
+      // re-render approach (no dismiss, same id) left the loading
+      // template's spinner chrome visible. Solution: dismiss the
+      // loading id first to clear the spinner chrome, then spawn the
+      // success on a deterministic-suffix new id (`<loadingId>-success`)
+      // so Sonner treats it as a brand-new toast with no animation
+      // state baggage. The deterministic suffix keeps the id
+      // predictable for tests and debug logs.
+      const loadingId = existing?.toastId;
+      const successId =
+        loadingId !== undefined
+          ? `${String(loadingId)}-success`
+          : generateToastId();
       const savedPath = event.payload.savedPath;
       const onOpen = () => {
         void filesApi.openSavedPath(savedPath);
-        toast.dismiss(toastId);
+        // Dismiss the success toast itself (not the long-gone loading
+        // id) — the user has acted, the affordance is consumed.
+        toast.dismiss(successId);
       };
       const onShowInFolder = () => {
         void filesApi.showSavedInFolder(savedPath);
-        toast.dismiss(toastId);
+        toast.dismiss(successId);
       };
-      // Post-archive smoke (2026-04-28) — explicit dismiss-then-spawn:
-      // simply re-using the same toast id with `toast.custom(..., { id })`
-      // does NOT clear Sonner's loading-variant chrome (the spinner is
-      // part of Sonner's `toast.loading` template, not our custom render).
-      // Without the dismiss, the success render mounts but the original
-      // loading toast's spinner persists in the DOM. Dismissing first
-      // forces Sonner to tear down the loading chrome before the custom
-      // render mounts, so the user sees only the success layout.
+      // Tear down the loading toast BEFORE spawning the success so the
+      // spinner chrome doesn't visually overlap the success render.
+      // Skipped when there was no prior loading toast (terminal-as-
+      // first-event path).
       if (existing !== undefined) {
-        toast.dismiss(toastId);
+        toast.dismiss(loadingId!);
       }
       toast.custom(
         (id) => buildSuccessRender(id, basename, onOpen, onShowInFolder),
         {
-          id: toastId,
-          // Per SUCCESS_TOAST_DURATION_MS docstring: 8000 ms
-          // (deliberately longer than upload's 4000 — download's V2
-          // success layout invites the user to click [Open] / [Show in
-          // folder] and needs the dwell time to register). Without an
-          // explicit `duration` here, Sonner's default for `toast.custom`
-          // (~4000 ms, version-dependent) would govern. Pinned by test
-          // (c-duration).
+          id: successId,
+          // Sticky — `Number.POSITIVE_INFINITY`. Sonner respects this
+          // sentinel (same pattern used by the failure toast above) and
+          // surfaces its default close-button X on sticky toasts. Per
+          // SUCCESS_TOAST_DURATION_MS docstring: the success toast IS
+          // the affordance, so auto-dismiss would defeat the dual-
+          // action layout. The toast clears when the user clicks Open /
+          // Show in folder (handlers above call `toast.dismiss`) or via
+          // the close-button X. Pinned by test (c-duration).
           duration: SUCCESS_TOAST_DURATION_MS,
           actions: { onOpen, onShowInFolder },
         },
       );
-      // Drop from tracker — terminal events are one-shot.
-      tracker.delete(downloadJobId);
+      // Mark terminal in the tracker so a duplicate `file-downloaded`
+      // (or a late `download-failed`) for the same jobId becomes a
+      // no-op. The entry now references the success id rather than the
+      // dismissed loading id.
+      tracker.set(downloadJobId, {
+        toastId: successId,
+        basename,
+        terminal: true,
+      });
       return;
     }
 
     if (event.kind === "download-failed") {
       const existing = tracker.get(downloadJobId);
+      // Duplicate-terminal guard (see file-downloaded handler).
+      if (existing?.terminal === true) {
+        return;
+      }
       const basename = existing?.basename ?? "download";
       const toastId = existing?.toastId ?? generateToastId();
       // Retry callback was correlated on the FIRST `downloading` event
@@ -482,7 +530,7 @@ export function createDownloadJobToaster(
       // — instant auth-revoked / immediate validation reject), no
       // correlation happened and Retry falls back to dismiss-only.
       const retry = existing?.retry;
-      tracker.set(downloadJobId, { toastId, basename, retry });
+      tracker.set(downloadJobId, { toastId, basename, retry, terminal: true });
       toast.error(`Download failed: ${event.payload.message}`, {
         id: toastId,
         duration: Number.POSITIVE_INFINITY,
@@ -497,7 +545,8 @@ export function createDownloadJobToaster(
           },
         },
       });
-      tracker.delete(downloadJobId);
+      // Terminal marker preserved in tracker — see file-downloaded
+      // handler for duplicate-terminal-guard rationale.
       return;
     }
 
