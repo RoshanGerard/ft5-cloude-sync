@@ -62,6 +62,21 @@ export type { CredentialStore } from "./credential-store.js";
 // ---------------------------------------------------------------------------
 
 /**
+ * Rename conflict-resolution policy (per add-engine-rename-download
+ * design.md Decision 1 + Decision 7). The wire-level rename request type
+ * (`FilesRenameRequest.conflictPolicy`) inlines this same union — the
+ * engine-local alias here gives the strategy interface a named,
+ * documented surface and keeps the `rename` signature self-explanatory
+ * at the call site. Distinct from sync-service's upload `ConflictPolicy`
+ * (`"overwrite" | "duplicate" | "skip"`) — rename has different semantics
+ * (`"fail"` surfaces a `tag: "conflict"` error so the renderer can
+ * re-prompt; `"keep-both"` auto-suffixes; `"overwrite"` replaces the
+ * colliding sibling on a file or refuses with `tag: "unsupported"` on a
+ * directory).
+ */
+export type ConflictPolicy = "fail" | "overwrite" | "keep-both";
+
+/**
  * The engine's public Strategy surface. Consumers program against this
  * interface — not against concrete client classes.
  */
@@ -103,6 +118,24 @@ export interface DatasourceClient<T extends DatasourceType> {
   ): Promise<void>;
   deleteFile(target: Target): Promise<void>;
   deleteDirectory(target: Target): Promise<never>;
+  /**
+   * Rename `target` to `newName` per `conflictPolicy` (per
+   * add-engine-rename-download spec). The base wraps the strategy's
+   * `doRenameImpl` with the existing `withRefresh` machinery and emits
+   * exactly one `entry-renamed { from, to }` event on success or one
+   * `delete-failed { tag, message, via: "rename" }` on failure
+   * (mirroring `createFile`'s `via: "createFile"` pattern).
+   * Per-policy orchestration (sibling-detection, suffix-retry,
+   * directory-overwrite refusal) lives inside each strategy's
+   * `doRenameImpl` since the introspection is provider-specific —
+   * the base only delegates by passing `conflictPolicy` through
+   * unchanged.
+   */
+  rename(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<T>>;
   getQuota(): Promise<Quota>;
 }
 
@@ -254,6 +287,50 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     signal: AbortSignal,
   ): Promise<DatasourceFileEntry<T>>;
   protected abstract doDeleteFileImpl(target: Target): Promise<void>;
+  /**
+   * Primitive for `rename()`. The base passes `conflictPolicy` through
+   * unchanged (per design.md Decision 1 — sibling-detection, suffix-retry,
+   * and kind-based refusal are provider-specific and live inside the
+   * strategy). Strategies SHALL:
+   *   - For `"fail"`: pre-check for a colliding sibling (provider-specific
+   *     query) and throw `DatasourceError { tag: "conflict",
+   *     raw: { existingPath } }` if one exists; otherwise rename.
+   *   - For `"overwrite"` on a file: delete the colliding sibling
+   *     (without emitting `deleted` — that primitive is part of the
+   *     strategy's internal state, not the public bus) then rename.
+   *   - For `"overwrite"` on a directory: throw `DatasourceError
+   *     { tag: "unsupported", message: "directory rename with
+   *     conflictPolicy 'overwrite' is not supported (would require
+   *     recursive replacement)" }`.
+   *   - For `"keep-both"`: append `-2` / `-3` / … suffix and retry until
+   *     success or 99 attempts (then throw `DatasourceError { tag:
+   *     "other", message: "exhausted keep-both attempts" }`).
+   *
+   * Default implementation throws `tag: "unsupported"` so strategies that
+   * have not yet wired their provider-specific rename path (i.e. the
+   * three concrete clients prior to add-engine-rename-download §7-§9
+   * landing) inherit a uniform "not supported" surface. Strategies
+   * override this method when they implement rename for their provider.
+   */
+  protected doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<T>> {
+    void target;
+    void newName;
+    void conflictPolicy;
+    return Promise.reject(
+      new DatasourceError<T>({
+        tag: "unsupported",
+        datasourceType: this.type,
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: "rename-not-implemented-by-strategy",
+        message: "rename is not implemented by this strategy",
+      }),
+    );
+  }
   protected abstract doGetQuotaImpl(): Promise<Quota>;
 
   /**
@@ -574,6 +651,55 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       raw: "disabled-for-product-stability",
       message: "deleteDirectory is disabled for product stability",
     });
+  }
+
+  /**
+   * Rename wrapper. The base wraps `doRenameImpl` with `withRefresh`
+   * (one-shot auth-expired retry per the engine's existing pattern),
+   * emits `entry-renamed { from, to }` once on success, and routes
+   * failures through the existing `delete-failed` taxonomy with
+   * `via: "rename"` (mirroring `createFile`'s use of `upload-failed
+   * { via: "createFile" }`). Unsupported errors stay silent on the bus
+   * per the engine-wide convention applied to every other op.
+   *
+   * Per design.md Decision 1, per-policy orchestration is strategy-side
+   * — the base passes `conflictPolicy` through to `doRenameImpl`
+   * unchanged and trusts the strategy to surface the right error tag
+   * (`"conflict"` for fail-on-collision; `"unsupported"` for
+   * directory-overwrite; `"other"` for exhausted keep-both retries).
+   */
+  async rename(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<T>> {
+    try {
+      const entry = await this.withRefresh(() =>
+        this.doRenameImpl(target, newName, conflictPolicy),
+      );
+      // Cast note: TS does not distribute `PayloadMap[T]["entry-renamed"]`
+      // to `{ from: Target; to: DatasourceFileEntry<T> }` when T is a
+      // generic parameter (indexed-access-on-generic limitation, same as
+      // `authentication-failed` below). At every concrete instantiation
+      // the types are equal — see the test-d assertions in
+      // datasources-engine.test-d.ts.
+      this.emit(
+        "entry-renamed",
+        false,
+        { from: target, to: entry } as PayloadMap[T]["entry-renamed"],
+      );
+      return entry;
+    } catch (err) {
+      const normalized = this.ensureNormalized(err);
+      if (normalized.tag !== "unsupported") {
+        this.emit("delete-failed", false, {
+          tag: normalized.tag,
+          message: normalized.message,
+          via: "rename",
+        });
+      }
+      throw normalized;
+    }
   }
 
   /**

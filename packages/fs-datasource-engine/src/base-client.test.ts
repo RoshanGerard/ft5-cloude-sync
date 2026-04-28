@@ -55,6 +55,11 @@ interface FakeConfig {
     signal: AbortSignal,
   ) => Promise<DatasourceFileEntry<FakeType>>;
   doDeleteFile?: (target: Target) => Promise<void>;
+  doRename?: (
+    target: Target,
+    newName: string,
+    conflictPolicy: "fail" | "overwrite" | "keep-both",
+  ) => Promise<DatasourceFileEntry<FakeType>>;
   doGetQuota?: () => Promise<Quota>;
   refreshToken?: () => Promise<AuthResult>;
   normalizeError?: (raw: unknown) => DatasourceError<FakeType>;
@@ -110,6 +115,13 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
     ) => Promise<DatasourceFileEntry<FakeType>>
   >();
   readonly doDeleteFile = vi.fn<(target: Target) => Promise<void>>();
+  readonly doRename = vi.fn<
+    (
+      target: Target,
+      newName: string,
+      conflictPolicy: "fail" | "overwrite" | "keep-both",
+    ) => Promise<DatasourceFileEntry<FakeType>>
+  >();
   readonly doGetQuotaSpy = vi.fn<() => Promise<Quota>>();
   readonly refreshTokenSpy = vi.fn<() => Promise<AuthResult>>();
   readonly normalizeErrorSpy = vi.fn<(raw: unknown) => DatasourceError<FakeType>>();
@@ -152,6 +164,9 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
     if (cfg.doDeleteFile)
       this.doDeleteFile.mockImplementation(cfg.doDeleteFile);
     else this.doDeleteFile.mockResolvedValue(undefined);
+
+    if (cfg.doRename) this.doRename.mockImplementation(cfg.doRename);
+    else this.doRename.mockResolvedValue(makeEntry());
 
     if (cfg.doGetQuota)
       this.doGetQuotaSpy.mockImplementation(cfg.doGetQuota);
@@ -207,6 +222,13 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   }
   protected doDeleteFileImpl(target: Target): Promise<void> {
     return this.doDeleteFile(target);
+  }
+  protected doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: "fail" | "overwrite" | "keep-both",
+  ): Promise<DatasourceFileEntry<FakeType>> {
+    return this.doRename(target, newName, conflictPolicy);
   }
   protected doGetQuotaImpl(): Promise<Quota> {
     return this.doGetQuotaSpy();
@@ -1229,6 +1251,270 @@ describe("BaseDatasourceClient — dispose()", () => {
     );
     d();
     expect(() => d()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — base-class primitive (add-engine-rename-download §4)
+// ---------------------------------------------------------------------------
+//
+// The base class wraps the strategy's `doRenameImpl` with the existing
+// `withRefresh` machinery and emits exactly one `entry-renamed` event on
+// success or one `delete-failed { via: "rename" }` event on failure
+// (mirroring `createFile`'s `via: "createFile"` pattern). Per design.md
+// Decision 1 + spec.md "Directory rename with conflictPolicy 'overwrite'
+// is refused", per-policy orchestration (sibling-detection,
+// suffix-retry, kind-based refusal) lives in each strategy — Section 4
+// only lands the base wrapper + a programmable mock subclass that
+// proves the wrapper's contract behaviour for each policy branch.
+
+describe("BaseDatasourceClient — rename success path", () => {
+  it("emits exactly one `entry-renamed { from, to }` event and resolves with the strategy's renamed entry", async () => {
+    const renamed = makeEntry("/welcome-v2.pdf");
+    const { client, events } = makeHarness({
+      doRename: async () => renamed,
+    });
+
+    const from: Target = { kind: "path", path: "/welcome.pdf" };
+    const result = await client.rename(from, "welcome-v2.pdf", "fail");
+
+    expect(result).toEqual(renamed);
+    const renames = events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    expect(renames[0]?.payload).toEqual({ from, to: renamed });
+    // No `delete-failed` (failure path) and no `deleted` (overwrite-cleanup
+    // pseudo-emission) MUST appear on the success path.
+    expect(events.some((e) => e.event === "delete-failed")).toBe(false);
+    expect(events.some((e) => e.event === "deleted")).toBe(false);
+  });
+});
+
+describe("BaseDatasourceClient — rename `fail` policy surfaces conflict tag", () => {
+  it("strategy throws conflict-tagged DatasourceError → base re-throws unchanged and emits one `delete-failed { via: rename, tag: conflict }`", async () => {
+    const conflictErr = new DatasourceError<FakeType>({
+      tag: "conflict",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      raw: { existingPath: "/parent/bar.pdf" },
+      message: "name already exists at /parent/bar.pdf",
+    });
+    const { client, events } = makeHarness({
+      doRename: async () => {
+        throw conflictErr;
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await client.rename(
+        { kind: "path", path: "/parent/foo.pdf" },
+        "bar.pdf",
+        "fail",
+      );
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<FakeType>;
+    expect(err.tag).toBe("conflict");
+    expect(err.retryable).toBe(false);
+    // `raw` carries the colliding sibling path so the renderer's
+    // ConflictResolutionDialog can prompt with the exact path.
+    expect(err.raw).toEqual({ existingPath: "/parent/bar.pdf" });
+
+    // The base routes rename failures through the existing `delete-failed`
+    // taxonomy (per spec.md "Rename failure emits delete-failed with via:
+    // rename") with the `via: "rename"` discriminator.
+    const failures = events.filter((e) => e.event === "delete-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.payload).toMatchObject({
+      tag: "conflict",
+      via: "rename",
+    });
+    // No `entry-renamed` on the failure path.
+    expect(events.some((e) => e.event === "entry-renamed")).toBe(false);
+  });
+});
+
+describe("BaseDatasourceClient — rename `overwrite` policy on a file delegates to the strategy", () => {
+  it("base passes `overwrite` through to doRenameImpl; strategy's internal `doDeleteFileImpl` cleanup does NOT leak a `deleted` event; bus observes one `entry-renamed` only", async () => {
+    // Per design.md Decision 1 + tasks.md §4.6 ("lives in each strategy
+    // since the sibling-detection is provider-specific"), the base does
+    // NOT itself drive the overwrite-then-rename. It delegates by passing
+    // `conflictPolicy` through to `doRenameImpl`. The base-side contract is:
+    //   1. `doRenameImpl` is invoked with conflictPolicy === "overwrite"
+    //   2. Whatever the strategy did internally — including a sibling
+    //      delete via the protected `doDeleteFileImpl` primitive — does
+    //      NOT cause the base to emit a `deleted` event for that internal
+    //      cleanup (the public `deleteFile` is the only path that emits;
+    //      strategies bypass it via the protected primitive precisely so
+    //      single-step rename UX holds, per spec.md "the deletion event
+    //      SHALL NOT be emitted to the bus")
+    //   3. On the strategy resolving the renamed entry, the base emits
+    //      exactly one `entry-renamed`
+    //
+    // The mock simulates the strategy's overwrite path by invoking
+    // `doDeleteFileImpl` (via the public `doDeleteFile` spy that the test
+    // fixture wires it to) before returning the renamed entry — exercising
+    // the actual property under test rather than just the policy passthrough.
+    const renamed = makeEntry("/parent/bar.pdf");
+    const { client, events } = makeHarness();
+    // Override doRename post-construction so the mock can close over
+    // `client` and exercise the protected primitive via the public spy.
+    client.doRename.mockImplementation(
+      async (_target, _newName, conflictPolicy) => {
+        // Sanity: the base MUST forward the policy unchanged.
+        expect(conflictPolicy).toBe("overwrite");
+        // Strategy's internal sibling-cleanup. doDeleteFileImpl resolves to
+        // doDeleteFile (the test spy), which is a no-op vi.fn — no provider
+        // call, no event emission. This mirrors a real strategy's overwrite
+        // path: call the protected primitive, then perform the rename.
+        await client["doDeleteFileImpl"]({
+          kind: "path",
+          path: "/parent/bar.pdf",
+        });
+        return renamed;
+      },
+    );
+
+    const from: Target = { kind: "path", path: "/parent/foo.pdf" };
+    const result = await client.rename(from, "bar.pdf", "overwrite");
+
+    expect(result).toEqual(renamed);
+    // The strategy's overwrite path actually invoked the cleanup primitive.
+    expect(client.doDeleteFile).toHaveBeenCalledTimes(1);
+    expect(client.doDeleteFile).toHaveBeenCalledWith({
+      kind: "path",
+      path: "/parent/bar.pdf",
+    });
+    const renames = events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    expect(renames[0]?.payload).toEqual({ from, to: renamed });
+    // CRITICAL: no `deleted` event despite the actual `doDeleteFileImpl`
+    // call inside the strategy. The user-visible UX is single-step.
+    expect(events.some((e) => e.event === "deleted")).toBe(false);
+  });
+});
+
+describe("BaseDatasourceClient — rename `overwrite` on a directory is refused", () => {
+  it("strategy throws `unsupported`; base re-throws; no `delete-failed` event (unsupported is silent on the bus per the existing convention)", async () => {
+    // Per design.md Decision 1 ("Directory-rename conflict-policy guard"),
+    // the strategy detects kind === "folder" + policy === "overwrite" and
+    // throws `DatasourceError { tag: "unsupported" }`. The base passes the
+    // policy through and re-throws the strategy-thrown error. Per the
+    // existing codebase convention (deleteFile L546-560, uploadFile
+    // L483-510, createFile L383-393), `*-failed` events are NOT emitted
+    // when `tag === "unsupported"` — the unsupported case stays silent on
+    // the bus. spec.md's "Directory rename with conflictPolicy 'overwrite'
+    // is refused" scenario confirms only "the call rejects ... no rename
+    // API call is issued" — no event-emission requirement.
+    const refusal = new DatasourceError<FakeType>({
+      tag: "unsupported",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      raw: "directory-overwrite-refused",
+      message:
+        "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
+    });
+    const { client, events } = makeHarness({
+      doRename: async () => {
+        throw refusal;
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await client.rename(
+        { kind: "path", path: "/parent/some-folder" },
+        "renamed-folder",
+        "overwrite",
+      );
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<FakeType>;
+    expect(err.tag).toBe("unsupported");
+    expect(err.message).toContain(
+      "directory rename with conflictPolicy 'overwrite' is not supported",
+    );
+    // No event of any kind for the unsupported-refusal path.
+    expect(events.some((e) => e.event === "delete-failed")).toBe(false);
+    expect(events.some((e) => e.event === "entry-renamed")).toBe(false);
+  });
+});
+
+describe("BaseDatasourceClient — rename `keep-both` policy delegates to the strategy", () => {
+  it("base passes `keep-both` through to doRenameImpl unchanged; strategy returns the auto-suffixed entry; bus observes one `entry-renamed`", async () => {
+    // Per design.md Decision 1 + tasks.md §4.10 ("lives in each strategy
+    // alongside its rename API call"), the keep-both retry loop is
+    // strategy-side (provider-specific sibling-detection happens during
+    // the loop). The base's job is to delegate — `doRenameImpl` receives
+    // `keep-both`, the strategy retries internally with `bar-2.pdf` /
+    // `bar-3.pdf` / … until success or 99 attempts (terminal `tag: other`),
+    // and resolves with the final renamed entry. Whatever number of
+    // internal retries occurred, the bus observes ONE `entry-renamed`
+    // (the terminal success).
+    const renamed = makeEntry("/parent/bar-3.pdf");
+    const { client, events } = makeHarness({
+      doRename: async (_target, _newName, conflictPolicy) => {
+        expect(conflictPolicy).toBe("keep-both");
+        return renamed;
+      },
+    });
+
+    const from: Target = { kind: "path", path: "/parent/foo.pdf" };
+    const result = await client.rename(from, "bar.pdf", "keep-both");
+
+    expect(result).toEqual(renamed);
+    const renames = events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    expect(renames[0]?.payload).toEqual({ from, to: renamed });
+    expect(events.some((e) => e.event === "delete-failed")).toBe(false);
+  });
+
+  it("strategy exhausts keep-both attempts → base re-throws strategy's `tag: other` error and emits one `delete-failed { via: rename }`", async () => {
+    // Strategy's exhausted-retry path lives in the strategy (§4.10), but
+    // the base must still route the resulting error through the standard
+    // failure-emission path so the renderer can surface it.
+    const exhausted = new DatasourceError<FakeType>({
+      tag: "other",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: "exhausted keep-both attempts",
+    });
+    const { client, events } = makeHarness({
+      doRename: async () => {
+        throw exhausted;
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await client.rename(
+        { kind: "path", path: "/parent/foo.pdf" },
+        "bar.pdf",
+        "keep-both",
+      );
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(DatasourceError);
+    expect((caught as DatasourceError).tag).toBe("other");
+
+    const failures = events.filter((e) => e.event === "delete-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.payload).toMatchObject({
+      tag: "other",
+      message: "exhausted keep-both attempts",
+      via: "rename",
+    });
   });
 });
 

@@ -39,6 +39,7 @@ export { BaseDatasourceClient } from "./base-client.js";
 export type {
   BaseClientContext,
   BaseClientInit,
+  ConflictPolicy,
   DatasourceClient,
 } from "./base-client.js";
 
