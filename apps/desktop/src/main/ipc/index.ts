@@ -1,4 +1,4 @@
-import { clipboard, dialog, ipcMain, type BrowserWindow } from "electron";
+import { clipboard, dialog, ipcMain, shell, type BrowserWindow } from "electron";
 
 import {
   DATASOURCES_CHANNELS,
@@ -35,14 +35,23 @@ import { handleDatasourcesAdd } from "./datasources/add.js";
 import { handleDatasourcesList } from "./datasources/list.js";
 import { handlePickFilesToUpload } from "./datasources/pick-files-to-upload.js";
 import { handleDatasourcesRemove } from "./datasources/remove.js";
+import { handleDialogShowSaveDialog, type SaveDialogOptionsLike } from "./dialog.js";
 import { handleFilesDownload } from "./files/download.js";
 import { handleFilesList } from "./files/list.js";
+import {
+  handleFilesOpenSavedPath,
+  handleFilesShowSavedInFolder,
+} from "./files/open-saved.js";
 import { handleFilesRemove } from "./files/remove.js";
 import { handleFilesRename } from "./files/rename.js";
 import { handleFilesSearch } from "./files/search.js";
 import { handleFilesStat } from "./files/stat.js";
 import { handleFilesUpload } from "./files/upload.js";
 import { handlePing } from "./ping.js";
+import {
+  handleGetDefaultDownloadsFolder,
+  handleSetDefaultDownloadsFolder,
+} from "./preferences.js";
 import { handleSyncAuthenticateCancel } from "./sync/authenticate-cancel.js";
 import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js";
 import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
@@ -218,4 +227,77 @@ export function registerIpcHandlers(
   ipcMain.handle("clipboard:writeText", (_event, text: string) => {
     clipboard.writeText(text);
   });
+
+  // add-engine-rename-download §18.1-§18.2 — preferences API for the
+  // download default-folder. The renderer's downloads-store (§20) is the
+  // durable owner via localStorage; this handler holds an in-memory
+  // mirror so callers outside the store have a uniform `window.api.*`
+  // binding. No on-disk persistence in main; the renderer reseeds the
+  // slot at startup.
+  ipcMain.handle(
+    "preferences:setDefaultDownloadsFolder",
+    (_event, folder: string) => handleSetDefaultDownloadsFolder(folder),
+  );
+  ipcMain.handle("preferences:getDefaultDownloadsFolder", () =>
+    handleGetDefaultDownloadsFolder(),
+  );
+
+  // §18.3-§18.6 — download-success toast CTAs (Open + Show in folder).
+  // Thin proxies over Electron's `shell.openPath` /
+  // `shell.showItemInFolder`. The Electron `shell` import lives here;
+  // the handler modules are unit-testable under plain Node via DI.
+  ipcMain.handle("files:openSavedPath", (_event, savedPath: string) =>
+    handleFilesOpenSavedPath(savedPath, {
+      openPath: (path) => shell.openPath(path),
+    }),
+  );
+  ipcMain.handle("files:showSavedInFolder", (_event, savedPath: string) =>
+    handleFilesShowSavedInFolder(savedPath, {
+      showItemInFolder: (path) => shell.showItemInFolder(path),
+    }),
+  );
+
+  // §18.7-§18.8 — `dialog.showSaveDialog` thin pass-through. Bound to
+  // the BrowserWindow when one is available so the dialog renders as a
+  // sheet on macOS / a window-modal on Windows; falls back to the
+  // standalone signature when no window is registered yet (parity with
+  // `pickFilesToUpload`'s targetWindow handling).
+  ipcMain.handle(
+    "dialog:showSaveDialog",
+    async (_event, opts: SaveDialogOptionsLike) =>
+      handleDialogShowSaveDialog(opts, {
+        showSaveDialog: async (o) => {
+          // Electron's `SaveDialogOptions.filters` is mutable
+          // (`FileFilter[]`); our handler-side type is readonly to keep
+          // the cross-process boundary safe. Defensive copy at the seam
+          // bridges the two without loosening either side.
+          const electronOpts = {
+            ...(o.title !== undefined ? { title: o.title } : {}),
+            ...(o.defaultPath !== undefined
+              ? { defaultPath: o.defaultPath }
+              : {}),
+            ...(o.buttonLabel !== undefined
+              ? { buttonLabel: o.buttonLabel }
+              : {}),
+            ...(o.filters !== undefined
+              ? {
+                  filters: o.filters.map((f) => ({
+                    name: f.name,
+                    extensions: [...f.extensions],
+                  })),
+                }
+              : {}),
+          };
+          const result = targetWindow
+            ? await dialog.showSaveDialog(targetWindow, electronOpts)
+            : await dialog.showSaveDialog(electronOpts);
+          return {
+            canceled: result.canceled,
+            ...(result.filePath !== undefined
+              ? { filePath: result.filePath }
+              : {}),
+          };
+        },
+      }),
+  );
 }

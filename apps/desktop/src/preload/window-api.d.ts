@@ -25,6 +25,7 @@ import type {
   FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
+import type { DownloadJob } from "@ft5/ipc-contracts/sync-service";
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -89,6 +90,31 @@ declare global {
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
         upload(req: FilesUploadRequest): Promise<FilesUploadResponse>;
+        openSavedPath(savedPath: string): Promise<void>;
+        showSavedInFolder(savedPath: string): Promise<void>;
+        onActiveDownloadsHydrate(
+          callback: (jobs: readonly DownloadJob[]) => void,
+        ): () => void;
+      };
+      preferences: {
+        setDefaultDownloadsFolder(folder: string): Promise<void>;
+        getDefaultDownloadsFolder(): Promise<string | null>;
+      };
+      dialog: {
+        // Electron's `SaveDialogOptions` and `SaveDialogReturnValue` are
+        // re-declared here as a structural subset so the preload type
+        // surface stays free of an `electron` import. The fields below
+        // match the design V4 / spec.md "Default folder path" + Save-as
+        // flow's actual usage.
+        showSaveDialog(opts: {
+          title?: string;
+          defaultPath?: string;
+          buttonLabel?: string;
+          filters?: ReadonlyArray<{
+            name: string;
+            extensions: readonly string[];
+          }>;
+        }): Promise<{ canceled: boolean; filePath?: string }>;
       };
       sync: {
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;

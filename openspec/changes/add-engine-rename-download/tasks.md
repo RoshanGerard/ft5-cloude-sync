@@ -228,16 +228,16 @@ The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-F
 
 ## 18. Main IPC — `dialog.showSaveDialog` + first-run modal trigger + on-launch hydrate
 
-- [ ] 18.1 Write a unit test for a new preload exposure `window.api.preferences.setDefaultDownloadsFolder(folder)` and `getDefaultDownloadsFolder()`; test fails
-- [ ] 18.2 Implement the preload exposure + main-process IPC handlers (the storage is renderer-side localStorage, but the preload routes through to keep the surface uniform); rerun → green
-- [ ] 18.3 Write a unit test for `window.api.files.openSavedPath(savedPath)` calling `shell.openPath(savedPath)`
-- [ ] 18.4 Implement the IPC + preload exposure; rerun → green
-- [ ] 18.5 Write a unit test for `window.api.files.showSavedInFolder(savedPath)` calling `shell.showItemInFolder(savedPath)`
-- [ ] 18.6 Implement; rerun → green
-- [ ] 18.7 Write a unit test for `window.api.dialog.showSaveDialog(opts)` (a thin pass-through to Electron's `dialog.showSaveDialog`); test fails
-- [ ] 18.8 Implement; rerun → green
-- [ ] 18.9 Write a unit test for the on-supervisor-connect `downloads:list-active` query firing exactly once on first connect, and the response being forwarded to the renderer via `window.api.files.onActiveDownloadsHydrate`
-- [ ] 18.10 Implement `apps/desktop/src/main/sync/on-connect-hydrate-downloads.ts`; rerun → green
+- [x] 18.1 Write a unit test for a new preload exposure `window.api.preferences.setDefaultDownloadsFolder(folder)` and `getDefaultDownloadsFolder()`; test fails
+- [x] 18.2 Implement the preload exposure + main-process IPC handlers (the storage is renderer-side localStorage, but the preload routes through to keep the surface uniform); rerun → green
+- [x] 18.3 Write a unit test for `window.api.files.openSavedPath(savedPath)` calling `shell.openPath(savedPath)`
+- [x] 18.4 Implement the IPC + preload exposure; rerun → green
+- [x] 18.5 Write a unit test for `window.api.files.showSavedInFolder(savedPath)` calling `shell.showItemInFolder(savedPath)`
+- [x] 18.6 Implement; rerun → green
+- [x] 18.7 Write a unit test for `window.api.dialog.showSaveDialog(opts)` (a thin pass-through to Electron's `dialog.showSaveDialog`); test fails
+- [x] 18.8 Implement; rerun → green
+- [x] 18.9 Write a unit test for the on-supervisor-connect `downloads:list-active` query firing exactly once on first connect, and the response being forwarded to the renderer via `window.api.files.onActiveDownloadsHydrate`
+- [x] 18.10 Implement `apps/desktop/src/main/sync/on-connect-hydrate-downloads.ts`; rerun → green. **Done 2026-04-28**: in-memory preferences slot in main; main-process handlers under `apps/desktop/src/main/ipc/{preferences,dialog}.ts` + `files/open-saved.ts`; preload routes via `clipboard:writeText`-style inline-string channels (`preferences:*`, `files:openSavedPath`, `files:showSavedInFolder`, `dialog:showSaveDialog`, `files:hydrate-active-downloads`); on-launch hydrate at `apps/desktop/src/main/sync/on-connect-hydrate-downloads.ts` + bootstrap call site after `did-finish-load` (fire-once-per-session is structural — NOT registered on `syncHandle.on("reconnect", ...)`). Test count delta: 1066 → 1091 (+25). Cross-package: 270/270 files / 2253 passed / 9 skipped. typecheck + lint clean.
 
 ## 19. Renderer — context-menu gate flip + S3 folder-rename branch
 
