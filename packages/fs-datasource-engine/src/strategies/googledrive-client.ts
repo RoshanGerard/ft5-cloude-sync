@@ -77,7 +77,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
 import { Transform, type Readable } from "node:stream";
 
 import type {
@@ -266,6 +266,59 @@ function splitNameForSuffix(name: string): { base: string; ext: string } {
   return { base: name.slice(0, dotIdx), ext: name.slice(dotIdx) };
 }
 
+// Post-archive smoke (2026-04-28): Drive's `files` REST returns `name` as a
+// "title" — for several mimes (notably `text/plain` from the Drive web UI's
+// New > Text file flow) the title does NOT include the extension that
+// macOS / Windows use to associate the file with an editor. The renderer
+// constructs the local-save `toPath` from `entry.name`, so an extension-less
+// entry produces an extension-less file on disk (e.g. `Getting Started`).
+//
+// Microsoft documents and most user-uploaded files DO carry the extension on
+// the title, so they aren't affected. The fix is scoped to Drive only:
+// OneDrive and S3 store filenames as-is (extensions preserved as part of the
+// stored name). Below is a small, conservative mime → canonical extension
+// lookup applied at `buildFileEntry`. Mimes outside the table fall through
+// unchanged so we don't double-append or invent a wrong extension.
+const DRIVE_MIME_TO_EXT: Readonly<Record<string, string>> = {
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "text/html": ".html",
+  "text/markdown": ".md",
+  "text/xml": ".xml",
+  "application/pdf": ".pdf",
+  "application/json": ".json",
+  "application/xml": ".xml",
+  "application/zip": ".zip",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/svg+xml": ".svg",
+  "audio/mpeg": ".mp3",
+  "video/mp4": ".mp4",
+};
+
+/**
+ * If `name` lacks a file extension AND `mimeType` maps to a canonical one,
+ * append it so the local-save path lands with the right associator on disk.
+ *
+ * - `name` already-has-extension (`extname(name) !== ""`) → returned as-is
+ * - `mimeType` not in the lookup → returned as-is (we don't guess)
+ * - empty `name` → returned as-is
+ *
+ * Exported for direct unit testing; production call site is `buildFileEntry`.
+ */
+export function appendExtensionIfMissing(
+  name: string,
+  mimeType: string | undefined,
+): string {
+  if (name === "") return name;
+  if (mimeType === undefined) return name;
+  if (extname(name) !== "") return name;
+  const canonical = DRIVE_MIME_TO_EXT[mimeType];
+  if (canonical === undefined) return name;
+  return name + canonical;
+}
+
 function mimeFamilyFromMime(mime?: string): DatasourceMimeFamily {
   if (!mime) return "other";
   if (mime === DRIVE_FOLDER_MIME) return "folder";
@@ -295,36 +348,11 @@ function isFolder(file: DriveFile): boolean {
   return file.mimeType === DRIVE_FOLDER_MIME;
 }
 
-/**
- * Map a Google Apps native mime to a short, user-friendly noun for the
- * "can't be downloaded directly" error. Caller MUST ensure the mime
- * starts with `application/vnd.google-apps.` AND is not the folder
- * mime; this helper does not re-guard. Unknown apps subtypes (e.g., a
- * future mime Google adds) fall back to "Apps file".
- *
- * Used only for the user-facing error path in `doDownloadFileImpl`. See
- * the parked follow-up `add-drive-docs-editors-export` for the actual
- * export-API routing that closes the gap.
- */
-function humanizeGoogleAppsMime(mime: string): string {
-  const subtype = mime.slice("application/vnd.google-apps.".length);
-  switch (subtype) {
-    case "document":
-      return "Doc";
-    case "spreadsheet":
-      return "Sheet";
-    case "presentation":
-      return "Slide";
-    case "drawing":
-      return "Drawing";
-    case "form":
-      return "Form";
-    case "script":
-      return "Apps Script";
-    default:
-      return "Apps file";
-  }
-}
+// Note: `humanizeGoogleAppsMime` (subtype → "Doc"/"Sheet"/...) was removed
+// post-smoke-2 (2026-04-28) when the friendly Docs-Editors refusal was
+// simplified to a single concise line. Restore from git history when the
+// parked follow-up `add-drive-docs-editors-export` lands and needs the
+// subtype-specific user copy.
 
 /**
  * Parse a `Content-Range` header (HTTP RFC 7233) into the engine's
@@ -815,8 +843,14 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     opts: { path: string; ambiguousSiblings?: string[] },
   ): DatasourceFileEntry<"google-drive"> {
     const id = file.id ?? "";
-    const name = file.name ?? "";
+    const rawName = file.name ?? "";
     const folder = isFolder(file);
+    // Folders never need extension repair; files do (per
+    // `appendExtensionIfMissing`'s lookup table — Drive returns extension-
+    // less `name` titles for several common mimes).
+    const name = folder
+      ? rawName
+      : appendExtensionIfMissing(rawName, file.mimeType);
     const kind: "file" | "folder" = folder ? "folder" : "file";
     const mimeFamily: DatasourceMimeFamily = folder
       ? "folder"
@@ -1771,6 +1805,10 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     options: DownloadOptions,
   ): Promise<DownloadResult> {
     const { fileId } = await this.resolveTarget(target);
+    // The bus's `downloading` / `file-downloaded` events carry an
+    // engine-facing path string. Path-form targets supply it directly;
+    // handle-form targets fall back to the handle so the event still
+    // identifies the file.
     const path = target.kind === "path" ? target.path : target.handle;
 
     // Post-archive smoke (2026-04-28): pre-fetch metadata to detect
@@ -1787,15 +1825,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     // ids, not mime types). Acceptable cost for a clean error path; the
     // proper fix lives in the follow-up which routes binary vs export
     // upstream of this call.
-    let metaName: string | undefined;
     let metaMimeType: string | undefined;
     try {
       const probe = await this.drive().files.get({
         fileId,
-        fields: "name, mimeType",
+        fields: "mimeType",
       });
       const data = probe.data as DriveFile;
-      metaName = data.name;
       metaMimeType = data.mimeType;
     } catch (err) {
       throw this.normalizeErrorImpl(err);
@@ -1805,15 +1841,18 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       metaMimeType.startsWith("application/vnd.google-apps.") &&
       metaMimeType !== DRIVE_FOLDER_MIME
     ) {
-      const displayName = metaName ?? path;
-      const kindLabel = humanizeGoogleAppsMime(metaMimeType);
+      // Post-smoke-2 (2026-04-28): the per-subtype humanized name +
+      // "Open it in Drive..." prose was rejected as too noisy in the
+      // toast; user wants a single concise line. The parked follow-up
+      // `add-drive-docs-editors-export` still owns the proper export
+      // path; this is just the friendly refusal.
       throw new DatasourceError<"google-drive">({
         tag: "unsupported",
         datasourceType: "google-drive",
         datasourceId: this.datasourceId,
         retryable: false,
         raw: { kind: "google-apps-not-downloadable", mimeType: metaMimeType },
-        message: `${displayName} is a Google ${kindLabel} and can't be downloaded directly. Open it in Drive and use File → Download to export as PDF/DOCX/CSV. Native export support is tracked in change 'add-drive-docs-editors-export'.`,
+        message: "Google Drive documents download not supported",
       });
     }
 

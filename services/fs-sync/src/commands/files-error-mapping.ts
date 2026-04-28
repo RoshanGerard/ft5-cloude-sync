@@ -46,8 +46,12 @@ function readExistingPath(raw: unknown): string | undefined {
 // the friendly substitution below.
 const DRIVE_NOT_DOWNLOADABLE_REASON = "fileNotDownloadable";
 const DRIVE_DOCS_EDITORS_PHRASE = "Use Export with Docs Editors files";
+// Post-smoke-2 (2026-04-28): user wants a single concise line in the
+// toast — not the per-subtype prose the strategy used to ship. The
+// parked follow-up `add-drive-docs-editors-export` still owns the
+// proper export path; this is just the friendly refusal.
 const FRIENDLY_DOCS_EDITORS_MESSAGE =
-  "This file is a Google Doc, Sheet, or Slide and can't be downloaded directly. Native export support is tracked in change 'add-drive-docs-editors-export'.";
+  "Google Drive documents download not supported";
 
 function looksLikeDriveDocsEditorsRefusal(message: string): boolean {
   return (

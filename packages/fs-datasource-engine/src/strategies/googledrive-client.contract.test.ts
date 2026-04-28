@@ -654,9 +654,9 @@ const fixture: StrategyContractFixture = {
       }),
     });
     // Metadata pre-fetch for the post-archive Google Apps detection
-    // path (`fields: "name, mimeType"`). The strategy issues this
-    // BEFORE the alt=media stream call so it can refuse Google Apps
-    // files with a friendly error. Plain binary mime → no refusal,
+    // path (`fields: "mimeType"` post-smoke-2). The strategy issues
+    // this BEFORE the alt=media stream call so it can refuse Google
+    // Apps files with a concise error. Plain binary mime → no refusal,
     // continues to the stream.
     gets.push({
       fileId,

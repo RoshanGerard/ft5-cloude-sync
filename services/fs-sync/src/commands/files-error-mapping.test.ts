@@ -207,10 +207,9 @@ describe("normalizeFilesError", () => {
     });
     const result = normalizeFilesError(err);
     expect(result.tag).toBe("other");
-    expect(result.message).toContain(
-      "Google Doc, Sheet, or Slide",
+    expect(result.message).toBe(
+      "Google Drive documents download not supported",
     );
-    expect(result.message).toContain("add-drive-docs-editors-export");
     // The raw JSON noise should not leak through to the renderer.
     expect(result.message).not.toContain("fileNotDownloadable");
   });
@@ -225,8 +224,8 @@ describe("normalizeFilesError", () => {
         "Drive said: Only files with binary content can be downloaded. Use Export with Docs Editors files.",
     });
     const result = normalizeFilesError(err);
-    expect(result.message).toContain(
-      "Google Doc, Sheet, or Slide",
+    expect(result.message).toBe(
+      "Google Drive documents download not supported",
     );
   });
 
@@ -238,8 +237,8 @@ describe("normalizeFilesError", () => {
     const err = new Error('{"reason":"fileNotDownloadable"}');
     const result = normalizeFilesError(err);
     expect(result.tag).toBe("other");
-    expect(result.message).toContain(
-      "Google Doc, Sheet, or Slide",
+    expect(result.message).toBe(
+      "Google Drive documents download not supported",
     );
   });
 
@@ -253,7 +252,7 @@ describe("normalizeFilesError", () => {
     });
     const result = normalizeFilesError(err);
     expect(result.message).toBe("refresh token revoked");
-    expect(result.message).not.toContain("Google Doc");
+    expect(result.message).not.toContain("Google Drive documents");
   });
 
   it("omits retryAfterMs when the DatasourceError did not carry one", () => {

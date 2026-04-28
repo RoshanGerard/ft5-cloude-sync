@@ -168,6 +168,81 @@ function resolveApi(
   };
 }
 
+// --- Filename sanitization ------------------------------------------
+
+// Windows-invalid filename characters (`< > : " / \ | ? *` plus C0 control
+// chars `\x00-\x1F`). POSIX is more permissive (only `/` and `\0` are
+// reserved), but the orchestrator runs in Electron and may target a
+// Windows host, so the stricter superset is used uniformly. The source
+// `path` / `handle` sent to the engine is NOT sanitized — Drive can host
+// a file named `Acme: Test file` and the strategy correctly references it
+// by handle. Only the local-filesystem `toPath` needs the cleanup.
+const WINDOWS_INVALID_CHAR_RE = /[<>:"/\\|?*\x00-\x1F]/g;
+
+// Windows reserved device names (case-insensitive, matched against the
+// basename without extension). Pre-pending `_` keeps the sanitized name
+// distinct from the device while preserving recognisability.
+const WINDOWS_RESERVED_DEVICES = new Set<string>([
+  "CON",
+  "PRN",
+  "AUX",
+  "NUL",
+  "COM1",
+  "COM2",
+  "COM3",
+  "COM4",
+  "COM5",
+  "COM6",
+  "COM7",
+  "COM8",
+  "COM9",
+  "LPT1",
+  "LPT2",
+  "LPT3",
+  "LPT4",
+  "LPT5",
+  "LPT6",
+  "LPT7",
+  "LPT8",
+  "LPT9",
+]);
+
+/**
+ * Replace Windows-invalid chars (`< > : " / \ | ? *` + control chars) with
+ * `_`, trim leading/trailing whitespace + dots (Windows refuses files that
+ * end in `.` or space), and prefix `_` to Windows reserved device names
+ * (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`).
+ *
+ * Returns `_unnamed_` when sanitization removes every character (e.g. the
+ * input was `" "` or only invalid chars) so the caller never produces an
+ * empty filename.
+ *
+ * Source `path` on the engine side is NOT touched — Drive can carry
+ * names with colons / slashes fine via `handle`. This is purely a
+ * local-filesystem concern at the renderer's `toPath` boundary.
+ *
+ * Exported for direct unit testing.
+ */
+export function sanitizeFilenameForOS(name: string): string {
+  // 1. Replace invalid chars with `_`.
+  let sanitized = name.replace(WINDOWS_INVALID_CHAR_RE, "_");
+  // 2. Trim leading/trailing whitespace + trailing dots. Windows refuses
+  //    `foo.` and `  foo  ` — Explorer silently strips the trailing dot
+  //    on creation, but `fs.writeFile` raises EINVAL on some flows.
+  sanitized = sanitized.replace(/^[\s.]+|[\s.]+$/g, "");
+  // 3. Empty after sanitization → fallback. Avoids producing a path that
+  //    ends in just the folder separator.
+  if (sanitized === "") return "_unnamed_";
+  // 4. Reserved-device-name guard. Compare the basename (the part before
+  //    the LAST dot) case-insensitively. `CON.txt` → reserved → `_CON.txt`.
+  const dotIdx = sanitized.lastIndexOf(".");
+  const stem = dotIdx > 0 ? sanitized.slice(0, dotIdx) : sanitized;
+  if (WINDOWS_RESERVED_DEVICES.has(stem.toUpperCase())) {
+    return `_${sanitized}`;
+  }
+  return sanitized;
+}
+
 // --- Path joining ----------------------------------------------------
 
 /**
@@ -177,6 +252,10 @@ function resolveApi(
  * native). The renderer doesn't have `node:path`, so we derive the
  * separator from the folder string itself: if the folder contains a
  * backslash we use `\`, otherwise `/`.
+ *
+ * The filename is run through `sanitizeFilenameForOS` BEFORE concatenation
+ * so vendor-side characters that are valid on Drive (colon, slash, etc.)
+ * but invalid on Windows are scrubbed to `_` before they cross IPC.
  *
  * Bug-fix history: the original implementation hard-coded `/` between
  * folder and filename. On Windows that produced `C:\Users\...\ft5/file`,
@@ -192,6 +271,7 @@ function resolveApi(
 export function joinFolderAndName(folder: string, filename: string): string {
   const stripped = folder.replace(/[/\\]+$/, "");
   const trimmedName = filename.replace(/^[/\\]+/, "");
+  const safeName = sanitizeFilenameForOS(trimmedName);
   // Determine the separator from the folder's existing separators.
   // Windows-style absolute paths always contain `\`; POSIX paths never
   // do. If the folder is just a drive letter (`C:`) with no separator
@@ -199,7 +279,7 @@ export function joinFolderAndName(folder: string, filename: string): string {
   const useBackslash =
     stripped.includes("\\") || /^[A-Za-z]:$/.test(stripped);
   const sep = useBackslash ? "\\" : "/";
-  return stripped + sep + trimmedName;
+  return stripped + sep + safeName;
 }
 
 // --- Hook ------------------------------------------------------------

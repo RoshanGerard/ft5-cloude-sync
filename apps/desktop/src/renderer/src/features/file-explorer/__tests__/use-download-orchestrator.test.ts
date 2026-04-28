@@ -42,6 +42,7 @@ import {
 // Subject under test (NOT YET IMPLEMENTED — these imports drive the RED).
 import {
   joinFolderAndName,
+  sanitizeFilenameForOS,
   useDownloadOrchestrator,
   type DownloadOrchestratorApi,
 } from "../use-download-orchestrator.js";
@@ -339,5 +340,98 @@ describe("joinFolderAndName — host-aware separator (post-archive bug fix)", ()
     expect(
       joinFolderAndName("/Users/alice/Downloads/ft5", "/welcome.pdf"),
     ).toBe("/Users/alice/Downloads/ft5/welcome.pdf");
+  });
+
+  // Post-archive smoke-2 (2026-04-28): sanitization must run BEFORE the
+  // join so vendor-side characters that are valid on Drive (`:`, `/`, etc.)
+  // but invalid on Windows are scrubbed before the path crosses IPC.
+  it("sanitizes Windows-invalid characters in the filename via joinFolderAndName", () => {
+    expect(
+      joinFolderAndName("C:\\Users\\dev2\\Downloads\\ft5", "Acme: Test.docx"),
+    ).toBe("C:\\Users\\dev2\\Downloads\\ft5\\Acme_ Test.docx");
+  });
+
+  it("sanitizes Windows reserved device names in the filename via joinFolderAndName", () => {
+    expect(
+      joinFolderAndName("C:\\Users\\dev2\\Downloads\\ft5", "CON.txt"),
+    ).toBe("C:\\Users\\dev2\\Downloads\\ft5\\_CON.txt");
+  });
+});
+
+// Post-archive smoke-2 (2026-04-28): the renderer is the only layer that
+// knows the local OS context — the engine's source `path` / `handle` can
+// reference Drive's `Acme: Test file` happily by handle, but the local
+// `toPath` must pass `path.normalize === input` AND survive Windows'
+// stricter filename grammar. This sanitizer lives at the renderer's
+// `joinFolderAndName` boundary so the cleaned-up name is what crosses IPC.
+describe("sanitizeFilenameForOS — Windows-friendly filename scrubbing", () => {
+  it("replaces ':' with '_' (colon is invalid on Windows; preserves spacing)", () => {
+    expect(sanitizeFilenameForOS("Acme: Test file.docx")).toBe(
+      "Acme_ Test file.docx",
+    );
+  });
+
+  it("replaces '/' (forward slash) inside a filename with '_' (invalid as filename char on Windows)", () => {
+    expect(sanitizeFilenameForOS("Q1 / Q2 Report.pdf")).toBe(
+      "Q1 _ Q2 Report.pdf",
+    );
+  });
+
+  it("prefixes Windows reserved device names with '_' (basename-only check; case-insensitive)", () => {
+    expect(sanitizeFilenameForOS("CON.txt")).toBe("_CON.txt");
+    expect(sanitizeFilenameForOS("con.txt")).toBe("_con.txt");
+    expect(sanitizeFilenameForOS("PRN")).toBe("_PRN");
+    expect(sanitizeFilenameForOS("COM1.dat")).toBe("_COM1.dat");
+    expect(sanitizeFilenameForOS("LPT9")).toBe("_LPT9");
+  });
+
+  it("does NOT prefix when the basename merely contains a reserved name as a substring", () => {
+    // `CONNECTION` starts with `CON` but isn't the device name itself.
+    expect(sanitizeFilenameForOS("CONNECTION.txt")).toBe("CONNECTION.txt");
+    expect(sanitizeFilenameForOS("PRNT.log")).toBe("PRNT.log");
+  });
+
+  it("strips trailing dots (Windows refuses files ending in '.')", () => {
+    expect(sanitizeFilenameForOS("file.txt.")).toBe("file.txt");
+  });
+
+  it("strips trailing whitespace (Windows refuses files ending in space)", () => {
+    expect(sanitizeFilenameForOS("file.txt  ")).toBe("file.txt");
+  });
+
+  it("strips leading whitespace and dots", () => {
+    expect(sanitizeFilenameForOS("  ..weird")).toBe("weird");
+  });
+
+  it("returns '_unnamed_' when whitespace + dots are the only chars (trim pass empties the string)", () => {
+    expect(sanitizeFilenameForOS(" ")).toBe("_unnamed_");
+    expect(sanitizeFilenameForOS("...")).toBe("_unnamed_");
+    expect(sanitizeFilenameForOS("  . .  ")).toBe("_unnamed_");
+  });
+
+  it("replaces an all-invalid-chars filename with all underscores (substitution, NOT empty fallback)", () => {
+    // Invalid chars get replaced with `_` BEFORE the trim pass, so an
+    // input that's all-invalid emerges as a string of `_`s — distinct
+    // from the empty-after-trim case which falls back to `_unnamed_`.
+    expect(sanitizeFilenameForOS('<>:"/\\|?*')).toBe("_________");
+    expect(sanitizeFilenameForOS("\x00\x01")).toBe("__");
+  });
+
+  it("leaves a benign filename unchanged", () => {
+    expect(sanitizeFilenameForOS("normal.pdf")).toBe("normal.pdf");
+    expect(sanitizeFilenameForOS("Report 2024 (Q1).docx")).toBe(
+      "Report 2024 (Q1).docx",
+    );
+  });
+
+  it("replaces every Windows-invalid char in one pass", () => {
+    expect(sanitizeFilenameForOS('a<b>c:d"e/f\\g|h?i*j.txt')).toBe(
+      "a_b_c_d_e_f_g_h_i_j.txt",
+    );
+  });
+
+  it("replaces C0 control chars with '_'", () => {
+    // \x07 (BEL) survives as a non-trim char; gets replaced with `_`.
+    expect(sanitizeFilenameForOS("a\x07b.txt")).toBe("a_b.txt");
   });
 });

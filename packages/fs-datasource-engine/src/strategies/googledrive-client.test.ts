@@ -39,6 +39,7 @@ import { DatasourceError, providers } from "@ft5/ipc-contracts";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import type { BaseClientContext, CredentialStore } from "../base-client.js";
 import {
+  appendExtensionIfMissing,
   createGoogleDriveClient,
   GoogleDriveClient,
   type GoogleDriveClientLike,
@@ -3037,9 +3038,9 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
         },
       ],
       // Post-archive (2026-04-28): the strategy issues a metadata
-      // pre-fetch (`fields: "name, mimeType"`) before the alt=media
-      // stream call to detect Google Apps files. The fake routes
-      // non-`alt=media` `files.get` calls to this matcher.
+      // pre-fetch (`fields: "mimeType"` post-smoke-2) before the
+      // alt=media stream call to detect Google Apps files. The fake
+      // routes non-`alt=media` `files.get` calls to this matcher.
       gets: [
         {
           fileId: "DL-ID",
@@ -3089,12 +3090,14 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
     });
     expect(Buffer.concat(chunks).toString()).toBe(fixture.toString());
     // Two `files.get` calls now: (1) metadata pre-fetch for Google
-    // Apps detection (`fields: "name, mimeType"`); (2) the alt=media
-    // stream call. The metadata call must NOT carry `alt=media`.
+    // Apps detection (`fields: "mimeType"` post-smoke-2; the per-file
+    // name was dropped from the user copy so we no longer fetch it);
+    // (2) the alt=media stream call. The metadata call must NOT carry
+    // `alt=media`.
     expect(calls.get).toHaveLength(2);
     expect(calls.get[0]!.params.fileId).toBe("DL-ID");
     expect(calls.get[0]!.params.alt).toBeUndefined();
-    expect(calls.get[0]!.params.fields).toBe("name, mimeType");
+    expect(calls.get[0]!.params.fields).toBe("mimeType");
     expect(calls.get[1]!.params.fileId).toBe("DL-ID");
     expect(calls.get[1]!.params.alt).toBe("media");
 
@@ -3326,11 +3329,13 @@ describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expir
 // ---------------------------------------------------------------------------
 
 describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", () => {
-  it("Google Doc (mimeType application/vnd.google-apps.document) throws DatasourceError tag:'unsupported' with a friendly message that names the file and the follow-up change; no alt=media call is issued", async () => {
+  it("Google Doc (mimeType application/vnd.google-apps.document) throws DatasourceError tag:'unsupported' with the concise toast message; no alt=media call is issued", async () => {
     // The strategy's metadata pre-fetch must catch the Google Apps mime
-    // BEFORE the alt=media stream call. The user-facing message must
-    // (a) identify the file by name, (b) name the type ("Doc"), and
-    // (c) reference the parked follow-up so the failure is actionable.
+    // BEFORE the alt=media stream call. Post-smoke-2 (2026-04-28): the
+    // user-facing message is a single concise line — the per-subtype
+    // humanized noun + "Open it in Drive..." prose was rejected as
+    // toast noise. The parked follow-up `add-drive-docs-editors-export`
+    // still owns the proper export-path implementation.
     const { client, calls } = makeFakeDrive({
       gets: [
         {
@@ -3358,21 +3363,19 @@ describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", 
     const e = caught as DatasourceError<"google-drive">;
     expect(e.tag).toBe("unsupported");
     expect(e.retryable).toBe(false);
-    expect(e.message).toContain("DT-206 Code Review");
-    expect(e.message).toContain("Doc");
-    expect(e.message).toContain("add-drive-docs-editors-export");
+    expect(e.message).toBe("Google Drive documents download not supported");
 
     // Only ONE files.get call — the metadata pre-fetch. No alt=media.
     expect(calls.get).toHaveLength(1);
     expect(calls.get[0]!.params.alt).toBeUndefined();
-    expect(calls.get[0]!.params.fields).toBe("name, mimeType");
+    expect(calls.get[0]!.params.fields).toBe("mimeType");
 
     // The base's downloadFile wrapper MUST emit `download-failed` even
     // for `tag: "unsupported"` throws from `doDownloadFileImpl` —
     // otherwise the renderer's toaster never sees the failure and the
     // user gets silent nothing (worse than the raw 403 they had before
     // this fix). Verify the event reaches the bus carrying the
-    // friendly message the renderer renders.
+    // concise message the renderer renders.
     const failed = h.events.filter((e) => e.event === "download-failed");
     expect(failed).toHaveLength(1);
     expect(failed[0]!.payload).toMatchObject({
@@ -3381,20 +3384,22 @@ describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", 
       datasourceId: "ds-gd-1",
     });
     const failedPayload = failed[0]!.payload as { message?: string };
-    expect(failedPayload.message).toContain("DT-206 Code Review");
-    expect(failedPayload.message).toContain("Doc");
-    expect(failedPayload.message).toContain("add-drive-docs-editors-export");
+    expect(failedPayload.message).toBe(
+      "Google Drive documents download not supported",
+    );
   });
 
-  it("each Google Apps subtype (sheet/presentation/drawing/form/script) is refused with the matching humanized noun", async () => {
-    const cases: Array<{ subtype: string; noun: string }> = [
-      { subtype: "spreadsheet", noun: "Sheet" },
-      { subtype: "presentation", noun: "Slide" },
-      { subtype: "drawing", noun: "Drawing" },
-      { subtype: "form", noun: "Form" },
-      { subtype: "script", noun: "Apps Script" },
+  it("each Google Apps subtype (sheet/presentation/drawing/form/script) is refused with the same concise message", async () => {
+    // Post-smoke-2 (2026-04-28): the per-subtype noun was dropped from
+    // the user copy; every Apps subtype now produces the same line.
+    const subtypes = [
+      "spreadsheet",
+      "presentation",
+      "drawing",
+      "form",
+      "script",
     ];
-    for (const { subtype, noun } of cases) {
+    for (const subtype of subtypes) {
       const fileId = `APPS-${subtype.toUpperCase()}`;
       const { client } = makeFakeDrive({
         gets: [
@@ -3418,12 +3423,11 @@ describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", 
       expect(caught).toBeInstanceOf(DatasourceError);
       const e = caught as DatasourceError<"google-drive">;
       expect(e.tag).toBe("unsupported");
-      expect(e.message).toContain(noun);
-      expect(e.message).toContain(`fixture-${subtype}`);
+      expect(e.message).toBe("Google Drive documents download not supported");
     }
   });
 
-  it("an unknown application/vnd.google-apps.<future> subtype falls back to 'Apps file' and still refuses (defence-in-depth against new Google types)", async () => {
+  it("an unknown application/vnd.google-apps.<future> subtype still refuses with the concise message (defence-in-depth against new Google types)", async () => {
     const { client } = makeFakeDrive({
       gets: [
         {
@@ -3446,7 +3450,7 @@ describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", 
     expect(caught).toBeInstanceOf(DatasourceError);
     const e = caught as DatasourceError<"google-drive">;
     expect(e.tag).toBe("unsupported");
-    expect(e.message).toContain("Apps file");
+    expect(e.message).toBe("Google Drive documents download not supported");
   });
 
   it("DRIVE_FOLDER_MIME (application/vnd.google-apps.folder) is NOT caught by the Google Apps refusal — folder downloads have their own existing failure path (kind='folder' upstream)", async () => {
@@ -3482,5 +3486,129 @@ describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", 
     // normalizeErrorImpl.
     const errMsg = (caught as Error).message ?? "";
     expect(errMsg).not.toContain("add-drive-docs-editors-export");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appendExtensionIfMissing — Drive's `name` titles often lack extensions for
+// `text/plain` and a handful of other mimes, but the renderer derives the
+// local-save filename from `entry.name`. Strategy-side append closes the
+// gap by consulting a small mime → canonical-extension lookup.
+// (post-archive smoke-2 2026-04-28)
+// ---------------------------------------------------------------------------
+
+describe("appendExtensionIfMissing — Drive title → local filename repair", () => {
+  it("appends '.txt' to an extensionless text/plain title", () => {
+    expect(appendExtensionIfMissing("Getting Started", "text/plain")).toBe(
+      "Getting Started.txt",
+    );
+  });
+
+  it("leaves an already-correctly-extensioned name unchanged (no double-append)", () => {
+    expect(appendExtensionIfMissing("Report.txt", "text/plain")).toBe(
+      "Report.txt",
+    );
+  });
+
+  it("appends '.png' to an extensionless image/png title", () => {
+    expect(appendExtensionIfMissing("scan", "image/png")).toBe("scan.png");
+  });
+
+  it("leaves an already-extensioned text/csv name unchanged", () => {
+    expect(appendExtensionIfMissing("data.csv", "text/csv")).toBe("data.csv");
+  });
+
+  it("returns the name unchanged for an unknown mime (no append, no guess)", () => {
+    expect(
+      appendExtensionIfMissing("mystery", "application/octet-stream"),
+    ).toBe("mystery");
+  });
+
+  it("returns the name unchanged for undefined mime (defensive)", () => {
+    expect(appendExtensionIfMissing("loose", undefined)).toBe("loose");
+  });
+
+  it("returns empty unchanged (avoids producing a path that is just the extension)", () => {
+    expect(appendExtensionIfMissing("", "text/plain")).toBe("");
+  });
+
+  it("treats names with a different extension as already-extensioned (preserves provider intent)", () => {
+    // Caller said the mime is text/plain but the name is `.dat` — we
+    // don't second-guess; `extname()` is non-empty so we leave it.
+    expect(appendExtensionIfMissing("Fixture.dat", "text/plain")).toBe(
+      "Fixture.dat",
+    );
+  });
+});
+
+// Integration: a `text/plain` row in the Drive listing whose `name` lacks
+// `.txt` produces an entry whose `name` carries the canonical extension,
+// so the renderer's `joinFolderAndName(folder, entry.name)` lands on
+// `<folder>/<title>.txt` rather than `<folder>/<title>`.
+describe("GoogleDriveClient — listDirectory entry.name extension repair", () => {
+  it("appends '.txt' to a text/plain Drive title that lacks an extension (smoke-2 fix)", async () => {
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({
+            files: [
+              {
+                id: "DOC-PLAIN-1",
+                // Title with NO extension — Drive's web "New > Text file"
+                // flow produces titles in this shape.
+                name: "Getting Started",
+                mimeType: "text/plain",
+                parents: ["root"],
+                size: "100",
+                modifiedTime: "2024-06-02T00:00:00Z",
+                createdTime: "2024-01-02T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const entries = await h.client.listDirectory({
+      kind: "path",
+      path: "/",
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.name).toBe("Getting Started.txt");
+    // The engine `path` is unchanged (still synthesized from the raw
+    // title) — only the user-facing `name` is repaired. Renderer reads
+    // `entry.name` for the local-save target.
+    expect(entries[0]!.providerMetadata.mimeType).toBe("text/plain");
+  });
+
+  it("leaves a text/plain title that already carries '.txt' unchanged (no double-append)", async () => {
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({
+            files: [
+              {
+                id: "DOC-PLAIN-2",
+                name: "Report.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                size: "200",
+                modifiedTime: "2024-06-02T00:00:00Z",
+                createdTime: "2024-01-02T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const entries = await h.client.listDirectory({
+      kind: "path",
+      path: "/",
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.name).toBe("Report.txt");
   });
 });
