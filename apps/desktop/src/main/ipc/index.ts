@@ -331,12 +331,16 @@ export function registerIpcHandlers(
             ...(o.properties !== undefined
               ? {
                   // Cast at the seam: Electron's properties is a
-                  // string-union literal type, but we accept any
+                  // string-union literal-array type, but we accept any
                   // readonly string[] from the renderer. The renderer
-                  // pins the vocabulary at the call site.
-                  properties: [...o.properties] as Parameters<
-                    typeof dialog.showOpenDialog
-                  >[0]["properties"],
+                  // pins the vocabulary at the call site. Use
+                  // NonNullable to strip the `undefined` that
+                  // Parameters<...>["properties"] inherits, since
+                  // `exactOptionalPropertyTypes` forbids assigning
+                  // `undefined` to an optional field.
+                  properties: [...o.properties] as NonNullable<
+                    Parameters<typeof dialog.showOpenDialog>[0]["properties"]
+                  >,
                 }
               : {}),
             ...(o.filters !== undefined
