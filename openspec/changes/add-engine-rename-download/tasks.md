@@ -218,13 +218,13 @@ The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-F
 
 ## 17. Main IPC — `files/rename.ts` + `files/download.ts` swap
 
-- [ ] 17.1 Write a unit test for the new `apps/desktop/src/main/ipc/files/rename.ts`: forwards the request to `SyncClient.request("files:rename", req)`; returns the response unchanged; on error envelope returns the error envelope; test fails because the file still imports from `mock-fs.js`
-- [ ] 17.2 Rewrite `rename.ts` to call `SyncClient.request(...)` (matching the existing `list.ts` pattern); rerun → green
-- [ ] 17.3 Write a unit test for the new `apps/desktop/src/main/ipc/files/download.ts`: forwards the request including `toPath` to the service; returns the response; test fails
-- [ ] 17.4 Rewrite `download.ts` similarly; rerun → green
-- [ ] 17.5 Write a regression test: the existing main-process IPC tests for rename/download (if any) are updated or deleted; the test suite remains green
-- [ ] 17.6 Delete the `rename` and `download` exports from `apps/desktop/src/main/ipc/files/mock-fs.ts` (preserve the rest); delete the corresponding arms in `__tests__/mock-fs.test.ts`; verify the file still passes typecheck and its remaining tests
-- [ ] 17.7 Add a lint/grep regression test asserting no source file under `apps/desktop/src/main/` (other than the mock-fs file itself) imports `rename` or `download` from mock-fs
+- [x] 17.1 Write a unit test for the new `apps/desktop/src/main/ipc/files/rename.ts`: forwards the request to `SyncClient.request("files:rename", req)`; returns the response unchanged; on error envelope returns the error envelope; test fails because the file still imports from `mock-fs.js`
+- [x] 17.2 Rewrite `rename.ts` to call `SyncClient.request(...)` (matching the existing `list.ts` pattern); rerun → green
+- [x] 17.3 Write a unit test for the new `apps/desktop/src/main/ipc/files/download.ts`: forwards the request including `toPath` to the service; returns the response; test fails
+- [x] 17.4 Rewrite `download.ts` similarly; rerun → green
+- [x] 17.5 Write a regression test: the existing main-process IPC tests for rename/download (if any) are updated or deleted; the test suite remains green
+- [x] 17.6 Delete the `rename` and `download` exports from `apps/desktop/src/main/ipc/files/mock-fs.ts` (preserve the rest); delete the corresponding arms in `__tests__/mock-fs.test.ts`; verify the file still passes typecheck and its remaining tests
+- [x] 17.7 Add a lint/grep regression test asserting no source file under `apps/desktop/src/main/` (other than the mock-fs file itself) imports `rename` or `download` from mock-fs
 
 ## 18. Main IPC — `dialog.showSaveDialog` + first-run modal trigger + on-launch hydrate
 

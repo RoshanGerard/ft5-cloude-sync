@@ -1,13 +1,9 @@
 import type {
   FileEntry,
-  FilesDownloadRequest,
-  FilesDownloadResponse,
   FilesListRequest,
   FilesListResponse,
   FilesRemoveRequest,
   FilesRemoveResponse,
-  FilesRenameRequest,
-  FilesRenameResponse,
   FilesSearchRequest,
   FilesSearchResponse,
   FilesStatRequest,
@@ -30,9 +26,6 @@ export const SEARCH_RESULT_CEILING = 50;
 
 /** Per-directory seed ceiling enforced by design.md Decision 10. */
 const DIRECTORY_SIZE_CEILING = 300;
-
-/** Fake "saved" root for download() responses. Not a real filesystem path. */
-const MOCK_DOWNLOADS_ROOT = "/tmp/ft5-mock-downloads";
 
 // Deterministic timestamps — tests asserting response shape must not hit a
 // fresh `Date.now()` on every reset.
@@ -551,77 +544,6 @@ export function stat(req: FilesStatRequest): FileEntry {
   return cloneEntry(found);
 }
 
-export function rename(req: FilesRenameRequest): FilesRenameResponse {
-  const tree = trees[req.datasourceId];
-  if (!tree) {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: `not found: ${req.datasourceId}:${req.path}`,
-        retryable: false,
-      },
-    };
-  }
-  const target = findEntry(tree, req.path);
-  if (!target) {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: `not found: ${req.datasourceId}:${req.path}`,
-        retryable: false,
-      },
-    };
-  }
-  if (target.kind === "directory") {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: "folder rename is not supported in this version",
-        retryable: false,
-      },
-    };
-  }
-
-  // Remove the old entry from its parent listing.
-  const siblings = tree.byParent.get(target.parentPath);
-  if (!siblings) {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: `not found: ${req.datasourceId}:${req.path}`,
-        retryable: false,
-      },
-    };
-  }
-  const idx = siblings.findIndex((e) => e.path === target.path);
-  if (idx === -1) {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: `not found: ${req.datasourceId}:${req.path}`,
-        retryable: false,
-      },
-    };
-  }
-
-  const newPath = joinPath(target.parentPath, req.newName);
-  const renamed: FileEntry = {
-    ...target,
-    id: `${req.datasourceId}::${newPath}`,
-    name: req.newName,
-    path: newPath,
-    mimeFamily: mimeFamilyFor(req.newName),
-    mimeType: mimeTypeFor(req.newName),
-  };
-  siblings[idx] = renamed;
-  return { ok: true, value: { entry: cloneEntry(renamed) } };
-}
-
 export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
   const tree = trees[req.datasourceId];
   const results: Array<
@@ -772,47 +694,6 @@ export function search(req: FilesSearchRequest): FilesSearchResponse {
     ok: true,
     value: { entries: result.entries, truncated: result.truncated },
   };
-}
-
-export function download(req: FilesDownloadRequest): FilesDownloadResponse {
-  const tree = trees[req.datasourceId];
-  if (!tree) {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: `not found: ${req.datasourceId}:${req.path}`,
-        retryable: false,
-      },
-    };
-  }
-  const target = findEntry(tree, req.path);
-  if (!target) {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: `not found: ${req.datasourceId}:${req.path}`,
-        retryable: false,
-      },
-    };
-  }
-  if (target.kind !== "file") {
-    return {
-      ok: false,
-      error: {
-        tag: "other",
-        message: "only file entries can be downloaded",
-        retryable: false,
-      },
-    };
-  }
-  const basename = target.name;
-  const savedPath = req.toPath !== "" ? req.toPath : `${MOCK_DOWNLOADS_ROOT}/${basename}`;
-  // TODO(add-engine-rename-download §13): the service-side download handler
-  // will populate `bytes` from the post-pipe `fs.stat(toPath).size`. Mock-fs
-  // has no real bytes to count, so return 0 here.
-  return { ok: true, value: { savedPath, bytes: 0 } };
 }
 
 export function enumerateSeededDirectorySizes(): Array<{
