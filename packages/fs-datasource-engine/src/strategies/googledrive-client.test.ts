@@ -26,6 +26,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -82,12 +83,39 @@ interface CreateResponder {
   nameMatch: string;
   handler: (params: Record<string, unknown>) => unknown;
 }
+/**
+ * `update` matcher for `files.update({ fileId, requestBody: { name } })`.
+ * The fake matches on `fileId`; the handler may inspect `requestBody.name`
+ * (or the full params bag) and returns the updated DriveFile shape.
+ */
+interface UpdateResponder {
+  fileId: string;
+  handler: (params: Record<string, unknown>) => unknown;
+}
+/**
+ * `get` for the media-download path: `files.get({fileId, alt: "media"},
+ * {responseType: "stream", headers, signal})`. The fake matches on `fileId`
+ * and the presence of `alt === "media"` in the params bag, then invokes the
+ * handler with the original params + the optional 2nd argument so tests
+ * can assert e.g. `Range` / `signal` forwarding. Returns a Node Readable +
+ * a `headers` map (Drive's stream response surface).
+ */
+interface GetStreamResponder {
+  fileId: string;
+  handler: (
+    params: Record<string, unknown>,
+    options: Record<string, unknown> | undefined,
+  ) => { stream: Readable; headers: Record<string, string> };
+}
 
 interface FakeDriveOptions {
   lists?: ListResponder[];
   gets?: GetResponder[];
+  /** Stream-mode responders (alt === "media"). Matched by fileId before metadata `gets`. */
+  getStreams?: GetStreamResponder[];
   deletes?: DeleteResponder[];
   creates?: CreateResponder[];
+  updates?: UpdateResponder[];
   about?: (params: Record<string, unknown>) => unknown;
 }
 
@@ -95,17 +123,22 @@ function makeFakeDrive(opts: FakeDriveOptions): {
   client: GoogleDriveClientLike;
   calls: {
     list: Array<Record<string, unknown>>;
-    get: Array<Record<string, unknown>>;
+    get: Array<{ params: Record<string, unknown>; options?: Record<string, unknown> }>;
     delete: Array<Record<string, unknown>>;
     create: Array<Record<string, unknown>>;
+    update: Array<Record<string, unknown>>;
     about: Array<Record<string, unknown>>;
   };
 } {
   const calls = {
     list: [] as Array<Record<string, unknown>>,
-    get: [] as Array<Record<string, unknown>>,
+    get: [] as Array<{
+      params: Record<string, unknown>;
+      options?: Record<string, unknown>;
+    }>,
     delete: [] as Array<Record<string, unknown>>,
     create: [] as Array<Record<string, unknown>>,
+    update: [] as Array<Record<string, unknown>>,
     about: [] as Array<Record<string, unknown>>,
   };
   const client: GoogleDriveClientLike = {
@@ -121,9 +154,24 @@ function makeFakeDrive(opts: FakeDriveOptions): {
         }
         return { data: match.handler(params) };
       },
-      async get(params) {
-        calls.get.push(params);
+      async get(params, options) {
+        calls.get.push({ params, ...(options !== undefined ? { options } : {}) });
         const fileId = String(params.fileId ?? "");
+        // Stream-mode dispatch: `alt: "media"` distinguishes a download from a
+        // metadata fetch. Stream responders are checked first so a fileId
+        // with both flavours can host both responder kinds in the same fake.
+        if (params.alt === "media") {
+          const streamMatch = (opts.getStreams ?? []).find(
+            (r) => r.fileId === fileId,
+          );
+          if (!streamMatch) {
+            throw makeGaxiosError(404, "no-get-stream-responder", "notFound", {
+              message: `no streaming get responder for fileId=${fileId}`,
+            });
+          }
+          const { stream, headers } = streamMatch.handler(params, options);
+          return { data: stream, headers };
+        }
         const match = (opts.gets ?? []).find((r) => r.fileId === fileId);
         if (!match) {
           throw makeGaxiosError(404, "no-get-responder", "notFound", {
@@ -157,6 +205,17 @@ function makeFakeDrive(opts: FakeDriveOptions): {
         }
         return { data: match.handler(params) };
       },
+      async update(params) {
+        calls.update.push(params);
+        const fileId = String(params.fileId ?? "");
+        const match = (opts.updates ?? []).find((r) => r.fileId === fileId);
+        if (!match) {
+          throw makeGaxiosError(500, "no-update-responder", "internalError", {
+            message: `no update responder for fileId=${fileId}`,
+          });
+        }
+        return { data: match.handler(params) as DriveFile };
+      },
     },
     about: {
       async get(params) {
@@ -171,6 +230,19 @@ function makeFakeDrive(opts: FakeDriveOptions): {
     },
   };
   return { client, calls };
+}
+
+// Local re-declaration of the DriveFile shape so the test fake's `update`
+// handler can return a typed value without re-importing the strategy's
+// internal type. Mirrors the production `DriveFile` interface.
+interface DriveFile {
+  id?: string;
+  name?: string;
+  mimeType?: string;
+  parents?: string[];
+  size?: string | number;
+  modifiedTime?: string;
+  createdTime?: string;
 }
 
 /** Build a GaxiosError-shaped object for fakes. Production `googleapis` SDK
@@ -860,7 +932,7 @@ describe("GoogleDriveClient — getMetadata", () => {
     expect(meta.size).toBe(99);
     expect(meta.mimeFamily).toBe("document");
     expect(calls.get).toHaveLength(1);
-    expect(calls.get[0]!.fileId).toBe("FILE-42");
+    expect(calls.get[0]!.params.fileId).toBe("FILE-42");
   });
 
   it("404 / notFound reason → DatasourceError tag 'not-found'", async () => {
@@ -2382,5 +2454,608 @@ describe("GoogleDriveClient — scope drift detection", () => {
       e instanceof DatasourceError && e.tag === "network-error",
     );
     expect(calls).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — files.update for both files and folders
+// (add-engine-rename-download §7.1-§7.6)
+// ---------------------------------------------------------------------------
+//
+// Drive's `files.update({fileId, requestBody: { name }})` is uniform across
+// files and folders. The strategy reads the response's `mimeType` to populate
+// `kind` ("folder" iff mime === "application/vnd.google-apps.folder").
+//
+// `conflictPolicy` semantics, strategy-side per design.md Decision 1:
+//   - "fail"      → pre-check siblings via files.list({q: "name='<new>'"});
+//                   throw conflict { existingPath } if any.
+//   - "overwrite" → pre-fetch target's mimeType; if folder, refuse with
+//                   `tag: "unsupported"` per "directory rename refusal" rule.
+//                   On a file: skip the sibling pre-check (S3-style overwrite).
+//   - "keep-both" → §4 base-class delegates the suffix-retry loop to the
+//                   strategy; tested separately under §7.x if covered.
+
+describe("GoogleDriveClient — doRenameImpl (files.update, kind via mimeType)", () => {
+  it("renames a file via drive.files.update and emits one entry-renamed event with kind='file' from the post-rename mimeType", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        // Path resolution: /old.txt
+        {
+          qMatch: "name='old.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "FILE-X",
+                name: "old.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        // Sibling pre-check on `fail`: no existing sibling.
+        {
+          qMatch: "name='new.txt'",
+          handler: () => ({ files: [] }),
+        },
+      ],
+      updates: [
+        {
+          fileId: "FILE-X",
+          handler: (params) => {
+            const rb = (params.requestBody ?? {}) as { name?: string };
+            expect(rb.name).toBe("new.txt");
+            return {
+              id: "FILE-X",
+              name: "new.txt",
+              mimeType: "text/plain",
+              parents: ["root"],
+              size: "12",
+              modifiedTime: "2024-06-02T00:00:00Z",
+              createdTime: "2024-01-01T00:00:00Z",
+            };
+          },
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/old.txt" },
+      "new.txt",
+      "fail",
+    );
+    expect(entry.handle).toBe("FILE-X");
+    expect(entry.name).toBe("new.txt");
+    expect(entry.kind).toBe("file");
+    expect(entry.mimeFamily).toBe("document");
+    expect(entry.providerMetadata.fileId).toBe("FILE-X");
+    expect(calls.update).toHaveLength(1);
+    expect(calls.update[0]!.fileId).toBe("FILE-X");
+
+    const renames = h.events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
+  });
+
+  it("renames a folder via drive.files.update — same uniform call shape; kind='folder' from the post-rename mimeType", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='photos'",
+          handler: () => ({
+            files: [
+              {
+                id: "FOLDER-Y",
+                name: "photos",
+                mimeType: "application/vnd.google-apps.folder",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        {
+          qMatch: "name='pictures'",
+          handler: () => ({ files: [] }),
+        },
+      ],
+      updates: [
+        {
+          fileId: "FOLDER-Y",
+          handler: () => ({
+            id: "FOLDER-Y",
+            name: "pictures",
+            mimeType: "application/vnd.google-apps.folder",
+            parents: ["root"],
+            modifiedTime: "2024-06-02T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/photos" },
+      "pictures",
+      "fail",
+    );
+    expect(entry.kind).toBe("folder");
+    expect(entry.mimeFamily).toBe("folder");
+    expect(entry.name).toBe("pictures");
+    expect(calls.update).toHaveLength(1);
+  });
+});
+
+describe("GoogleDriveClient — doRenameImpl sibling-collision pre-check on `fail`", () => {
+  it("issues a files.list({q: \"name='<new>' and '<parent>' in parents and trashed=false\"}) before the update; if results, throws conflict { existingPath }", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='foo.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "FOO-ID",
+                name: "foo.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        // Sibling check finds an existing /bar.txt
+        {
+          qMatch: "name='bar.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "BAR-EXISTING",
+                name: "bar.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-02-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+      // No `updates` responder — if the strategy issues files.update the fake
+      // throws (the test would still pass on rejection, but checking that
+      // calls.update is empty is the behavioral assertion).
+    });
+    const h = makeHarness({ drive: client });
+
+    let caught: unknown;
+    try {
+      await h.client.rename(
+        { kind: "path", path: "/foo.txt" },
+        "bar.txt",
+        "fail",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"google-drive">;
+    expect(err.tag).toBe("conflict");
+    // raw carries the existingPath so the consumer can populate the
+    // FilesErrorEnvelope { existingPath } at the wire layer.
+    expect((err.raw as { existingPath?: string }).existingPath).toBe(
+      "/bar.txt",
+    );
+    // No update issued — pre-check short-circuited the rename.
+    expect(calls.update).toHaveLength(0);
+
+    // Failure-path bus emission goes through delete-failed { via: rename }.
+    const failures = h.events.filter((e) => e.event === "delete-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.payload).toMatchObject({
+      tag: "conflict",
+      via: "rename",
+    });
+  });
+});
+
+describe("GoogleDriveClient — doRenameImpl `overwrite` on a file deletes the colliding sibling", () => {
+  it("when policy='overwrite' AND a sibling with the new name exists in the same parent, deletes that sibling (via direct files.delete — no `deleted` bus emission) THEN issues files.update; bus observes one entry-renamed and zero `deleted` events", async () => {
+    // Per design.md Decision 1 + base-client doRenameImpl JSDoc + §4.6:
+    // strategy-side overwrite-on-file performs sibling-deletion (without
+    // emitting a `deleted` bus event — that primitive is internal cleanup,
+    // NOT a public deletion) THEN renames. Drive permits ambiguous siblings
+    // by default (see class header); without this step, rename + overwrite
+    // would silently create a duplicate name in the same parent.
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        // Path resolution: /old.txt
+        {
+          qMatch: "name='old.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "OLD-FILE",
+                name: "old.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        // Sibling-list for the new name: returns ONE colliding sibling.
+        {
+          qMatch: "name='new.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "EXISTING-NEW",
+                name: "new.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-02-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+      gets: [
+        // Pre-rename mimeType probe on the overwrite path.
+        {
+          fileId: "OLD-FILE",
+          handler: () => ({ id: "OLD-FILE", mimeType: "text/plain" }),
+        },
+      ],
+      deletes: [
+        {
+          fileId: "EXISTING-NEW",
+          handler: () => ({}),
+        },
+      ],
+      updates: [
+        {
+          fileId: "OLD-FILE",
+          handler: () => ({
+            id: "OLD-FILE",
+            name: "new.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            modifiedTime: "2024-06-02T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/old.txt" },
+      "new.txt",
+      "overwrite",
+    );
+    expect(entry.handle).toBe("OLD-FILE");
+    expect(entry.name).toBe("new.txt");
+    expect(calls.delete).toHaveLength(1);
+    expect(calls.delete[0]!.fileId).toBe("EXISTING-NEW");
+    expect(calls.update).toHaveLength(1);
+
+    // No `deleted` event — the strategy-internal sibling cleanup MUST NOT
+    // emit a public deletion (per the engine-wide convention that
+    // primitives don't emit; only the public `deleteFile` wrapper does).
+    expect(h.events.some((e) => e.event === "deleted")).toBe(false);
+    const renames = h.events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+  });
+});
+
+describe("GoogleDriveClient — doRenameImpl directory-overwrite refusal", () => {
+  it("when target.mimeType === folder mime AND policy === 'overwrite', throws unsupported with the spec-required message; no update call issued", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='photos'",
+          handler: () => ({
+            files: [
+              {
+                id: "FOLDER-Z",
+                name: "photos",
+                mimeType: "application/vnd.google-apps.folder",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+      gets: [
+        {
+          // Pre-rename mimeType fetch on overwrite path.
+          fileId: "FOLDER-Z",
+          handler: () => ({
+            id: "FOLDER-Z",
+            mimeType: "application/vnd.google-apps.folder",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+
+    let caught: unknown;
+    try {
+      await h.client.rename(
+        { kind: "path", path: "/photos" },
+        "pictures",
+        "overwrite",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"google-drive">;
+    expect(err.tag).toBe("unsupported");
+    expect(err.message).toBe(
+      "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
+    );
+    expect(calls.update).toHaveLength(0);
+
+    // Unsupported is silent on the bus — no delete-failed event for this
+    // refusal path (per the engine-wide convention).
+    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
+    expect(h.events.some((e) => e.event === "entry-renamed")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadFile — files.get({alt: "media"}, {responseType: "stream", ...})
+// (add-engine-rename-download §7.7-§7.12)
+// ---------------------------------------------------------------------------
+
+describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)", () => {
+  it("calls files.get({fileId, alt:'media'}, {responseType:'stream', signal}) and resolves with stream + contentLength + bus emits downloading + file-downloaded", async () => {
+    const fixture = Buffer.from("hello-world-bytes");
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='hello.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "DL-ID",
+                name: "hello.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                size: String(fixture.length),
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+      getStreams: [
+        {
+          fileId: "DL-ID",
+          handler: (params, options) => {
+            // alt: media + responseType stream are the contract per task §7.7.
+            expect(params.alt).toBe("media");
+            expect(options?.responseType).toBe("stream");
+            const stream = new Readable({
+              read() {
+                this.push(fixture);
+                this.push(null);
+              },
+            });
+            return {
+              stream,
+              headers: {
+                "content-length": String(fixture.length),
+              },
+            };
+          },
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const result = await h.client.downloadFile({
+      kind: "path",
+      path: "/hello.txt",
+    });
+    expect(result.contentLength).toBe(fixture.length);
+    expect(result.contentRange).toBeUndefined();
+    // Drain the stream so the base's `end` listener fires `file-downloaded`.
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", (c: Buffer) => chunks.push(c));
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", reject);
+    });
+    expect(Buffer.concat(chunks).toString()).toBe(fixture.toString());
+    expect(calls.get).toHaveLength(1);
+    expect(calls.get[0]!.params.fileId).toBe("DL-ID");
+    expect(calls.get[0]!.params.alt).toBe("media");
+
+    const downloadings = h.events.filter((e) => e.event === "downloading");
+    const downloaded = h.events.filter((e) => e.event === "file-downloaded");
+    expect(downloadings.length).toBeGreaterThanOrEqual(1);
+    expect(downloaded).toHaveLength(1);
+    expect(downloaded[0]!.payload).toMatchObject({
+      path: "/hello.txt",
+      bytes: fixture.length,
+    });
+    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
+    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
+  });
+
+  it("forwards options.rangeStart > 0 as a Range:bytes=<n>- header into the SDK call and parses Content-Range from the 206 response", async () => {
+    const partial = Buffer.from("PARTIAL");
+    const total = 1024;
+    const start = 16;
+    const { client, calls } = makeFakeDrive({
+      getStreams: [
+        {
+          fileId: "RANGE-ID",
+          handler: (_params, options) => {
+            const headers =
+              (options?.headers ?? {}) as Record<string, string>;
+            expect(headers.Range).toBe(`bytes=${start}-`);
+            const stream = new Readable({
+              read() {
+                this.push(partial);
+                this.push(null);
+              },
+            });
+            return {
+              stream,
+              headers: {
+                "content-length": String(partial.length),
+                "content-range": `bytes ${start}-${start + partial.length - 1}/${total}`,
+              },
+            };
+          },
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const result = await h.client.downloadFile(
+      { kind: "handle", handle: "RANGE-ID" },
+      { rangeStart: start },
+    );
+    expect(result.contentLength).toBe(partial.length);
+    expect(result.contentRange).toEqual({
+      start,
+      end: start + partial.length - 1,
+      total,
+    });
+    // Drain so the base emits file-downloaded.
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", reject);
+    });
+    expect(calls.get).toHaveLength(1);
+  });
+});
+
+describe("GoogleDriveClient — doDownloadFileImpl AbortSignal forwarding", () => {
+  it("aborting the consumer signal makes the SDK reject AbortError; bus emits exactly one download-cancelled with the byte counts at abort time; no download-failed", async () => {
+    const controller = new AbortController();
+    const { client } = makeFakeDrive({
+      getStreams: [
+        {
+          fileId: "CANCEL-ID",
+          handler: (_params, options) => {
+            const sig = options?.signal as AbortSignal | undefined;
+            const stream = new Readable({ read() {} });
+            // Wire the abort listener BEFORE pushing data: pushing is
+            // synchronous so the consumer's data handler (which fires
+            // controller.abort()) runs inside `push()` — if the abort
+            // listener were registered after `push()`, it would miss
+            // an already-aborted signal because EventTarget does not
+            // back-fire for `addEventListener` after `abort()`.
+            if (sig) {
+              sig.addEventListener("abort", () => {
+                stream.destroy(
+                  Object.assign(new Error("aborted"), {
+                    name: "AbortError",
+                  }),
+                );
+              });
+            }
+            // First chunk lands so byte counts are non-zero at abort time.
+            setImmediate(() => {
+              stream.push(Buffer.alloc(2048));
+            });
+            return {
+              stream,
+              headers: { "content-length": "16384" },
+            };
+          },
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const result = await h.client.downloadFile(
+      { kind: "handle", handle: "CANCEL-ID" },
+      { signal: controller.signal },
+    );
+    // Drive consumer pipe so byte counter ticks; then abort.
+    let bytesSeen = 0;
+    const consumer = new Promise<unknown>((resolve) => {
+      result.stream.on("data", (c: Buffer) => {
+        bytesSeen += c.length;
+        // Trigger abort once first chunk has been observed.
+        if (bytesSeen >= 2048) controller.abort();
+      });
+      result.stream.on("error", (err) => resolve(err));
+      result.stream.on("end", () => resolve(null));
+    });
+    await consumer;
+
+    const cancelled = h.events.filter((e) => e.event === "download-cancelled");
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]!.payload).toMatchObject({
+      path: "CANCEL-ID",
+      bytesDownloaded: 2048,
+    });
+    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
+    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+  });
+});
+
+describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired → download-failed", () => {
+  it("normalizes a mid-stream 401 to tag:auth-expired; bus emits exactly one download-failed whose payload IS the SerializedDatasourceError; no download-cancelled", async () => {
+    const { client } = makeFakeDrive({
+      getStreams: [
+        {
+          fileId: "401-ID",
+          handler: () => {
+            const stream = new Readable({ read() {} });
+            // Push a chunk so byte-counting fires once, then synthesize a
+            // mid-stream 401 by destroying the stream with a Gaxios-shaped
+            // 401 error. The strategy's normalizeErrorImpl maps this to
+            // tag:auth-expired; the base emits download-failed carrying the
+            // serialized error.
+            setImmediate(() => {
+              stream.push(Buffer.alloc(512));
+              const err401 = makeGaxiosError(
+                401,
+                "auth-expired-mid-stream",
+                "authError",
+              );
+              stream.destroy(err401);
+            });
+            return {
+              stream,
+              headers: { "content-length": "8192" },
+            };
+          },
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const result = await h.client.downloadFile({
+      kind: "handle",
+      handle: "401-ID",
+    });
+    let caught: unknown;
+    await new Promise<void>((resolve) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", (err) => {
+        caught = err;
+        resolve();
+      });
+    });
+    expect(caught).toBeInstanceOf(Error);
+
+    const failed = h.events.filter((e) => e.event === "download-failed");
+    expect(failed).toHaveLength(1);
+    // Payload IS the SerializedDatasourceError — not a wrapper. Mirrors
+    // base-client.test.ts §5.9 + the authentication-failed precedent.
+    expect(failed[0]!.payload).toMatchObject({
+      tag: "auth-expired",
+      datasourceType: "google-drive",
+      datasourceId: "ds-gd-1",
+    });
+    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
+    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
   });
 });
