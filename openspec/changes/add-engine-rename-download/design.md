@@ -612,6 +612,21 @@ edge case of a sub-millisecond completion, the spawn-on-first-event
 path handles terminal-as-first events correctly (spawn-and-immediately-
 flip-to-success).
 
+**Retry deviation.** Spec line 134-135 (`scenarios/Download failure
+shows Retry`) calls for the Retry action to "re-dispatch
+`window.api.files.download` with the original parameters and open a
+new toast bound to the new downloadJobId." The §24 toaster's Retry
+action is a no-op-then-dismiss in v1: `DownloadFailedPayload` carries
+no `toPath` / `sourcePath`, so the toaster cannot reconstruct the
+original IPC arguments without coupling back to the orchestrator (or
+extending the wire contract — `packages/ipc-contracts` work that §24
+explicitly forbids). The toaster's failure path correctly sets up the
+Retry button shape (label + onClick) so the visual surface matches the
+spec; the click handler dismisses the failed toast and the user
+re-clicks Download from the file-explorer to retry. A future change
+that widens `DownloadFailedPayload` (or that re-couples toast spawn to
+orchestrator state) would close this gap; out of scope for v1.
+
 ## Visual direction
 
 These four decisions came out of the Visual Companion brainstorming
