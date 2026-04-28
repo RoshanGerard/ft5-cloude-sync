@@ -152,9 +152,9 @@ Final state (Section 7): 254 → 263 engine tests (+9 across 5 describe blocks: 
 
 ## 11. Service — `DownloadRegistry` module
 
-- [ ] 11.1 Write unit tests for `DownloadRegistry` at `services/fs-sync/src/downloads/__tests__/registry.test.ts`: `set` adds an entry; `update(downloadJobId, partial)` merges; `delete` removes; `snapshot()` returns the values ordered by `startedAt`; concurrent updates do not lose data
-- [ ] 11.2 Implement `services/fs-sync/src/downloads/registry.ts` to pass the tests
-- [ ] 11.3 Add a tiny lifecycle integration test: registry events emitted by a fake engine update the registry exactly as the design specifies (start → bytesDownloaded updates → terminal removes)
+- [x] 11.1 Write unit tests for `DownloadRegistry` at `services/fs-sync/src/downloads/__tests__/registry.test.ts`: `set` adds an entry; `update(downloadJobId, partial)` merges; `delete` removes; `snapshot()` returns the values ordered by `startedAt`; concurrent updates do not lose data
+- [x] 11.2 Implement `services/fs-sync/src/downloads/registry.ts` to pass the tests
+- [x] 11.3 Add a tiny lifecycle integration test: registry events emitted by a fake engine update the registry exactly as the design specifies (start → bytesDownloaded updates → terminal removes)
 
 ## 12. Service — `files-rename` RPC handler
 
