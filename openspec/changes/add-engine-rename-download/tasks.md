@@ -241,11 +241,11 @@ The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-F
 
 ## 19. Renderer — context-menu gate flip + S3 folder-rename branch
 
-- [ ] 19.1 Write a unit test for `context-menu.tsx` rendering Rename/Download as enabled (no `aria-disabled`) for a Google Drive file entry; test fails (the existing implementation disables them)
-- [ ] 19.2 Update `context-menu.tsx`: remove the broad `engineBacked || entry.kind === "directory"` disabled rule for Rename/Download; replace with a narrower rule (S3 directory only for rename; directories for download); update the tooltip strings
-- [ ] 19.3 Rerun the engine-backed-disable existing test (`__tests__/context-menu-engine-backed-disable.test.tsx`); update the assertions to the new expected behavior; or delete the file if its scenarios are entirely about the removed rule (replaced by the new rule's tests)
-- [ ] 19.4 Write tests for the new rule: Rename enabled for files everywhere; Rename enabled for Drive/OneDrive directories; Rename disabled for S3 directories with the new tooltip; Rename disabled for mock directories with the existing "v1" tooltip; Download enabled for files everywhere; Download disabled for directories with the "Folder download is not supported" tooltip
-- [ ] 19.5 All tests green
+- [x] 19.1 Write a unit test for `context-menu.tsx` rendering Rename/Download as enabled (no `aria-disabled`) for a Google Drive file entry; test fails (the existing implementation disables them)
+- [x] 19.2 Update `context-menu.tsx`: remove the broad `engineBacked || entry.kind === "directory"` disabled rule for Rename/Download; replace with a narrower rule (S3 directory only for rename; directories for download); update the tooltip strings
+- [x] 19.3 Rerun the engine-backed-disable existing test (`__tests__/context-menu-engine-backed-disable.test.tsx`); update the assertions to the new expected behavior; or delete the file if its scenarios are entirely about the removed rule (replaced by the new rule's tests). **Done 2026-04-28**: deleted the file — all 5 scenarios tested the removed engine-backed-on-file rule (file-entry fixture), each one inverts under the new rule and is covered by the new `context-menu-provider-conditional.test.tsx`.
+- [x] 19.4 Write tests for the new rule: Rename enabled for files everywhere; Rename enabled for Drive/OneDrive directories; Rename disabled for S3 directories with the new tooltip; Rename disabled for mock directories with the existing "v1" tooltip; Download enabled for files everywhere; Download disabled for directories with the "Folder download is not supported" tooltip
+- [x] 19.5 All tests green. **Done 2026-04-28**: apps/desktop 1103/1103 (1091 → 1103, +12 = +17 new − 5 removed); cross-package 270/270 files / 2265 passed / 9 skipped (2253 → 2265, +12); typecheck + lint clean.
 
 ## 20. Renderer — `downloads-store` (preferences)
 
