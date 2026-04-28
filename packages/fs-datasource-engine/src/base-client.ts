@@ -306,31 +306,17 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    *     success or 99 attempts (then throw `DatasourceError { tag:
    *     "other", message: "exhausted keep-both attempts" }`).
    *
-   * Default implementation throws `tag: "unsupported"` so strategies that
-   * have not yet wired their provider-specific rename path (i.e. the
-   * three concrete clients prior to add-engine-rename-download §7-§9
-   * landing) inherit a uniform "not supported" surface. Strategies
-   * override this method when they implement rename for their provider.
+   * Abstract per the spec: every concrete strategy MUST implement this
+   * primitive (mirroring `doDeleteFileImpl` etc.) so a future strategy
+   * author cannot silently inherit a no-op default. §7/§8/§9 replace the
+   * three current placeholder overrides (Drive / OneDrive / S3) with
+   * provider-specific rename paths.
    */
-  protected doRenameImpl(
+  protected abstract doRenameImpl(
     target: Target,
     newName: string,
     conflictPolicy: ConflictPolicy,
-  ): Promise<DatasourceFileEntry<T>> {
-    void target;
-    void newName;
-    void conflictPolicy;
-    return Promise.reject(
-      new DatasourceError<T>({
-        tag: "unsupported",
-        datasourceType: this.type,
-        datasourceId: this.datasourceId,
-        retryable: false,
-        raw: "rename-not-implemented-by-strategy",
-        message: "rename is not implemented by this strategy",
-      }),
-    );
-  }
+  ): Promise<DatasourceFileEntry<T>>;
   protected abstract doGetQuotaImpl(): Promise<Quota>;
 
   /**

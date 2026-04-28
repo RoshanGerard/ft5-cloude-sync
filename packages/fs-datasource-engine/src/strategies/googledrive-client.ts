@@ -95,7 +95,11 @@ import type {
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { PreAuthConfig } from "../auth-types.js";
-import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
+import {
+  BaseDatasourceClient,
+  type BaseClientContext,
+  type ConflictPolicy,
+} from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
@@ -1389,6 +1393,28 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     } catch (err) {
       throw this.normalizeErrorImpl(err);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // rename — placeholder until §7 wires the Drive-specific path
+  // -------------------------------------------------------------------------
+
+  /** Stub override for §7 to replace with Drive's `files.update` rename path. */
+  protected override doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<"google-drive">> {
+    void target;
+    void newName;
+    void conflictPolicy;
+    throw new DatasourceError<"google-drive">({
+      tag: "unsupported",
+      datasourceType: "google-drive",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      message: "rename not yet implemented for Google Drive",
+    });
   }
 
   // -------------------------------------------------------------------------

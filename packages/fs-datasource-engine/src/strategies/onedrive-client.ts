@@ -73,7 +73,11 @@ import type {
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { PreAuthConfig } from "../auth-types.js";
-import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
+import {
+  BaseDatasourceClient,
+  type BaseClientContext,
+  type ConflictPolicy,
+} from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
@@ -922,6 +926,28 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   protected override async doDeleteFileImpl(target: Target): Promise<void> {
     const url = this.resolveTargetUrl(target, "");
     await this.graph().api(url).delete();
+  }
+
+  // -------------------------------------------------------------------------
+  // rename — placeholder until §8 wires the Graph-specific path
+  // -------------------------------------------------------------------------
+
+  /** Stub override for §8 to replace with OneDrive's PATCH driveItem rename path. */
+  protected override doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<"onedrive">> {
+    void target;
+    void newName;
+    void conflictPolicy;
+    throw new DatasourceError<"onedrive">({
+      tag: "unsupported",
+      datasourceType: "onedrive",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      message: "rename not yet implemented for OneDrive",
+    });
   }
 
   // -------------------------------------------------------------------------

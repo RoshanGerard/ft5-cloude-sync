@@ -65,7 +65,11 @@ import type {
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { PreAuthConfig } from "../auth-types.js";
-import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
+import {
+  BaseDatasourceClient,
+  type BaseClientContext,
+  type ConflictPolicy,
+} from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
@@ -648,6 +652,28 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
     await this.aws.send(
       new DeleteObjectCommand({ Bucket: this.creds.bucket, Key: key }),
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // rename — placeholder until §9 wires the S3-specific copy+delete path
+  // -------------------------------------------------------------------------
+
+  /** Stub override for §9 to replace with S3's CopyObject + DeleteObject rename path. */
+  protected override doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<"amazon-s3">> {
+    void target;
+    void newName;
+    void conflictPolicy;
+    throw new DatasourceError<"amazon-s3">({
+      tag: "unsupported",
+      datasourceType: "amazon-s3",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      message: "rename not yet implemented for Amazon S3",
+    });
   }
 
   // -------------------------------------------------------------------------
