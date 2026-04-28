@@ -275,6 +275,153 @@ const fixture: StrategyContractFixture = {
       verbs: { delete: () => undefined },
     });
   },
+
+  // -------------------------------------------------------------------------
+  // §10.1 — rename + download contract hooks
+  // -------------------------------------------------------------------------
+
+  primeRenameFileOk(opts) {
+    const itemId = "OD-CONTRACT-FILE";
+    const parentId = "OD-CONTRACT-PARENT-ROOT";
+    // resolveRenameTarget: GET /me/drive/root:/<fromPath>:
+    responders.push({
+      match: `/me/drive/root:${opts.fromPath}:`,
+      verbs: {
+        get: () => ({
+          id: itemId,
+          name: opts.fromPath.replace(/^\//, ""),
+          file: { mimeType: "text/plain" },
+          size: 12,
+          lastModifiedDateTime: "2024-06-01T00:00:00Z",
+          parentReference: { path: "/drive/root:", id: parentId },
+        }),
+      },
+    });
+    // sibling pre-check on `fail`: GET /me/drive/items/<parentId>/children?$filter=...
+    responders.push({
+      match: `/me/drive/items/${parentId}/children?$filter=name%20eq%20'${opts.newName}'`,
+      verbs: { get: () => ({ value: [] }) },
+    });
+    // PATCH /me/drive/items/<itemId>
+    responders.push({
+      match: `/me/drive/items/${itemId}`,
+      verbs: {
+        patch: () => ({
+          id: itemId,
+          name: opts.newName,
+          file: { mimeType: "text/plain" },
+          size: 12,
+          lastModifiedDateTime: "2024-06-02T00:00:00Z",
+          parentReference: { path: "/drive/root:", id: parentId },
+        }),
+      },
+    });
+  },
+
+  primeRenameDirectory(opts) {
+    const itemId = "OD-CONTRACT-FOLDER";
+    const parentId = "OD-CONTRACT-PARENT-ROOT";
+    responders.push({
+      match: `/me/drive/root:${opts.fromPath}:`,
+      verbs: {
+        get: () => ({
+          id: itemId,
+          name: opts.fromPath.replace(/^\//, ""),
+          folder: { childCount: 2 },
+          lastModifiedDateTime: "2024-06-01T00:00:00Z",
+          parentReference: { path: "/drive/root:", id: parentId },
+        }),
+      },
+    });
+    responders.push({
+      match: `/me/drive/items/${parentId}/children?$filter=name%20eq%20'${opts.newName}'`,
+      verbs: { get: () => ({ value: [] }) },
+    });
+    responders.push({
+      match: `/me/drive/items/${itemId}`,
+      verbs: {
+        patch: () => ({
+          id: itemId,
+          name: opts.newName,
+          folder: { childCount: 2 },
+          lastModifiedDateTime: "2024-06-02T00:00:00Z",
+          parentReference: { path: "/drive/root:", id: parentId },
+        }),
+      },
+    });
+  },
+
+  supportsFolderRename: true,
+
+  primeDownloadOk(opts) {
+    const itemId = "OD-CONTRACT-DL";
+    // resolveTargetItemId: GET /me/drive/root:<path>: returns item w/ id.
+    responders.push({
+      match: `/me/drive/root:${opts.path}:`,
+      verbs: {
+        get: () => ({
+          id: itemId,
+          name: opts.path.replace(/^\//, ""),
+          file: { mimeType: "text/plain" },
+          size: opts.bytes.length,
+          parentReference: { path: "/drive/root:", id: "OD-CONTRACT-DL-PARENT" },
+        }),
+      },
+    });
+    // The download URL is built from the resolved itemId; the fakeFetch
+    // shifts a response from `fetchResponses` for any non-upload URL.
+    fetchResponses.push(
+      () =>
+        new Response(opts.bytes, {
+          status: 200,
+          headers: { "content-length": String(opts.bytes.length) },
+        }),
+    );
+  },
+
+  primeDownloadCancellable(opts) {
+    const itemId = "OD-CONTRACT-CANCEL";
+    responders.push({
+      match: `/me/drive/root:${opts.path}:`,
+      verbs: {
+        get: () => ({
+          id: itemId,
+          name: opts.path.replace(/^\//, ""),
+          file: { mimeType: "text/plain" },
+          size: opts.totalBytes,
+          parentReference: { path: "/drive/root:", id: "OD-CONTRACT-CANCEL-PARENT" },
+        }),
+      },
+    });
+    // The fakeFetch closure has no access to the per-call init.signal,
+    // so we override fakeFetch's behaviour for this scenario via an
+    // override push to fetchResponses that consults `opts.controller`.
+    // We push a function that builds a Response with a Web ReadableStream
+    // body which pushes one chunk and awaits abort.
+    fetchResponses.push(() => {
+      const sig = opts.controller.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(streamCtrl) {
+          // Push first chunk synchronously.
+          streamCtrl.enqueue(new Uint8Array(opts.firstChunkBytes));
+        },
+        pull() {
+          return new Promise<void>((_resolve, reject) => {
+            sig.addEventListener("abort", () => {
+              const err = Object.assign(new Error("aborted"), {
+                name: "AbortError",
+              });
+              reject(err);
+            });
+          });
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": String(opts.totalBytes) },
+      });
+    });
+  },
 };
 
 // ---------------------------------------------------------------------------

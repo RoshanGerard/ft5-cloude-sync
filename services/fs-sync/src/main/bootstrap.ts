@@ -28,6 +28,7 @@ import { createResolveClient } from "./resolve-client.js";
 import { buildCommandHandlers } from "../commands/handlers.js";
 import { ServiceConfigStore } from "../config/service-config-store.js";
 import { ConfigFileCredentialStore } from "../credential-store/config-file.js";
+import { createDownloadRegistry } from "../downloads/registry.js";
 import { applyMigrations } from "../db/migrations.js";
 import { openDatabase } from "../db/open.js";
 import { ensureDataDir } from "../env/ensure-dir.js";
@@ -57,6 +58,7 @@ import {
   AlreadyRunningError,
 } from "../single-instance/pid-guard.js";
 import { recoverRunningJobs } from "../startup/recovery.js";
+import { createHashComputer } from "../util/hash-computer.js";
 
 export type BootstrapStage =
   | "open-database"
@@ -196,6 +198,22 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     // required by EngineContext. They are distinct types — do not cross-wire.
     const bus: EventBus = createEventBus();
     const engineBus = createEngineEventBus();
+    // Download-side singletons (per add-engine-rename-download §11 + §13).
+    // - `downloadRegistry` is the in-memory `Map<downloadJobId, entry>`
+    //   shared by the `files:download` handler (mutates per byte tick),
+    //   `sync:cancel-download` (drives the AbortController), and
+    //   `downloads:list-active` (snapshots for the IPC reply). Single
+    //   instance per service lifetime — its registry contract pins
+    //   identity to `downloadJobId`, so a second instance would split
+    //   the namespace and break the concurrent-rejection guard.
+    // - `hashComputer` is functionally stateless (each `hashFile` call
+    //   opens its own ReadStream) so a single shared instance is fine.
+    // Without these two, the `files:download` / `sync:cancel-download` /
+    // `downloads:list-active` handlers stay gated off in the
+    // `buildCommandHandlers` map and the §13/§14 commands are
+    // unreachable from `SyncClient.request(...)`.
+    const downloadRegistry = createDownloadRegistry();
+    const hashComputer = createHashComputer();
     const credentialStore = new ConfigFileCredentialStore({
       filePath: credentialsPath,
     });
@@ -305,6 +323,16 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       engineContext,
       loopbackBroker,
       credentialStore,
+      // add-engine-rename-download §13/§14 download bundle. With all
+      // four (resolveClient already above + downloadRegistry + engineBus
+      // + hashComputer), buildCommandHandlers wires files:download,
+      // sync:cancel-download, and downloads:list-active. The engine
+      // event bus is structurally a `EngineBusSubscriber` — the
+      // handler-local subscription only reads `event`, `datasourceId`,
+      // and `payload`.
+      downloadRegistry,
+      engineBus,
+      hashComputer,
     });
     const subscribeHandler: CommandHandler<"sync:subscribe-events"> = async (
       _params,

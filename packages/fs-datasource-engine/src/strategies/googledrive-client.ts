@@ -77,7 +77,8 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
+import { Transform, type Readable } from "node:stream";
 
 import type {
   AuthIntent,
@@ -95,7 +96,13 @@ import type {
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { PreAuthConfig } from "../auth-types.js";
-import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
+import {
+  BaseDatasourceClient,
+  type BaseClientContext,
+  type ConflictPolicy,
+  type DownloadOptions,
+  type DownloadResult,
+} from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
@@ -120,8 +127,28 @@ const require = createRequire(import.meta.url);
 
 export interface DriveFilesLike {
   list(params: Record<string, unknown>): Promise<{ data: DriveListResponse }>;
-  get(params: Record<string, unknown>): Promise<{ data: DriveFile }>;
+  /**
+   * Drive's `files.get` is overloaded by call shape:
+   *   - Metadata fetch: `get({ fileId, fields })` → `{ data: DriveFile }`.
+   *   - Media download: `get({ fileId, alt: "media" }, { responseType: "stream",
+   *     headers, signal })` → `{ data: Readable, headers }`.
+   *
+   * The duck-type widens `data` to `unknown` so both call shapes share one
+   * method signature; the call sites narrow on use (the metadata sites cast
+   * to `DriveFile`; the download site casts to `Readable`). The optional
+   * 2nd argument carries `responseType` / `headers` / `signal` per
+   * Drive's resumable-stream contract.
+   */
+  get(
+    params: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<{ data: unknown; headers?: Record<string, string> }>;
   create(params: Record<string, unknown>): Promise<{ data: DriveFile }>;
+  /**
+   * `drive.files.update({ fileId, requestBody: { name } })` — uniform across
+   * files and folders. Returns the updated file metadata.
+   */
+  update(params: Record<string, unknown>): Promise<{ data: DriveFile }>;
   delete(params: Record<string, unknown>): Promise<{ data: unknown }>;
 }
 
@@ -221,6 +248,77 @@ export function encodeDriveQuery(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+/**
+ * Split a filename into `{ base, ext }` for the `keep-both` suffix loop.
+ * The split mirrors `path.basename` / `path.extname` semantics so candidate
+ * names preserve the extension across attempts: `foo.pdf` → `{base:"foo",
+ * ext:".pdf"}` → candidate `foo-2.pdf`. Extensionless names like `Makefile`
+ * → `{base:"Makefile", ext:""}` → candidate `Makefile-2`. Hidden files like
+ * `.gitignore` (leading dot, no other dots) are treated as extensionless to
+ * avoid pathological `{base:"", ext:".gitignore"}` results — `.gitignore` →
+ * `{base:".gitignore", ext:""}` → `.gitignore-2`.
+ */
+function splitNameForSuffix(name: string): { base: string; ext: string } {
+  const dotIdx = name.lastIndexOf(".");
+  // No dot, or leading-dot hidden file with no other separator → treat as
+  // extensionless. Index 0 means the dot is the first character.
+  if (dotIdx <= 0) return { base: name, ext: "" };
+  return { base: name.slice(0, dotIdx), ext: name.slice(dotIdx) };
+}
+
+// Post-archive smoke (2026-04-28): Drive's `files` REST returns `name` as a
+// "title" — for several mimes (notably `text/plain` from the Drive web UI's
+// New > Text file flow) the title does NOT include the extension that
+// macOS / Windows use to associate the file with an editor. The renderer
+// constructs the local-save `toPath` from `entry.name`, so an extension-less
+// entry produces an extension-less file on disk (e.g. `Getting Started`).
+//
+// Microsoft documents and most user-uploaded files DO carry the extension on
+// the title, so they aren't affected. The fix is scoped to Drive only:
+// OneDrive and S3 store filenames as-is (extensions preserved as part of the
+// stored name). Below is a small, conservative mime → canonical extension
+// lookup applied at `buildFileEntry`. Mimes outside the table fall through
+// unchanged so we don't double-append or invent a wrong extension.
+const DRIVE_MIME_TO_EXT: Readonly<Record<string, string>> = {
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "text/html": ".html",
+  "text/markdown": ".md",
+  "text/xml": ".xml",
+  "application/pdf": ".pdf",
+  "application/json": ".json",
+  "application/xml": ".xml",
+  "application/zip": ".zip",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/svg+xml": ".svg",
+  "audio/mpeg": ".mp3",
+  "video/mp4": ".mp4",
+};
+
+/**
+ * If `name` lacks a file extension AND `mimeType` maps to a canonical one,
+ * append it so the local-save path lands with the right associator on disk.
+ *
+ * - `name` already-has-extension (`extname(name) !== ""`) → returned as-is
+ * - `mimeType` not in the lookup → returned as-is (we don't guess)
+ * - empty `name` → returned as-is
+ *
+ * Exported for direct unit testing; production call site is `buildFileEntry`.
+ */
+export function appendExtensionIfMissing(
+  name: string,
+  mimeType: string | undefined,
+): string {
+  if (name === "") return name;
+  if (mimeType === undefined) return name;
+  if (extname(name) !== "") return name;
+  const canonical = DRIVE_MIME_TO_EXT[mimeType];
+  if (canonical === undefined) return name;
+  return name + canonical;
+}
+
 function mimeFamilyFromMime(mime?: string): DatasourceMimeFamily {
   if (!mime) return "other";
   if (mime === DRIVE_FOLDER_MIME) return "folder";
@@ -248,6 +346,39 @@ function parseSize(size: string | number | undefined): number | undefined {
 
 function isFolder(file: DriveFile): boolean {
   return file.mimeType === DRIVE_FOLDER_MIME;
+}
+
+// Note: `humanizeGoogleAppsMime` (subtype → "Doc"/"Sheet"/...) was removed
+// post-smoke-2 (2026-04-28) when the friendly Docs-Editors refusal was
+// simplified to a single concise line. Restore from git history when the
+// parked follow-up `add-drive-docs-editors-export` lands and needs the
+// subtype-specific user copy.
+
+/**
+ * Parse a `Content-Range` header (HTTP RFC 7233) into the engine's
+ * `{ start, end, total }` shape. Returns `undefined` for headers we can't
+ * parse, including the unknown-range form (`bytes [asterisk]/[total]`)
+ * which has no usable range bounds.
+ */
+function parseContentRangeHeader(
+  header: string | undefined,
+): { start: number; end: number; total: number } | undefined {
+  if (!header) return undefined;
+  // RFC 7233 specifies `Content-Range: bytes <start>-<end>/<total>` (and
+  // an `unknown-range` form not handled here).
+  const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(header.trim());
+  if (!match) return undefined;
+  const start = Number.parseInt(match[1]!, 10);
+  const end = Number.parseInt(match[2]!, 10);
+  const total = Number.parseInt(match[3]!, 10);
+  if (
+    Number.isNaN(start) ||
+    Number.isNaN(end) ||
+    Number.isNaN(total)
+  ) {
+    return undefined;
+  }
+  return { start, end, total };
 }
 
 /** Returns true iff the space-separated `scope` string includes the full
@@ -712,8 +843,14 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     opts: { path: string; ambiguousSiblings?: string[] },
   ): DatasourceFileEntry<"google-drive"> {
     const id = file.id ?? "";
-    const name = file.name ?? "";
+    const rawName = file.name ?? "";
     const folder = isFolder(file);
+    // Folders never need extension repair; files do (per
+    // `appendExtensionIfMissing`'s lookup table — Drive returns extension-
+    // less `name` titles for several common mimes).
+    const name = folder
+      ? rawName
+      : appendExtensionIfMissing(rawName, file.mimeType);
     const kind: "file" | "folder" = folder ? "folder" : "file";
     const mimeFamily: DatasourceMimeFamily = folder
       ? "folder"
@@ -1100,7 +1237,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         fileId,
         fields: DEFAULT_FILE_FIELDS,
       });
-      file = result.data;
+      file = result.data as DriveFile;
     } catch (err) {
       throw this.normalizeErrorImpl(err);
     }
@@ -1392,6 +1529,410 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   }
 
   // -------------------------------------------------------------------------
+  // rename — files.update for both files and folders
+  // -------------------------------------------------------------------------
+  //
+  // Drive's `files.update({ fileId, requestBody: { name } })` is uniform
+  // across files and folders — the strategy reads the response's
+  // `mimeType` to populate the entry's `kind` ("folder" iff mime ===
+  // application/vnd.google-apps.folder).
+  //
+  // Per design.md Decision 1, conflictPolicy semantics live in the
+  // strategy:
+  //
+  //   - "fail"      → pre-check siblings via files.list({q: "name='<new>'
+  //                   and '<parent>' in parents and trashed=false"}); if
+  //                   any results, throw `DatasourceError { tag: "conflict",
+  //                   raw: { existingPath } }`.
+  //   - "overwrite" → pre-fetch the target's mimeType; if folder, refuse
+  //                   with `tag: "unsupported"` carrying the spec-required
+  //                   message. On a file: list colliding siblings (Drive
+  //                   permits ambiguous (parent, name) tuples — see the
+  //                   class-header note on path ambiguity — so we MUST
+  //                   delete each collision explicitly; PATCH alone does
+  //                   not replace), delete each via direct
+  //                   `drive().files.delete({fileId})` (NOT `this.deleteFile`
+  //                   — that primitive is internal cleanup, not a public
+  //                   deletion event), then issue the rename.
+  //   - "keep-both" → strategy-side suffix-retry loop. Issue a sibling-list
+  //                   query for the candidate name (starting with the
+  //                   original `newName`); on collision retry with
+  //                   `<base>-2.<ext>`, `<base>-3.<ext>`, ..., preserving
+  //                   the file extension across attempts. The original
+  //                   counts as attempt #1, so suffixes 2..99 cover up to
+  //                   99 total attempts. Cap at 99 → throw
+  //                   `DatasourceError { tag: "other", message:
+  //                   "exhausted keep-both attempts" }` per spec.md
+  //                   `specs/fs-datasource-engine/spec.md:191-193`.
+  //                   Drive silently allows ambiguous (parent, name)
+  //                   tuples (see class-header path-ambiguity note), so
+  //                   the strategy MUST do the explicit pre-check rather
+  //                   than relying on Drive to reject duplicates.
+  protected override async doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<"google-drive">> {
+    const { fileId } = await this.resolveTarget(target);
+
+    // Pre-resolve the target's parent — `fail`, `overwrite`, AND
+    // `keep-both` all need it for the sibling list query. Reusing the
+    // resolution saves a `files.get` round-trip per attempt.
+    const parentInfo =
+      conflictPolicy === "fail" ||
+      conflictPolicy === "overwrite" ||
+      conflictPolicy === "keep-both"
+        ? await this.resolveRenameParent(target, fileId)
+        : null;
+
+    if (conflictPolicy === "overwrite") {
+      // Directory-overwrite refusal — recursive replacement is out of scope.
+      // Lightweight metadata fetch (mimeType only); the post-rename response
+      // already carries mimeType but we need to check it BEFORE the rename.
+      let mimeType: string | undefined;
+      try {
+        const probe = await this.drive().files.get({
+          fileId,
+          fields: "mimeType",
+        });
+        mimeType = (probe.data as DriveFile).mimeType;
+      } catch (err) {
+        throw this.normalizeErrorImpl(err);
+      }
+      if (mimeType === DRIVE_FOLDER_MIME) {
+        throw new DatasourceError<"google-drive">({
+          tag: "unsupported",
+          datasourceType: "google-drive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message:
+            "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
+        });
+      }
+
+      // File-overwrite: enumerate colliding siblings + delete each. Drive
+      // permits ambiguous (parent, name) tuples, so a single colliding
+      // sibling is the common case but multiple is possible — delete all.
+      // The deletion is a strategy-internal primitive (direct
+      // `drive().files.delete`), NOT routed through `this.deleteFile` —
+      // the wrapper would emit a public `deleted` event, but rename's
+      // single-step UX (per design.md Decision 7) means the consumer sees
+      // ONE `entry-renamed` event covering both the deletion AND the
+      // rename.
+      const q = `name='${encodeDriveQuery(newName)}' and '${parentInfo!.parentFileId}' in parents and trashed=false`;
+      let resp: DriveListResponse;
+      try {
+        const result = await this.drive().files.list({
+          q,
+          fields: DEFAULT_LIST_FIELDS,
+          pageSize: 100,
+        });
+        resp = result.data;
+      } catch (err) {
+        throw this.normalizeErrorImpl(err);
+      }
+      const collisions = resp.files ?? [];
+      for (const sibling of collisions) {
+        if (!sibling.id || sibling.id === fileId) continue;
+        try {
+          await this.drive().files.delete({ fileId: sibling.id });
+        } catch (err) {
+          throw this.normalizeErrorImpl(err);
+        }
+      }
+    }
+
+    if (conflictPolicy === "fail") {
+      // Sibling pre-check: walks the target's parent (path-form derives
+      // it from the path's segments minus the last; handle-form fetches
+      // `parents` via files.get).
+      const q = `name='${encodeDriveQuery(newName)}' and '${parentInfo!.parentFileId}' in parents and trashed=false`;
+      let resp: DriveListResponse;
+      try {
+        const result = await this.drive().files.list({
+          q,
+          fields: DEFAULT_LIST_FIELDS,
+          pageSize: 1,
+        });
+        resp = result.data;
+      } catch (err) {
+        throw this.normalizeErrorImpl(err);
+      }
+      const matches = resp.files ?? [];
+      if (matches.length > 0) {
+        const existingPath = parentInfo!.parentPath
+          ? `${parentInfo!.parentPath}/${newName}`
+          : `/${newName}`;
+        throw new DatasourceError<"google-drive">({
+          tag: "conflict",
+          datasourceType: "google-drive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          raw: { existingPath },
+          message: `Sibling already exists at ${existingPath}`,
+        });
+      }
+    }
+
+    // `keep-both` suffix-retry loop. Issue a sibling-list query for each
+    // candidate (starting with the original `newName`); on collision,
+    // bump the suffix and retry. The original counts as attempt #1, so
+    // suffixes 2..99 cover 99 total attempts. On exhaustion, throw
+    // `tag: "other"` per spec. The chosen `effectiveName` is then fed
+    // into the single `files.update` below — there's exactly one
+    // mutation, regardless of how many list-checks ran.
+    let effectiveName = newName;
+    if (conflictPolicy === "keep-both") {
+      const { base, ext } = splitNameForSuffix(newName);
+      let chosen: string | null = null;
+      for (let attempt = 1; attempt <= 99; attempt++) {
+        const candidate = attempt === 1 ? newName : `${base}-${attempt}${ext}`;
+        const q = `name='${encodeDriveQuery(candidate)}' and '${parentInfo!.parentFileId}' in parents and trashed=false`;
+        let resp: DriveListResponse;
+        try {
+          const result = await this.drive().files.list({
+            q,
+            fields: DEFAULT_LIST_FIELDS,
+            pageSize: 1,
+          });
+          resp = result.data;
+        } catch (err) {
+          throw this.normalizeErrorImpl(err);
+        }
+        const matches = resp.files ?? [];
+        if (matches.length === 0) {
+          chosen = candidate;
+          break;
+        }
+      }
+      if (chosen === null) {
+        // Engine taxonomy uses `provider-error` for "no-better-tag"
+        // exhaustion failures; the wire-layer (`normalizeFilesError` in
+        // services/fs-sync) collapses `provider-error` → `tag: "other"`
+        // for the renderer. The user-visible behavior matches the spec
+        // scenario at `specs/fs-datasource-engine/spec.md:191-193`.
+        throw new DatasourceError<"google-drive">({
+          tag: "provider-error",
+          datasourceType: "google-drive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message: "exhausted keep-both attempts",
+        });
+      }
+      effectiveName = chosen;
+    }
+
+    let updated: DriveFile;
+    try {
+      const result = await this.drive().files.update({
+        fileId,
+        requestBody: { name: effectiveName },
+        fields: DEFAULT_FILE_FIELDS,
+      });
+      updated = result.data;
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+
+    // Engine-facing path on the renamed entry. For path-form targets we can
+    // compute it from the original path's parent + the new name; for
+    // handle-form we synthesize `/<newName>` (same convention as search /
+    // handle-form listDirectory, see the class header's "Synthesized paths"
+    // note). Cache invalidation on rename is a follow-up concern (the
+    // bus subscription does not currently observe `entry-renamed`).
+    let entryPath: string;
+    if (target.kind === "path") {
+      const segs = pathSegments(target.path);
+      segs.pop();
+      const parent = segs.length === 0 ? "" : `/${segs.join("/")}`;
+      entryPath =
+        parent === "" ? `/${effectiveName}` : `${parent}/${effectiveName}`;
+    } else {
+      entryPath = `/${effectiveName}`;
+    }
+    return this.buildFileEntry(updated, { path: entryPath });
+  }
+
+  /**
+   * Resolve the target's parent for the sibling pre-check. For path-form
+   * targets, the parent's fileId comes from a path walk of the parent
+   * segments (cheap, often cache-hit). For handle-form, we issue a
+   * `files.get({fileId, fields: "parents"})` to discover the parent. The
+   * `parentPath` returned here is best-effort — present only for path-form
+   * targets — so the conflict's `existingPath` can be a real engine path
+   * when known, otherwise `/<newName>`.
+   */
+  private async resolveRenameParent(
+    target: Target,
+    fileId: string,
+  ): Promise<{ parentFileId: string; parentPath: string }> {
+    if (target.kind === "path") {
+      const segs = pathSegments(target.path);
+      segs.pop();
+      const parentPath = segs.length === 0 ? "" : `/${segs.join("/")}`;
+      const parent = await this.resolvePath(parentPath || "/");
+      return { parentFileId: parent.fileId, parentPath };
+    }
+    // Handle-form: round-trip to discover the parent fileId.
+    let file: DriveFile;
+    try {
+      const result = await this.drive().files.get({
+        fileId,
+        fields: "parents",
+      });
+      file = result.data as DriveFile;
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    const parentFileId = file.parents?.[0] ?? DRIVE_ROOT_FILE_ID;
+    return { parentFileId, parentPath: "" };
+  }
+
+  // -------------------------------------------------------------------------
+  // downloadFile — files.get({alt: "media"}, {responseType: "stream", ...})
+  // -------------------------------------------------------------------------
+  //
+  // Drive's media-download path is `files.get({fileId, alt: "media"})` with
+  // `responseType: "stream"`. The strategy threads `options.signal` and any
+  // `Range:` header through the SDK call, wraps the SDK's source stream in
+  // a `PassThrough` so byte-counting + bus emission happen inline (the
+  // consumer's pipe drives flow on the wrapper; they observe data through
+  // the same Readable but the count happens upstream of their listener),
+  // and surfaces `contentLength` / `contentRange` from the response
+  // headers so fs-sync's range-resume retry loop can validate them.
+  protected override async doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult> {
+    const { fileId } = await this.resolveTarget(target);
+    // The bus's `downloading` / `file-downloaded` events carry an
+    // engine-facing path string. Path-form targets supply it directly;
+    // handle-form targets fall back to the handle so the event still
+    // identifies the file.
+    const path = target.kind === "path" ? target.path : target.handle;
+
+    // Post-archive smoke (2026-04-28): pre-fetch metadata to detect
+    // Google Apps native files (Docs / Sheets / Slides / Drawings /
+    // Forms / Apps Script). Drive's `files.get?alt=media` only works
+    // for files with binary content; Google Apps files require
+    // `files.export` with a target export mime — that's the scope of
+    // the parked follow-up `add-drive-docs-editors-export`. For this
+    // change we refuse early with a friendly message instead of
+    // letting the user see the raw 403 `fileNotDownloadable` JSON.
+    //
+    // Trade-off: this adds one round-trip per download (no cache layer
+    // serves this metadata fetch — Drive's path↔fileId LRU only stores
+    // ids, not mime types). Acceptable cost for a clean error path; the
+    // proper fix lives in the follow-up which routes binary vs export
+    // upstream of this call.
+    let metaMimeType: string | undefined;
+    try {
+      const probe = await this.drive().files.get({
+        fileId,
+        fields: "mimeType",
+      });
+      const data = probe.data as DriveFile;
+      metaMimeType = data.mimeType;
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    if (
+      metaMimeType !== undefined &&
+      metaMimeType.startsWith("application/vnd.google-apps.") &&
+      metaMimeType !== DRIVE_FOLDER_MIME
+    ) {
+      // Post-smoke-2 (2026-04-28): the per-subtype humanized name +
+      // "Open it in Drive..." prose was rejected as too noisy in the
+      // toast; user wants a single concise line. The parked follow-up
+      // `add-drive-docs-editors-export` still owns the proper export
+      // path; this is just the friendly refusal.
+      throw new DatasourceError<"google-drive">({
+        tag: "unsupported",
+        datasourceType: "google-drive",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: { kind: "google-apps-not-downloadable", mimeType: metaMimeType },
+        message: "Google Drive documents download not supported",
+      });
+    }
+
+    const headers: Record<string, string> = {};
+    if (options.rangeStart !== undefined && options.rangeStart > 0) {
+      headers.Range = `bytes=${options.rangeStart}-`;
+    }
+    const sdkOptions: Record<string, unknown> = {
+      responseType: "stream",
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    };
+    let resp: { data: unknown; headers?: Record<string, string> };
+    try {
+      resp = await this.drive().files.get(
+        { fileId, alt: "media" },
+        sdkOptions,
+      );
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    const sourceStream = resp.data as Readable;
+    const respHeaders = resp.headers ?? {};
+    const contentLengthHeader =
+      respHeaders["content-length"] ?? respHeaders["Content-Length"];
+    const contentLength =
+      contentLengthHeader !== undefined && contentLengthHeader !== ""
+        ? Number.parseInt(contentLengthHeader, 10)
+        : null;
+    const contentRange = parseContentRangeHeader(
+      respHeaders["content-range"] ?? respHeaders["Content-Range"],
+    );
+
+    // Wrap source in a `Transform` so the byte-counting hook is INLINE
+    // with the data flow. The consumer attaches their listeners to the
+    // wrapper; chunks flow through `_transform` (counting) then onward
+    // to the consumer untouched. Using `Transform` (rather than a
+    // `PassThrough` + extra `data` listener) avoids the timing race
+    // where the strategy's `data` listener consumes a chunk before
+    // the consumer attaches: a `Transform` pushes each chunk forward
+    // exactly once, and the consumer's `data` / `pipe` is the sole
+    // consumer driving flow.
+    let loaded = 0;
+    const total: number | null = contentLength;
+    const counter = new Transform({
+      transform: (chunk: Buffer, _enc, cb) => {
+        loaded += chunk.length;
+        try {
+          options.onProgress?.(loaded, total);
+        } catch {
+          // Consumer-callback errors must not break the stream pipeline.
+        }
+        this.emitDownloading(path, loaded, total);
+        cb(null, chunk);
+      },
+    });
+    // Forward errors from the source stream; without this listener the
+    // wrapper would not transition to errored state and the base's
+    // `error` listener would never fire on a mid-stream provider error.
+    sourceStream.on("error", (err) => {
+      const normalized = this.normalizeErrorImpl(err);
+      counter.destroy(normalized);
+    });
+    // Pipe source → wrapper. The wrapper Transform forwards `end`
+    // automatically and back-pressures the source via the consumer's
+    // pipe / `.on("data")`.
+    sourceStream.pipe(counter);
+
+    // Per-call total fall-back: when the provider response does not carry
+    // a `Content-Length` header (rare on Drive but possible), the engine
+    // contract surfaces `contentLength: null` and the byte-counter
+    // observes `total: null` per tick — fs-sync handles that case.
+    return {
+      stream: counter,
+      contentLength,
+      ...(contentRange ? { contentRange } : {}),
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // getQuota — about.get({fields: "storageQuota"})
   // -------------------------------------------------------------------------
 
@@ -1525,6 +2066,17 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       sysCode === "invalid_token"
     ) {
       return mk("auth-revoked", false);
+    }
+
+    // AbortError surfacing — `googleapis` propagates abort via fetch /
+    // RequestInit's `signal`; the rejection lands here as `name: "AbortError"`
+    // (DOMException-like) regardless of any other shape on the error. Map
+    // it to `tag: "cancelled"` BEFORE the network-error branch so an
+    // aborted in-flight request that also exposes a network-y `code`
+    // does not get mis-classified as transient. The base routes
+    // `cancelled` to the `download-cancelled` bus event per Decision 3.
+    if (name === "AbortError") {
+      return mk("cancelled", false, { message: "download cancelled" });
     }
 
     // Network / Node system errors. Check BEFORE status-based branches —

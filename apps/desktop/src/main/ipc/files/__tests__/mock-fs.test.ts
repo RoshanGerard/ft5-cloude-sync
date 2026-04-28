@@ -16,12 +16,10 @@ import {
   getFileTree,
   list,
   remove,
-  rename,
   resetMockFs,
   search,
   SEARCH_RESULT_CEILING,
   stat,
-  download,
 } from "../mock-fs";
 
 const SEEDED_DATASOURCE_IDS = [
@@ -162,61 +160,6 @@ describe("mock-fs: stat", () => {
       stat({
         datasourceId: "ds-gdrive-personal",
         path: "/does-not-exist",
-      }),
-    ).toThrow(/not found/i);
-  });
-});
-
-describe("mock-fs: rename", () => {
-  it("renames a file entry and returns the updated FileEntry", () => {
-    resetMockFs();
-    const { entries } = expectListOk({
-      datasourceId: "ds-gdrive-personal",
-      path: "/documents",
-    });
-    const file = entries.find((e) => e.kind === "file")!;
-    expect(file).toBeTruthy();
-    const result = rename({
-      datasourceId: "ds-gdrive-personal",
-      path: file.path,
-      newName: "renamed-doc.pdf",
-    });
-    expect(result.entry.name).toBe("renamed-doc.pdf");
-    expect(result.entry.path.endsWith("/renamed-doc.pdf")).toBe(true);
-
-    // state is mutated: the original path is gone, the new one is present
-    const refreshed = expectListOk({
-      datasourceId: "ds-gdrive-personal",
-      path: "/documents",
-    }).entries;
-    expect(refreshed.some((e) => e.path === file.path)).toBe(false);
-    expect(refreshed.some((e) => e.path === result.entry.path)).toBe(true);
-  });
-
-  it("rejects rename on a directory entry", () => {
-    resetMockFs();
-    const { entries } = expectListOk({
-      datasourceId: "ds-gdrive-personal",
-      path: "/",
-    });
-    const dir = entries.find((e) => e.kind === "directory")!;
-    expect(dir).toBeTruthy();
-    expect(() =>
-      rename({
-        datasourceId: "ds-gdrive-personal",
-        path: dir.path,
-        newName: "nope",
-      }),
-    ).toThrow(/folder rename is not supported/i);
-  });
-
-  it("throws when the path does not exist", () => {
-    resetMockFs();
-    expect(() =>
-      rename({
-        datasourceId: "ds-gdrive-personal",
-        path: "/nowhere.pdf",
-        newName: "x.pdf",
       }),
     ).toThrow(/not found/i);
   });
@@ -373,24 +316,6 @@ describe("mock-fs: search", () => {
   });
 });
 
-describe("mock-fs: download", () => {
-  it("returns { savedPath } under the mock downloads directory", () => {
-    resetMockFs();
-    const { entries } = expectListOk({
-      datasourceId: "ds-gdrive-personal",
-      path: "/",
-    });
-    const file = entries.find((e) => e.kind === "file")!;
-    const response = download({
-      datasourceId: "ds-gdrive-personal",
-      path: file.path,
-    });
-    expect(typeof response.savedPath).toBe("string");
-    expect(response.savedPath).toContain("ft5-mock-downloads");
-    expect(response.savedPath.endsWith(file.name)).toBe(true);
-  });
-});
-
 describe("mock-fs: mimeFamily derivation via seeded entries", () => {
   it("every seeded file has a MimeFamily consistent with its extension", () => {
     resetMockFs();
@@ -416,25 +341,30 @@ describe("mock-fs: mimeFamily derivation via seeded entries", () => {
 });
 
 describe("mock-fs: resetMockFs", () => {
-  it("restores state after a rename", () => {
+  it("restores state after a remove", () => {
     resetMockFs();
     const before = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/documents",
     }).entries;
     const file = before.find((e) => e.kind === "file")!;
-    rename({
+    remove({
       datasourceId: "ds-gdrive-personal",
-      path: file.path,
-      newName: "renamed.pdf",
+      targets: [{ path: file.path, handle: file.handle, kind: file.kind }],
     });
+    // confirm the mutation happened
+    const mutated = expectListOk({
+      datasourceId: "ds-gdrive-personal",
+      path: "/documents",
+    }).entries;
+    expect(mutated.some((e) => e.path === file.path)).toBe(false);
+
     resetMockFs();
     const after = expectListOk({
       datasourceId: "ds-gdrive-personal",
       path: "/documents",
     }).entries;
     expect(after.some((e) => e.path === file.path)).toBe(true);
-    expect(after.some((e) => e.name === "renamed.pdf")).toBe(false);
   });
 });
 

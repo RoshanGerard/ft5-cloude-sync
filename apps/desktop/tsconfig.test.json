@@ -10,10 +10,13 @@
   "include": [
     "src/preload/window-api.d.ts",
     "src/preload/__tests__/window-api.types.test-d.ts",
-    "../../packages/fs-datasource-engine/src/**/*.test-d.ts"
+    "../../packages/fs-datasource-engine/src/**/*.test-d.ts",
+    "../../packages/ipc-contracts/src/**/*.test-d.ts",
+    "../../services/fs-sync/src/**/*.test-d.ts"
   ],
   "references": [
     { "path": "../../packages/ipc-contracts" },
-    { "path": "../../packages/fs-datasource-engine" }
+    { "path": "../../packages/fs-datasource-engine" },
+    { "path": "../../services/fs-sync" }
   ]
 }

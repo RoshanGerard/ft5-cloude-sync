@@ -1,4 +1,4 @@
-import { clipboard, dialog, ipcMain, type BrowserWindow } from "electron";
+import { app, clipboard, dialog, ipcMain, shell, type BrowserWindow } from "electron";
 
 import {
   DATASOURCES_CHANNELS,
@@ -35,14 +35,29 @@ import { handleDatasourcesAdd } from "./datasources/add.js";
 import { handleDatasourcesList } from "./datasources/list.js";
 import { handlePickFilesToUpload } from "./datasources/pick-files-to-upload.js";
 import { handleDatasourcesRemove } from "./datasources/remove.js";
+import {
+  handleDialogShowOpenDialog,
+  handleDialogShowSaveDialog,
+  type OpenDialogOptionsLike,
+  type SaveDialogOptionsLike,
+} from "./dialog.js";
 import { handleFilesDownload } from "./files/download.js";
 import { handleFilesList } from "./files/list.js";
+import {
+  handleFilesOpenSavedPath,
+  handleFilesShowSavedInFolder,
+} from "./files/open-saved.js";
 import { handleFilesRemove } from "./files/remove.js";
 import { handleFilesRename } from "./files/rename.js";
 import { handleFilesSearch } from "./files/search.js";
 import { handleFilesStat } from "./files/stat.js";
 import { handleFilesUpload } from "./files/upload.js";
 import { handlePing } from "./ping.js";
+import {
+  handleGetDefaultDownloadsFolder,
+  handleGetOSDefaultDownloadsFolder,
+  handleSetDefaultDownloadsFolder,
+} from "./preferences.js";
 import { handleSyncAuthenticateCancel } from "./sync/authenticate-cancel.js";
 import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js";
 import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
@@ -218,4 +233,144 @@ export function registerIpcHandlers(
   ipcMain.handle("clipboard:writeText", (_event, text: string) => {
     clipboard.writeText(text);
   });
+
+  // add-engine-rename-download §18.1-§18.2 — preferences API for the
+  // download default-folder. The renderer's downloads-store (§20) is the
+  // durable owner via localStorage; this handler holds an in-memory
+  // mirror so callers outside the store have a uniform `window.api.*`
+  // binding. No on-disk persistence in main; the renderer reseeds the
+  // slot at startup.
+  ipcMain.handle(
+    "preferences:setDefaultDownloadsFolder",
+    (_event, folder: string) => handleSetDefaultDownloadsFolder(folder),
+  );
+  ipcMain.handle("preferences:getDefaultDownloadsFolder", () =>
+    handleGetDefaultDownloadsFolder(),
+  );
+
+  // Post-archive bug-fix follow-up — exposure for `app.getPath("downloads")`
+  // so the first-run downloads modal can pre-fill a REAL absolute path
+  // instead of the broken `"~/Downloads/ft5"` placeholder. See
+  // `preferences.ts` for the handler-side rationale.
+  ipcMain.handle("preferences:getOSDefaultDownloadsFolder", () =>
+    handleGetOSDefaultDownloadsFolder({
+      getOSDefaultDownloadsFolder: () => app.getPath("downloads"),
+    }),
+  );
+
+  // §18.3-§18.6 — download-success toast CTAs (Open + Show in folder).
+  // Thin proxies over Electron's `shell.openPath` /
+  // `shell.showItemInFolder`. The Electron `shell` import lives here;
+  // the handler modules are unit-testable under plain Node via DI.
+  ipcMain.handle("files:openSavedPath", (_event, savedPath: string) =>
+    handleFilesOpenSavedPath(savedPath, {
+      openPath: (path) => shell.openPath(path),
+    }),
+  );
+  ipcMain.handle("files:showSavedInFolder", (_event, savedPath: string) =>
+    handleFilesShowSavedInFolder(savedPath, {
+      showItemInFolder: (path) => shell.showItemInFolder(path),
+    }),
+  );
+
+  // §18.7-§18.8 — `dialog.showSaveDialog` thin pass-through. Bound to
+  // the BrowserWindow when one is available so the dialog renders as a
+  // sheet on macOS / a window-modal on Windows; falls back to the
+  // standalone signature when no window is registered yet (parity with
+  // `pickFilesToUpload`'s targetWindow handling).
+  ipcMain.handle(
+    "dialog:showSaveDialog",
+    async (_event, opts: SaveDialogOptionsLike) =>
+      handleDialogShowSaveDialog(opts, {
+        showSaveDialog: async (o) => {
+          // Electron's `SaveDialogOptions.filters` is mutable
+          // (`FileFilter[]`); our handler-side type is readonly to keep
+          // the cross-process boundary safe. Defensive copy at the seam
+          // bridges the two without loosening either side.
+          const electronOpts = {
+            ...(o.title !== undefined ? { title: o.title } : {}),
+            ...(o.defaultPath !== undefined
+              ? { defaultPath: o.defaultPath }
+              : {}),
+            ...(o.buttonLabel !== undefined
+              ? { buttonLabel: o.buttonLabel }
+              : {}),
+            ...(o.filters !== undefined
+              ? {
+                  filters: o.filters.map((f) => ({
+                    name: f.name,
+                    extensions: [...f.extensions],
+                  })),
+                }
+              : {}),
+          };
+          const result = targetWindow
+            ? await dialog.showSaveDialog(targetWindow, electronOpts)
+            : await dialog.showSaveDialog(electronOpts);
+          return {
+            canceled: result.canceled,
+            ...(result.filePath !== undefined
+              ? { filePath: result.filePath }
+              : {}),
+          };
+        },
+      }),
+  );
+
+  // add-engine-rename-download §21 prerequisite — `dialog.showOpenDialog`
+  // pass-through. Used by the first-run downloads modal's Browse button
+  // (§21) and the Settings dialog's Change… button (§22). Mirrors the
+  // showSaveDialog binding above: targetWindow-aware, defensive copy of
+  // mutable Electron fields at the seam.
+  ipcMain.handle(
+    "dialog:showOpenDialog",
+    async (_event, opts: OpenDialogOptionsLike) =>
+      handleDialogShowOpenDialog(opts, {
+        showOpenDialog: async (o) => {
+          // Electron's `OpenDialogOptions.properties` is mutable (a
+          // string-union array); our handler-side type is readonly to
+          // keep the cross-process boundary safe. Defensive copy at
+          // the seam.
+          const electronOpts = {
+            ...(o.title !== undefined ? { title: o.title } : {}),
+            ...(o.defaultPath !== undefined
+              ? { defaultPath: o.defaultPath }
+              : {}),
+            ...(o.buttonLabel !== undefined
+              ? { buttonLabel: o.buttonLabel }
+              : {}),
+            ...(o.properties !== undefined
+              ? {
+                  // Cast at the seam: Electron's properties is a
+                  // string-union literal-array type, but we accept any
+                  // readonly string[] from the renderer. The renderer
+                  // pins the vocabulary at the call site. Use
+                  // NonNullable to strip the `undefined` that
+                  // Parameters<...>["properties"] inherits, since
+                  // `exactOptionalPropertyTypes` forbids assigning
+                  // `undefined` to an optional field.
+                  properties: [...o.properties] as NonNullable<
+                    Parameters<typeof dialog.showOpenDialog>[0]["properties"]
+                  >,
+                }
+              : {}),
+            ...(o.filters !== undefined
+              ? {
+                  filters: o.filters.map((f) => ({
+                    name: f.name,
+                    extensions: [...f.extensions],
+                  })),
+                }
+              : {}),
+          };
+          const result = targetWindow
+            ? await dialog.showOpenDialog(targetWindow, electronOpts)
+            : await dialog.showOpenDialog(electronOpts);
+          return {
+            canceled: result.canceled,
+            filePaths: result.filePaths,
+          };
+        },
+      }),
+  );
 }

@@ -56,6 +56,7 @@
 import { createReadStream, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, posix as pathPosix } from "node:path";
+import { Readable, Transform } from "node:stream";
 
 import type {
   AuthIntent,
@@ -73,7 +74,13 @@ import type {
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { PreAuthConfig } from "../auth-types.js";
-import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
+import {
+  BaseDatasourceClient,
+  type BaseClientContext,
+  type ConflictPolicy,
+  type DownloadOptions,
+  type DownloadResult,
+} from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
@@ -182,7 +189,7 @@ interface DriveItem {
   lastModifiedDateTime?: string;
   file?: { mimeType?: string };
   folder?: { childCount?: number };
-  parentReference?: { path?: string; driveId?: string };
+  parentReference?: { path?: string; driveId?: string; id?: string };
 }
 
 /** Derive the engine path for a DriveItem by joining the parent path and
@@ -196,6 +203,49 @@ function driveItemToPath(item: DriveItem): string {
   const name = item.name ?? "";
   if (stripped === "" || stripped === "/") return `/${name}`;
   return `${stripped}/${name}`;
+}
+
+/**
+ * Split a filename into `{ base, ext }` for the `keep-both` suffix loop.
+ * Mirrors `path.basename` / `path.extname` semantics so candidate names
+ * preserve the extension across attempts: `foo.pdf` → `{base:"foo",
+ * ext:".pdf"}` → candidate `foo-2.pdf`. Extensionless names like
+ * `Makefile` → `{base:"Makefile", ext:""}` → candidate `Makefile-2`.
+ * Hidden files with a leading dot and no other separator (`.gitignore`)
+ * are treated as extensionless to avoid pathological
+ * `{base:"", ext:".gitignore"}` results.
+ *
+ * Local copy of the same helper Drive defines in
+ * `googledrive-client.ts` — duplicated rather than cross-imported so each
+ * strategy stays self-contained (cross-strategy imports are
+ * architecturally forbidden by the engine's module boundary).
+ */
+function splitNameForSuffix(name: string): { base: string; ext: string } {
+  const dotIdx = name.lastIndexOf(".");
+  if (dotIdx <= 0) return { base: name, ext: "" };
+  return { base: name.slice(0, dotIdx), ext: name.slice(dotIdx) };
+}
+
+/**
+ * Parse a `Content-Range: bytes <start>-<end>/<total>` response header into
+ * the `{ start, end, total }` shape used by `DownloadResult.contentRange`.
+ * Returns `undefined` for headers we can't parse, including the
+ * `unknown-range` form (`bytes [asterisk]/[total]`) which has no usable
+ * range bounds.
+ */
+function parseContentRangeHeader(
+  header: string | undefined,
+): { start: number; end: number; total: number } | undefined {
+  if (!header) return undefined;
+  const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(header.trim());
+  if (!match) return undefined;
+  const start = Number.parseInt(match[1]!, 10);
+  const end = Number.parseInt(match[2]!, 10);
+  const total = Number.parseInt(match[3]!, 10);
+  if (Number.isNaN(start) || Number.isNaN(end) || Number.isNaN(total)) {
+    return undefined;
+  }
+  return { start, end, total };
 }
 
 function mimeFamilyFromMime(mime?: string): DatasourceMimeFamily {
@@ -925,6 +975,428 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   }
 
   // -------------------------------------------------------------------------
+  // rename — PATCH /me/drive/items/{id} body { name }
+  // (add-engine-rename-download §8.1-§8.4, §8.8)
+  // -------------------------------------------------------------------------
+  //
+  // Graph treats files and folders uniformly via the `driveItem` resource.
+  // PATCH `body: { name }` renames either kind; the response carries either
+  // a `folder` or `file` facet which drives the returned entry's `kind`.
+  //
+  // Sibling-collision pre-check: `GET /me/drive/items/{parentId}/children
+  // ?$filter=name eq '<encoded>'`. The pre-check is the strategy's
+  // primary guard against duplicate-name siblings BUT cannot rule out a
+  // race — a concurrent client could insert a sibling between pre-check
+  // and PATCH. The PATCH error path therefore re-routes through
+  // `normalizeErrorImpl` which already maps Graph 409 / `nameAlreadyExists`
+  // to `tag: "conflict"`; the base then routes to
+  // `delete-failed { via: "rename" }`.
+  //
+  // Directory-overwrite refusal mirrors Drive §7.5/§7.6: probe the
+  // target's `folder` facet on the `overwrite` path and throw
+  // `unsupported` BEFORE any mutation.
+  //
+  // File-overwrite explicit deletion: when `conflictPolicy: "overwrite"`
+  // on a file, the strategy issues `DELETE /me/drive/items/{siblingId}`
+  // for any colliding sibling — using the SDK's direct `delete` rather
+  // than `this.deleteFile` so no public `deleted` event fires (single-step
+  // UX per design.md Decision 7; same convention as Drive §7.4-§7.6).
+  protected override async doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<"onedrive">> {
+    // Resolve target → driveItemId + parent metadata. The pre-check needs
+    // the parent's id; the path-form parent path lets us populate
+    // `existingPath` with a real engine path (otherwise `/<newName>`).
+    const resolved = await this.resolveRenameTarget(target);
+    const itemId = resolved.itemId;
+    const parentId = resolved.parentId;
+    const parentPath = resolved.parentPath;
+
+    if (conflictPolicy === "overwrite") {
+      // Pre-rename folder-facet probe — directory-overwrite is unsupported
+      // because recursive replacement is out of scope (parallel to Drive
+      // §7.5/§7.6). The post-rename response would tell us, but we need
+      // to refuse BEFORE issuing the PATCH.
+      let probe: DriveItem;
+      try {
+        probe = (await this.graph()
+          .api(`${GRAPH_ITEMS}/${itemId}`)
+          .get()) as DriveItem;
+      } catch (err) {
+        throw this.normalizeErrorImpl(err);
+      }
+      if (probe.folder !== undefined) {
+        throw new DatasourceError<"onedrive">({
+          tag: "unsupported",
+          datasourceType: "onedrive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message:
+            "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
+        });
+      }
+      // File-overwrite: enumerate colliding siblings and DELETE each
+      // directly (NOT via `this.deleteFile` — bypassing the public
+      // wrapper avoids emitting `deleted` events). Graph normally
+      // disallows duplicate siblings, but we tolerate the multi-result
+      // case for symmetry with Drive's handling.
+      let listResp: { value?: DriveItem[] };
+      try {
+        listResp = (await this.graph()
+          .api(this.childrenFilterUrl(parentId, newName))
+          .get()) as { value?: DriveItem[] };
+      } catch (err) {
+        throw this.normalizeErrorImpl(err);
+      }
+      for (const sibling of listResp.value ?? []) {
+        if (!sibling.id || sibling.id === itemId) continue;
+        try {
+          await this.graph().api(`${GRAPH_ITEMS}/${sibling.id}`).delete();
+        } catch (err) {
+          throw this.normalizeErrorImpl(err);
+        }
+      }
+    }
+
+    if (conflictPolicy === "fail") {
+      // Sibling pre-check: a single match short-circuits with `conflict`.
+      let listResp: { value?: DriveItem[] };
+      try {
+        listResp = (await this.graph()
+          .api(this.childrenFilterUrl(parentId, newName))
+          .get()) as { value?: DriveItem[] };
+      } catch (err) {
+        throw this.normalizeErrorImpl(err);
+      }
+      const matches = listResp.value ?? [];
+      if (matches.length > 0) {
+        const existingPath = parentPath
+          ? `${parentPath}/${newName}`
+          : `/${newName}`;
+        throw new DatasourceError<"onedrive">({
+          tag: "conflict",
+          datasourceType: "onedrive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          raw: { existingPath },
+          message: `Sibling already exists at ${existingPath}`,
+        });
+      }
+    }
+
+    // `keep-both` suffix-retry loop. Issue a children $filter query for
+    // each candidate (starting with the original `newName`); on collision,
+    // bump the suffix and retry. The original counts as attempt #1, so
+    // suffixes 2..99 cover up to 99 total attempts. On exhaustion, throw
+    // `tag: "provider-error"` per spec (engine taxonomy lacks `"other"`;
+    // wire-layer collapses provider-error → `tag: "other"`).
+    let effectiveName = newName;
+    if (conflictPolicy === "keep-both") {
+      const { base, ext } = splitNameForSuffix(newName);
+      let chosen: string | null = null;
+      for (let attempt = 1; attempt <= 99; attempt++) {
+        const candidate =
+          attempt === 1 ? newName : `${base}-${attempt}${ext}`;
+        let listResp: { value?: DriveItem[] };
+        try {
+          listResp = (await this.graph()
+            .api(this.childrenFilterUrl(parentId, candidate))
+            .get()) as { value?: DriveItem[] };
+        } catch (err) {
+          throw this.normalizeErrorImpl(err);
+        }
+        const matches = listResp.value ?? [];
+        if (matches.length === 0) {
+          chosen = candidate;
+          break;
+        }
+      }
+      if (chosen === null) {
+        throw new DatasourceError<"onedrive">({
+          tag: "provider-error",
+          datasourceType: "onedrive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message: "exhausted keep-both attempts",
+        });
+      }
+      effectiveName = chosen;
+    }
+
+    let updated: DriveItem;
+    try {
+      updated = (await this.graph()
+        .api(`${GRAPH_ITEMS}/${itemId}`)
+        .patch({ name: effectiveName })) as DriveItem;
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+
+    // Engine-facing path on the renamed entry. For path-form targets we
+    // can compute it from the original path's parent + the new name; for
+    // handle-form we synthesize `/<newName>` (same convention as
+    // search / handle-form listDirectory).
+    const isFolder = updated.folder !== undefined;
+    const kind: "file" | "folder" = isFolder ? "folder" : "file";
+    const mimeFamily: DatasourceMimeFamily = isFolder
+      ? "folder"
+      : mimeFamilyFromMime(updated.file?.mimeType);
+    let entryPath: string;
+    if (target.kind === "path") {
+      const segs = target.path
+        .replace(/^\/+/, "")
+        .split("/")
+        .filter((s) => s.length > 0);
+      segs.pop();
+      const parent = segs.length === 0 ? "" : `/${segs.join("/")}`;
+      entryPath =
+        parent === "" ? `/${effectiveName}` : `${parent}/${effectiveName}`;
+    } else {
+      entryPath = `/${effectiveName}`;
+    }
+    const providerMetadata: ProviderMetadata<"onedrive"> = {
+      driveItemId: updated.id ?? itemId,
+      ...(updated.file?.mimeType ? { mimeType: updated.file.mimeType } : {}),
+      ...(updated.parentReference?.driveId
+        ? { driveId: updated.parentReference.driveId }
+        : {}),
+    };
+    const modifiedAt = updated.lastModifiedDateTime
+      ? new Date(updated.lastModifiedDateTime).getTime()
+      : 0;
+    const entry: DatasourceFileEntry<"onedrive"> = {
+      path: entryPath,
+      handle: updated.id ?? itemId,
+      name: effectiveName,
+      kind,
+      ...(typeof updated.size === "number" ? { size: updated.size } : {}),
+      modifiedAt,
+      mimeFamily,
+      providerMetadata,
+    };
+    return entry;
+  }
+
+  /**
+   * Resolve a rename target into `{ itemId, parentId, parentPath }`. For
+   * path-form targets we derive `parentPath` from the input path (so
+   * conflict's `existingPath` can be a real engine path); for handle-form
+   * `parentPath` is "" (the conflict raw payload uses `/<newName>` in
+   * that case).
+   *
+   * Both forms read `parentReference.id` from the resolved DriveItem.
+   * Graph populates this field on every item-resolution response (root's
+   * children, item-by-id, item-by-path), so it is the canonical parent
+   * identifier without an additional round-trip.
+   */
+  private async resolveRenameTarget(
+    target: Target,
+  ): Promise<{ itemId: string; parentId: string; parentPath: string }> {
+    const url = this.resolveTargetUrl(target, "");
+    let item: DriveItem;
+    try {
+      item = (await this.graph().api(url).get()) as DriveItem;
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    const itemId = item.id ?? "";
+    const parentId = item.parentReference?.id ?? "";
+    const parentPath =
+      target.kind === "path"
+        ? (() => {
+            const segs = target.path
+              .replace(/^\/+/, "")
+              .split("/")
+              .filter((s) => s.length > 0);
+            segs.pop();
+            return segs.length === 0 ? "" : `/${segs.join("/")}`;
+          })()
+        : "";
+    return { itemId, parentId, parentPath };
+  }
+
+  /**
+   * Build the `/me/drive/items/{parentId}/children?$filter=name eq '<v>'`
+   * URL used by the rename sibling pre-check. The `$filter` value is
+   * percent-encoded so embedded spaces / special characters do not
+   * terminate the query string (Graph does its own decoding before
+   * OData parsing, so single-quote doubling for OData literals AND
+   * percent-encoding for URL-safety stack cleanly).
+   *
+   * Single quotes inside the name are doubled per OData's string-literal
+   * rules BEFORE percent-encoding; the encoded result decodes back to
+   * `''` (one OData-escaped quote pair) on the server.
+   */
+  private childrenFilterUrl(parentId: string, name: string): string {
+    const odataEscaped = name.replace(/'/g, "''");
+    const filter = `name eq '${odataEscaped}'`;
+    return `${GRAPH_ITEMS}/${parentId}/children?$filter=${encodeURIComponent(
+      filter,
+    )}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // downloadFile — fetch GET /me/drive/items/{id}/content
+  // (add-engine-rename-download §8.5-§8.7)
+  // -------------------------------------------------------------------------
+  //
+  // The Graph SDK's `.api(...).get()` returns parsed JSON, not a Node
+  // `Readable` / Web `ReadableStream`. We therefore use raw `fetch` against
+  // Graph's REST equivalent (`https://graph.microsoft.com/v1.0/me/drive/
+  // items/{id}/content`), forwarding the consumer's AbortSignal directly
+  // to fetch's `signal` so an aborted in-flight request rejects with
+  // `AbortError`. The Web ReadableStream returned by `fetch` is converted
+  // to a Node `Readable` via `Readable.fromWeb(...)`.
+  //
+  // The byte-counting wrapper is a `Transform` (NOT a PassThrough +
+  // `data` listener) — the same timing-race avoidance Drive's §7.7
+  // describes. The Transform's `_transform` invokes
+  // `options.onProgress?.(...)` AND `this.emitDownloading(path, loaded,
+  // total)` per chunk so consumer callback + bus stay in lockstep.
+  //
+  // Auth-expired surfacing: a 401 surfaced before the body opens is
+  // mapped by `normalizeErrorImpl` (Graph 401 → `tag: "auth-expired"`)
+  // and routed by the base to `download-failed`. A mid-stream 401 (the
+  // body opens 200 then errors) is also mapped to `auth-expired` —
+  // raised by the underlying ReadableStream's error and caught by the
+  // wrapper's source-error listener.
+  protected override async doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult> {
+    // Resolve target to a driveItemId. Path-form targets walk the cache
+    // first (cache hit avoids the round-trip); handle-form passes
+    // through directly. The download URL itself uses item-id form so
+    // path renames mid-flight do not invalidate the URL.
+    const itemId = await this.resolveTargetItemId(target);
+    const path = target.kind === "path" ? target.path : target.handle;
+
+    const downloadUrl = `https://graph.microsoft.com/v1.0/me/drive/items/${itemId}/content`;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.requireCreds().accessToken}`,
+    };
+    if (options.rangeStart !== undefined && options.rangeStart > 0) {
+      headers.Range = `bytes=${options.rangeStart}-`;
+    }
+    let resp: Response;
+    try {
+      resp = await this.fetchImpl(downloadUrl, {
+        method: "GET",
+        headers,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    if (!resp.ok) {
+      // Graph error envelope as JSON. Parse and surface via
+      // normalizeErrorImpl so the standard taxonomy applies.
+      let bodyJson: { error?: { code?: string; message?: string } } | undefined;
+      try {
+        bodyJson = (await resp.json()) as {
+          error?: { code?: string; message?: string };
+        };
+      } catch {
+        bodyJson = undefined;
+      }
+      throw this.normalizeErrorImpl({
+        statusCode: resp.status,
+        ...(bodyJson?.error?.code ? { code: bodyJson.error.code } : {}),
+        ...(bodyJson?.error?.message
+          ? { message: bodyJson.error.message }
+          : {}),
+        body: bodyJson,
+      });
+    }
+    const respHeaders: Record<string, string> = {};
+    resp.headers.forEach((v, k) => {
+      respHeaders[k.toLowerCase()] = v;
+    });
+    const contentLengthHeader = respHeaders["content-length"];
+    const contentLength =
+      contentLengthHeader !== undefined && contentLengthHeader !== ""
+        ? Number.parseInt(contentLengthHeader, 10)
+        : null;
+    const contentRange = parseContentRangeHeader(respHeaders["content-range"]);
+
+    // Convert fetch's Web ReadableStream → Node Readable. `Readable.fromWeb`
+    // is supported on Node 18+ (this codebase's target).
+    if (resp.body === null) {
+      throw this.normalizeErrorImpl({
+        message: "graph-download-missing-body",
+        statusCode: resp.status,
+      });
+    }
+    const sourceStream = Readable.fromWeb(
+      resp.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>,
+    );
+
+    // Wrap source in a `Transform` so the byte-counting hook is INLINE
+    // with the data flow. Mirrors Drive §7.7's pattern: forking a
+    // separate `data` listener races with the consumer's
+    // attach-listeners step; a `Transform` pushes each chunk forward
+    // exactly once.
+    let loaded = 0;
+    const total: number | null = contentLength;
+    const counter = new Transform({
+      transform: (chunk: Buffer, _enc, cb) => {
+        loaded += chunk.length;
+        try {
+          options.onProgress?.(loaded, total);
+        } catch {
+          // Consumer-callback errors must not break the stream pipeline.
+        }
+        this.emitDownloading(path, loaded, total);
+        cb(null, chunk);
+      },
+    });
+    // Forward errors from the source stream so the wrapper transitions
+    // to errored state and the base's `error` listener fires on a
+    // mid-stream provider error (e.g., synthesized 401, network drop).
+    sourceStream.on("error", (err) => {
+      const normalized = this.normalizeErrorImpl(err);
+      counter.destroy(normalized);
+    });
+    sourceStream.pipe(counter);
+
+    return {
+      stream: counter,
+      contentLength,
+      ...(contentRange ? { contentRange } : {}),
+    };
+  }
+
+  /**
+   * Resolve a `Target` to a driveItemId for the download URL. Path-form
+   * targets consult the LRU cache (the `resolveTargetUrl` cache lookup
+   * is duplicated here so we get the id directly rather than a URL
+   * string). On cache miss, a `files.get` round-trip resolves the path
+   * and seeds the cache for subsequent calls.
+   */
+  private async resolveTargetItemId(target: Target): Promise<string> {
+    if (target.kind === "handle") return target.handle;
+    const cached = this.pathHandleCache.get(target.path);
+    if (cached !== undefined) {
+      this.pathHandleCache.delete(target.path);
+      this.pathHandleCache.set(target.path, cached);
+      return cached;
+    }
+    let item: DriveItem;
+    try {
+      item = (await this.graph()
+        .api(pathUrl(target.path, ""))
+        .get()) as DriveItem;
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    const id = item.id ?? "";
+    if (id) this.cachePathHandle(target.path, id);
+    return id;
+  }
+
+  // -------------------------------------------------------------------------
   // getQuota — read /me/drive and return {used, quota}
   // -------------------------------------------------------------------------
 
@@ -1080,6 +1552,16 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     // quota-aware UX.
     if (code === "quotaLimitReached") {
       return mk("provider-error", false);
+    }
+    // AbortError — `fetch` propagates an aborted signal as an error with
+    // `name: "AbortError"` (DOMException-like) regardless of any other
+    // shape on the error. Map it to `tag: "cancelled"` BEFORE the
+    // network-error branch so an aborted in-flight request that ALSO
+    // exposes a network-y `code` does not get mis-classified as
+    // transient. The base routes `cancelled` to the `download-cancelled`
+    // bus event per design.md Decision 3 (mirrors Drive §7.10).
+    if (name === "AbortError") {
+      return mk("cancelled", false, { message: "download cancelled" });
     }
     // network-error — Node fetch / undici surface these as FetchError or the
     // underlying socket code bubbles up directly.

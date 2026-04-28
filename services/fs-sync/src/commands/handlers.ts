@@ -34,6 +34,16 @@ import { makeFilesListHandler } from "./files-list.js";
 import { makeFilesStatHandler } from "./files-stat.js";
 import { makeFilesSearchHandler } from "./files-search.js";
 import { makeFilesRemoveHandler } from "./files-remove.js";
+import { makeFilesRenameHandler } from "./files-rename.js";
+import {
+  createDefaultFilesDownloadDeps,
+  makeFilesDownloadHandler,
+  makeSyncCancelDownloadHandler,
+  type EngineBusSubscriber,
+  type HashComputer,
+} from "./files-download.js";
+import { makeDownloadsListActiveHandler } from "./downloads-list-active.js";
+import type { DownloadRegistry } from "../downloads/registry.js";
 import type { ServiceConfigStore } from "../config/service-config-store.js";
 import type { AuthCorrelationStore } from "../state/auth-correlation-store.js";
 import type { OAuthLoopbackBroker } from "../oauth/loopback-broker.js";
@@ -66,6 +76,19 @@ export interface HandlersDeps {
   readonly engineContext?: EngineContext;
   readonly loopbackBroker?: OAuthLoopbackBroker;
   readonly credentialStore?: CredentialStore;
+  /**
+   * Download-side dependencies — added by add-engine-rename-download §13.
+   * The `files:download` handler needs the in-memory `DownloadRegistry`,
+   * the engine event bus (for the per-handler-call subscription that
+   * drives the §13.25-§13.26 derived-not-relayed IPC events), and a
+   * hash computer for the post-download integrity check. When ANY of
+   * the trio is absent, `files:download` and `sync:cancel-download` are
+   * omitted from the returned map (mirrors the auth-bundle pattern
+   * above) so existing tests that pre-date §13 keep compiling.
+   */
+  readonly downloadRegistry?: DownloadRegistry;
+  readonly engineBus?: EngineBusSubscriber;
+  readonly hashComputer?: HashComputer;
 }
 
 export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
@@ -311,6 +334,40 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
           }),
           "files:remove": makeFilesRemoveHandler({
             resolveClient: deps.resolveClient,
+          }),
+          "files:rename": makeFilesRenameHandler({
+            resolveClient: deps.resolveClient,
+          }),
+        }
+      : {}),
+    // files:download + sync:cancel-download + downloads:list-active —
+    // wired only when the full download-bundle is supplied
+    // (resolveClient + downloadRegistry + engineBus + hashComputer).
+    // Production bootstrap supplies all four; pre-§13 tests omit them
+    // and the keys simply fall out of the map. `downloads:list-active`
+    // strictly only needs `downloadRegistry`, but the bundle stays
+    // atomic — wiring it any time the registry is present would imply
+    // half a feature; keep it gated with the rest per design.md
+    // Decision 4.
+    ...(deps.resolveClient &&
+    deps.downloadRegistry &&
+    deps.engineBus &&
+    deps.hashComputer
+      ? {
+          "files:download": makeFilesDownloadHandler(
+            createDefaultFilesDownloadDeps({
+              resolveClient: deps.resolveClient,
+              registry: deps.downloadRegistry,
+              fsSyncBus: deps.bus,
+              engineBus: deps.engineBus,
+              hash: deps.hashComputer,
+            }),
+          ),
+          "sync:cancel-download": makeSyncCancelDownloadHandler({
+            registry: deps.downloadRegistry,
+          }),
+          "downloads:list-active": makeDownloadsListActiveHandler({
+            registry: deps.downloadRegistry,
           }),
         }
       : {}),

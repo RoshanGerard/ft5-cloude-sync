@@ -1,13 +1,9 @@
 import type {
   FileEntry,
-  FilesDownloadRequest,
-  FilesDownloadResponse,
   FilesListRequest,
   FilesListResponse,
   FilesRemoveRequest,
   FilesRemoveResponse,
-  FilesRenameRequest,
-  FilesRenameResponse,
   FilesSearchRequest,
   FilesSearchResponse,
   FilesStatRequest,
@@ -30,9 +26,6 @@ export const SEARCH_RESULT_CEILING = 50;
 
 /** Per-directory seed ceiling enforced by design.md Decision 10. */
 const DIRECTORY_SIZE_CEILING = 300;
-
-/** Fake "saved" root for download() responses. Not a real filesystem path. */
-const MOCK_DOWNLOADS_ROOT = "/tmp/ft5-mock-downloads";
 
 // Deterministic timestamps — tests asserting response shape must not hit a
 // fresh `Date.now()` on every reset.
@@ -551,36 +544,6 @@ export function stat(req: FilesStatRequest): FileEntry {
   return cloneEntry(found);
 }
 
-export function rename(req: FilesRenameRequest): FilesRenameResponse {
-  const tree = trees[req.datasourceId];
-  if (!tree) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
-  const target = findEntry(tree, req.path);
-  if (!target) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
-  if (target.kind === "directory") {
-    throw new Error("folder rename is not supported in this version");
-  }
-
-  // Remove the old entry from its parent listing.
-  const siblings = tree.byParent.get(target.parentPath);
-  if (!siblings) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
-  const idx = siblings.findIndex((e) => e.path === target.path);
-  if (idx === -1) {
-    throw new Error(`not found: ${req.datasourceId}:${req.path}`);
-  }
-
-  const newPath = joinPath(target.parentPath, req.newName);
-  const renamed: FileEntry = {
-    ...target,
-    id: `${req.datasourceId}::${newPath}`,
-    name: req.newName,
-    path: newPath,
-    mimeFamily: mimeFamilyFor(req.newName),
-    mimeType: mimeTypeFor(req.newName),
-  };
-  siblings[idx] = renamed;
-  return { entry: cloneEntry(renamed) };
-}
-
 export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
   const tree = trees[req.datasourceId];
   const results: Array<
@@ -731,19 +694,6 @@ export function search(req: FilesSearchRequest): FilesSearchResponse {
     ok: true,
     value: { entries: result.entries, truncated: result.truncated },
   };
-}
-
-export function download(req: FilesDownloadRequest): FilesDownloadResponse {
-  const tree = trees[req.datasourceId];
-  if (!tree) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
-  const target = findEntry(tree, req.path);
-  if (!target) throw new Error(`not found: ${req.datasourceId}:${req.path}`);
-  if (target.kind !== "file") {
-    throw new Error("only file entries can be downloaded");
-  }
-  const basename = target.name;
-  const savedPath = req.toPath ?? `${MOCK_DOWNLOADS_ROOT}/${basename}`;
-  return { savedPath };
 }
 
 export function enumerateSeededDirectorySizes(): Array<{

@@ -46,9 +46,21 @@ type ExposedApi = {
     remove: (req: unknown) => Promise<unknown>;
     download: (req: unknown) => Promise<unknown>;
     upload: (req: unknown) => Promise<unknown>;
+    openSavedPath: (savedPath: string) => Promise<void>;
+    showSavedInFolder: (savedPath: string) => Promise<void>;
+    onActiveDownloadsHydrate: (
+      callback: (jobs: readonly unknown[]) => void,
+    ) => () => void;
   };
   clipboard: {
     writeText: (text: string) => Promise<void>;
+  };
+  preferences: {
+    setDefaultDownloadsFolder: (folder: string) => Promise<void>;
+    getDefaultDownloadsFolder: () => Promise<string | null>;
+  };
+  dialog: {
+    showSaveDialog: (opts: unknown) => Promise<unknown>;
   };
 };
 
@@ -79,8 +91,10 @@ describe("preload exposed api", () => {
     expect(Object.keys(exposed).sort()).toEqual([
       "clipboard",
       "datasources",
+      "dialog",
       "files",
       "ping",
+      "preferences",
       "sync",
       "webUtils",
     ]);
@@ -90,6 +104,8 @@ describe("preload exposed api", () => {
     expect(typeof exposed.clipboard).toBe("object");
     expect(typeof exposed.sync).toBe("object");
     expect(typeof exposed.webUtils).toBe("object");
+    expect(typeof exposed.preferences).toBe("object");
+    expect(typeof exposed.dialog).toBe("object");
   });
 
   it("ping() invokes ipcRenderer.invoke('ping') with no other args and returns its resolved value", async () => {
@@ -451,11 +467,16 @@ describe("preload exposed api", () => {
 
     it("rename(req) delegates to ipcRenderer.invoke('files:rename', req)", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      const response = { entry: { id: "e1" } };
+      const response = { ok: true as const, value: { entry: { id: "e1" } } };
       invokeMock.mockResolvedValue(response);
 
       const exposed = await loadExposed();
-      const req = { datasourceId: "ds-1", path: "/a.txt", newName: "b.txt" };
+      const req = {
+        datasourceId: "ds-1",
+        path: "/a.txt",
+        newName: "b.txt",
+        conflictPolicy: "fail" as const,
+      };
       const result = await exposed.files.rename(req);
 
       expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -479,11 +500,14 @@ describe("preload exposed api", () => {
 
     it("download(req) delegates to ipcRenderer.invoke('files:download', req)", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      const response = { savedPath: "/tmp/a.txt" };
+      const response = {
+        ok: true as const,
+        value: { savedPath: "/tmp/a.txt", bytes: 0 },
+      };
       invokeMock.mockResolvedValue(response);
 
       const exposed = await loadExposed();
-      const req = { datasourceId: "ds-1", path: "/a.txt" };
+      const req = { datasourceId: "ds-1", path: "/a.txt", toPath: "/tmp/a.txt" };
       const result = await exposed.files.download(req);
 
       expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -508,6 +532,179 @@ describe("preload exposed api", () => {
       expect(invokeMock).toHaveBeenCalledTimes(1);
       expect(invokeMock.mock.calls[0]).toEqual([FILES_CHANNELS.upload, req]);
       expect(result).toBe(response);
+    });
+
+    // add-engine-rename-download §18.3-§18.4: openSavedPath delegates the
+    // user's "Open" CTA on the download-success toast to the main process,
+    // which then invokes `shell.openPath(savedPath)`.
+    it("openSavedPath(savedPath) delegates to ipcRenderer.invoke('files:openSavedPath', savedPath)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      invokeMock.mockResolvedValue(undefined);
+
+      const exposed = await loadExposed();
+      const savedPath = "/Users/alice/Downloads/ft5/welcome.pdf";
+      await exposed.files.openSavedPath(savedPath);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        "files:openSavedPath",
+        savedPath,
+      ]);
+    });
+
+    // add-engine-rename-download §18.5-§18.6: showSavedInFolder delegates
+    // the toast's "Show in folder" link to the main process, which then
+    // invokes `shell.showItemInFolder(savedPath)`.
+    it("showSavedInFolder(savedPath) delegates to ipcRenderer.invoke('files:showSavedInFolder', savedPath)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      invokeMock.mockResolvedValue(undefined);
+
+      const exposed = await loadExposed();
+      const savedPath = "/Users/alice/Downloads/ft5/welcome.pdf";
+      await exposed.files.showSavedInFolder(savedPath);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        "files:showSavedInFolder",
+        savedPath,
+      ]);
+    });
+
+    // add-engine-rename-download §18.9-§18.10: onActiveDownloadsHydrate is
+    // a one-way main → renderer event channel that fires once per app
+    // session with the snapshot returned by `downloads:list-active`. The
+    // preload registers ONE listener per call and returns an unsubscribe
+    // that removes that exact listener — same pattern as the existing
+    // `datasources.onEvent` and `sync.onEvent` exposures.
+    it("onActiveDownloadsHydrate registers a listener on 'files:hydrate-active-downloads' and returns an unsubscribe that removes that listener", async () => {
+      const onMock = ipcRenderer.on as unknown as ReturnType<typeof vi.fn>;
+      const removeListenerMock =
+        ipcRenderer.removeListener as unknown as ReturnType<typeof vi.fn>;
+
+      const exposed = await loadExposed();
+      const callback = vi.fn();
+
+      const unsubscribe = exposed.files.onActiveDownloadsHydrate(callback);
+
+      expect(onMock).toHaveBeenCalledTimes(1);
+      const [channel, listener] = onMock.mock.calls[0]!;
+      expect(channel).toBe("files:hydrate-active-downloads");
+      expect(typeof listener).toBe("function");
+
+      // Simulate delivery: the preload listener strips the IpcRendererEvent
+      // and forwards the payload to the caller's callback.
+      const sampleJobs = [
+        {
+          downloadJobId: "dl-1",
+          datasourceId: "ds-1",
+          sourcePath: "/a.txt",
+          targetPath: "/tmp/a.txt",
+          bytesDownloaded: 100,
+          contentLength: 1000,
+          startedAt: 1700000000000,
+        },
+      ];
+      (
+        listener as (ev: unknown, payload: readonly unknown[]) => void
+      )({}, sampleJobs);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(sampleJobs);
+
+      // Unsubscribe must remove the SAME listener instance.
+      expect(typeof unsubscribe).toBe("function");
+      unsubscribe();
+      expect(removeListenerMock).toHaveBeenCalledTimes(1);
+      expect(removeListenerMock.mock.calls[0]).toEqual([
+        "files:hydrate-active-downloads",
+        listener,
+      ]);
+    });
+  });
+
+  // add-engine-rename-download §18.1-§18.2: preferences API for the
+  // download default-folder. The preload routes through main IPC to keep
+  // the surface uniform; the main process holds an in-memory string slot
+  // that the renderer's localStorage-backed downloads-store mirrors at
+  // the boundary. Renderer is the durable owner per design V4.
+  describe("preferences surface", () => {
+    it("setDefaultDownloadsFolder(folder) delegates to ipcRenderer.invoke('preferences:setDefaultDownloadsFolder', folder)", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      invokeMock.mockResolvedValue(undefined);
+
+      const exposed = await loadExposed();
+      const folder = "/Users/alice/Downloads/ft5";
+      await exposed.preferences.setDefaultDownloadsFolder(folder);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        "preferences:setDefaultDownloadsFolder",
+        folder,
+      ]);
+    });
+
+    it("getDefaultDownloadsFolder() delegates to ipcRenderer.invoke('preferences:getDefaultDownloadsFolder') with no second arg and returns the resolved value", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      invokeMock.mockResolvedValue("/Users/alice/Downloads/ft5");
+
+      const exposed = await loadExposed();
+      const result = await exposed.preferences.getDefaultDownloadsFolder();
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        "preferences:getDefaultDownloadsFolder",
+      ]);
+      expect(result).toBe("/Users/alice/Downloads/ft5");
+    });
+
+    it("getDefaultDownloadsFolder() returns null when no folder is set", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      invokeMock.mockResolvedValue(null);
+
+      const exposed = await loadExposed();
+      const result = await exposed.preferences.getDefaultDownloadsFolder();
+
+      expect(result).toBeNull();
+    });
+  });
+
+  // add-engine-rename-download §18.7-§18.8: dialog.showSaveDialog is a
+  // thin pass-through over Electron's `dialog.showSaveDialog` that the
+  // download orchestrator calls when Shift+Click or Always-ask is on.
+  // The preload forwards the renderer-supplied options object verbatim;
+  // the main-process handler attaches the BrowserWindow ref + invokes
+  // Electron.
+  describe("dialog surface", () => {
+    it("showSaveDialog(opts) delegates to ipcRenderer.invoke('dialog:showSaveDialog', opts) and returns the resolved value", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { canceled: false, filePath: "/tmp/welcome.pdf" };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const opts = {
+        defaultPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        title: "Save file",
+      };
+      const result = await exposed.dialog.showSaveDialog(opts);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        "dialog:showSaveDialog",
+        opts,
+      ]);
+      expect(result).toBe(response);
+    });
+
+    it("showSaveDialog returns { canceled: true } when the user dismisses", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response = { canceled: true, filePath: undefined };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const result = await exposed.dialog.showSaveDialog({
+        defaultPath: "/tmp/x.pdf",
+      });
+
+      expect(result).toEqual(response);
     });
   });
 });

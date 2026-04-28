@@ -37,16 +37,25 @@ type FilesEnvelope<T> =
 // ---- Tests ----------------------------------------------------------------
 
 describe("sync-service files:* command contract", () => {
-  it("CommandMap registers all four files:* commands", () => {
+  it("CommandMap registers every files:* command", () => {
     expectTypeOf<CommandMap["files:list"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:stat"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:search"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:remove"]>().not.toBeNever();
+    expectTypeOf<CommandMap["files:rename"]>().not.toBeNever();
+    expectTypeOf<CommandMap["files:download"]>().not.toBeNever();
+    expectTypeOf<CommandMap["sync:cancel-download"]>().not.toBeNever();
   });
 
-  it("FilesErrorTag is the exact four-variant union", () => {
+  it("FilesErrorTag is the exact seven-variant union (Conflict + Cancelled)", () => {
     expectTypeOf<FilesErrorTag>().toEqualTypeOf<
-      "auth-revoked" | "disconnected" | "rate-limited" | "other"
+      | "auth-revoked"
+      | "disconnected"
+      | "rate-limited"
+      | "other"
+      | "invalid-datasource"
+      | "conflict"
+      | "cancelled"
     >();
   });
 
@@ -55,7 +64,9 @@ describe("sync-service files:* command contract", () => {
       | "files:list"
       | "files:stat"
       | "files:search"
-      | "files:remove";
+      | "files:remove"
+      | "files:rename"
+      | "files:download";
     expectTypeOf<ExpectedFiles>().toMatchTypeOf<CommandName>();
   });
 
@@ -65,6 +76,9 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<"files:stat">().toMatchTypeOf<Names>();
     expectTypeOf<"files:search">().toMatchTypeOf<Names>();
     expectTypeOf<"files:remove">().toMatchTypeOf<Names>();
+    expectTypeOf<"files:rename">().toMatchTypeOf<Names>();
+    expectTypeOf<"files:download">().toMatchTypeOf<Names>();
+    expectTypeOf<"sync:cancel-download">().toMatchTypeOf<Names>();
   });
 
   // -- files:list -----------------------------------------------------------
@@ -155,6 +169,75 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<
       CommandError<"files:remove">
     >().toEqualTypeOf<FilesCommandErrorShape>();
+  });
+
+  // -- files:rename ---------------------------------------------------------
+
+  it("files:rename params carry path / handle? / newName / conflictPolicy (no kind — Decision 1)", () => {
+    expectTypeOf<CommandParams<"files:rename">>().toEqualTypeOf<{
+      readonly datasourceId: string;
+      readonly path: string;
+      readonly handle?: string;
+      readonly newName: string;
+      readonly conflictPolicy: "fail" | "overwrite" | "keep-both";
+    }>();
+  });
+
+  it("files:rename result is { entry: FileEntry }", () => {
+    expectTypeOf<CommandResult<"files:rename">>().toEqualTypeOf<{
+      readonly entry: FileEntry;
+    }>();
+  });
+
+  it("files:rename error carries the tagged envelope error shape (existingPath populated when tag === 'conflict')", () => {
+    expectTypeOf<
+      CommandError<"files:rename">
+    >().toEqualTypeOf<FilesCommandErrorShape>();
+  });
+
+  it("FilesCommandErrorShape.existingPath is a flat-optional string (Decision 7)", () => {
+    // The field exists on every envelope but is only populated for
+    // tag: "conflict" — flat-optional shape (NOT a discriminated union)
+    // mirrors retryAfterMs.
+    type Shape = FilesCommandErrorShape;
+    expectTypeOf<Shape["existingPath"]>().toEqualTypeOf<string | undefined>();
+  });
+
+  // -- files:download (add-engine-rename-download §13) ---------------------
+
+  it("files:download params carry datasourceId / path / required toPath", () => {
+    expectTypeOf<CommandParams<"files:download">>().toEqualTypeOf<{
+      readonly datasourceId: string;
+      readonly path: string;
+      readonly toPath: string;
+    }>();
+  });
+
+  it("files:download result is { savedPath, bytes }", () => {
+    expectTypeOf<CommandResult<"files:download">>().toEqualTypeOf<{
+      readonly savedPath: string;
+      readonly bytes: number;
+    }>();
+  });
+
+  it("files:download error carries the tagged envelope error shape", () => {
+    expectTypeOf<
+      CommandError<"files:download">
+    >().toEqualTypeOf<FilesCommandErrorShape>();
+  });
+
+  // -- sync:cancel-download (add-engine-rename-download §13.15) -----------
+
+  it("sync:cancel-download params are { downloadJobId }", () => {
+    expectTypeOf<CommandParams<"sync:cancel-download">>().toEqualTypeOf<{
+      readonly downloadJobId: string;
+    }>();
+  });
+
+  it("sync:cancel-download result is { cancelled: boolean } (idempotent)", () => {
+    expectTypeOf<CommandResult<"sync:cancel-download">>().toEqualTypeOf<{
+      readonly cancelled: boolean;
+    }>();
   });
 
   // -- Envelope shape --------------------------------------------------------

@@ -25,13 +25,23 @@
 //     for S3 is the S3 key itself (post-strip), so callers that pass a `handle`
 //     Target in a later call skip the strip.
 //
-//   - `normalizeError`. Auth errors (403, AccessDenied, InvalidAccessKeyId,
+//   - `normalizeError`. Most auth errors (403, AccessDenied, InvalidAccessKeyId,
 //     SignatureDoesNotMatch) are tagged `auth-revoked`, NOT `auth-expired`.
 //     Static keys cannot refresh, so the base's `withRefresh` path MUST never
-//     fire for this strategy. Routing all auth-flavored errors to
-//     `auth-revoked` short-circuits the retry/refresh loop entirely — the
-//     defensive `refreshTokenImpl` throw is a safety net that will (by this
-//     design) never actually fire.
+//     fire for those. Routing to `auth-revoked` short-circuits the
+//     retry/refresh loop entirely — the defensive `refreshTokenImpl` throw is
+//     a safety net that will (by this design) never actually fire for the
+//     static-key case.
+//
+//     ExpiredToken is the exception: it manifests for STS temporary
+//     credentials (which carry a `sessionToken` and have a finite TTL). The
+//     strategy itself still cannot refresh those tokens (no refresh-grant
+//     mechanism is wired here), but mid-stream the error is surfaced as
+//     `auth-expired` so fs-sync's download retry loop (add-engine-rename-
+//     download Decision 3) can drive its `withRefresh` cycle. Per
+//     `add-engine-rename-download` §9.18: `ExpiredToken` → `tag:
+//     auth-expired`. `refreshTokenImpl` still throws `auth-revoked` to halt
+//     the loop if it fires anyway.
 //
 //   - `deleteDirectory` and `getQuota` are both unsupported (base's
 //     `deleteDirectory` always throws; `getQuota` throws via the descriptor
@@ -39,9 +49,12 @@
 
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
+import { Readable, Transform } from "node:stream";
 
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -65,7 +78,13 @@ import type {
 import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { PreAuthConfig } from "../auth-types.js";
-import { BaseDatasourceClient, type BaseClientContext } from "../base-client.js";
+import {
+  BaseDatasourceClient,
+  type BaseClientContext,
+  type ConflictPolicy,
+  type DownloadOptions,
+  type DownloadResult,
+} from "../base-client.js";
 import {
   type CredentialShapeValidator,
   type ProviderFactoryFn,
@@ -98,6 +117,43 @@ export function keyToPath(key: string): string {
 function targetToKey(target: Target): string {
   if (target.kind === "path") return pathToKey(target.path);
   return target.handle;
+}
+
+/**
+ * Split a filename into `{ base, ext }` for the `keep-both` suffix loop.
+ * Mirrors the same helper in `googledrive-client.ts` (kept local because the
+ * §9 implementation must not touch other strategy files). `foo.pdf` →
+ * `{base:"foo", ext:".pdf"}` → candidate `foo-2.pdf`. Extensionless names
+ * like `Makefile` → `{base:"Makefile", ext:""}`. Hidden files like
+ * `.gitignore` (leading dot, no other dots) are treated as extensionless to
+ * avoid `{base:"", ext:".gitignore"}`.
+ */
+function splitNameForSuffix(name: string): { base: string; ext: string } {
+  const dotIdx = name.lastIndexOf(".");
+  if (dotIdx <= 0) return { base: name, ext: "" };
+  return { base: name.slice(0, dotIdx), ext: name.slice(dotIdx) };
+}
+
+/**
+ * Parse an S3 `Content-Range` response field (RFC 7233 `bytes <start>-<end>/<total>`)
+ * into the engine's `{ start, end, total }` shape. Returns `undefined` for
+ * unparseable input. Matches the convention used by the Drive / OneDrive
+ * strategies' `parseContentRangeHeader`; kept local to avoid cross-strategy
+ * imports.
+ */
+function parseContentRangeFromS3(
+  header: string | undefined,
+): { start: number; end: number; total: number } | undefined {
+  if (!header) return undefined;
+  const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(header.trim());
+  if (!match) return undefined;
+  const start = Number.parseInt(match[1]!, 10);
+  const end = Number.parseInt(match[2]!, 10);
+  const total = Number.parseInt(match[3]!, 10);
+  if (Number.isNaN(start) || Number.isNaN(end) || Number.isNaN(total)) {
+    return undefined;
+  }
+  return { start, end, total };
 }
 
 /** MIME family inference. S3 does not return a mime type on list/head in
@@ -651,6 +707,339 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
   }
 
   // -------------------------------------------------------------------------
+  // rename — CopyObject + DeleteObject for files; folder targets unsupported
+  // -------------------------------------------------------------------------
+  //
+  // S3 has no native rename. The strategy's introspection helper distinguishes
+  // file vs virtual-folder vs not-found before branching:
+  //
+  //   - HeadObject(key) 200 → file → CopyObject + DeleteObject path
+  //   - HeadObject(key) 404 then ListObjectsV2(Prefix=key+"/", MaxKeys=1) returns
+  //     ≥1 key → virtual folder → throw `unsupported` (S3 folder rename is
+  //     out of scope this version: a recursive copy + delete walk is required)
+  //   - both 404 → throw `not-found`
+  //
+  // Decision 2 (design.md): when CopyObject succeeds but the subsequent
+  // DeleteObject fails, the rename SUCCEEDED from the user's perspective —
+  // the new key has the renamed content. The orphan old key is silently
+  // tolerated; the bus emits exactly one `entry-renamed` regardless of
+  // post-copy delete failure.
+  //
+  // S3's CopyObject is naturally OVERWRITING (unlike Drive/OneDrive's PATCH
+  // path which needs explicit pre-delete). For `conflictPolicy: "overwrite"`
+  // on a file we simply proceed. For `conflictPolicy: "fail"` we issue a
+  // pre-flight `HeadObject` for the target and short-circuit with `conflict`
+  // if it returns 200. For `keep-both` we loop HeadObject probes for `name`,
+  // `name-2`, `name-3`, … up to 99 attempts, then throw `provider-error`
+  // (engine taxonomy lacks `"other"`; the wire layer collapses it to
+  // `tag: "other"` for the renderer per Drive §7.14 precedent).
+  //
+  // For directory targets + `conflictPolicy === "overwrite"`, the strategy
+  // refuses with the same "directory rename with conflictPolicy 'overwrite'
+  // is not supported" message Drive / OneDrive use (recursive replacement
+  // is out of scope this change).
+  protected override async doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<"amazon-s3">> {
+    const oldKey = targetToKey(target);
+    const kind = await this.introspectKey(oldKey);
+    if (kind === null) {
+      throw new DatasourceError<"amazon-s3">({
+        tag: "not-found",
+        datasourceType: "amazon-s3",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: "s3-rename-target-not-found",
+        message: `Rename target not found at /${oldKey}`,
+      });
+    }
+    if (kind === "folder") {
+      // §9.13/§9.14 — directory-overwrite refusal takes precedence over the
+      // generic folder-rename refusal so the message is policy-specific.
+      if (conflictPolicy === "overwrite") {
+        throw new DatasourceError<"amazon-s3">({
+          tag: "unsupported",
+          datasourceType: "amazon-s3",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message:
+            "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
+        });
+      }
+      // §9.7/§9.8 — generic folder-rename refusal.
+      throw new DatasourceError<"amazon-s3">({
+        tag: "unsupported",
+        datasourceType: "amazon-s3",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        message: "S3 folder rename is not supported in this version",
+      });
+    }
+
+    // File branch. Compute the new key (preserve the parent prefix).
+    const lastSlash = oldKey.lastIndexOf("/");
+    const parentPrefix = lastSlash === -1 ? "" : oldKey.slice(0, lastSlash + 1);
+    const candidateInitial = `${parentPrefix}${newName}`;
+
+    // Pre-rename collision pre-check / keep-both loop. Each branch resolves
+    // to `effectiveKey` — the destination key that the CopyObject below
+    // will write.
+    let effectiveKey: string;
+    let effectiveName: string;
+    if (conflictPolicy === "fail") {
+      // §9.9/§9.10 — sibling collision pre-check. HeadObject 200 → conflict.
+      const exists = await this.headObjectExists(candidateInitial);
+      if (exists) {
+        const existingPath = `/${candidateInitial}`;
+        throw new DatasourceError<"amazon-s3">({
+          tag: "conflict",
+          datasourceType: "amazon-s3",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          raw: { existingPath },
+          message: `Sibling already exists at ${existingPath}`,
+        });
+      }
+      effectiveKey = candidateInitial;
+      effectiveName = newName;
+    } else if (conflictPolicy === "keep-both") {
+      // §9.19/§9.20 — suffix retry loop, capped at 99.
+      const { base, ext } = splitNameForSuffix(newName);
+      let chosenKey: string | null = null;
+      let chosenName: string | null = null;
+      for (let attempt = 1; attempt <= 99; attempt++) {
+        const candidateName =
+          attempt === 1 ? newName : `${base}-${attempt}${ext}`;
+        const candidateKey = `${parentPrefix}${candidateName}`;
+        const exists = await this.headObjectExists(candidateKey);
+        if (!exists) {
+          chosenKey = candidateKey;
+          chosenName = candidateName;
+          break;
+        }
+      }
+      if (chosenKey === null || chosenName === null) {
+        throw new DatasourceError<"amazon-s3">({
+          tag: "provider-error",
+          datasourceType: "amazon-s3",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message: "exhausted keep-both attempts",
+        });
+      }
+      effectiveKey = chosenKey;
+      effectiveName = chosenName;
+    } else {
+      // §9.11/§9.12 — `overwrite` on a file: S3's CopyObject is naturally
+      // overwriting. No pre-delete is needed (unlike Drive/OneDrive).
+      effectiveKey = candidateInitial;
+      effectiveName = newName;
+    }
+
+    // CopyObject then DeleteObject. Decision 2: if DeleteObject fails after
+    // a successful Copy, the rename SUCCEEDS from the user's perspective.
+    // The old key becomes an orphan; the bus still emits exactly one
+    // entry-renamed event.
+    let copyResult: { ETag?: string; LastModified?: Date } = {};
+    try {
+      const resp = await this.aws.send(
+        new CopyObjectCommand({
+          Bucket: this.creds.bucket,
+          Key: effectiveKey,
+          CopySource: `${this.creds.bucket}/${oldKey}`,
+        }),
+      );
+      copyResult = {
+        ...(resp.CopyObjectResult?.ETag ? { ETag: resp.CopyObjectResult.ETag } : {}),
+        ...(resp.CopyObjectResult?.LastModified
+          ? { LastModified: resp.CopyObjectResult.LastModified }
+          : {}),
+      };
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    try {
+      await this.aws.send(
+        new DeleteObjectCommand({
+          Bucket: this.creds.bucket,
+          Key: oldKey,
+        }),
+      );
+    } catch {
+      // Orphan old key — Decision 2: the rename succeeded from the user's
+      // perspective, so we swallow the delete failure and proceed. No
+      // logger is wired for this strategy; a future change can introduce
+      // structured logging here without altering the user-facing contract.
+    }
+
+    return buildFileEntry(this.creds.bucket, effectiveKey, {
+      ...(copyResult.LastModified ? { lastModified: copyResult.LastModified } : {}),
+      ...(copyResult.ETag ? { etag: copyResult.ETag } : {}),
+    });
+    // The entry's `name` is derived from the key's basename, matching
+    // `effectiveName` by construction. We do not pass `name` separately;
+    // `buildFileEntry`'s `basename(key)` produces the same value.
+    void effectiveName;
+  }
+
+  /**
+   * Resolve an S3 key to one of `"file"` / `"folder"` / `null` (not-found)
+   * via the documented two-phase introspection:
+   *
+   *   1. `HeadObject(Key=key)` — if 200, the object exists at that exact key
+   *      (a real file).
+   *   2. If HeadObject returns 404, fall back to
+   *      `ListObjectsV2(Prefix=key+"/", MaxKeys=1)`. If at least one key is
+   *      under that prefix, this is an S3 "virtual folder" (no actual
+   *      object exists at the bare key, but children do).
+   *   3. Both empty → `null` (not-found).
+   *
+   * Non-404 errors from HeadObject (auth, transport) propagate via
+   * `normalizeErrorImpl` so the caller surfaces the right taxonomy tag.
+   */
+  private async introspectKey(
+    key: string,
+  ): Promise<"file" | "folder" | null> {
+    try {
+      await this.aws.send(
+        new HeadObjectCommand({ Bucket: this.creds.bucket, Key: key }),
+      );
+      return "file";
+    } catch (err) {
+      const normalized = this.normalizeErrorImpl(err);
+      if (normalized.tag !== "not-found") {
+        throw normalized;
+      }
+      // Fall through to ListObjectsV2 to detect the virtual-folder case.
+    }
+    let listResp;
+    try {
+      listResp = await this.aws.send(
+        new ListObjectsV2Command({
+          Bucket: this.creds.bucket,
+          Prefix: `${key}/`,
+          MaxKeys: 1,
+        }),
+      );
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    const hasChildren =
+      (listResp.Contents && listResp.Contents.length > 0) ||
+      (listResp.CommonPrefixes && listResp.CommonPrefixes.length > 0);
+    if (hasChildren) return "folder";
+    return null;
+  }
+
+  /**
+   * `HeadObject(Key=key)` → boolean: true if the object exists, false on a
+   * 404. Other errors propagate via `normalizeErrorImpl` so the caller
+   * surfaces the right taxonomy tag (e.g., auth-revoked).
+   */
+  private async headObjectExists(key: string): Promise<boolean> {
+    try {
+      await this.aws.send(
+        new HeadObjectCommand({ Bucket: this.creds.bucket, Key: key }),
+      );
+      return true;
+    } catch (err) {
+      const normalized = this.normalizeErrorImpl(err);
+      if (normalized.tag === "not-found") return false;
+      throw normalized;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // downloadFile — GetObject stream, with Range + abortSignal forwarding
+  // -------------------------------------------------------------------------
+  //
+  // S3's media-download primitive is `GetObjectCommand({Bucket, Key,
+  // Range})`. The strategy threads `options.signal` into the SDK's
+  // per-call `abortSignal` (HttpHandlerOptions on `client.send`'s second
+  // arg), wraps `response.Body` (a Node `Readable` in this runtime) in a
+  // `Transform` so byte-counting is INLINE with the data flow (mirrors
+  // Drive §7.7 / OneDrive §8.5 — a separate `data` listener races with
+  // the consumer attach), and surfaces `ContentLength` / `ContentRange`
+  // from the response so fs-sync's range-resume retry loop can validate.
+  //
+  // Auth-expired surfacing: a mid-stream `ExpiredToken` (STS temporary
+  // credentials) is mapped by `normalizeErrorImpl` to `tag:auth-expired`
+  // — see the class-header normalizeError note. The base routes
+  // `auth-expired` to `download-failed` whose payload IS the
+  // `SerializedDatasourceError<"amazon-s3">`.
+  protected override async doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult> {
+    const key = targetToKey(target);
+    const path = target.kind === "path" ? target.path : target.handle;
+    const range =
+      options.rangeStart !== undefined && options.rangeStart > 0
+        ? `bytes=${options.rangeStart}-`
+        : undefined;
+    let resp;
+    try {
+      resp = await this.aws.send(
+        new GetObjectCommand({
+          Bucket: this.creds.bucket,
+          Key: key,
+          ...(range !== undefined ? { Range: range } : {}),
+        }),
+        // HttpHandlerOptions per @smithy/types — `abortSignal` is the
+        // per-call signal that propagates to the underlying handler.
+        ...(options.signal ? [{ abortSignal: options.signal }] : []),
+      );
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    if (resp.Body === undefined || resp.Body === null) {
+      throw this.normalizeErrorImpl({
+        message: "s3-download-missing-body",
+      });
+    }
+    // The SDK's `Body` is `StreamingBlobTypes` — in Node it's a Readable.
+    // Cast at the boundary; tests pass a Readable directly via the mock.
+    const sourceStream = resp.Body as Readable;
+    const contentLength =
+      typeof resp.ContentLength === "number" ? resp.ContentLength : null;
+    const contentRange = parseContentRangeFromS3(resp.ContentRange);
+
+    // Wrap source in a Transform so byte counting is inline with data flow.
+    // The consumer attaches their listeners to the wrapper; chunks flow
+    // through `_transform` (counting + emit) then onward untouched.
+    let loaded = 0;
+    const total: number | null = contentLength;
+    const counter = new Transform({
+      transform: (chunk: Buffer, _enc, cb) => {
+        loaded += chunk.length;
+        try {
+          options.onProgress?.(loaded, total);
+        } catch {
+          // Consumer-callback errors must not break the pipeline.
+        }
+        this.emitDownloading(path, loaded, total);
+        cb(null, chunk);
+      },
+    });
+    // Forward source errors so the wrapper transitions to errored state and
+    // the base's `error` listener fires on a mid-stream provider error
+    // (e.g., ExpiredToken or AbortError surfaced via the body's destroy).
+    sourceStream.on("error", (err) => {
+      const normalized = this.normalizeErrorImpl(err);
+      counter.destroy(normalized);
+    });
+    sourceStream.pipe(counter);
+
+    return {
+      stream: counter,
+      contentLength,
+      ...(contentRange ? { contentRange } : {}),
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // getQuota — defensive Unsupported (capability gate short-circuits above)
   // -------------------------------------------------------------------------
 
@@ -721,16 +1110,33 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
         ...(extra.message ? { message: extra.message } : {}),
       });
 
+    // AbortError surfacing — per add-engine-rename-download §9.17. Placed
+    // BEFORE the network-error branch so an aborted in-flight request whose
+    // error also exposes a network-y `code` does not get mis-classified as
+    // transient. The base routes `cancelled` to the `download-cancelled`
+    // bus event per Decision 3.
+    if (name === "AbortError") {
+      return mk("cancelled", false, { message: "download cancelled" });
+    }
     // not-found
     if (name === "NoSuchKey" || name === "NotFound" || status === 404) {
       return mk("not-found", false);
+    }
+    // auth-expired — STS temporary credential expiry. Surfaced separately
+    // from the static-key auth-revoked branch per §9.18: `ExpiredToken`
+    // signals a TTL'd session token, which the consumer (fs-sync's
+    // download retry loop) can drive a refresh against. The strategy
+    // itself cannot refresh (refreshTokenImpl throws auth-revoked), but
+    // the engine's `download-failed` event MUST carry `auth-expired` so
+    // fs-sync can splice resumption.
+    if (name === "ExpiredToken") {
+      return mk("auth-expired", false);
     }
     // auth-revoked (not auth-expired — see class docstring)
     if (
       name === "AccessDenied" ||
       name === "InvalidAccessKeyId" ||
       name === "SignatureDoesNotMatch" ||
-      name === "ExpiredToken" ||
       status === 403
     ) {
       return mk("auth-revoked", false);

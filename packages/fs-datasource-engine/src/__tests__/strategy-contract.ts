@@ -108,6 +108,76 @@ export interface StrategyContractFixture {
    * `client.deleteFile({ kind: "path", path: targetPath })`. */
   primeDeleteOk(targetPath: string): void;
 
+  /**
+   * Prime a successful FILE rename happy path. The scenario then calls
+   * `client.rename({ kind: "path", path: fromPath }, newName, "fail")` and
+   * expects it to resolve with a `kind: "file"` entry. The fixture is
+   * responsible for priming whatever introspection / sibling pre-check
+   * the strategy issues before the rename.
+   */
+  primeRenameFileOk(opts: { fromPath: string; newName: string }): void;
+
+  /**
+   * Prime the directory-rename scenario. Two semantics depending on
+   * `supportsFolderRename`:
+   *
+   *   - `supportsFolderRename: true` (Drive, OneDrive) — prime a
+   *     successful folder rename. The shared scenario asserts the
+   *     returned entry has `kind: "folder"` and exactly one
+   *     `entry-renamed` event fires.
+   *   - `supportsFolderRename: false` (S3) — prime the strategy-side
+   *     introspection so the rename refuses with `tag: "unsupported"`
+   *     per design.md Decision 1's strategy-introspected refusal. The
+   *     shared scenario asserts the rejection AND that no
+   *     `entry-renamed` is emitted.
+   *
+   * The fixture supplies the priming; the shared scenario decides which
+   * outcome to assert via `supportsFolderRename`.
+   */
+  primeRenameDirectory(opts: { fromPath: string; newName: string }): void;
+
+  /**
+   * Whether this provider supports folder rename. Drive / OneDrive
+   * (`true`) accept folder rename via the same primitive used for files.
+   * S3 (`false`) refuses with `tag: "unsupported"` after introspection
+   * detects a virtual-folder key.
+   */
+  supportsFolderRename: boolean;
+
+  /**
+   * Prime a successful end-to-end download. The fixture's SDK / fetch
+   * mock returns a stream containing exactly `bytes` bytes plus a
+   * `Content-Length` advertising the same. The shared scenario invokes
+   * `client.downloadFile({ kind: "path", path })`, drains the stream,
+   * and asserts:
+   *   - the bytes flowing through are byte-equal to the supplied buffer
+   *   - `result.contentLength === bytes.length`
+   *   - bus emits ≥1 `downloading` then exactly one `file-downloaded`
+   *   - no `download-failed` / `download-cancelled`
+   */
+  primeDownloadOk(opts: { path: string; bytes: Buffer }): void;
+
+  /**
+   * Prime a download that pushes `firstChunkBytes` synchronously, then
+   * awaits the supplied `controller.signal.abort()`. On abort, the
+   * underlying source errors with an `AbortError`. The shared scenario
+   * starts the download, drains until `firstChunkBytes` have been
+   * observed, calls `controller.abort()`, and asserts:
+   *   - bus emits exactly one `download-cancelled
+   *     { path, bytesDownloaded: firstChunkBytes }`
+   *   - no `download-failed` and no `file-downloaded`
+   *
+   * Each provider's fake stream wires abort-to-error differently; the
+   * fixture owns that wiring so the shared scenario reads the same
+   * across providers.
+   */
+  primeDownloadCancellable(opts: {
+    path: string;
+    firstChunkBytes: number;
+    totalBytes: number;
+    controller: AbortController;
+  }): void;
+
   /** Stored credentials to construct the client under test. */
   credentials: StoredCredentials;
 }
@@ -329,6 +399,139 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         client.cancelUpload("tx-nonexistent"),
       ).resolves.toBeUndefined();
       expect(events).toHaveLength(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // add-engine-rename-download §10.1 — rename + download contract sweep
+    // -----------------------------------------------------------------------
+    //
+    // Four scenarios run against every strategy so the engine's new
+    // surface (rename, downloadFile) is exercised uniformly. Per-strategy
+    // SDK quirks live in each provider's `*-client.contract.test.ts`
+    // fixture; the shared assertions below pin the cross-provider
+    // contract.
+
+    it("rename(file) returns the renamed entry; bus emits exactly one entry-renamed; no other events", async () => {
+      fixture.resetMock();
+      fixture.primeRenameFileOk({
+        fromPath: "/contract-old.txt",
+        newName: "contract-new.txt",
+      });
+      const { client, events } = makeHarness();
+      const entry = await client.rename(
+        { kind: "path", path: "/contract-old.txt" },
+        "contract-new.txt",
+        "fail",
+      );
+      expect(entry.kind).toBe("file");
+      expect(entry.name).toBe("contract-new.txt");
+      const renames = events.filter((e) => e.event === "entry-renamed");
+      expect(renames).toHaveLength(1);
+      // No other lifecycle events should fire — rename is one normalized
+      // event regardless of how many provider-side calls the strategy
+      // made (Decision 2). In particular S3's internal copy+delete must
+      // NOT surface a `deleted` event.
+      const otherNames = events
+        .map((e) => e.event)
+        .filter((n) => n !== "entry-renamed");
+      expect(otherNames).toHaveLength(0);
+    });
+
+    it("rename(directory) succeeds on Drive/OneDrive OR refuses with `unsupported` on S3 (per Decision 1)", async () => {
+      fixture.resetMock();
+      fixture.primeRenameDirectory({
+        fromPath: "/contract-folder",
+        newName: "contract-folder-renamed",
+      });
+      const { client, events } = makeHarness();
+      if (fixture.supportsFolderRename) {
+        const entry = await client.rename(
+          { kind: "path", path: "/contract-folder" },
+          "contract-folder-renamed",
+          "fail",
+        );
+        expect(entry.kind).toBe("folder");
+        expect(entry.name).toBe("contract-folder-renamed");
+        const renames = events.filter((e) => e.event === "entry-renamed");
+        expect(renames).toHaveLength(1);
+      } else {
+        await expect(
+          client.rename(
+            { kind: "path", path: "/contract-folder" },
+            "contract-folder-renamed",
+            "fail",
+          ),
+        ).rejects.toSatisfy(
+          (e: unknown) =>
+            e instanceof DatasourceError && e.tag === "unsupported",
+        );
+        // Refusal must not emit entry-renamed.
+        expect(events.some((e) => e.event === "entry-renamed")).toBe(false);
+      }
+    });
+
+    it("downloadFile streams a small fixture end-to-end; bus emits downloading then file-downloaded; bytes are intact", async () => {
+      const fixtureBytes = Buffer.from("contract-download-bytes-payload");
+      fixture.resetMock();
+      fixture.primeDownloadOk({
+        path: "/contract-download.txt",
+        bytes: fixtureBytes,
+      });
+      const { client, events } = makeHarness();
+      const result = await client.downloadFile({
+        kind: "path",
+        path: "/contract-download.txt",
+      });
+      expect(result.contentLength).toBe(fixtureBytes.length);
+      // Drain the stream so the base's terminal listeners fire.
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        result.stream.on("data", (c: Buffer) => chunks.push(c));
+        result.stream.on("end", () => resolve());
+        result.stream.on("error", reject);
+      });
+      expect(Buffer.concat(chunks).equals(fixtureBytes)).toBe(true);
+      const names = events.map((e) => e.event);
+      expect(
+        names.filter((n) => n === "downloading").length,
+      ).toBeGreaterThanOrEqual(1);
+      expect(names.filter((n) => n === "file-downloaded")).toHaveLength(1);
+      expect(names).not.toContain("download-failed");
+      expect(names).not.toContain("download-cancelled");
+    });
+
+    it("downloadFile mid-flight abort: bus emits exactly one download-cancelled with bytesDownloaded; no download-failed", async () => {
+      const controller = new AbortController();
+      const firstChunkBytes = 2048;
+      const totalBytes = 16384;
+      fixture.resetMock();
+      fixture.primeDownloadCancellable({
+        path: "/contract-cancel.txt",
+        firstChunkBytes,
+        totalBytes,
+        controller,
+      });
+      const { client, events } = makeHarness();
+      const result = await client.downloadFile(
+        { kind: "path", path: "/contract-cancel.txt" },
+        { signal: controller.signal },
+      );
+      let bytesSeen = 0;
+      await new Promise<void>((resolve) => {
+        result.stream.on("data", (c: Buffer) => {
+          bytesSeen += c.length;
+          if (bytesSeen >= firstChunkBytes) controller.abort();
+        });
+        result.stream.on("error", () => resolve());
+        result.stream.on("end", () => resolve());
+      });
+      const cancelled = events.filter((e) => e.event === "download-cancelled");
+      expect(cancelled).toHaveLength(1);
+      expect(cancelled[0]!.payload).toMatchObject({
+        bytesDownloaded: firstChunkBytes,
+      });
+      expect(events.some((e) => e.event === "download-failed")).toBe(false);
+      expect(events.some((e) => e.event === "file-downloaded")).toBe(false);
     });
   });
 }

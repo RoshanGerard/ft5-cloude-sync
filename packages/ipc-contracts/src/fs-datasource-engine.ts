@@ -174,6 +174,58 @@ interface CanonicalEventPayloads<T extends DatasourceType = DatasourceType> {
   "token-expired": unknown;
   "status-changed": unknown;
   "rate-limited": unknown;
+  /**
+   * Download lifecycle (add-engine-rename-download Decision 1). The four
+   * download events fire from `BaseDatasourceClient.downloadFile` /
+   * the strategy's byte-counter hook on a single byte-flow source. The
+   * `DatasourceEvent<T, K>` envelope carries `datasourceType`,
+   * `datasourceId`, `ts`, and the `streaming` flag — these payloads
+   * carry only the byte-counter / placement state plus `path` (which
+   * is NOT in the envelope; mirrors the engine's `UploadCancelledPayload`
+   * convention of putting consumer-domain identity inside the payload).
+   *
+   * `total` and `bytesTotal` are `number | null` — `null` when the
+   * provider does not advertise content-length upfront (rare on
+   * `GetObject` / `files.get`, possible on `OneDrive` chunked
+   * responses without `@odata.size`). Consumers render an indeterminate
+   * progress bar in that case.
+   *
+   * `file-downloaded` carries only `path` and `bytes` — the engine
+   * never writes to disk, so it cannot know `savedPath`. The engine
+   * emits this event when the strategy's response stream fires `end`
+   * cleanly, with `bytes` reflecting the total bytes that flowed from
+   * the provider. fs-sync (the consumer that pipes the stream to disk)
+   * runs the integrity check and emits its OWN desktop-facing
+   * `file-downloaded { downloadJobId, savedPath, bytes }` event with
+   * `savedPath` populated from its pipe target.
+   */
+  downloading: { loaded: number; total: number | null; path: string };
+  "file-downloaded": { path: string; bytes: number };
+  "download-cancelled": {
+    bytesDownloaded: number;
+    bytesTotal: number | null;
+    path: string;
+  };
+  /**
+   * `download-failed` mirrors the existing `authentication-failed`
+   * pattern — the payload is the full serialized error so subscribers
+   * reconstruct retry affordances (`retryable` / `retryAfterMs` / `tag`)
+   * without round-tripping the class identity through structured-clone.
+   * Provider-pinned via `T` so narrowing on `datasourceType` carries
+   * through to the serialized error.
+   */
+  "download-failed": SerializedDatasourceError<T>;
+  /**
+   * Rename (add-engine-rename-download Decision 2). The base class emits
+   * exactly one `entry-renamed` per successful `rename` call regardless
+   * of how many provider API calls the strategy made internally
+   * (Drive/OneDrive: 1 PATCH; S3 file: CopyObject + DeleteObject).
+   * `from` carries the original target so subscribers can identify
+   * the pre-rename entry; `to` is the full new entry shape, generic
+   * over `T` so provider-specific metadata (Drive's `fileId`, S3's
+   * `bucket`/`key`) preserves through the bus.
+   */
+  "entry-renamed": { from: Target; to: DatasourceFileEntry<T> };
 }
 
 /**

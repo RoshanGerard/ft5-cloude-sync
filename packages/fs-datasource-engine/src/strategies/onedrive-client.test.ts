@@ -1409,3 +1409,797 @@ describe("OneDriveClient — testConnection / status", () => {
     await expect(h.client.status()).resolves.toBe("connected");
   });
 });
+
+// ---------------------------------------------------------------------------
+// rename — PATCH /me/drive/items/{id} with body {name}
+// (add-engine-rename-download §8.1-§8.4, §8.8)
+// ---------------------------------------------------------------------------
+//
+// Graph treats files and folders uniformly via the `driveItem` resource:
+// `PATCH /me/drive/items/{id}` with body `{ name }` renames either kind.
+// `kind` on the returned entry is read from the response's `folder` vs `file`
+// facet (presence of `folder` → folder; otherwise file).
+//
+// Sibling-collision pre-check uses `?$filter=name eq '<encoded>'` on the
+// parent's children — embedded directly in the api path so the test fake's
+// prefix matcher captures it cleanly (mirrors the search test pattern).
+//
+// File-overwrite explicit deletion: when `conflictPolicy: "overwrite"` on a
+// FILE, the strategy deletes the colliding sibling directly via
+// `DELETE /me/drive/items/{siblingId}` BEFORE the PATCH — bypassing the public
+// `deleteFile` wrapper so no `deleted` bus event fires (single-step UX per
+// design.md Decision 7; same convention as Drive §7.4-§7.6).
+//
+// Directory-overwrite refusal mirrors Drive §7.5/§7.6 verbatim — the
+// strategy probes the target's `folder` facet and throws `unsupported`
+// before any PATCH is issued.
+
+describe("OneDriveClient — doRenameImpl (PATCH /me/drive/items, kind via folder/file facet)", () => {
+  it("renames a file via PATCH and emits one entry-renamed event with kind='file'", async () => {
+    const patchBodies: unknown[] = [];
+    const { client, apiCalls } = makeFakeGraph([
+      // Path resolution for /old.txt
+      {
+        match: "/me/drive/root:/old.txt:",
+        verbs: {
+          get: () => ({
+            id: "FILE-X",
+            name: "old.txt",
+            file: { mimeType: "text/plain" },
+            size: 12,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      // Sibling pre-check on `fail`: no existing sibling (children $filter).
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'new.txt'",
+        verbs: { get: () => ({ value: [] }) },
+      },
+      // PATCH on the resolved id.
+      {
+        match: "/me/drive/items/FILE-X",
+        verbs: {
+          patch: (body) => {
+            patchBodies.push(body);
+            return {
+              id: "FILE-X",
+              name: "new.txt",
+              file: { mimeType: "text/plain" },
+              size: 12,
+              lastModifiedDateTime: "2024-06-02T00:00:00Z",
+              parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+            };
+          },
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/old.txt" },
+      "new.txt",
+      "fail",
+    );
+    expect(entry.handle).toBe("FILE-X");
+    expect(entry.name).toBe("new.txt");
+    expect(entry.kind).toBe("file");
+    expect(entry.mimeFamily).toBe("document");
+    expect(entry.providerMetadata.driveItemId).toBe("FILE-X");
+    // PATCH body carries the new name only.
+    expect(patchBodies).toHaveLength(1);
+    expect(patchBodies[0]).toMatchObject({ name: "new.txt" });
+    // PATCH issued on the items/<id> URL.
+    expect(apiCalls.some((u) => u === "/me/drive/items/FILE-X")).toBe(true);
+
+    const renames = h.events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
+  });
+
+  it("renames a folder via PATCH — same uniform call shape; kind='folder' from response folder facet", async () => {
+    const { client } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/photos:",
+        verbs: {
+          get: () => ({
+            id: "FOLDER-Y",
+            name: "photos",
+            folder: { childCount: 4 },
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'pictures'",
+        verbs: { get: () => ({ value: [] }) },
+      },
+      {
+        match: "/me/drive/items/FOLDER-Y",
+        verbs: {
+          patch: () => ({
+            id: "FOLDER-Y",
+            name: "pictures",
+            folder: { childCount: 4 },
+            lastModifiedDateTime: "2024-06-02T00:00:00Z",
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/photos" },
+      "pictures",
+      "fail",
+    );
+    expect(entry.kind).toBe("folder");
+    expect(entry.mimeFamily).toBe("folder");
+    expect(entry.name).toBe("pictures");
+  });
+});
+
+describe("OneDriveClient — doRenameImpl sibling-collision pre-check on `fail`", () => {
+  it("issues a children $filter query before PATCH; if results, throws conflict { existingPath }", async () => {
+    const patchCalls: unknown[] = [];
+    const { client } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/foo.txt:",
+        verbs: {
+          get: () => ({
+            id: "FOO-ID",
+            name: "foo.txt",
+            file: { mimeType: "text/plain" },
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      // Sibling-list query finds an existing /bar.txt
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'bar.txt'",
+        verbs: {
+          get: () => ({
+            value: [
+              {
+                id: "BAR-EXISTING",
+                name: "bar.txt",
+                file: { mimeType: "text/plain" },
+                parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+              },
+            ],
+          }),
+        },
+      },
+      // If the strategy issues PATCH the test will not see the throw expected.
+      {
+        match: "/me/drive/items/FOO-ID",
+        verbs: {
+          patch: (body) => {
+            patchCalls.push(body);
+            return {};
+          },
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+
+    let caught: unknown;
+    try {
+      await h.client.rename(
+        { kind: "path", path: "/foo.txt" },
+        "bar.txt",
+        "fail",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"onedrive">;
+    expect(err.tag).toBe("conflict");
+    expect((err.raw as { existingPath?: string }).existingPath).toBe("/bar.txt");
+    // No PATCH issued — pre-check short-circuited the rename.
+    expect(patchCalls).toHaveLength(0);
+
+    const failures = h.events.filter((e) => e.event === "delete-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.payload).toMatchObject({
+      tag: "conflict",
+      via: "rename",
+    });
+  });
+});
+
+describe("OneDriveClient — doRenameImpl `overwrite` on a file deletes the colliding sibling", () => {
+  it("when policy='overwrite' AND a sibling with the new name exists, deletes that sibling (via direct DELETE — no `deleted` bus emission) THEN issues PATCH; bus observes one entry-renamed and zero `deleted` events", async () => {
+    const deleteCalls: string[] = [];
+    const patchCalls: unknown[] = [];
+    const { client, apiCalls } = makeFakeGraph([
+      // Path resolution for /old.txt
+      {
+        match: "/me/drive/root:/old.txt:",
+        verbs: {
+          get: () => ({
+            id: "OLD-FILE",
+            name: "old.txt",
+            file: { mimeType: "text/plain" },
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      // Pre-rename folder-facet probe — existing item is a file (no folder facet).
+      // Resolves on the same /items/OLD-FILE URL but as a `get` rather than `patch`.
+      {
+        match: "/me/drive/items/OLD-FILE",
+        verbs: {
+          get: () => ({
+            id: "OLD-FILE",
+            file: { mimeType: "text/plain" },
+          }),
+          patch: (body) => {
+            patchCalls.push(body);
+            return {
+              id: "OLD-FILE",
+              name: "new.txt",
+              file: { mimeType: "text/plain" },
+              parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+            };
+          },
+        },
+      },
+      // Sibling list returns the colliding sibling.
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'new.txt'",
+        verbs: {
+          get: () => ({
+            value: [
+              {
+                id: "EXISTING-NEW",
+                name: "new.txt",
+                file: { mimeType: "text/plain" },
+                parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+              },
+            ],
+          }),
+        },
+      },
+      // Direct DELETE on the colliding sibling.
+      {
+        match: "/me/drive/items/EXISTING-NEW",
+        verbs: {
+          delete: () => {
+            deleteCalls.push("EXISTING-NEW");
+            return undefined;
+          },
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/old.txt" },
+      "new.txt",
+      "overwrite",
+    );
+    expect(entry.handle).toBe("OLD-FILE");
+    expect(entry.name).toBe("new.txt");
+    expect(deleteCalls).toEqual(["EXISTING-NEW"]);
+    expect(patchCalls).toHaveLength(1);
+    // No `deleted` event — the strategy-internal sibling cleanup MUST NOT
+    // emit a public deletion (engine-wide convention; primitives don't emit).
+    expect(h.events.some((e) => e.event === "deleted")).toBe(false);
+    const renames = h.events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    // DELETE was issued on the colliding sibling URL.
+    expect(apiCalls.some((u) => u === "/me/drive/items/EXISTING-NEW")).toBe(
+      true,
+    );
+  });
+});
+
+describe("OneDriveClient — doRenameImpl directory-overwrite refusal", () => {
+  it("when target's folder facet is set AND policy === 'overwrite', throws unsupported with the spec-required message; no PATCH issued", async () => {
+    const patchCalls: unknown[] = [];
+    const { client } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/photos:",
+        verbs: {
+          get: () => ({
+            id: "FOLDER-Z",
+            name: "photos",
+            folder: { childCount: 1 },
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      {
+        match: "/me/drive/items/FOLDER-Z",
+        verbs: {
+          // Pre-rename folder-facet probe — returns a folder facet.
+          get: () => ({
+            id: "FOLDER-Z",
+            folder: { childCount: 1 },
+          }),
+          patch: (body) => {
+            patchCalls.push(body);
+            return {};
+          },
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+
+    let caught: unknown;
+    try {
+      await h.client.rename(
+        { kind: "path", path: "/photos" },
+        "pictures",
+        "overwrite",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"onedrive">;
+    expect(err.tag).toBe("unsupported");
+    expect(err.message).toBe(
+      "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
+    );
+    expect(patchCalls).toHaveLength(0);
+    // Unsupported is silent on the bus — no delete-failed event.
+    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
+    expect(h.events.some((e) => e.event === "entry-renamed")).toBe(false);
+  });
+});
+
+describe("OneDriveClient — doRenameImpl Graph 409 race normalizes to conflict", () => {
+  it("if a race made the §8.2 pre-check pass but PATCH errors with 409, the strategy normalizes to tag:conflict and the base routes to delete-failed { via: 'rename' }", async () => {
+    // Pre-check passes (no children); PATCH fails with 409 (e.g., another
+    // client created /bar.txt between the pre-check and the PATCH).
+    const { client } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/old.txt:",
+        verbs: {
+          get: () => ({
+            id: "FILE-X",
+            name: "old.txt",
+            file: { mimeType: "text/plain" },
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'bar.txt'",
+        verbs: { get: () => ({ value: [] }) },
+      },
+      {
+        match: "/me/drive/items/FILE-X",
+        verbs: {
+          patch: () => {
+            throw Object.assign(new Error("nameAlreadyExists"), {
+              code: "nameAlreadyExists",
+              statusCode: 409,
+            });
+          },
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    let caught: unknown;
+    try {
+      await h.client.rename(
+        { kind: "path", path: "/old.txt" },
+        "bar.txt",
+        "fail",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    expect((caught as DatasourceError<"onedrive">).tag).toBe("conflict");
+    const failures = h.events.filter((e) => e.event === "delete-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.payload).toMatchObject({
+      tag: "conflict",
+      via: "rename",
+    });
+  });
+});
+
+describe("OneDriveClient — doRenameImpl `keep-both` policy retries with suffix until success", () => {
+  it("first sibling-list collides for `bar.pdf`, second collides for `bar-2.pdf`, third returns empty for `bar-3.pdf`; then PATCH with name='bar-3.pdf'; bus emits one entry-renamed", async () => {
+    const patchBodies: unknown[] = [];
+    const { client } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/foo.pdf:",
+        verbs: {
+          get: () => ({
+            id: "FOO-FILE",
+            name: "foo.pdf",
+            file: { mimeType: "application/pdf" },
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      // bar.pdf collides
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'bar.pdf'",
+        verbs: {
+          get: () => ({
+            value: [
+              {
+                id: "BAR-EXISTING",
+                name: "bar.pdf",
+                file: { mimeType: "application/pdf" },
+                parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+              },
+            ],
+          }),
+        },
+      },
+      // bar-2.pdf collides
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'bar-2.pdf'",
+        verbs: {
+          get: () => ({
+            value: [
+              {
+                id: "BAR2-EXISTING",
+                name: "bar-2.pdf",
+                file: { mimeType: "application/pdf" },
+                parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+              },
+            ],
+          }),
+        },
+      },
+      // bar-3.pdf is free
+      {
+        match: "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'bar-3.pdf'",
+        verbs: { get: () => ({ value: [] }) },
+      },
+      {
+        match: "/me/drive/items/FOO-FILE",
+        verbs: {
+          patch: (body) => {
+            patchBodies.push(body);
+            return {
+              id: "FOO-FILE",
+              name: "bar-3.pdf",
+              file: { mimeType: "application/pdf" },
+              parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+            };
+          },
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/foo.pdf" },
+      "bar.pdf",
+      "keep-both",
+    );
+    expect(entry.name).toBe("bar-3.pdf");
+    expect(entry.handle).toBe("FOO-FILE");
+    expect(patchBodies).toHaveLength(1);
+    expect(patchBodies[0]).toMatchObject({ name: "bar-3.pdf" });
+    const renames = h.events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    expect((renames[0]!.payload as { to?: { name?: string } }).to?.name).toBe(
+      "bar-3.pdf",
+    );
+    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
+  });
+
+  it("after 99 collisions (newName + suffixes 2..99), throws DatasourceError { tag:'provider-error', message:'exhausted keep-both attempts' }; no PATCH issued", async () => {
+    let listCalls = 0;
+    const patchCalls: unknown[] = [];
+    const { client } = makeFakeGraph([
+      // Path resolution for /foo.pdf
+      {
+        match: "/me/drive/root:/foo.pdf:",
+        verbs: {
+          get: () => ({
+            id: "FOO-FILE",
+            name: "foo.pdf",
+            file: { mimeType: "application/pdf" },
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      // Catch-all collision responder for every $filter children query.
+      {
+        match: "/me/drive/items/PARENT-ROOT/children",
+        verbs: {
+          get: () => {
+            listCalls++;
+            return {
+              value: [
+                {
+                  id: `COLLIDER-${listCalls}`,
+                  name: "collide",
+                  file: { mimeType: "application/pdf" },
+                  parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+                },
+              ],
+            };
+          },
+        },
+      },
+      {
+        match: "/me/drive/items/FOO-FILE",
+        verbs: {
+          patch: (body) => {
+            patchCalls.push(body);
+            return {};
+          },
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    let caught: unknown;
+    try {
+      await h.client.rename(
+        { kind: "path", path: "/foo.pdf" },
+        "bar.pdf",
+        "keep-both",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"onedrive">;
+    // Engine taxonomy uses `provider-error` for exhaustion (no `"other"`
+    // tag exists in `DatasourceErrorTag`); the wire layer collapses
+    // provider-error → tag: "other" before the renderer sees it.
+    expect(err.tag).toBe("provider-error");
+    expect(err.retryable).toBe(false);
+    expect(err.message).toBe("exhausted keep-both attempts");
+    expect(listCalls).toBe(99);
+    expect(patchCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadFile — fetch-based GET /me/drive/items/{id}/content stream
+// (add-engine-rename-download §8.5-§8.7)
+// ---------------------------------------------------------------------------
+//
+// OneDrive downloads use raw `fetch` against the Graph SDK's URL-equivalent
+// `/me/drive/items/{id}/content`, NOT the Graph SDK fluent chain (the SDK's
+// `.api(...).get()` returns a parsed JSON response, not a Node `Readable` /
+// `ReadableStream`). The strategy converts the Web ReadableStream returned by
+// `fetch` to a Node `Readable` via `Readable.fromWeb(...)`, wraps it in a
+// `Transform` so byte counting is inline (mirrors Drive §7.7 — `Transform`
+// avoids the timing race a `PassThrough` + `data` listener would introduce).
+//
+// The Transform's `_transform` invokes `options.onProgress` AND
+// `this.emitDownloading(path, loaded, total)` per chunk so bus + callback
+// are driven from the same byte source.
+
+describe("OneDriveClient — doDownloadFileImpl (fetch /me/drive/items/{id}/content stream)", () => {
+  it("calls fetch on /me/drive/items/<id>/content with signal forwarded; resolves with stream + contentLength + bus emits downloading + file-downloaded", async () => {
+    const fixture = Buffer.from("hello-world-bytes");
+    const { client: graphClient } = makeFakeGraph([
+      // Path resolution for /hello.txt
+      {
+        match: "/me/drive/root:/hello.txt:",
+        verbs: {
+          get: () => ({
+            id: "DL-ID",
+            name: "hello.txt",
+            file: { mimeType: "text/plain" },
+            size: fixture.length,
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+    ]);
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), ...(init ? { init } : {}) });
+      return new Response(fixture, {
+        status: 200,
+        headers: { "content-length": String(fixture.length) },
+      });
+    }) as unknown as typeof fetch;
+    const h = makeHarness({ graph: graphClient, fetchImpl });
+    const result = await h.client.downloadFile({
+      kind: "path",
+      path: "/hello.txt",
+    });
+    expect(result.contentLength).toBe(fixture.length);
+    expect(result.contentRange).toBeUndefined();
+    // Drain the stream so the base's `end` listener fires `file-downloaded`.
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", (c: Buffer) => chunks.push(c));
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", reject);
+    });
+    expect(Buffer.concat(chunks).toString()).toBe(fixture.toString());
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.url).toContain("/me/drive/items/DL-ID/content");
+
+    const downloadings = h.events.filter((e) => e.event === "downloading");
+    const downloaded = h.events.filter((e) => e.event === "file-downloaded");
+    expect(downloadings.length).toBeGreaterThanOrEqual(1);
+    expect(downloaded).toHaveLength(1);
+    expect(downloaded[0]!.payload).toMatchObject({
+      path: "/hello.txt",
+      bytes: fixture.length,
+    });
+    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
+    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
+  });
+
+  it("forwards options.rangeStart > 0 as a Range:bytes=<n>- header into fetch and parses Content-Range from the 206 response", async () => {
+    const partial = Buffer.from("PARTIAL");
+    const total = 1024;
+    const start = 16;
+    const fetchCalls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const hdrs = (init?.headers ?? {}) as Record<string, string>;
+      fetchCalls.push({ url: String(url), headers: hdrs });
+      return new Response(partial, {
+        status: 206,
+        headers: {
+          "content-length": String(partial.length),
+          "content-range": `bytes ${start}-${start + partial.length - 1}/${total}`,
+        },
+      });
+    }) as unknown as typeof fetch;
+    const { client: graphClient } = makeFakeGraph([]);
+    const h = makeHarness({ graph: graphClient, fetchImpl });
+    const result = await h.client.downloadFile(
+      { kind: "handle", handle: "RANGE-ID" },
+      { rangeStart: start },
+    );
+    expect(result.contentLength).toBe(partial.length);
+    expect(result.contentRange).toEqual({
+      start,
+      end: start + partial.length - 1,
+      total,
+    });
+    // Drain so the base emits file-downloaded.
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", reject);
+    });
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.headers.Range).toBe(`bytes=${start}-`);
+  });
+});
+
+describe("OneDriveClient — doDownloadFileImpl AbortSignal forwarding", () => {
+  it("aborting the consumer signal makes fetch reject AbortError; bus emits exactly one download-cancelled with the byte counts at abort time; no download-failed", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const sig = init?.signal as AbortSignal | undefined;
+      // Build a Web ReadableStream that pushes one chunk then awaits abort.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller2) {
+          // Push first chunk synchronously.
+          controller2.enqueue(new Uint8Array(2048));
+        },
+        pull(controller2) {
+          // Await abort; reject the pull to error the stream.
+          return new Promise<void>((_resolve, reject) => {
+            sig?.addEventListener("abort", () => {
+              const err = Object.assign(new Error("aborted"), {
+                name: "AbortError",
+              });
+              try {
+                controller2.error(err);
+              } catch {
+                // ignore
+              }
+              reject(err);
+            });
+          });
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": "16384" },
+      });
+    }) as unknown as typeof fetch;
+    const { client: graphClient } = makeFakeGraph([]);
+    const h = makeHarness({ graph: graphClient, fetchImpl });
+    const result = await h.client.downloadFile(
+      { kind: "handle", handle: "CANCEL-ID" },
+      { signal: controller.signal },
+    );
+    let bytesSeen = 0;
+    const consumer = new Promise<unknown>((resolve) => {
+      result.stream.on("data", (c: Buffer) => {
+        bytesSeen += c.length;
+        if (bytesSeen >= 2048) controller.abort();
+      });
+      result.stream.on("error", (err) => resolve(err));
+      result.stream.on("end", () => resolve(null));
+    });
+    await consumer;
+    const cancelled = h.events.filter((e) => e.event === "download-cancelled");
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]!.payload).toMatchObject({
+      path: "CANCEL-ID",
+      bytesDownloaded: 2048,
+    });
+    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
+    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+  });
+});
+
+describe("OneDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired → download-failed", () => {
+  it("normalizes a mid-stream Graph 401 to tag:auth-expired; bus emits exactly one download-failed whose payload IS the SerializedDatasourceError; no download-cancelled", async () => {
+    const fetchImpl = vi.fn(async () => {
+      // Push one chunk so byte counting runs once, then synthesize a
+      // mid-stream 401 by erroring the underlying ReadableStream with a
+      // Graph-shaped 401 error. The strategy's normalizeErrorImpl maps this
+      // to tag:auth-expired; the base emits download-failed carrying the
+      // serialized error.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(512));
+          setTimeout(() => {
+            const err401 = Object.assign(new Error("auth-expired-mid-stream"), {
+              statusCode: 401,
+              code: "InvalidAuthenticationToken",
+            });
+            try {
+              controller.error(err401);
+            } catch {
+              // ignore
+            }
+          }, 5);
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": "8192" },
+      });
+    }) as unknown as typeof fetch;
+    const { client: graphClient } = makeFakeGraph([]);
+    const h = makeHarness({ graph: graphClient, fetchImpl });
+    const result = await h.client.downloadFile({
+      kind: "handle",
+      handle: "401-ID",
+    });
+    let caught: unknown;
+    await new Promise<void>((resolve) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", (err) => {
+        caught = err;
+        resolve();
+      });
+    });
+    expect(caught).toBeInstanceOf(Error);
+    const failed = h.events.filter((e) => e.event === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.payload).toMatchObject({
+      tag: "auth-expired",
+      datasourceType: "onedrive",
+      datasourceId: "ds-od-1",
+    });
+    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
+    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortError normalization (added by §8.6 — defensive branch in normalizeErrorImpl)
+// ---------------------------------------------------------------------------
+describe("OneDriveClient — normalizeError AbortError → cancelled", () => {
+  it("AbortError name maps to tag:cancelled (not network-error)", () => {
+    const { client } = makeFakeGraph([]);
+    const h = makeHarness({ graph: client });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const normalize = (h.client as any).normalizeErrorImpl.bind(h.client);
+    const err = Object.assign(new Error("aborted"), { name: "AbortError" });
+    const out = normalize(err) as DatasourceError<"onedrive">;
+    expect(out.tag).toBe("cancelled");
+    expect(out.retryable).toBe(false);
+  });
+});

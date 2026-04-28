@@ -179,7 +179,10 @@ describe("window.api.files round-trip", () => {
 
   it("rename(req) returns { entry } and round-trips cleanly", async () => {
     const response: FilesRenameResponse = {
-      entry: makeEntry({ name: "report-v2.pdf", path: "/projects/report-v2.pdf" }),
+      ok: true,
+      value: {
+        entry: makeEntry({ name: "report-v2.pdf", path: "/projects/report-v2.pdf" }),
+      },
     };
     vi.mocked(filesApi.rename).mockResolvedValue(response);
 
@@ -187,12 +190,16 @@ describe("window.api.files round-trip", () => {
       datasourceId: "ds-s3-archive",
       path: "/projects/report.pdf",
       newName: "report-v2.pdf",
+      conflictPolicy: "fail",
     };
     const result = await filesApi.rename(req);
 
     expect(filesApi.rename).toHaveBeenCalledTimes(1);
     expect(vi.mocked(filesApi.rename).mock.calls[0]).toEqual([req]);
-    expect(result.entry.name).toBe("report-v2.pdf");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.entry.name).toBe("report-v2.pdf");
+    }
     assertStructuredCloneSafe(result);
   });
 
@@ -245,7 +252,8 @@ describe("window.api.files round-trip", () => {
 
   it("download(req) returns { savedPath } and round-trips cleanly; optional toPath accepted", async () => {
     const response: FilesDownloadResponse = {
-      savedPath: "/tmp/report.pdf",
+      ok: true,
+      value: { savedPath: "/tmp/report.pdf", bytes: 0 },
     };
     vi.mocked(filesApi.download).mockResolvedValue(response);
 
@@ -253,14 +261,19 @@ describe("window.api.files round-trip", () => {
     const req1: FilesDownloadRequest = {
       datasourceId: "ds-s3-archive",
       path: "/projects/report.pdf",
+      toPath: "/tmp/report.pdf",
     };
     const res1 = await filesApi.download(req1);
-    expect(typeof res1.savedPath).toBe("string");
+    expect(res1.ok).toBe(true);
+    if (res1.ok) {
+      expect(typeof res1.value.savedPath).toBe("string");
+    }
     assertStructuredCloneSafe(res1);
 
     // With toPath.
     vi.mocked(filesApi.download).mockResolvedValueOnce({
-      savedPath: "/Users/me/Downloads/report.pdf",
+      ok: true,
+      value: { savedPath: "/Users/me/Downloads/report.pdf", bytes: 0 },
     });
     const req2: FilesDownloadRequest = {
       datasourceId: "ds-s3-archive",
@@ -268,7 +281,10 @@ describe("window.api.files round-trip", () => {
       toPath: "/Users/me/Downloads/report.pdf",
     };
     const res2 = await filesApi.download(req2);
-    expect(res2.savedPath).toBe("/Users/me/Downloads/report.pdf");
+    expect(res2.ok).toBe(true);
+    if (res2.ok) {
+      expect(res2.value.savedPath).toBe("/Users/me/Downloads/report.pdf");
+    }
     assertStructuredCloneSafe(res2);
   });
 });

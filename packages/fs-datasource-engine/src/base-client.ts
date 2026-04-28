@@ -46,6 +46,8 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, serializeDatasourceError } from "@ft5/ipc-contracts";
 
+import type { Readable } from "node:stream";
+
 import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
 
@@ -60,6 +62,68 @@ export type { CredentialStore } from "./credential-store.js";
 // ---------------------------------------------------------------------------
 // Public port: DatasourceClient Strategy interface
 // ---------------------------------------------------------------------------
+
+/**
+ * Rename conflict-resolution policy (per add-engine-rename-download
+ * design.md Decision 1 + Decision 7). The wire-level rename request type
+ * (`FilesRenameRequest.conflictPolicy`) inlines this same union — the
+ * engine-local alias here gives the strategy interface a named,
+ * documented surface and keeps the `rename` signature self-explanatory
+ * at the call site. Distinct from sync-service's upload `ConflictPolicy`
+ * (`"overwrite" | "duplicate" | "skip"`) — rename has different semantics
+ * (`"fail"` surfaces a `tag: "conflict"` error so the renderer can
+ * re-prompt; `"keep-both"` auto-suffixes; `"overwrite"` replaces the
+ * colliding sibling on a file or refuses with `tag: "unsupported"` on a
+ * directory).
+ */
+export type ConflictPolicy = "fail" | "overwrite" | "keep-both";
+
+/**
+ * Options accepted by `downloadFile` (per add-engine-rename-download
+ * design.md Decision 3). Each call is a one-shot HTTP primitive — the
+ * engine forwards these options unchanged to the strategy's
+ * `doDownloadFileImpl` and does NOT carry per-download state across calls.
+ *
+ * - `rangeStart` (optional): when set, the strategy attaches
+ *   `Range: bytes=<rangeStart>-` to the provider request. fs-sync uses
+ *   this to resume after a mid-stream auth-expired or network error
+ *   (per Decision 3's handler retry loop).
+ * - `signal` (optional): consumer-supplied AbortSignal. The strategy
+ *   threads it into the underlying SDK / fetch so an abort propagates
+ *   to the in-flight provider request and the returned stream errors
+ *   with AbortError. The base distinguishes AbortError / `tag:
+ *   "cancelled"` from other failures and routes terminal emission to
+ *   `download-cancelled` rather than `download-failed`.
+ * - `onProgress` (optional): synchronous consumer callback fired from
+ *   the strategy's byte-counting hook. Per design.md, the SAME hook
+ *   that calls `onProgress` ALSO calls the base's
+ *   `protected emitDownloading(...)` helper so the bus and the
+ *   consumer callback observe the same byte-flow source.
+ */
+export interface DownloadOptions {
+  rangeStart?: number;
+  signal?: AbortSignal;
+  onProgress?: (loaded: number, total: number | null) => void;
+}
+
+/**
+ * Result of `downloadFile`. The engine returns the raw stream and
+ * metadata unchanged; consumers (fs-sync) own the pipe-to-disk step.
+ *
+ * - `stream`: the provider response body as a Node `Readable`.
+ * - `contentLength`: total bytes the provider advertises in the response,
+ *   or `null` when the provider does not advertise a length (rare on
+ *   `GetObject` / `files.get`; possible on Graph chunked responses).
+ * - `contentRange`: present iff the provider returned 206 Partial Content
+ *   in response to a `Range:` request. fs-sync's retry loop validates
+ *   `contentRange.start === rangeStart` before resuming the local pipe
+ *   (Decision 3's range-not-honored safeguard).
+ */
+export interface DownloadResult {
+  stream: Readable;
+  contentLength: number | null;
+  contentRange?: { start: number; end: number; total: number };
+}
 
 /**
  * The engine's public Strategy surface. Consumers program against this
@@ -103,6 +167,45 @@ export interface DatasourceClient<T extends DatasourceType> {
   ): Promise<void>;
   deleteFile(target: Target): Promise<void>;
   deleteDirectory(target: Target): Promise<never>;
+  /**
+   * Rename `target` to `newName` per `conflictPolicy` (per
+   * add-engine-rename-download spec). The base wraps the strategy's
+   * `doRenameImpl` with the existing `withRefresh` machinery and emits
+   * exactly one `entry-renamed { from, to }` event on success or one
+   * `delete-failed { tag, message, via: "rename" }` on failure
+   * (mirroring `createFile`'s `via: "createFile"` pattern).
+   * Per-policy orchestration (sibling-detection, suffix-retry,
+   * directory-overwrite refusal) lives inside each strategy's
+   * `doRenameImpl` since the introspection is provider-specific —
+   * the base only delegates by passing `conflictPolicy` through
+   * unchanged.
+   */
+  rename(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<T>>;
+  /**
+   * Download `target`'s contents (per add-engine-rename-download
+   * design.md Decision 3). The engine is a one-shot HTTP primitive —
+   * each call issues exactly ONE provider GET, wrapped in `withRefresh`
+   * for the existing one-shot auth-expired refresh-and-retry on the
+   * INITIAL request. The engine does NOT retry mid-stream, does NOT
+   * mint a transaction id, does NOT track per-download state across
+   * calls. Consumer-domain orchestration of resume (calling
+   * `downloadFile` again with `rangeStart = bytesWritten`) lives in
+   * fs-sync.
+   *
+   * The base emits `downloading` per progress tick (driven by the
+   * strategy's byte-counting hook), `file-downloaded` on the
+   * stream's `end` event, `download-failed` on stream error, and
+   * `download-cancelled` on AbortSignal (or normalized
+   * `tag: "cancelled"`).
+   */
+  downloadFile(
+    target: Target,
+    options?: DownloadOptions,
+  ): Promise<DownloadResult>;
   getQuota(): Promise<Quota>;
 }
 
@@ -254,6 +357,65 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     signal: AbortSignal,
   ): Promise<DatasourceFileEntry<T>>;
   protected abstract doDeleteFileImpl(target: Target): Promise<void>;
+  /**
+   * Primitive for `rename()`. The base passes `conflictPolicy` through
+   * unchanged (per design.md Decision 1 — sibling-detection, suffix-retry,
+   * and kind-based refusal are provider-specific and live inside the
+   * strategy). Strategies SHALL:
+   *   - For `"fail"`: pre-check for a colliding sibling (provider-specific
+   *     query) and throw `DatasourceError { tag: "conflict",
+   *     raw: { existingPath } }` if one exists; otherwise rename.
+   *   - For `"overwrite"` on a file: delete the colliding sibling
+   *     (without emitting `deleted` — that primitive is part of the
+   *     strategy's internal state, not the public bus) then rename.
+   *   - For `"overwrite"` on a directory: throw `DatasourceError
+   *     { tag: "unsupported", message: "directory rename with
+   *     conflictPolicy 'overwrite' is not supported (would require
+   *     recursive replacement)" }`.
+   *   - For `"keep-both"`: append `-2` / `-3` / … suffix and retry until
+   *     success or 99 attempts (then throw `DatasourceError { tag:
+   *     "other", message: "exhausted keep-both attempts" }`).
+   *
+   * Abstract per the spec: every concrete strategy MUST implement this
+   * primitive (mirroring `doDeleteFileImpl` etc.) so a future strategy
+   * author cannot silently inherit a no-op default. §7/§8/§9 replace the
+   * three current placeholder overrides (Drive / OneDrive / S3) with
+   * provider-specific rename paths.
+   */
+  protected abstract doRenameImpl(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<T>>;
+  /**
+   * Primitive for `downloadFile()`. Per add-engine-rename-download
+   * design.md Decision 3, each call issues exactly ONE provider GET
+   * request — wrapped at the base layer in `withRefresh` for the
+   * existing one-shot auth-expired retry. Strategies SHALL:
+   *   - Pass `options.signal` (if any) into the underlying SDK / fetch
+   *     so abort propagates to the in-flight provider request.
+   *   - Attach `Range: bytes=<options.rangeStart>-` when
+   *     `options.rangeStart > 0`; populate the returned `contentRange`
+   *     from the response's `Content-Range` header so fs-sync can
+   *     validate `range-not-honored` (provider returned 200 instead
+   *     of 206) and `range-mismatch` cases.
+   *   - Run a byte-counting hook against the provider stream that
+   *     fires BOTH `options.onProgress(loaded, total)` AND
+   *     `this.emitDownloading(path, loaded, total)` from the same
+   *     source, so the consumer callback and the bus emission stay
+   *     in lockstep (per spec.md Requirement: "downloadFile is a
+   *     stateless one-shot HTTP primitive" + the four download
+   *     lifecycle events).
+   *
+   * Per-strategy implementations land in §7 (Drive), §8 (OneDrive),
+   * and §9 (S3). Section 5's strategy placeholders throw
+   * `tag: "unsupported"` until those sections wire the real provider
+   * paths.
+   */
+  protected abstract doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult>;
   protected abstract doGetQuotaImpl(): Promise<Quota>;
 
   /**
@@ -574,6 +736,250 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       raw: "disabled-for-product-stability",
       message: "deleteDirectory is disabled for product stability",
     });
+  }
+
+  /**
+   * Rename wrapper. The base wraps `doRenameImpl` with `withRefresh`
+   * (one-shot auth-expired retry per the engine's existing pattern),
+   * emits `entry-renamed { from, to }` once on success, and routes
+   * failures through the existing `delete-failed` taxonomy with
+   * `via: "rename"` (mirroring `createFile`'s use of `upload-failed
+   * { via: "createFile" }`). Unsupported errors stay silent on the bus
+   * per the engine-wide convention applied to every other op.
+   *
+   * Per design.md Decision 1, per-policy orchestration is strategy-side
+   * — the base passes `conflictPolicy` through to `doRenameImpl`
+   * unchanged and trusts the strategy to surface the right error tag
+   * (`"conflict"` for fail-on-collision; `"unsupported"` for
+   * directory-overwrite; `"other"` for exhausted keep-both retries).
+   */
+  async rename(
+    target: Target,
+    newName: string,
+    conflictPolicy: ConflictPolicy,
+  ): Promise<DatasourceFileEntry<T>> {
+    try {
+      const entry = await this.withRefresh(() =>
+        this.doRenameImpl(target, newName, conflictPolicy),
+      );
+      // Cast note: TS does not distribute `PayloadMap[T]["entry-renamed"]`
+      // to `{ from: Target; to: DatasourceFileEntry<T> }` when T is a
+      // generic parameter (indexed-access-on-generic limitation, same as
+      // `authentication-failed` below). At every concrete instantiation
+      // the types are equal — see the test-d assertions in
+      // datasources-engine.test-d.ts.
+      this.emit(
+        "entry-renamed",
+        false,
+        { from: target, to: entry } as PayloadMap[T]["entry-renamed"],
+      );
+      return entry;
+    } catch (err) {
+      const normalized = this.ensureNormalized(err);
+      if (normalized.tag !== "unsupported") {
+        this.emit("delete-failed", false, {
+          tag: normalized.tag,
+          message: normalized.message,
+          via: "rename",
+        });
+      }
+      throw normalized;
+    }
+  }
+
+  /**
+   * Per-call progress hooks for in-flight `downloadFile` calls, keyed
+   * by `path`. Each entry is the closure-local `recordProgress`
+   * callback that the call's own `lastLoaded` / `lastTotal` live
+   * inside; `emitDownloading(path, …)` looks the entry up so a tick
+   * threads through to the right call's closure when multiple
+   * downloads run concurrently on the same client (different paths).
+   *
+   * The architecture allows concurrent downloads on the same client:
+   * fs-sync enforces single-flight per `(datasourceId, path)` at the
+   * service layer (§13.23), NOT per `(datasourceId)`. The same client
+   * instance therefore legitimately serves multiple concurrent
+   * downloads on different paths. Two simultaneous calls for the
+   * SAME path on one client are a fs-sync invariant violation; if it
+   * ever happens, the second `set` clobbers the first — the same
+   * failure mode as the original single-slot design, which is
+   * acceptable since fs-sync's reverse index already prevents it.
+   */
+  private readonly activeDownloads = new Map<
+    string,
+    (loaded: number, total: number | null) => void
+  >();
+
+  /**
+   * Emit a `downloading` event on the bus AND notify the active
+   * download's per-call progress hook (so `download-cancelled` /
+   * `download-failed` can carry the last-reported byte counts from
+   * the call's own closure, not a shared instance slot). Strategies
+   * invoke this from the same byte-counting hook that fires the
+   * consumer's `onProgress` callback, so the bus and the consumer
+   * stay in lockstep on a single source of truth (per design.md /
+   * tasks.md §5.7-§5.8).
+   *
+   * Cast note: TS does not distribute `PayloadMap[T]["downloading"]`
+   * to the literal payload shape when T is a generic parameter
+   * (indexed-access-on-generic limitation, same as `entry-renamed` and
+   * `authentication-failed`). At every concrete instantiation the types
+   * are equal — see the test-d assertions.
+   */
+  protected emitDownloading(
+    path: string,
+    loaded: number,
+    total: number | null,
+  ): void {
+    const recordProgress = this.activeDownloads.get(path);
+    if (recordProgress !== undefined) {
+      recordProgress(loaded, total);
+    }
+    this.emit(
+      "downloading",
+      true,
+      { path, loaded, total } as PayloadMap[T]["downloading"],
+    );
+  }
+
+  /**
+   * Download wrapper (per add-engine-rename-download design.md Decision 3).
+   * The base wraps `doDownloadFileImpl` with `withRefresh` for the
+   * existing one-shot auth-expired retry on the initial HTTP call,
+   * attaches stream-end / stream-error listeners to drive
+   * `file-downloaded` / `download-failed` / `download-cancelled`, and
+   * keeps closure-local last-byte-counts so the cancel path's payload
+   * is populated with real numbers.
+   *
+   * The shape returned to the consumer is the strategy's shape
+   * unchanged — the base does NOT replace the stream, mutate
+   * `contentLength`, or strip `contentRange`. fs-sync's retry loop
+   * relies on those values to validate `range-not-honored` /
+   * `range-mismatch` (Decision 3's safeguards).
+   */
+  async downloadFile(
+    target: Target,
+    options: DownloadOptions = {},
+  ): Promise<DownloadResult> {
+    const path = target.kind === "path" ? target.path : target.handle;
+    // Per-call byte-tracking lives entirely in this method's closure. Each
+    // concurrent invocation captures its OWN `lastLoaded` / `lastTotal` so
+    // a cancel / failure on one call cannot read the byte counts of another
+    // call running on the same client instance (different path). The
+    // closure-local `recordProgress` is registered in `activeDownloads`
+    // by path so `emitDownloading(path, …)` routes a tick to the right
+    // call's closure; the cancel / failure-path emits below read from the
+    // closure variables directly, never from the map.
+    let lastLoaded = 0;
+    let lastTotal: number | null = null;
+    const recordProgress = (loaded: number, total: number | null): void => {
+      lastLoaded = loaded;
+      lastTotal = total;
+    };
+    this.activeDownloads.set(path, recordProgress);
+    let result: DownloadResult;
+    try {
+      result = await this.withRefresh(() =>
+        this.doDownloadFileImpl(target, options),
+      );
+    } catch (err) {
+      // Initial-call failure (no stream returned). The strategy's
+      // `withRefresh` already attempted the one-shot refresh; this is
+      // terminal. Cancel takes precedence over failure when the
+      // consumer's signal is already aborted (e.g., abort fired before
+      // the SDK call settled).
+      this.activeDownloads.delete(path);
+      const normalized = this.ensureNormalized(err);
+      if (
+        options.signal?.aborted ||
+        normalized.tag === "cancelled" ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        this.emit(
+          "download-cancelled",
+          false,
+          {
+            path,
+            bytesDownloaded: lastLoaded,
+            bytesTotal: lastTotal ?? 0,
+          } as PayloadMap[T]["download-cancelled"],
+        );
+        throw new DatasourceError<T>({
+          tag: "cancelled",
+          datasourceType: this.type,
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message: "download cancelled",
+        });
+      }
+      this.emit(
+        "download-failed",
+        false,
+        serializeDatasourceError(
+          normalized,
+        ) as PayloadMap[T]["download-failed"],
+      );
+      throw normalized;
+    }
+    // Stream is open. Attach observational listeners so the bus's terminal
+    // event fires when the consumer's pipe drains (or errors / aborts).
+    // Capture `contentLength` for the cancel-path `bytesTotal` fallback.
+    const contentLength = result.contentLength;
+    let terminalEmitted = false;
+    const emitTerminal = (kind: "end" | "error" | "abort", err?: unknown): void => {
+      if (terminalEmitted) return;
+      terminalEmitted = true;
+      this.activeDownloads.delete(path);
+      if (kind === "end") {
+        this.emit(
+          "file-downloaded",
+          false,
+          {
+            path,
+            bytes: lastLoaded || (contentLength ?? 0),
+          } as PayloadMap[T]["file-downloaded"],
+        );
+        return;
+      }
+      // Failure / cancel branch. Distinguish AbortError / `tag: "cancelled"`
+      // / aborted-signal from other failures.
+      const isAbortError =
+        err instanceof Error && err.name === "AbortError";
+      const isCancelTag =
+        err instanceof DatasourceError && err.tag === "cancelled";
+      if (kind === "abort" || isAbortError || isCancelTag || options.signal?.aborted) {
+        this.emit(
+          "download-cancelled",
+          false,
+          {
+            path,
+            bytesDownloaded: lastLoaded,
+            bytesTotal: contentLength,
+          } as PayloadMap[T]["download-cancelled"],
+        );
+        return;
+      }
+      const normalized = this.ensureNormalized(err);
+      this.emit(
+        "download-failed",
+        false,
+        serializeDatasourceError(
+          normalized,
+        ) as PayloadMap[T]["download-failed"],
+      );
+    };
+    result.stream.on("end", () => emitTerminal("end"));
+    result.stream.on("error", (err) => emitTerminal("error", err));
+    // AbortSignal-driven cancel: the strategy's signal-listener typically
+    // destroys the stream with AbortError, which fires our `error` listener
+    // above. This redundant abort listener handles the edge case where the
+    // strategy did not wire abort to a stream-error (e.g., the SDK simply
+    // ends the stream without erroring) — the base still routes terminal
+    // emission to `download-cancelled`.
+    options.signal?.addEventListener("abort", () => emitTerminal("abort"), {
+      once: true,
+    });
+    return result;
   }
 
   /**

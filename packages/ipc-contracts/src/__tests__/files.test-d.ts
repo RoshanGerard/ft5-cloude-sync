@@ -5,12 +5,16 @@ import type {
   FileEntry,
   FilesDownloadRequest,
   FilesDownloadResponse,
+  FilesDownloadValue,
+  FilesEnvelope,
+  FilesErrorEnvelope,
   FilesListRequest,
   FilesListResponse,
   FilesRemoveRequest,
   FilesRemoveResponse,
   FilesRenameRequest,
   FilesRenameResponse,
+  FilesRenameValue,
   FilesSearchRequest,
   FilesSearchResponse,
   FilesStatRequest,
@@ -142,10 +146,18 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource"
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
+            existingPath?: string;
           };
         }
     >();
@@ -164,10 +176,18 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource"
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
+            existingPath?: string;
           };
         }
     >();
@@ -214,34 +234,27 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource"
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
+            existingPath?: string;
           };
         }
     >();
   });
 
-  it("rename: { datasourceId, path, newName } request, { entry } response (unchanged)", () => {
-    // `files:rename` is NOT part of the tagged-envelope rollout in Section 1
-    // of wire-file-explorer-to-service; it stays on the legacy shape until a
-    // follow-up change widens it. This assertion guards against accidental
-    // drift while the shape is still the old one.
-    const req: FilesRenameRequest = {
-      datasourceId: "ds-1",
-      path: "/old.txt",
-      newName: "new.txt",
-    };
-    expect(req.newName).toBe("new.txt");
-
-    expectTypeOf<FilesRenameRequest>().toEqualTypeOf<{
-      datasourceId: string;
-      path: string;
-      newName: string;
-    }>();
-    expectTypeOf<FilesRenameResponse>().toEqualTypeOf<{ entry: FileEntry }>();
-  });
+  // Legacy rename test removed: the request shape is now covered by
+  // "rename: FilesRenameRequest carries conflictPolicy ..." below, and
+  // the response shape is now covered by
+  // "rename: FilesRenameResponse migrates to FilesEnvelope<FilesRenameValue>".
 
   it("remove: { datasourceId, targets } request, ok envelope with per-path results", () => {
     const req: FilesRemoveRequest = {
@@ -290,18 +303,21 @@ describe("ipc-contracts files request/response pairs", () => {
           ok: true;
           value: {
             results: Array<
-              | { path: string; handle: string; ok: true }
+              | { readonly path: string; readonly handle: string; readonly ok: true }
               | {
-                  path: string;
-                  handle: string;
-                  ok: false;
-                  error: {
-                    tag:
+                  readonly path: string;
+                  readonly handle: string;
+                  readonly ok: false;
+                  readonly error: {
+                    readonly tag:
                       | "auth-revoked"
                       | "disconnected"
                       | "rate-limited"
-                      | "other";
-                    message: string;
+                      | "other"
+                      | "invalid-datasource"
+                      | "conflict"
+                      | "cancelled";
+                    readonly message: string;
                   };
                 }
             >;
@@ -310,10 +326,18 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource"
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
+            existingPath?: string;
           };
         }
     >();
@@ -376,38 +400,194 @@ describe("ipc-contracts files request/response pairs", () => {
       | {
           ok: false;
           error: {
-            tag: "auth-revoked" | "disconnected" | "rate-limited" | "other";
+            tag:
+              | "auth-revoked"
+              | "disconnected"
+              | "rate-limited"
+              | "other"
+              | "invalid-datasource"
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
+            existingPath?: string;
           };
         }
     >();
   });
 
-  it("download: { datasourceId, path, toPath? } request, { savedPath } response", () => {
+  // Legacy download test removed: the request shape is now covered by
+  // "download: FilesDownloadRequest.toPath is non-optional" below, and
+  // the response shape is now covered by
+  // "download: FilesDownloadResponse migrates to FilesEnvelope<FilesDownloadValue>".
+
+  // ---- add-engine-rename-download additions -----------------------------
+  // The block below mirrors the design.md / spec.md changes for this
+  // change. The existing rename + download tests above remain in this
+  // file until the implementation phase (§2.2 / §2.8 / §2.10 / §2.12)
+  // updates them in lockstep with the type changes.
+
+  it("rename: FilesRenameRequest carries conflictPolicy: \"fail\" | \"overwrite\" | \"keep-both\"", () => {
+    // Per add-engine-rename-download design.md Decision 7: rename's
+    // conflict policy is a tri-state distinct from upload's (which is
+    // "overwrite" | "duplicate" | "skip"). The wire type is non-optional;
+    // default semantics ("fail") are enforced at the consumer layer.
+    const failReq: FilesRenameRequest = {
+      datasourceId: "ds-1",
+      path: "/old.pdf",
+      newName: "new.pdf",
+      conflictPolicy: "fail",
+    };
+    const overwriteReq: FilesRenameRequest = {
+      datasourceId: "ds-1",
+      path: "/old.pdf",
+      newName: "new.pdf",
+      conflictPolicy: "overwrite",
+    };
+    const keepBothReq: FilesRenameRequest = {
+      datasourceId: "ds-1",
+      path: "/old.pdf",
+      newName: "new.pdf",
+      conflictPolicy: "keep-both",
+    };
+    expect(failReq.conflictPolicy).toBe("fail");
+    expect(overwriteReq.conflictPolicy).toBe("overwrite");
+    expect(keepBothReq.conflictPolicy).toBe("keep-both");
+
+    expectTypeOf<FilesRenameRequest>().toEqualTypeOf<{
+      datasourceId: string;
+      path: string;
+      newName: string;
+      conflictPolicy: "fail" | "overwrite" | "keep-both";
+    }>();
+  });
+
+  it("FilesErrorEnvelope optionally carries existingPath alongside tag: \"conflict\"", () => {
+    // Flat-optional shape mirrors the existing retryAfterMs? precedent
+    // (NOT a discriminated union per design.md / specs/file-explorer
+    // spec.md). Populated only when the response surfaces a rename
+    // collision so the renderer's ConflictResolutionDialog can show the
+    // colliding sibling path.
+    const conflictErr: FilesErrorEnvelope = {
+      tag: "conflict",
+      message: "name collision at /parent/bar.pdf",
+      retryable: false,
+      existingPath: "/parent/bar.pdf",
+    };
+    expect(conflictErr.existingPath).toBe("/parent/bar.pdf");
+
+    // The field is structurally optional — assertions about other tags
+    // work without specifying it.
+    const otherErr: FilesErrorEnvelope = {
+      tag: "other",
+      message: "boom",
+      retryable: false,
+    };
+    expect(otherErr.existingPath).toBeUndefined();
+
+    expectTypeOf<FilesErrorEnvelope>().toMatchTypeOf<{ existingPath?: string }>();
+  });
+
+  it("rename: FilesRenameResponse migrates to FilesEnvelope<FilesRenameValue>", () => {
+    // §2.10 of add-engine-rename-download: drop the legacy
+    // `{ entry: FileEntry }` shape (which lived through the
+    // wire-file-explorer-to-service mock-fs era) in favor of the same
+    // tagged envelope every other files:* response carries.
+    const okFixture: FileEntry = {
+      id: "ent-1",
+      kind: "file",
+      name: "renamed.pdf",
+      path: "/projects/renamed.pdf",
+      parentPath: "/projects",
+      size: 1024,
+      mimeFamily: "document",
+      mimeType: "application/pdf",
+      modifiedAt: "2026-04-28T00:00:00.000Z",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      providerMetadata: {},
+    };
+    const ok: FilesRenameResponse = {
+      ok: true,
+      value: { entry: okFixture },
+    };
+    const conflict: FilesRenameResponse = {
+      ok: false,
+      error: {
+        tag: "conflict",
+        message: "name collision at /parent/bar.pdf",
+        retryable: false,
+        existingPath: "/parent/bar.pdf",
+      },
+    };
+    if (ok.ok) {
+      expect(ok.value.entry.name).toBe("renamed.pdf");
+    }
+    if (!conflict.ok) {
+      expect(conflict.error.existingPath).toBe("/parent/bar.pdf");
+    }
+
+    expectTypeOf<FilesRenameValue>().toEqualTypeOf<{ entry: FileEntry }>();
+    expectTypeOf<FilesRenameResponse>().toEqualTypeOf<
+      FilesEnvelope<FilesRenameValue>
+    >();
+  });
+
+  it("download: FilesDownloadResponse migrates to FilesEnvelope<FilesDownloadValue>", () => {
+    // §2.12 of add-engine-rename-download: replaces the legacy
+    // `{ savedPath: string }` literal. The new value carries `bytes`
+    // because the service handler asserts `bytes === contentLength`
+    // post-pipe and returns the count to the renderer.
+    const ok: FilesDownloadResponse = {
+      ok: true,
+      value: {
+        savedPath: "C:/Users/me/Downloads/welcome.pdf",
+        bytes: 12345,
+      },
+    };
+    const failed: FilesDownloadResponse = {
+      ok: false,
+      error: {
+        tag: "other",
+        message: "range not supported on this resource",
+        retryable: false,
+      },
+    };
+    if (ok.ok) {
+      expect(ok.value.bytes).toBe(12345);
+    }
+    if (!failed.ok) {
+      expect(failed.error.tag).toBe("other");
+    }
+
+    expectTypeOf<FilesDownloadValue>().toEqualTypeOf<{
+      savedPath: string;
+      bytes: number;
+    }>();
+    expectTypeOf<FilesDownloadResponse>().toEqualTypeOf<
+      FilesEnvelope<FilesDownloadValue>
+    >();
+  });
+
+  it("download: FilesDownloadRequest.toPath is non-optional", () => {
+    // Per add-engine-rename-download: the service handler validates and
+    // writes to toPath, so the renderer must resolve a concrete path
+    // (default folder + filename, or showSaveDialog result) before
+    // dispatch. The mock-fs era allowed `toPath?` so the main process
+    // could fall back to a "saved-to-mock-path" stub; that fallback no
+    // longer exists.
     const req: FilesDownloadRequest = {
       datasourceId: "ds-1",
-      path: "/report.pdf",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
     };
-    const withTarget: FilesDownloadRequest = {
-      datasourceId: "ds-1",
-      path: "/report.pdf",
-      toPath: "C:/Users/me/Downloads/report.pdf",
-    };
-    const res: FilesDownloadResponse = {
-      savedPath: "C:/Users/me/Downloads/report.pdf",
-    };
-    expect(req.path).toBe("/report.pdf");
-    expect(withTarget.toPath).toBe("C:/Users/me/Downloads/report.pdf");
-    expect(res.savedPath).toBe("C:/Users/me/Downloads/report.pdf");
+    expect(req.toPath).toBe("C:/Users/me/Downloads/welcome.pdf");
 
     expectTypeOf<FilesDownloadRequest>().toEqualTypeOf<{
       datasourceId: string;
       path: string;
-      toPath?: string;
+      toPath: string;
     }>();
-    expectTypeOf<FilesDownloadResponse>().toEqualTypeOf<{ savedPath: string }>();
   });
 });
 

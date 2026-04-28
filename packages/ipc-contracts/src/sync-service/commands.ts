@@ -439,12 +439,20 @@ export type { FilesErrorTag };
  * only when the provider surfaced a concrete backoff (typically paired
  * with `tag: "rate-limited"`); callers MUST treat its absence as
  * "unknown — use your own policy", not as "retry immediately".
+ *
+ * `existingPath` is populated only when `tag === "conflict"` (per
+ * add-engine-rename-download design.md Decision 7) — surfaces the
+ * colliding remote sibling path so the renderer's
+ * ConflictResolutionDialog can prompt the user with the exact path.
+ * Flat-optional shape mirrors `retryAfterMs` (NOT a discriminated
+ * union) so callers can read the field without re-narrowing on tag.
  */
 export interface FilesCommandErrorShape extends ErrorShape {
   readonly tag: FilesErrorTag;
   readonly message: string;
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
+  readonly existingPath?: string;
 }
 
 // Canonical `FilesRemoveEntryResult` lives in `../files.ts`. Re-exported
@@ -517,6 +525,130 @@ interface FilesRemoveCommand {
   readonly error: FilesCommandErrorShape;
 }
 
+// `files:rename` (add-engine-rename-download §12). The handler resolves
+// the engine client for `datasourceId`, builds the engine `Target` from
+// `path` plus optional `handle` (the same handle-first convention as
+// `files:remove`), and forwards `(target, newName, conflictPolicy)` to
+// `client.rename`. The handler does NOT inspect or carry `kind` — the
+// strategy resolves kind within its own provider context (per
+// design.md Decision 1). Error envelope's `existingPath` lights up
+// for `tag: "conflict"` per design.md Decision 7.
+interface FilesRenameCommand {
+  readonly command: "files:rename";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly path: string;
+    readonly handle?: string;
+    readonly newName: string;
+    readonly conflictPolicy: "fail" | "overwrite" | "keep-both";
+  };
+  readonly result: {
+    readonly entry: FileEntry;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `files:download` (add-engine-rename-download §13). The handler validates
+// `toPath`, mints a `downloadJobId`, creates an AbortController, drives the
+// engine's `downloadFile` retry loop (resume-after-mid-stream-auth-expired
+// per design.md Decision 3), pipes the response stream to disk, runs the
+// post-pipe byte-count + integrity-hash assertions, emits `downloading` /
+// `file-downloaded` / `download-failed` / `download-cancelled` derived
+// events on the IPC event channel, and replies with the saved-file
+// summary. Cancel surface lives on the sibling `sync:cancel-download`
+// command. Error envelope tags collapse the four sub-failures
+// (range-not-supported, range-mismatch, byte-count-mismatch,
+// integrity-failed) under `tag: "other"` per spec.md line 73 / 115; the
+// distinct `tag: "cancelled"` exists for user-driven cancels per spec
+// line 78.
+interface FilesDownloadCommand {
+  readonly command: "files:download";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly path: string;
+    readonly toPath: string;
+  };
+  readonly result: {
+    readonly savedPath: string;
+    readonly bytes: number;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `sync:cancel-download` (add-engine-rename-download §13.15-§13.16).
+// Cancels an in-flight `files:download` identified by its
+// `downloadJobId`. Idempotent — cancel of an unknown / already-terminal
+// job resolves with `cancelled: false` rather than erroring; cancel of a
+// live job invokes `abortController.abort()`, the in-flight pipeline
+// rejects with AbortError, the handler emits a single
+// `download-cancelled` event, and the original `files:download`
+// promise resolves with `{ ok: false, error: { tag: "cancelled" } }`.
+interface SyncCancelDownloadCommand {
+  readonly command: "sync:cancel-download";
+  readonly params: {
+    readonly downloadJobId: string;
+  };
+  readonly result: {
+    readonly cancelled: boolean;
+  };
+  readonly error: ValidationErrorShape;
+}
+
+// ---- downloads:* commands (add-engine-rename-download §3.1/§3.2) ---------
+//
+// `downloads:list-active` returns the live snapshot of in-flight download
+// jobs the service is tracking in its `DownloadRegistry` (see design.md
+// Decision 3 + tasks §11). Each `DownloadJob` is keyed by the per-job
+// business-domain id (`downloadJobId`) — the engine bus's
+// `(datasourceId, path)` is reverse-indexed in the registry, but the
+// list response uses the consumer-facing key.
+//
+// The renderer hydrates its toaster strip on first connect from this
+// snapshot; the live progress feed thereafter arrives through fs-sync's
+// `downloading` events on the `sync:subscribe-events` stream.
+
+/**
+ * One in-flight download job, as observed by the service's
+ * `DownloadRegistry`. `bytesDownloaded` advances over the job's lifetime;
+ * `contentLength` is `null` when the provider did not advertise it
+ * upfront (the renderer renders an indeterminate progress bar in that
+ * case). `startedAt` is epoch milliseconds (UTC) and is the response's
+ * stable ordering key.
+ */
+export interface DownloadJob {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesDownloaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
+
+/**
+ * Wire-shape alias for the `downloads:list-active` request. Empty params
+ * — the service returns all live jobs across every datasource. (Filtered
+ * variants are out of scope for v1; the renderer fans out the snapshot
+ * across its toaster strip.)
+ */
+export type DownloadsListActiveRequest = Record<string, never>;
+
+/**
+ * Wire-shape alias for the `downloads:list-active` response, expressed
+ * as the standard tagged envelope used across the sync-service surface.
+ * Subscribers branch on `ok` to pick out `value.jobs` vs `error`.
+ */
+export type DownloadsListActiveResponse =
+  | { readonly ok: true; readonly value: { readonly jobs: readonly DownloadJob[] } }
+  | { readonly ok: false; readonly error: FilesCommandErrorShape };
+
+interface DownloadsListActiveCommand {
+  readonly command: "downloads:list-active";
+  readonly params: DownloadsListActiveRequest;
+  readonly result: { readonly jobs: readonly DownloadJob[] };
+  readonly error: FilesCommandErrorShape;
+}
+
 // ---- Command map + derived helpers ---------------------------------------
 
 export interface CommandMap {
@@ -540,6 +672,10 @@ export interface CommandMap {
   "files:stat": FilesStatCommand;
   "files:search": FilesSearchCommand;
   "files:remove": FilesRemoveCommand;
+  "files:rename": FilesRenameCommand;
+  "files:download": FilesDownloadCommand;
+  "sync:cancel-download": SyncCancelDownloadCommand;
+  "downloads:list-active": DownloadsListActiveCommand;
 }
 
 export type CommandName = keyof CommandMap;
@@ -572,4 +708,8 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "files:stat",
   "files:search",
   "files:remove",
+  "files:rename",
+  "files:download",
+  "sync:cancel-download",
+  "downloads:list-active",
 ] as const;

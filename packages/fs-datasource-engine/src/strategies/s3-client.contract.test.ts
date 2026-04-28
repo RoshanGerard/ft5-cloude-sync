@@ -10,10 +10,14 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Readable } from "node:stream";
+
 import {
+  CopyObjectCommand,
   CreateMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
@@ -115,6 +119,92 @@ const fixture: StrategyContractFixture = {
 
   primeDeleteOk() {
     s3Mock.on(DeleteObjectCommand).resolves({});
+  },
+
+  // -------------------------------------------------------------------------
+  // §10.1 — rename + download contract hooks
+  // -------------------------------------------------------------------------
+
+  primeRenameFileOk(opts) {
+    const oldKey = opts.fromPath.replace(/^\//, "");
+    const newKey = oldKey.includes("/")
+      ? `${oldKey.slice(0, oldKey.lastIndexOf("/") + 1)}${opts.newName}`
+      : opts.newName;
+    // introspectKey(oldKey) → HeadObject 200 → "file"
+    s3Mock
+      .on(HeadObjectCommand, { Key: oldKey })
+      .resolves({
+        ContentLength: 12,
+        LastModified: new Date("2024-06-01"),
+        ETag: '"contract-old-etag"',
+      });
+    // sibling pre-check on `fail` → HeadObject(newKey) → 404
+    const notFoundErr = Object.assign(new Error("NotFound"), {
+      name: "NotFound",
+      $metadata: { httpStatusCode: 404 },
+    });
+    s3Mock.on(HeadObjectCommand, { Key: newKey }).rejects(notFoundErr);
+    s3Mock.on(CopyObjectCommand).resolves({
+      CopyObjectResult: {
+        ETag: '"contract-new-etag"',
+        LastModified: new Date("2024-06-02"),
+      },
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+  },
+
+  primeRenameDirectory(opts) {
+    const folderKey = opts.fromPath.replace(/^\//, "");
+    // introspectKey(folderKey) → HeadObject 404, ListObjectsV2(Prefix+"/")
+    // returns ≥1 → return "folder" → strategy throws unsupported.
+    const notFoundErr = Object.assign(new Error("NotFound"), {
+      name: "NotFound",
+      $metadata: { httpStatusCode: 404 },
+    });
+    s3Mock.on(HeadObjectCommand).rejects(notFoundErr);
+    s3Mock
+      .on(ListObjectsV2Command, { Prefix: `${folderKey}/` })
+      .resolves({
+        Contents: [{ Key: `${folderKey}/inner.txt` }],
+        IsTruncated: false,
+      });
+  },
+
+  supportsFolderRename: false,
+
+  primeDownloadOk(opts) {
+    const key = opts.path.replace(/^\//, "");
+    s3Mock.on(GetObjectCommand, { Key: key }).resolves({
+      Body: Readable.from(opts.bytes) as unknown as undefined,
+      ContentLength: opts.bytes.length,
+    });
+  },
+
+  primeDownloadCancellable(opts) {
+    let pushedFirstChunk = false;
+    const body = new Readable({
+      read() {
+        if (!pushedFirstChunk) {
+          pushedFirstChunk = true;
+          this.push(Buffer.alloc(opts.firstChunkBytes));
+          // Don't end — wait for abort.
+        }
+      },
+    });
+    opts.controller.signal.addEventListener(
+      "abort",
+      () => {
+        body.destroy(
+          Object.assign(new Error("aborted"), { name: "AbortError" }),
+        );
+      },
+      { once: true },
+    );
+    const key = opts.path.replace(/^\//, "");
+    s3Mock.on(GetObjectCommand, { Key: key }).resolves({
+      Body: body as unknown as undefined,
+      ContentLength: opts.totalBytes,
+    });
   },
 };
 

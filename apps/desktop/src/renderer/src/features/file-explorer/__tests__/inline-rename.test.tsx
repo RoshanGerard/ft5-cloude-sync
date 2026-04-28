@@ -38,6 +38,7 @@ function installRenameFn(
     datasourceId: string;
     path: string;
     newName: string;
+    conflictPolicy: "fail" | "overwrite" | "keep-both";
   }) => Promise<FilesRenameResponse>,
 ): ReturnType<typeof vi.fn> {
   const spy = vi.fn(fn);
@@ -95,11 +96,14 @@ describe("inline rename UI", () => {
 
   it("Enter commits: dispatches store.rename with the new value, calling window.api.files.rename once", async () => {
     const renameFn = installRenameFn(async (req) => ({
-      entry: seedEntry({
-        id: "e1",
-        name: req.newName,
-        path: `/${req.newName}`,
-      }),
+      ok: true,
+      value: {
+        entry: seedEntry({
+          id: "e1",
+          name: req.newName,
+          path: `/${req.newName}`,
+        }),
+      },
     }));
     const store = makeStore();
     seedEntries(store, [seedEntry({ id: "e1", name: "old.txt", path: "/old.txt" })]);
@@ -126,7 +130,8 @@ describe("inline rename UI", () => {
 
   it("Escape cancels: input closes, no rename dispatched, editingId returns to null", () => {
     const renameFn = installRenameFn(async () => ({
-      entry: seedEntry({ id: "e1" }),
+      ok: true,
+      value: { entry: seedEntry({ id: "e1" }) },
     }));
     const store = makeStore();
     seedEntries(store, [seedEntry({ id: "e1", name: "old.txt", path: "/old.txt" })]);

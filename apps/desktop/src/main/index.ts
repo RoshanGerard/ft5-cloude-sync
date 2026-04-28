@@ -12,9 +12,10 @@ import { getEngine, initEngine } from "./datasources/engine.js";
 import { createEventBridge } from "./ipc/datasources/event-bridge.js";
 import { startSupervisor } from "./sync/supervisor.js";
 import { createSyncEventBridge } from "./sync/event-bridge.js";
+import { hydrateActiveDownloadsOnce } from "./sync/on-connect-hydrate-downloads.js";
 import { resolveSyncPipePath } from "./sync/pipe-paths.js";
 import { resolveServiceNodeBinary } from "./sync/node-binary-resolver.js";
-import { setSyncClient } from "./sync/sync-client-holder.js";
+import { getSyncClient, setSyncClient } from "./sync/sync-client-holder.js";
 import type { SyncEventBridgeHandle } from "./sync/event-bridge.js";
 
 // The compiled output is CJS (see `electron.vite.config.ts`), so `__dirname`
@@ -271,6 +272,35 @@ async function bootstrap(): Promise<void> {
   // Register IPC handlers AFTER window creation so upload progress events can
   // be routed to the correct renderer via webContents.send.
   registerIpcHandlers(window);
+
+  // add-engine-rename-download §18.9-§18.10 — fire the downloads:list-active
+  // hydrate exactly once per app session. Fire-once-per-session is a
+  // STRUCTURAL invariant: the call lives here at bootstrap (not inside
+  // `startSupervisor` and NOT registered on `syncHandle.on("reconnect", ...)`),
+  // so a mid-session pipe reconnect does NOT re-issue the query — the
+  // renderer's live event subscriptions resume instead.
+  //
+  // Wait for `did-finish-load` so the renderer has subscribed to the
+  // `files:hydrate-active-downloads` channel before the snapshot lands;
+  // otherwise the one-shot event would be dropped.
+  if (syncEventBridge !== null) {
+    const fireHydrate = (): void => {
+      // Closure reads via `getSyncClient()` so the always-current client
+      // is used (matches the IPC handler pattern in sync-client-holder.ts).
+      void hydrateActiveDownloadsOnce(
+        { request: (cmd, params) => getSyncClient().request(cmd, params) },
+        (channel, payload) => {
+          if (window.isDestroyed()) return;
+          window.webContents.send(channel, payload);
+        },
+      );
+    };
+    if (window.webContents.isLoading()) {
+      window.webContents.once("did-finish-load", fireHydrate);
+    } else {
+      fireHydrate();
+    }
+  }
 
   // Silence the `net` import lint — `net.fetch` is available for future
   // handler work that needs to chain to file:// URLs. Kept imported here

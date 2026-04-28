@@ -30,6 +30,7 @@ import type {
   FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
+import type { DownloadJob } from "@ft5/ipc-contracts/sync-service";
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -70,9 +71,48 @@ declare global {
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
         upload(req: FilesUploadRequest): Promise<FilesUploadResponse>;
+        // add-engine-rename-download §18.3-§18.6: download-success toast
+        // CTAs route through main → shell. The renderer never reaches
+        // Electron's `shell` directly.
+        openSavedPath(savedPath: string): Promise<void>;
+        showSavedInFolder(savedPath: string): Promise<void>;
+        // §18.9-§18.10: one-way main → renderer event channel; fires
+        // EXACTLY ONCE per app session on the supervisor's first connect
+        // with the active-downloads snapshot from `downloads:list-active`.
+        // Reconnects mid-session do NOT re-fire.
+        onActiveDownloadsHydrate(
+          callback: (jobs: readonly DownloadJob[]) => void,
+        ): () => void;
       };
       clipboard: {
         writeText(text: string): Promise<void>;
+      };
+      // add-engine-rename-download §18.1-§18.2: download-default-folder
+      // preferences API. Renderer-side `downloads-store` (built in §20)
+      // is the durable owner via localStorage; this surface routes
+      // through main IPC so callers outside the store have a uniform
+      // window.api.* binding.
+      preferences: {
+        setDefaultDownloadsFolder(folder: string): Promise<void>;
+        getDefaultDownloadsFolder(): Promise<string | null>;
+        // Post-archive bug-fix follow-up — `app.getPath("downloads")`
+        // exposure used by the first-run downloads modal to pre-fill a
+        // REAL absolute path. The renderer composes `<resolved>/ft5`
+        // with the host's separator.
+        getOSDefaultDownloadsFolder(): Promise<string>;
+      };
+      // §18.7-§18.8: thin pass-through to Electron's `dialog.showSaveDialog`
+      // for the download orchestrator's Shift+Click / Always-ask paths.
+      dialog: {
+        showSaveDialog(opts: {
+          title?: string;
+          defaultPath?: string;
+          buttonLabel?: string;
+          filters?: ReadonlyArray<{
+            name: string;
+            extensions: readonly string[];
+          }>;
+        }): Promise<{ canceled: boolean; filePath?: string }>;
       };
       // Task 10.2 narrowed this to just `onEvent`; the smoke of 10.9 then
       // needed `listJobs` to pull the initial state on mount (the pushed

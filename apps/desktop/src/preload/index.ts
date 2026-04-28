@@ -29,6 +29,27 @@ import type {
   PingResponse,
 } from "@ft5/ipc-contracts";
 import { SYNC_CHANNELS } from "@ft5/ipc-contracts/sync-service-desktop";
+
+// Local mirror of `DownloadJob` from the wire subpath (sync-service/commands).
+// The preload's import-boundary test (sync-surface.import-boundary.test.ts)
+// forbids importing from `@ft5/ipc-contracts/sync-service` here — that
+// subpath is reserved for the main ↔ service daemon hop and must not bleed
+// into the renderer-facing layer. The renderer-facing barrel
+// (`sync-service-desktop`) does NOT re-export `DownloadJob`, and extending
+// it is out-of-scope for this change. Mirroring the structural shape locally
+// is the standing pattern: same fields as `DownloadJob`, identity coverage
+// of the wire shape sits in the contract package's `__tests__/`. The
+// `window-api.d.ts` keeps the typed import (the import-boundary test scopes
+// to `preload/index.ts` only).
+interface DownloadJob {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesDownloaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -150,6 +171,45 @@ const api = {
       ipcRenderer.invoke(FILES_CHANNELS.download, req),
     upload: (req: FilesUploadRequest): Promise<FilesUploadResponse> =>
       ipcRenderer.invoke(FILES_CHANNELS.upload, req),
+    // add-engine-rename-download §18.3-§18.4: the download-success toast's
+    // primary "Open" CTA delegates to the main process, which invokes
+    // `shell.openPath(savedPath)`. The preload routes through IPC rather
+    // than exposing the shell binding directly because shell APIs only
+    // exist in main; the same pattern is used by `clipboard.writeText`.
+    openSavedPath: (savedPath: string): Promise<void> =>
+      ipcRenderer.invoke("files:openSavedPath", savedPath),
+    // §18.5-§18.6: companion to openSavedPath — invokes
+    // `shell.showItemInFolder(savedPath)` in the main process so the
+    // user can locate the just-downloaded file in the OS file manager.
+    showSavedInFolder: (savedPath: string): Promise<void> =>
+      ipcRenderer.invoke("files:showSavedInFolder", savedPath),
+    // §18.9-§18.10: one-way main → renderer event channel that fires
+    // EXACTLY ONCE per app session — on the supervisor's first connect.
+    // The main process queries `downloads:list-active` against the
+    // sync-service registry and forwards the response so the renderer
+    // can spawn one Sonner toast per in-flight download (Decision 4).
+    // Reconnects mid-session do NOT re-fire; the renderer's existing
+    // event subscriptions resume. Mirrors `datasources.onEvent` and
+    // `sync.onEvent` in shape: each invocation registers its own
+    // listener, the returned dispose function removes that specific
+    // listener (not all listeners on the channel).
+    onActiveDownloadsHydrate: (
+      callback: (jobs: readonly DownloadJob[]) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: IpcRendererEvent,
+        payload: readonly DownloadJob[],
+      ): void => {
+        callback(payload);
+      };
+      ipcRenderer.on("files:hydrate-active-downloads", listener);
+      return () => {
+        ipcRenderer.removeListener(
+          "files:hydrate-active-downloads",
+          listener,
+        );
+      };
+    },
   },
   clipboard: {
     // Main-process clipboard bridge. `navigator.clipboard.writeText` is
@@ -222,6 +282,48 @@ const api = {
         ipcRenderer.removeListener(SYNC_CHANNELS.event, listener);
       };
     },
+  },
+  // add-engine-rename-download §18.1-§18.2: download-default-folder
+  // preferences API. The renderer's downloads-store (built in §20) is
+  // the durable owner via localStorage; this preload routes through
+  // a main-process in-memory mirror so the surface stays uniform with
+  // the rest of `window.api` and so callers outside the store (e.g.
+  // the §22 first-download modal) can read/write without touching
+  // localStorage directly. Channel naming mirrors the inline-string
+  // pattern used by `clipboard:writeText`.
+  preferences: {
+    setDefaultDownloadsFolder: (folder: string): Promise<void> =>
+      ipcRenderer.invoke("preferences:setDefaultDownloadsFolder", folder),
+    getDefaultDownloadsFolder: (): Promise<string | null> =>
+      ipcRenderer.invoke("preferences:getDefaultDownloadsFolder"),
+    // Post-archive bug-fix follow-up — exposes `app.getPath("downloads")`
+    // so the first-run downloads modal can pre-fill a REAL absolute
+    // path instead of the placeholder `"~/Downloads/ft5"` that fails
+    // the service-side `path.isAbsolute` validator on every host.
+    getOSDefaultDownloadsFolder: (): Promise<string> =>
+      ipcRenderer.invoke("preferences:getOSDefaultDownloadsFolder"),
+  },
+  // §18.7-§18.8: thin pass-through to Electron's `dialog.showSaveDialog`
+  // for the download orchestrator's Shift+Click / Always-ask paths
+  // (design.md V4). The preload forwards the renderer-supplied options
+  // verbatim; the main-process handler attaches the BrowserWindow ref
+  // and invokes Electron's `dialog`. The wire shape for `opts` is
+  // intentionally `unknown` here — Electron's `SaveDialogOptions` type
+  // pulls in `electron`, which the renderer cannot import. The
+  // renderer-scoped `window-api.d.ts` widens this to a structural
+  // subset of the SaveDialogOptions fields the renderer actually uses.
+  dialog: {
+    showSaveDialog: (opts: unknown): Promise<unknown> =>
+      ipcRenderer.invoke("dialog:showSaveDialog", opts),
+    // add-engine-rename-download §21 prerequisite — pass-through to
+    // Electron's `dialog.showOpenDialog`. Used by the first-run
+    // downloads modal's Browse button (§21) and the Settings dialog's
+    // Change… button (§22) for directory-pick. Same `unknown` wire
+    // shape as showSaveDialog; the renderer-scoped `window-api.d.ts`
+    // widens this to a structural subset of the OpenDialogOptions
+    // fields the renderer actually uses.
+    showOpenDialog: (opts: unknown): Promise<unknown> =>
+      ipcRenderer.invoke("dialog:showOpenDialog", opts),
   },
   // Electron 32+ removed `File.path`. The drag-drop upload flow needs
   // the absolute filesystem path of each dropped File so the main-

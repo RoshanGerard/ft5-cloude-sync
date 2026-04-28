@@ -37,6 +37,29 @@ import type {
 export type ViewMode = "list" | "details" | "small" | "tiles" | "medium" | "large";
 export type SortBy = "name" | "type" | "size" | "modified";
 export type SortDir = "asc" | "desc";
+
+// Rename request's wire-level conflict policy (mirrors
+// `FilesRenameRequest.conflictPolicy`). Distinct from upload's
+// `ConflictPolicy` (which is `"overwrite" | "duplicate" | "skip"`) per
+// add-engine-rename-download/design.md Decision 7.
+export type RenameConflictPolicy = "fail" | "overwrite" | "keep-both";
+
+// Choice surface for the rename-conflict prompt. The dialog returns
+// `"cancel"` when the user dismisses the dialog (Escape, X, or Cancel
+// button); `"overwrite"` / `"keep-both"` trigger a re-dispatch with
+// the matching `conflictPolicy`. See `rename-conflict-dialog.tsx`.
+export type RenameConflictChoice = "overwrite" | "keep-both" | "cancel";
+
+/**
+ * Prompt port for resolving a single rename conflict. The store invokes
+ * this with the envelope's `existingPath` and awaits the user's choice.
+ * `RenameConflictPrompt` is intentionally lightweight (one collision at
+ * a time, no batch/queue semantics) — the upload `ConflictResolver`
+ * shape doesn't fit (see design.md Decision 7).
+ */
+export type RenameConflictPrompt = (
+  existingPath: string,
+) => Promise<RenameConflictChoice>;
 // "replace" and "clear-add" currently collapse to the same branch (both
 // produce a fresh single-element selection). Kept as distinct modes to
 // name the user-intent difference surfaced by the action's caller: a
@@ -176,12 +199,36 @@ export interface ExplorerStore {
   startEdit(entryId: string): void;
   cancelEdit(): void;
   rename(entryId: string, newName: string): Promise<void>;
+  /**
+   * Register / unregister the rename-conflict prompt port. The
+   * `<FileExplorer>` mounts a `useRenameConflictDialog()` hook and wires
+   * its `prompt` into the store via this setter inside a `useEffect`.
+   * On a `tag: "conflict"` rename response, `store.rename` invokes the
+   * prompt with the envelope's `existingPath` and re-dispatches with
+   * the user's chosen policy (`"overwrite" | "keep-both"`) or aborts on
+   * `"cancel"`. See add-engine-rename-download/design.md Decision 7
+   * (renderer-wiring deviation 2026-04-28) for why rename uses a
+   * parallel hook rather than the upload `ConflictResolutionDialog`.
+   *
+   * Pass `null` on unmount to detach. When unset, a conflict envelope
+   * falls through to the existing `lastError` + `toast.error` path.
+   */
+  setRenameConflictPrompt(prompt: RenameConflictPrompt | null): void;
 
   // Remove (delete) — accepts one or more paths; issues a single IPC call.
   remove(targets: FilesRemoveTarget[]): Promise<void>;
 
   // Download — one-shot IPC for a file entry; does NOT use pendingOps
   // (the entry stays in the list; the op is user-facing via toast only).
+  //
+  // @deprecated Superseded by `useDownloadOrchestrator` +
+  //   `createDownloadJobToaster` (`add-engine-rename-download` §23/§24).
+  //   The file-explorer composite no longer calls this — the orchestrator
+  //   resolves `toPath` (default folder + Shift / Always-ask), runs the
+  //   first-run modal, and dispatches `window.api.files.download` while
+  //   the toaster owns the per-job lifecycle UI. This method is kept
+  //   only because store-level tests at `__tests__/store.test.ts`
+  //   reference it directly; remove once those tests retire.
   download(entryId: string): Promise<void>;
 }
 
@@ -289,6 +336,13 @@ function parentOf(path: string): string {
 export function createExplorerStore(datasourceId: string): ExplorerStore {
   const listeners = new Set<() => void>();
   const prefs = loadPrefs(datasourceId);
+
+  // Rename-conflict prompt port. Registered by the `<FileExplorer>`'s
+  // `useRenameConflictDialog()` mount-effect via `setRenameConflictPrompt`.
+  // `null` on first render and after unmount; when null, the rename loop
+  // surfaces a conflict envelope through the existing `lastError` /
+  // `toast.error` path. See ExplorerStore.setRenameConflictPrompt.
+  let renameConflictPrompt: RenameConflictPrompt | null = null;
 
   let state: ExplorerState = {
     currentPath: "/",
@@ -652,6 +706,12 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     set({ ...state, editingId: null }, false);
   }
 
+  function setRenameConflictPrompt(
+    prompt: RenameConflictPrompt | null,
+  ): void {
+    renameConflictPrompt = prompt;
+  }
+
   async function rename(entryId: string, newName: string): Promise<void> {
     const entry = state.entries.find((e) => e.id === entryId);
     if (entry === undefined) return;
@@ -700,62 +760,125 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
       return;
     }
 
-    const op: PendingOp = { kind: "rename", startedAt: Date.now(), newName };
-    set(
-      clearEditing({
-        ...state,
-        pendingOps: { ...state.pendingOps, [entryId]: op },
-        lastError: null,
-      }),
-      false,
-    );
-
-    try {
-      const api = (globalThis as unknown as {
-        window?: {
-          api?: {
-            files?: {
-              rename?: (req: {
-                datasourceId: string;
-                path: string;
-                newName: string;
-              }) => Promise<FilesRenameResponse>;
-            };
+    const api = (globalThis as unknown as {
+      window?: {
+        api?: {
+          files?: {
+            rename?: (req: {
+              datasourceId: string;
+              path: string;
+              newName: string;
+              conflictPolicy: RenameConflictPolicy;
+            }) => Promise<FilesRenameResponse>;
           };
         };
-      }).window?.api?.files?.rename;
+      };
+    }).window?.api?.files?.rename;
+
+    // Seed the optimistic pendingOp + close the inline input. The loop
+    // below refreshes `pendingOp.startedAt` on each retry so the
+    // optimistic UI reflects the new attempt (per
+    // add-engine-rename-download §25.1).
+    const seedPending = (s: ExplorerState): ExplorerState => ({
+      ...s,
+      pendingOps: {
+        ...s.pendingOps,
+        [entryId]: { kind: "rename", startedAt: Date.now(), newName },
+      },
+      lastError: null,
+    });
+    set(clearEditing(seedPending(state)), false);
+
+    const clearPending = (s: ExplorerState): ExplorerState => {
+      const next: Record<string, PendingOp> = { ...s.pendingOps };
+      delete next[entryId];
+      return { ...s, pendingOps: next };
+    };
+
+    // Conflict re-prompt loop. Initial dispatch carries
+    // `conflictPolicy: "fail"`. On `tag: "conflict"`, invoke the
+    // registered `RenameConflictPrompt` with `existingPath`; the
+    // user's choice (`"overwrite" | "keep-both"`) drives a
+    // re-dispatch with the matching policy; `"cancel"` exits cleanly.
+    // When no prompt is registered, fall through to the legacy
+    // surface-error path (preserves test fixtures that don't mock the
+    // prompt).
+    let policy: RenameConflictPolicy = "fail";
+    try {
       if (api === undefined) {
         throw new Error("window.api.files.rename is unavailable");
       }
-      const response = await api({
-        datasourceId,
-        path: entry.path,
-        newName,
-      });
-      const nextPending: Record<string, PendingOp> = { ...state.pendingOps };
-      delete nextPending[entryId];
-      const nextEntries = state.entries.map((e) =>
-        e.id === entryId ? response.entry : e,
-      );
-      set(
-        {
-          ...state,
-          entries: nextEntries,
-          pendingOps: nextPending,
-          lastError: null,
-        },
-        false,
-      );
+      // Bound the loop defensively so a rogue prompt that never
+      // returns `"cancel"` and a backend that never resolves can't
+      // spin forever. 5 attempts is comfortably more than any user
+      // would step through a conflict re-prompt manually.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const response = await api({
+          datasourceId,
+          path: entry.path,
+          newName,
+          conflictPolicy: policy,
+        });
+        if (response.ok) {
+          const nextEntries = state.entries.map((e) =>
+            e.id === entryId ? response.value.entry : e,
+          );
+          set(
+            clearPending({
+              ...state,
+              entries: nextEntries,
+              lastError: null,
+            }),
+            false,
+          );
+          return;
+        }
+        // Conflict + prompt registered → re-prompt and re-dispatch.
+        if (
+          response.error.tag === "conflict" &&
+          renameConflictPrompt !== null
+        ) {
+          const choice = await renameConflictPrompt(
+            response.error.existingPath ?? entry.path,
+          );
+          if (choice === "cancel") {
+            // User aborted the rename. Clear pendingOp; leave the
+            // entry as-is. No `lastError` — cancel is a soft outcome,
+            // not a failure to surface.
+            set(clearPending(state), false);
+            return;
+          }
+          policy = choice;
+          // Refresh pendingOp.startedAt so the optimistic UI reflects
+          // the retry (per add-engine-rename-download §25.1).
+          set(
+            {
+              ...state,
+              pendingOps: {
+                ...state.pendingOps,
+                [entryId]: {
+                  kind: "rename",
+                  startedAt: Date.now(),
+                  newName,
+                },
+              },
+            },
+            false,
+          );
+          continue;
+        }
+        // Non-conflict (or no prompt) → surface as before.
+        throw new Error(response.error.message);
+      }
+      // Loop bound exhausted — surface as a generic failure.
+      throw new Error("rename retry limit exceeded");
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      const nextPending: Record<string, PendingOp> = { ...state.pendingOps };
-      delete nextPending[entryId];
       set(
-        {
+        clearPending({
           ...state,
-          pendingOps: nextPending,
           lastError: { entryId, reason },
-        },
+        }),
         false,
       );
       toast.error(reason);
@@ -914,7 +1037,10 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         throw new Error("window.api.files.download is unavailable");
       }
       const response = await api({ datasourceId, path: entry.path });
-      toast.success(`Downloaded to ${response.savedPath}`);
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      toast.success(`Downloaded to ${response.value.savedPath}`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       set({ ...state, lastError: { entryId, reason } }, false);
@@ -953,6 +1079,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     startEdit,
     cancelEdit,
     rename,
+    setRenameConflictPrompt,
     remove,
     download,
   };

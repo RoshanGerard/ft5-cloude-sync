@@ -9,6 +9,7 @@ dist/
 out/
 .next/
 .tsbuild/
+*.tsbuildinfo
 release/
 
 # Test output

@@ -25,6 +25,7 @@ import type {
   FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
+import type { DownloadJob } from "@ft5/ipc-contracts/sync-service";
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -89,6 +90,51 @@ declare global {
         remove(req: FilesRemoveRequest): Promise<FilesRemoveResponse>;
         download(req: FilesDownloadRequest): Promise<FilesDownloadResponse>;
         upload(req: FilesUploadRequest): Promise<FilesUploadResponse>;
+        openSavedPath(savedPath: string): Promise<void>;
+        showSavedInFolder(savedPath: string): Promise<void>;
+        onActiveDownloadsHydrate(
+          callback: (jobs: readonly DownloadJob[]) => void,
+        ): () => void;
+      };
+      preferences: {
+        setDefaultDownloadsFolder(folder: string): Promise<void>;
+        getDefaultDownloadsFolder(): Promise<string | null>;
+        // Post-archive bug-fix follow-up — `app.getPath("downloads")`
+        // exposure for the first-run downloads modal pre-fill.
+        getOSDefaultDownloadsFolder(): Promise<string>;
+      };
+      dialog: {
+        // Electron's `SaveDialogOptions` and `SaveDialogReturnValue` are
+        // re-declared here as a structural subset so the preload type
+        // surface stays free of an `electron` import. The fields below
+        // match the design V4 / spec.md "Default folder path" + Save-as
+        // flow's actual usage.
+        showSaveDialog(opts: {
+          title?: string;
+          defaultPath?: string;
+          buttonLabel?: string;
+          filters?: ReadonlyArray<{
+            name: string;
+            extensions: readonly string[];
+          }>;
+        }): Promise<{ canceled: boolean; filePath?: string }>;
+        // add-engine-rename-download §21 prerequisite — directory-pick
+        // surface for the first-run downloads modal's Browse button
+        // (§21) and the Settings dialog's Change… button (§22).
+        // Structural subset of Electron's `OpenDialogOptions` /
+        // `OpenDialogReturnValue`; properties is typed as a readonly
+        // string array — the renderer constrains the vocabulary at
+        // the call site to `['openDirectory', 'createDirectory']`.
+        showOpenDialog(opts: {
+          title?: string;
+          defaultPath?: string;
+          buttonLabel?: string;
+          properties?: readonly string[];
+          filters?: ReadonlyArray<{
+            name: string;
+            extensions: readonly string[];
+          }>;
+        }): Promise<{ canceled: boolean; filePaths: readonly string[] }>;
       };
       sync: {
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;

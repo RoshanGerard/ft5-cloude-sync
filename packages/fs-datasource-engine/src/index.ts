@@ -39,7 +39,10 @@ export { BaseDatasourceClient } from "./base-client.js";
 export type {
   BaseClientContext,
   BaseClientInit,
+  ConflictPolicy,
   DatasourceClient,
+  DownloadOptions,
+  DownloadResult,
 } from "./base-client.js";
 
 // Phase 4: CredentialStore port. The concrete implementation

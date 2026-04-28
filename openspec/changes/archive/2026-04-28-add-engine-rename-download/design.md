@@ -131,6 +131,28 @@ calls it repeatedly with `rangeStart` advancing on each retry to
 implement resume. AbortSignal propagation gives the consumer cancel
 control without needing a separate engine cancel API.
 
+The engine bus emits four download lifecycle events alongside the
+synchronous `options.onProgress` callback:
+
+- `downloading { datasourceId, path, loaded, total }`
+- `file-downloaded { datasourceId, path, bytes }`
+- `download-failed`: payload IS `SerializedDatasourceError<T>` directly (per the `authentication-failed` precedent on the engine bus — error events are pinned to the serialized error so subscribers narrow on the envelope's `datasourceType` and read the error fields without wrapper unwrap). `datasourceId` lives on the envelope; `path` is NOT on this payload.
+- `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }`
+
+The engine never writes to disk and so cannot know `savedPath`; that
+field belongs to fs-sync's transformed desktop-facing event, populated
+from the handler's pipe target after the integrity check resolves.
+
+These events are raw vendor-API facts emitted on the engine's
+broadcast bus — the same shape and cadence regardless of provider.
+The `options.onProgress` callback remains the low-overhead
+synchronous hook for the direct caller (the fs-sync handler's
+pipe-to-disk loop); the bus is the broadcast path consumed by
+fs-sync's subscription that owns the registry and consumer-domain
+event taxonomy. Both paths fire from the same byte-flow lifecycle —
+the bus does not duplicate internal state, the strategy hooks
+`(loaded, total)` into both as bytes flow.
+
 `contentRange` is populated only when `rangeStart` is set; the
 strategy reads it from the provider's `Content-Range` response
 header (or SDK equivalent). The consumer SHALL validate that
@@ -385,6 +407,35 @@ handler also emits the consumer-domain events (`downloading`,
 `file-downloaded`, `download-failed`, `download-cancelled`) on the
 service's IPC event stream.
 
+**fs-sync events are derived, not relayed.** The events fs-sync
+emits to desktop are NOT a re-broadcast of engine bus events. They
+are the output of a business-logic transformation that fs-sync
+applies on top of its engine-bus subscription: mint
+`downloadJobId`, throttle progress, run integrity check
+post-pipe, apply retry policy, update the DownloadRegistry, then
+emit a desktop-facing event whose payload shape differs from the
+engine's bus event. Engine bus events are keyed by `(datasourceId,
+path)` and carry raw vendor facts; fs-sync events are keyed by
+`downloadJobId` and carry business-decoration metadata.
+
+The canonical illustration of this principle is the no-connection
+class of failure. The engine emits a raw `no-connection` bus event
+the moment the underlying SDK call fails. fs-sync subscribes to
+that, applies its retry policy, and emits its own desktop-facing
+`no-connection { retryAfter: 30, maxRetryCount: 5 }` event every
+30 seconds until the datasource is restored — different cadence,
+different payload, business-logic-decorated. The engine never
+emits a `retryAfter` field; that field is fs-sync's contribution.
+
+Engine = raw vendor-API facts on a broadcast bus. fs-sync = the
+layer that owns business logic and edge cases, transforming engine
+events into the desktop-facing event taxonomy. This change applies
+that principle to the four download lifecycle events: engine
+emits `(datasourceId, path)`-keyed raw events; fs-sync's
+subscription transforms them into `downloadJobId`-keyed
+desktop-facing events with throttling, integrity, and registry
+state baked in.
+
 A new RPC `downloads:list-active` returns a snapshot of the registry.
 On supervisor connect (specifically, on the desktop main process's
 first connect of a session), the desktop main queries this and
@@ -509,6 +560,114 @@ the same surface keeps the test matrix small.
 **Why `"fail"` is the default.** Predictability. A rename from the
 inline UX should not silently overwrite a sibling without explicit
 user consent. The renderer always re-prompts with the dialog.
+
+**Renderer wiring (§25 deviation, 2026-04-28).** The §25 implementation
+surfaced a structural mismatch between rename's single-collision
+re-prompt and the upload `ConflictResolutionDialog`'s queue-walker
+shape: the upload dialog is built around `ConflictInfo`
+(`file.basename` + `existing.sizeBytes` + `existing.modifiedAt` + an
+"Apply this choice to the remaining N conflicts" checkbox) and
+choices `"overwrite" | "duplicate" | "skip"`. Rename has only
+`existingPath`, no batch context, and choices
+`"overwrite" | "keep-both" | <cancel>`. Forcing the upload component
+to do double duty would either feed it synthetic placeholder
+`ConflictInfo` (wrong copy displayed to the user) or make it
+mode-aware (broader blast radius into stable upload code). Instead a
+parallel `rename-conflict-dialog.tsx` ships with the same shadcn
+`<Dialog>` primitives + amber Overwrite styling so the visual
+language matches; "existing dialog" in the spec scenario at
+specs/file-explorer/spec.md:84 is satisfied in the visual-language
+sense rather than the literal-component sense. Store-side wiring is
+a `setRenameConflictPrompt(prompt | null)` setter that the file-
+explorer registers from the rename dialog hook in a `useEffect`;
+`store.rename` runs an internal loop (initial dispatch with
+`"fail"` → on `tag: "conflict"` invoke the prompt with
+`existingPath` → re-dispatch with the user's policy or clear
+pendingOp on cancel).
+
+### Decision 8 — Renderer download orchestrator + toast are decoupled via the global event stream (NOT via the dispatch return value)
+
+**Context.** The original spec.md "Download a file from S3" scenario
+reads as if `window.api.files.download(...)` returns a `downloadJobId`
+that the toast binds to. Implementation surfaced a flaw in that
+framing: the canonical `FilesDownloadResponse` contract
+(`packages/ipc-contracts/src/files.ts`) carries only
+`{ savedPath, bytes }` — there is no `downloadJobId` on the response,
+and `files.download` is a long-running call that resolves at terminal
+completion, not at dispatch. Widening that contract would touch
+`packages/*` and `apps/desktop/src/main/`, which §23/§24 are scoped
+out of.
+
+**What.** The renderer download orchestrator (§23) and the renderer
+download toast (§24) are decoupled. The orchestrator is purely the
+dispatcher: resolves `toPath`, optionally opens `showSaveDialog`,
+optionally opens the first-run modal + queues, then calls
+`window.api.files.download(...)` and returns the response (or `null`
+when the user cancels mid-resolve). The orchestrator does NOT return
+a `downloadJobId`.
+
+The toast (§24) subscribes to `window.api.sync.onEvent` filtered to
+the four download lifecycle event names (`downloading` /
+`file-downloaded` / `download-failed` / `download-cancelled`).
+Spawning is event-driven: the FIRST event for a previously-unseen
+`downloadJobId` spawns a toast; subsequent events for the same id
+update it; terminal events flip to the success / failure / silent-
+dismiss variants.
+
+App-launch hydration uses the SAME spawn path: each `DownloadJob`
+from `onActiveDownloadsHydrate(jobs)` registers its `downloadJobId`
+in the spawn-tracker with seeded initial progress, so the next live
+event updates an existing toast rather than creating a duplicate.
+
+**Why decoupling rather than mirroring the upload pattern verbatim.**
+Upload binds toast → jobId via the IPC return value because
+`FilesUploadResponse` carries `{ jobId }` at dispatch. Download has
+no per-job channel like `onUploadProgress` and no `downloadJobId`
+at dispatch — only the global `window.api.sync.onEvent`. Faking a
+correlation in the orchestrator (e.g., racing `downloading` events
+to associate with a dispatch in flight) would couple the dispatcher
+to the event stream brittlely; decoupling is the correct shape.
+
+**Risk.** The orchestrator can no longer pre-create a placeholder
+toast at click-time — the user sees the toast appear only when the
+first `downloading` event lands (or `file-downloaded` for very small
+files). For typical download latency this is invisible; for the
+edge case of a sub-millisecond completion, the spawn-on-first-event
+path handles terminal-as-first events correctly (spawn-and-immediately-
+flip-to-success).
+
+**Retry — pre-dispatch callback registry.** Spec line 134-135
+(`scenarios/Download failure shows Retry`) calls for the Retry action
+to "re-dispatch `window.api.files.download` with the original
+parameters and open a new toast bound to the new downloadJobId."
+`DownloadFailedPayload` carries no `toPath` / `sourcePath`, so the
+toaster cannot reconstruct the original IPC arguments from the
+failure event alone. The §23/§24 follow-up resolves this with a
+narrow callback registry on the toaster:
+
+- The toaster exposes `registerRetry(datasourceId, sourcePath, retry)`.
+- The file-explorer's `handleDownload` calls
+  `toaster.registerRetry(datasourceId, entry.path, () =>
+  handleDownload(entry))` BEFORE invoking
+  `orchestrator.dispatchDownload(...)`.
+- On the FIRST `downloading` event for a previously-unseen
+  `downloadJobId`, the toaster looks up
+  `(payload.datasourceId, payload.path)` in the registry, drains the
+  callback into the per-job `ToastEntry`, and removes the registry
+  slot.
+- The Retry button's `onClick` dismisses the failed toast AND invokes
+  the drained callback. The new dispatch produces a fresh
+  `downloadJobId` and a fresh toast bound to it via the same spawn
+  path — matching the spec's "open a new toast bound to the new
+  downloadJobId" wording without widening the wire contract.
+
+**Failure-before-any-downloading-event edge case.** If a download
+fails before any `downloading` event arrives (rare — instant
+auth-revoked / immediate validation reject inside the service), no
+correlation happens because the `downloading` event is the moment we
+drain the registry. In that case the failure toast renders correctly
+but the Retry button falls back to dismiss-only. Acceptable for v1;
+the user re-clicks Download from the row / context menu.
 
 ## Visual direction
 

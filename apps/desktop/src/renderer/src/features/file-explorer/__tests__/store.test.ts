@@ -889,10 +889,11 @@ describe("rename action", () => {
     const entry = makeEntry({ id: "e1", name: "old.txt", path: "/old.txt" });
     const renamed: FileEntry = { ...entry, name: "new.txt", path: "/new.txt" };
     // Deferred resolution so we can observe the pendingOp mid-flight.
-    let resolveRename: (value: { entry: FileEntry }) => void = () => {};
+    type RenameEnvelope = { ok: true; value: { entry: FileEntry } };
+    let resolveRename: (value: RenameEnvelope) => void = () => {};
     const renameFn = vi.fn(
       () =>
-        new Promise<{ entry: FileEntry }>((res) => {
+        new Promise<RenameEnvelope>((res) => {
           resolveRename = res;
         }),
     );
@@ -912,7 +913,7 @@ describe("rename action", () => {
       expect.objectContaining({ path: "/old.txt", newName: "new.txt" }),
     );
 
-    resolveRename({ entry: renamed });
+    resolveRename({ ok: true, value: { entry: renamed } });
     await promise;
 
     const after = snap(store);
@@ -1019,6 +1020,255 @@ describe("rename action", () => {
 
     await store.rename("missing", "new.txt");
     expect(renameFn).not.toHaveBeenCalled();
+  });
+});
+
+// --- Rename conflict re-prompt (add-engine-rename-download §25) ----------
+//
+// `store.rename` dispatches with `conflictPolicy: "fail"` by default. On
+// a `tag: "conflict"` envelope rejection, the store invokes the registered
+// `RenameConflictPrompt` with the envelope's `existingPath`; the user's
+// choice (`"overwrite" | "keep-both"`) drives a re-dispatch with the new
+// policy; `"cancel"` aborts the rename and clears `pendingOp`. The
+// `pendingOp` is refreshed (new `startedAt`) on each attempt so the
+// optimistic UI reflects the in-flight retry.
+
+describe("rename action — conflict re-prompt (§25)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+    clearFilesApi();
+  });
+
+  function conflictEnvelope(existingPath: string): {
+    ok: false;
+    error: {
+      tag: "conflict";
+      message: string;
+      retryable: boolean;
+      existingPath: string;
+    };
+  } {
+    return {
+      ok: false,
+      error: {
+        tag: "conflict",
+        message: "rename conflict",
+        retryable: false,
+        existingPath,
+      },
+    };
+  }
+
+  it("initial dispatch carries conflictPolicy: 'fail' (no prompt registered)", async () => {
+    const entry = makeEntry({ id: "e1", name: "old.txt", path: "/old.txt" });
+    const renamed: FileEntry = {
+      ...entry,
+      name: "new.txt",
+      path: "/new.txt",
+    };
+    const renameFn = vi.fn(async () => ({
+      ok: true as const,
+      value: { entry: renamed },
+    }));
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    await store.rename("e1", "new.txt");
+
+    expect(renameFn).toHaveBeenCalledTimes(1);
+    expect(renameFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/old.txt",
+        newName: "new.txt",
+        conflictPolicy: "fail",
+      }),
+    );
+  });
+
+  it("on tag: 'conflict', invokes prompt with existingPath and re-dispatches with chosen policy ('overwrite')", async () => {
+    const entry = makeEntry({ id: "e1", name: "foo.pdf", path: "/foo.pdf" });
+    const renamed: FileEntry = {
+      ...entry,
+      name: "bar.pdf",
+      path: "/bar.pdf",
+    };
+
+    let call = 0;
+    const renameFn = vi.fn(async (req: { conflictPolicy: string }) => {
+      call += 1;
+      if (call === 1) {
+        // First attempt: fail policy → conflict.
+        expect(req.conflictPolicy).toBe("fail");
+        return conflictEnvelope("/bar.pdf");
+      }
+      // Second attempt: re-dispatch with the user's choice.
+      expect(req.conflictPolicy).toBe("overwrite");
+      return { ok: true as const, value: { entry: renamed } };
+    });
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    const prompt = vi.fn(
+      async (_existingPath: string) => "overwrite" as const,
+    );
+    store.setRenameConflictPrompt(prompt);
+
+    await store.rename("e1", "bar.pdf");
+
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt).toHaveBeenCalledWith("/bar.pdf");
+    expect(renameFn).toHaveBeenCalledTimes(2);
+    const after = snap(store);
+    expect(after.entries.find((e) => e.id === "e1")?.name).toBe("bar.pdf");
+    expect(after.pendingOps["e1"]).toBeUndefined();
+    expect(after.lastError).toBeNull();
+  });
+
+  it("on tag: 'conflict' + 'keep-both' choice, re-dispatches with conflictPolicy: 'keep-both'", async () => {
+    const entry = makeEntry({ id: "e1", name: "foo.pdf", path: "/foo.pdf" });
+    const renamed: FileEntry = {
+      ...entry,
+      name: "bar-2.pdf",
+      path: "/bar-2.pdf",
+    };
+
+    let call = 0;
+    const renameFn = vi.fn(async (req: { conflictPolicy: string }) => {
+      call += 1;
+      if (call === 1) {
+        expect(req.conflictPolicy).toBe("fail");
+        return conflictEnvelope("/bar.pdf");
+      }
+      expect(req.conflictPolicy).toBe("keep-both");
+      return { ok: true as const, value: { entry: renamed } };
+    });
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+    store.setRenameConflictPrompt(async () => "keep-both");
+
+    await store.rename("e1", "bar.pdf");
+
+    expect(renameFn).toHaveBeenCalledTimes(2);
+    const after = snap(store);
+    expect(after.entries.find((e) => e.id === "e1")?.name).toBe("bar-2.pdf");
+  });
+
+  it("on Cancel choice, no re-dispatch; pendingOp cleared; lastError unset", async () => {
+    const entry = makeEntry({ id: "e1", name: "foo.pdf", path: "/foo.pdf" });
+    const renameFn = vi.fn(async () => conflictEnvelope("/bar.pdf"));
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+    store.setRenameConflictPrompt(async () => "cancel");
+
+    await store.rename("e1", "bar.pdf");
+
+    expect(renameFn).toHaveBeenCalledTimes(1);
+    const after = snap(store);
+    expect(after.pendingOps["e1"]).toBeUndefined();
+    expect(after.lastError).toBeNull();
+    expect(after.entries.find((e) => e.id === "e1")?.name).toBe("foo.pdf");
+  });
+
+  it("pendingOp.startedAt refreshes on each attempt (initial + retry)", async () => {
+    const entry = makeEntry({ id: "e1", name: "foo.pdf", path: "/foo.pdf" });
+    const renamed: FileEntry = {
+      ...entry,
+      name: "bar.pdf",
+      path: "/bar.pdf",
+    };
+
+    // Two deferred resolutions so we can observe pendingOp.startedAt
+    // mid-flight at attempt 1 and again at attempt 2.
+    type ConflictResp = ReturnType<typeof conflictEnvelope>;
+    type SuccessResp = { ok: true; value: { entry: FileEntry } };
+    let resolve1: (v: ConflictResp) => void = () => {};
+    let resolve2: (v: SuccessResp) => void = () => {};
+    let call = 0;
+    const renameFn = vi.fn(() => {
+      call += 1;
+      if (call === 1) {
+        return new Promise<ConflictResp>((res) => {
+          resolve1 = res;
+        });
+      }
+      return new Promise<SuccessResp>((res) => {
+        resolve2 = res;
+      });
+    });
+    installFilesApi(renameFn);
+
+    let resolvePrompt: (choice: "overwrite") => void = () => {};
+    const promptPromise = new Promise<"overwrite">((res) => {
+      resolvePrompt = res;
+    });
+    const prompt = vi.fn(() => promptPromise);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+    store.setRenameConflictPrompt(prompt);
+
+    const dateSpy = vi.spyOn(Date, "now");
+    dateSpy.mockReturnValueOnce(1000); // initial pending startedAt
+    dateSpy.mockReturnValueOnce(2000); // retry pending startedAt
+
+    const promise = store.rename("e1", "bar.pdf");
+
+    // Attempt 1 in flight.
+    const mid1 = snap(store);
+    expect(mid1.pendingOps["e1"]?.startedAt).toBe(1000);
+
+    resolve1(conflictEnvelope("/bar.pdf"));
+    // Allow the conflict envelope to resolve and the prompt to run.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Prompt should be open; pendingOp still present (rename is mid-flight).
+    expect(prompt).toHaveBeenCalledTimes(1);
+
+    // User picks Overwrite.
+    resolvePrompt("overwrite");
+    // Microtask queue: store handles the choice and re-dispatches.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const mid2 = snap(store);
+    // pendingOp should still be present, with refreshed startedAt for the retry.
+    expect(mid2.pendingOps["e1"]?.startedAt).toBe(2000);
+
+    resolve2({ ok: true, value: { entry: renamed } });
+    await promise;
+    dateSpy.mockRestore();
+
+    expect(renameFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("when no prompt is registered, conflict envelope falls through to lastError + toast.error", async () => {
+    const entry = makeEntry({ id: "e1", name: "foo.pdf", path: "/foo.pdf" });
+    const renameFn = vi.fn(async () => conflictEnvelope("/bar.pdf"));
+    installFilesApi(renameFn);
+
+    const store = makeStore("ds-1");
+    store.setEntries([entry]);
+
+    await store.rename("e1", "bar.pdf");
+
+    expect(renameFn).toHaveBeenCalledTimes(1);
+    const after = snap(store);
+    expect(after.pendingOps["e1"]).toBeUndefined();
+    expect(after.lastError?.entryId).toBe("e1");
+    expect(toast.error).toHaveBeenCalled();
   });
 });
 
@@ -1247,7 +1497,10 @@ describe("download action", () => {
   it("happy path: dispatches IPC once with entry path and toasts success with savedPath", async () => {
     const entry = makeEntry({ id: "e1", name: "file.pdf", path: "/file.pdf" });
     const downloadFn = vi.fn(() =>
-      Promise.resolve({ savedPath: "/path/to/saved/file.pdf" }),
+      Promise.resolve({
+        ok: true as const,
+        value: { savedPath: "/path/to/saved/file.pdf", bytes: 0 },
+      }),
     );
     installFilesDownloadApi(downloadFn);
 
