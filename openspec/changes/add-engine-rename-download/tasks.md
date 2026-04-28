@@ -146,9 +146,9 @@ Final state (Section 7): 254 → 263 engine tests (+9 across 5 describe blocks: 
 
 ## 10. Engine — strategy-contract test sweep
 
-- [ ] 10.1 Update `packages/fs-datasource-engine/src/__tests__/strategy-contract.ts` to add the four new methods to the contract suite: rename file, rename directory or assert Unsupported, download a small fixture file end-to-end, cancel download mid-flight
-- [ ] 10.2 Run the full engine vitest suite; all green; capture the test count delta
-- [ ] 10.3 Run engine package's typecheck; all green
+- [x] 10.1 Update `packages/fs-datasource-engine/src/__tests__/strategy-contract.ts` to add the four new methods to the contract suite: rename file, rename directory or assert Unsupported, download a small fixture file end-to-end, cancel download mid-flight
+- [x] 10.2 Run the full engine vitest suite; all green; capture the test count delta
+- [x] 10.3 Run engine package's typecheck; all green
 
 ## 11. Service — `DownloadRegistry` module
 

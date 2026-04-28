@@ -13,6 +13,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 
 import { vi } from "vitest";
 
@@ -49,11 +50,20 @@ interface FileResponder {
   fileId: string;
   handler: FileHandler;
 }
+interface GetStreamResponder {
+  fileId: string;
+  handler: (
+    params: Record<string, unknown>,
+    options: Record<string, unknown> | undefined,
+  ) => { stream: Readable; headers: Record<string, string> };
+}
 
 let lists: ListResponder[] = [];
 let gets: FileResponder[] = [];
+let getStreams: GetStreamResponder[] = [];
 let deletes: Array<{ fileId: string; handler: DeleteHandler }> = [];
 let creates: Array<{ nameMatch: string; handler: FileHandler }> = [];
+let updates: Array<{ fileId: string; handler: FileHandler }> = [];
 let aboutHandler: AboutHandler | null = null;
 let fetchResponses: Array<() => Response> = [];
 
@@ -86,8 +96,41 @@ function buildDrive(): GoogleDriveClientLike {
         }
         return { data: match.handler(params) as never };
       },
-      async get(params) {
+      async get(params, options) {
         const fileId = String(params.fileId ?? "");
+        // Stream-mode dispatch: `alt: "media"` distinguishes a download
+        // from a metadata fetch. Stream responders are checked first so
+        // a fileId can host both flavours.
+        if (params.alt === "media") {
+          const streamMatch = getStreams.find((r) => r.fileId === fileId);
+          if (!streamMatch) {
+            const err = Object.assign(
+              new Error(`no-get-stream-responder ${fileId}`),
+              {
+                name: "GaxiosError",
+                code: "404",
+                status: 404,
+                response: {
+                  status: 404,
+                  headers: {},
+                  data: {
+                    error: {
+                      code: 404,
+                      message: `no-get-stream-responder ${fileId}`,
+                      errors: [{ reason: "notFound", message: "not found" }],
+                    },
+                  },
+                },
+              },
+            );
+            throw err;
+          }
+          const { stream, headers } = streamMatch.handler(
+            params,
+            options as Record<string, unknown> | undefined,
+          );
+          return { data: stream as unknown, headers };
+        }
         const match = gets.find((r) => r.fileId === fileId);
         if (!match) {
           const err = Object.assign(new Error(`no-get-responder ${fileId}`), {
@@ -160,6 +203,35 @@ function buildDrive(): GoogleDriveClientLike {
                   error: {
                     code: 500,
                     message: `no-create-responder ${wanted}`,
+                    errors: [
+                      { reason: "internalError", message: "no responder" },
+                    ],
+                  },
+                },
+              },
+            },
+          );
+          throw err;
+        }
+        return { data: match.handler(params) as never };
+      },
+      async update(params) {
+        const fileId = String(params.fileId ?? "");
+        const match = updates.find((r) => r.fileId === fileId);
+        if (!match) {
+          const err = Object.assign(
+            new Error(`no-update-responder ${fileId}`),
+            {
+              name: "GaxiosError",
+              code: "500",
+              status: 500,
+              response: {
+                status: 500,
+                headers: {},
+                data: {
+                  error: {
+                    code: 500,
+                    message: `no-update-responder ${fileId}`,
                     errors: [
                       { reason: "internalError", message: "no responder" },
                     ],
@@ -258,8 +330,10 @@ const fixture: StrategyContractFixture = {
   resetMock() {
     lists = [];
     gets = [];
+    getStreams = [];
     deletes = [];
     creates = [];
+    updates = [];
     aboutHandler = null;
     fetchResponses = [];
     (fakeFetch as unknown as ReturnType<typeof vi.fn>).mockClear();
@@ -475,6 +549,169 @@ const fixture: StrategyContractFixture = {
     deletes.push({
       fileId: "contract-del-id",
       handler: () => ({}),
+    });
+  },
+
+  // -------------------------------------------------------------------------
+  // §10.1 — rename + download contract hooks
+  // -------------------------------------------------------------------------
+
+  primeRenameFileOk(opts) {
+    const fromTerminal = opts.fromPath.replace(/^\//, "");
+    const fileId = "GD-CONTRACT-FILE";
+    // resolveTarget for the from-path: list with name filter on the
+    // terminal segment under root.
+    lists.push({
+      qMatch: `name='${fromTerminal}'`,
+      handler: () => ({
+        files: [
+          {
+            id: fileId,
+            name: fromTerminal,
+            mimeType: "text/plain",
+            parents: ["root"],
+            size: "12",
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    });
+    // sibling pre-check on `fail`: list for the new name → empty.
+    lists.push({
+      qMatch: `name='${opts.newName}'`,
+      handler: () => ({ files: [] }),
+    });
+    // files.update with fileId returns the renamed metadata.
+    updates.push({
+      fileId,
+      handler: () => ({
+        id: fileId,
+        name: opts.newName,
+        mimeType: "text/plain",
+        parents: ["root"],
+        size: "12",
+        modifiedTime: "2024-06-02T00:00:00Z",
+        createdTime: "2024-01-01T00:00:00Z",
+      }),
+    });
+  },
+
+  primeRenameDirectory(opts) {
+    const fromTerminal = opts.fromPath.replace(/^\//, "");
+    const fileId = "GD-CONTRACT-FOLDER";
+    lists.push({
+      qMatch: `name='${fromTerminal}'`,
+      handler: () => ({
+        files: [
+          {
+            id: fileId,
+            name: fromTerminal,
+            mimeType: "application/vnd.google-apps.folder",
+            parents: ["root"],
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    });
+    lists.push({
+      qMatch: `name='${opts.newName}'`,
+      handler: () => ({ files: [] }),
+    });
+    updates.push({
+      fileId,
+      handler: () => ({
+        id: fileId,
+        name: opts.newName,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: ["root"],
+        modifiedTime: "2024-06-02T00:00:00Z",
+        createdTime: "2024-01-01T00:00:00Z",
+      }),
+    });
+  },
+
+  supportsFolderRename: true,
+
+  primeDownloadOk(opts) {
+    const terminal = opts.path.replace(/^\//, "");
+    const fileId = "GD-CONTRACT-DL";
+    lists.push({
+      qMatch: `name='${terminal}'`,
+      handler: () => ({
+        files: [
+          {
+            id: fileId,
+            name: terminal,
+            mimeType: "text/plain",
+            parents: ["root"],
+            size: String(opts.bytes.length),
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    });
+    getStreams.push({
+      fileId,
+      handler: () => {
+        const stream = new Readable({
+          read() {
+            this.push(opts.bytes);
+            this.push(null);
+          },
+        });
+        return {
+          stream,
+          headers: { "content-length": String(opts.bytes.length) },
+        };
+      },
+    });
+  },
+
+  primeDownloadCancellable(opts) {
+    const terminal = opts.path.replace(/^\//, "");
+    const fileId = "GD-CONTRACT-CANCEL";
+    lists.push({
+      qMatch: `name='${terminal}'`,
+      handler: () => ({
+        files: [
+          {
+            id: fileId,
+            name: terminal,
+            mimeType: "text/plain",
+            parents: ["root"],
+            size: String(opts.totalBytes),
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    });
+    getStreams.push({
+      fileId,
+      handler: (_params, options) => {
+        const sig = options?.signal as AbortSignal | undefined;
+        const stream = new Readable({ read() {} });
+        if (sig) {
+          sig.addEventListener("abort", () => {
+            stream.destroy(
+              Object.assign(new Error("aborted"), { name: "AbortError" }),
+            );
+          });
+        }
+        // Push first chunk on next tick so the consumer's data handler
+        // (which fires controller.abort()) runs after the abort
+        // listener is wired.
+        setImmediate(() => {
+          stream.push(Buffer.alloc(opts.firstChunkBytes));
+        });
+        return {
+          stream,
+          headers: { "content-length": String(opts.totalBytes) },
+        };
+      },
     });
   },
 };
