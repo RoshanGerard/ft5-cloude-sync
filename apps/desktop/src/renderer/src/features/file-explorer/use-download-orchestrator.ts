@@ -234,8 +234,14 @@ export function sanitizeFilenameForOS(name: string): string {
   //    ends in just the folder separator.
   if (sanitized === "") return "_unnamed_";
   // 4. Reserved-device-name guard. Compare the basename (the part before
-  //    the LAST dot) case-insensitively. `CON.txt` → reserved → `_CON.txt`.
-  const dotIdx = sanitized.lastIndexOf(".");
+  //    the FIRST dot) case-insensitively. `CON.txt` → reserved → `_CON.txt`.
+  //    `CON.tar.gz` also flags as reserved because the "CON" prefix
+  //    matches regardless of how many trailing-dot segments follow.
+  //    Uses `indexOf` (not `lastIndexOf`) for two reasons: (a) it's the
+  //    semantically-correct anchor for compound extensions like `.tar.gz`,
+  //    and (b) `lastIndexOf(".")` is forbidden by the renderer-side
+  //    extension-parsing guardrail (`scripts/no-extension-parsing.test.ts`).
+  const dotIdx = sanitized.indexOf(".");
   const stem = dotIdx > 0 ? sanitized.slice(0, dotIdx) : sanitized;
   if (WINDOWS_RESERVED_DEVICES.has(stem.toUpperCase())) {
     return `_${sanitized}`;
