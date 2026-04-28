@@ -31,7 +31,11 @@ describe("sync-service event contract", () => {
       | "auth-failed"
       | "auth-timeout"
       | "oauth-open-url"
-      | "credential-persisted";
+      | "credential-persisted"
+      | "downloading"
+      | "file-downloaded"
+      | "download-failed"
+      | "download-cancelled";
     expectTypeOf<EventName>().toEqualTypeOf<Expected>();
   });
 

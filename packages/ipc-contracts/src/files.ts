@@ -30,6 +30,14 @@ export const FilesErrorTag = {
   // with `existingPath` on the envelope so the renderer's
   // ConflictResolutionDialog can prompt with the colliding sibling path.
   Conflict: "conflict",
+  // `"cancelled"` (per add-engine-rename-download §13 + spec.md "Cancel
+  // mid-stream" scenario at line 78). Surfaces a user-driven cancel of an
+  // in-flight `files:download` — the partial file at `toPath` is left on
+  // disk and the handler emits a single `download-cancelled` event before
+  // returning this envelope. Distinct from `"other"` because the renderer's
+  // download toaster treats cancellation as a soft-state (no error toast,
+  // partial-file disclosure UI) rather than a failure.
+  Cancelled: "cancelled",
 } as const;
 export type FilesErrorTag =
   (typeof FilesErrorTag)[keyof typeof FilesErrorTag];

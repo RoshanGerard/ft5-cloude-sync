@@ -548,6 +548,52 @@ interface FilesRenameCommand {
   readonly error: FilesCommandErrorShape;
 }
 
+// `files:download` (add-engine-rename-download §13). The handler validates
+// `toPath`, mints a `downloadJobId`, creates an AbortController, drives the
+// engine's `downloadFile` retry loop (resume-after-mid-stream-auth-expired
+// per design.md Decision 3), pipes the response stream to disk, runs the
+// post-pipe byte-count + integrity-hash assertions, emits `downloading` /
+// `file-downloaded` / `download-failed` / `download-cancelled` derived
+// events on the IPC event channel, and replies with the saved-file
+// summary. Cancel surface lives on the sibling `sync:cancel-download`
+// command. Error envelope tags collapse the four sub-failures
+// (range-not-supported, range-mismatch, byte-count-mismatch,
+// integrity-failed) under `tag: "other"` per spec.md line 73 / 115; the
+// distinct `tag: "cancelled"` exists for user-driven cancels per spec
+// line 78.
+interface FilesDownloadCommand {
+  readonly command: "files:download";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly path: string;
+    readonly toPath: string;
+  };
+  readonly result: {
+    readonly savedPath: string;
+    readonly bytes: number;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `sync:cancel-download` (add-engine-rename-download §13.15-§13.16).
+// Cancels an in-flight `files:download` identified by its
+// `downloadJobId`. Idempotent — cancel of an unknown / already-terminal
+// job resolves with `cancelled: false` rather than erroring; cancel of a
+// live job invokes `abortController.abort()`, the in-flight pipeline
+// rejects with AbortError, the handler emits a single
+// `download-cancelled` event, and the original `files:download`
+// promise resolves with `{ ok: false, error: { tag: "cancelled" } }`.
+interface SyncCancelDownloadCommand {
+  readonly command: "sync:cancel-download";
+  readonly params: {
+    readonly downloadJobId: string;
+  };
+  readonly result: {
+    readonly cancelled: boolean;
+  };
+  readonly error: ValidationErrorShape;
+}
+
 // ---- downloads:* commands (add-engine-rename-download §3.1/§3.2) ---------
 //
 // `downloads:list-active` returns the live snapshot of in-flight download
@@ -627,6 +673,8 @@ export interface CommandMap {
   "files:search": FilesSearchCommand;
   "files:remove": FilesRemoveCommand;
   "files:rename": FilesRenameCommand;
+  "files:download": FilesDownloadCommand;
+  "sync:cancel-download": SyncCancelDownloadCommand;
   "downloads:list-active": DownloadsListActiveCommand;
 }
 
@@ -661,5 +709,7 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "files:search",
   "files:remove",
   "files:rename",
+  "files:download",
+  "sync:cancel-download",
   "downloads:list-active",
 ] as const;

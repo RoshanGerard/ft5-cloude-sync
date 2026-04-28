@@ -171,6 +171,72 @@ export interface CredentialPersistedPayload {
   readonly summary: DatasourceSummary;
 }
 
+// ---- Download-lifecycle event taxonomy (add-engine-rename-download §13) --
+//
+// Per spec.md "Service handler emits `downloading`/terminal events on the
+// IPC stream" the fs-sync handler emits four DERIVED events on the
+// `sync:subscribe-events` channel. These shapes are NOT the engine bus's
+// shapes — engine events are `(datasourceId, path)`-keyed and carry raw
+// vendor facts; fs-sync events are `downloadJobId`-keyed and carry
+// business decoration (throttled progress percentage, savedPath from the
+// handler's pipe target, post-integrity decision). The transformation
+// runs inside the `files:download` handler's bus subscription per §13.25-
+// §13.26; the desktop subscriber sees only the fs-sync shapes.
+
+/** Streaming-tagged progress event. `progress` is the 0..100 percentage
+ * derived from the engine bus's `downloading { loaded, total }` (or, when
+ * `contentLength` is `null`, the raw `loaded` count divided into a
+ * caller-defined heuristic — but in practice every supported provider
+ * advertises length, so the renderer treats `progress` as authoritative).
+ * `path` is the SOURCE path on the datasource, not the local `toPath` —
+ * the renderer correlates against its own entry rows by `(datasourceId,
+ * path)` to update the in-flight toaster. */
+export interface DownloadingPayload {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  readonly progress: number;
+  readonly path: string;
+}
+
+/** Terminal success. `savedPath` is the absolute local path the handler
+ * piped the stream into; `bytes` is the post-pipe `fs.stat(savedPath).size`
+ * the handler asserted equal to the provider's `contentLength`. */
+export interface FileDownloadedPayload {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  readonly savedPath: string;
+  readonly bytes: number;
+}
+
+/** Terminal failure. The handler collapses the engine's
+ * `SerializedDatasourceError<T>` taxonomy into the renderer-facing
+ * `FilesErrorTag` (range-not-supported, range-mismatch, byte-count-mismatch,
+ * and integrity-failed all collapse to `tag: "other"` with descriptive
+ * messages per spec.md line 73 / 115). The raw engine error is NOT
+ * forwarded — only `tag` + `message` cross the wire. */
+export interface DownloadFailedPayload {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  readonly tag: "auth-revoked" | "disconnected" | "rate-limited" | "other"
+    | "invalid-datasource";
+  readonly message: string;
+}
+
+/** Terminal cancel. `bytesDownloaded` is the last value the engine reported
+ * via `onProgress` before the AbortSignal fired; `bytesTotal` is the
+ * provider's advertised `contentLength` (or `null` when unknown).
+ * `reason: "user"` is the only v1 source — service-restart / network-drop
+ * cancels are not yet wired and would surface through `download-failed`
+ * if they occur. The partial file at the handler's `toPath` is NOT
+ * auto-deleted (spec line 78). */
+export interface DownloadCancelledPayload {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  readonly bytesDownloaded: number;
+  readonly bytesTotal: number | null;
+  readonly reason: "user";
+}
+
 // ---- Event map + derived helpers -----------------------------------------
 
 export interface EventPayloadMap {
@@ -192,6 +258,12 @@ export interface EventPayloadMap {
   "auth-timeout": AuthTimeoutPayload;
   "oauth-open-url": OAuthOpenUrlPayload;
   "credential-persisted": CredentialPersistedPayload;
+  // add-engine-rename-download §13 — fs-sync's downloadJobId-keyed
+  // download lifecycle events (DERIVED from the engine bus, NOT relayed).
+  "downloading": DownloadingPayload;
+  "file-downloaded": FileDownloadedPayload;
+  "download-failed": DownloadFailedPayload;
+  "download-cancelled": DownloadCancelledPayload;
 }
 
 export type EventName = keyof EventPayloadMap;
@@ -222,5 +294,9 @@ export const EVENT_NAMES: ReadonlyArray<EventName> = [
   "auth-timeout",
   "oauth-open-url",
   "credential-persisted",
+  "downloading",
+  "file-downloaded",
+  "download-failed",
+  "download-cancelled",
 ] as const;
 

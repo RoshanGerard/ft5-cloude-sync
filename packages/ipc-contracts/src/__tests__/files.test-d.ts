@@ -152,7 +152,8 @@ describe("ipc-contracts files request/response pairs", () => {
               | "rate-limited"
               | "other"
               | "invalid-datasource"
-              | "conflict";
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -181,7 +182,8 @@ describe("ipc-contracts files request/response pairs", () => {
               | "rate-limited"
               | "other"
               | "invalid-datasource"
-              | "conflict";
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -238,7 +240,8 @@ describe("ipc-contracts files request/response pairs", () => {
               | "rate-limited"
               | "other"
               | "invalid-datasource"
-              | "conflict";
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -312,7 +315,8 @@ describe("ipc-contracts files request/response pairs", () => {
                       | "rate-limited"
                       | "other"
                       | "invalid-datasource"
-                      | "conflict";
+                      | "conflict"
+                      | "cancelled";
                     readonly message: string;
                   };
                 }
@@ -328,7 +332,8 @@ describe("ipc-contracts files request/response pairs", () => {
               | "rate-limited"
               | "other"
               | "invalid-datasource"
-              | "conflict";
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;
@@ -401,7 +406,8 @@ describe("ipc-contracts files request/response pairs", () => {
               | "rate-limited"
               | "other"
               | "invalid-datasource"
-              | "conflict";
+              | "conflict"
+              | "cancelled";
             message: string;
             retryable: boolean;
             retryAfterMs?: number;

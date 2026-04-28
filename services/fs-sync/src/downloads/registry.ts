@@ -112,15 +112,57 @@ export interface DownloadRegistry {
    */
   snapshot(): DownloadJobEntry[];
 
+  /**
+   * Reverse-index lookup (per add-engine-rename-download §13.23). Returns
+   * the `downloadJobId` for the in-flight `(datasourceId, sourcePath)`
+   * pair, or `undefined` if no entry exists for that key. O(1) — backed
+   * by a Map keyed on `${datasourceId}::${sourcePath}` updated in lockstep
+   * with `set` / `delete`.
+   *
+   * Identity fields (`datasourceId`, `sourcePath`) are immutable across an
+   * entry's lifetime per the §11 design, so the reverse-index does not
+   * track `update` mutations — only insertions and removals.
+   *
+   * Used by:
+   * - The `files:download` handler's concurrent-rejection guard (rejects
+   *   a second download for the same `(datasourceId, sourcePath)` BEFORE
+   *   any engine call is issued, per spec.md scenario "Concurrent
+   *   download for the same `(datasourceId, path)` is rejected").
+   * - The handler's engine-bus subscription callback to correlate
+   *   engine `(datasourceId, path)` events back to the in-flight job's
+   *   `downloadJobId` (per spec.md "Service subscribes to engine bus
+   *   events for download lifecycle").
+   */
+  findByKey(datasourceId: string, sourcePath: string): string | undefined;
+
   /** Number of entries currently in the registry. */
   size(): number;
 }
 
 export function createDownloadRegistry(): DownloadRegistry {
   const entries = new Map<string, DownloadJobEntry>();
+  // Reverse index keyed `${datasourceId}::${sourcePath}` → downloadJobId.
+  // Updated in lockstep with `set` / `delete`. NOT touched by `update`
+  // because identity fields are immutable per the entry contract.
+  const byKey = new Map<string, string>();
+  const keyOf = (datasourceId: string, sourcePath: string): string =>
+    `${datasourceId}::${sourcePath}`;
 
   function set(entry: DownloadJobEntry): void {
+    // If the slot is being replaced (last-writer-wins) AND the prior entry
+    // had a different `(datasourceId, sourcePath)`, drop the old reverse
+    // mapping. In practice this never fires because the handler mints a
+    // fresh `downloadJobId` per call; the defensive sweep just keeps the
+    // index honest if a caller violates the contract.
+    const prev = entries.get(entry.downloadJobId);
+    if (prev !== undefined) {
+      const prevKey = keyOf(prev.datasourceId, prev.sourcePath);
+      if (byKey.get(prevKey) === entry.downloadJobId) {
+        byKey.delete(prevKey);
+      }
+    }
     entries.set(entry.downloadJobId, entry);
+    byKey.set(keyOf(entry.datasourceId, entry.sourcePath), entry.downloadJobId);
   }
 
   function get(downloadJobId: string): DownloadJobEntry | undefined {
@@ -133,18 +175,35 @@ export function createDownloadRegistry(): DownloadRegistry {
     // Replace, don't mutate — keeps snapshot stability and avoids any
     // shared-reference tear with concurrent readers. The abortController
     // is carried by reference (do NOT clone — the handler aborts cancels
-    // through this exact instance).
+    // through this exact instance). Identity fields are typed-locked out
+    // of `DownloadJobUpdate` so the reverse-index never needs touching.
     entries.set(downloadJobId, { ...prev, ...partial });
   }
 
   function deleteEntry(downloadJobId: string): void {
+    const prev = entries.get(downloadJobId);
+    if (prev === undefined) return;
     entries.delete(downloadJobId);
+    const prevKey = keyOf(prev.datasourceId, prev.sourcePath);
+    // Defensive: only delete the reverse mapping if it still points at
+    // this id (a `set` for a fresh job on the same key may have already
+    // overwritten it).
+    if (byKey.get(prevKey) === downloadJobId) {
+      byKey.delete(prevKey);
+    }
   }
 
   function snapshot(): DownloadJobEntry[] {
     return Array.from(entries.values()).sort(
       (a, b) => a.startedAt - b.startedAt,
     );
+  }
+
+  function findByKey(
+    datasourceId: string,
+    sourcePath: string,
+  ): string | undefined {
+    return byKey.get(keyOf(datasourceId, sourcePath));
   }
 
   function size(): number {
@@ -157,6 +216,7 @@ export function createDownloadRegistry(): DownloadRegistry {
     update,
     delete: deleteEntry,
     snapshot,
+    findByKey,
     size,
   };
 }

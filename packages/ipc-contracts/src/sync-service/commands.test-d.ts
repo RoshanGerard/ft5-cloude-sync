@@ -49,6 +49,8 @@ describe("sync-service command contract", () => {
       | "files:search"
       | "files:remove"
       | "files:rename"
+      | "files:download"
+      | "sync:cancel-download"
       | "downloads:list-active";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });

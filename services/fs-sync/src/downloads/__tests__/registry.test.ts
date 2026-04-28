@@ -370,4 +370,68 @@ describe("DownloadRegistry", () => {
       //   const bad6: DownloadJobUpdate = { abortController: new AbortController() };
     });
   });
+
+  // Reverse-index lookup (per add-engine-rename-download §13.23 + spec.md
+  // "Service subscribes to engine bus events"). The handler's
+  // concurrent-rejection guard reads `(datasourceId, sourcePath) →
+  // downloadJobId` BEFORE any engine call; the engine-bus subscription
+  // callback uses it to correlate engine events back to the in-flight
+  // job's `downloadJobId`. Identity fields are immutable per the §11
+  // entry contract, so the reverse index is set on `set` and cleared on
+  // `delete` — `update` must NOT touch it.
+  describe("findByKey reverse index (§13.23)", () => {
+    it("returns the downloadJobId for an in-flight (datasourceId, sourcePath) pair", () => {
+      const registry = createDownloadRegistry();
+      registry.set(makeEntry({ downloadJobId: "job-A" }));
+      expect(registry.findByKey("ds-1", "/welcome.pdf")).toBe("job-A");
+    });
+
+    it("returns undefined for an unknown (datasourceId, sourcePath) pair", () => {
+      const registry = createDownloadRegistry();
+      expect(registry.findByKey("ds-ghost", "/unknown.pdf")).toBeUndefined();
+    });
+
+    it("clears the mapping after delete so a fresh download can re-claim the key", () => {
+      const registry = createDownloadRegistry();
+      registry.set(makeEntry({ downloadJobId: "job-A" }));
+      registry.delete("job-A");
+      expect(registry.findByKey("ds-1", "/welcome.pdf")).toBeUndefined();
+      // A fresh entry on the same (datasourceId, sourcePath) is now allowed.
+      registry.set(
+        makeEntry({ downloadJobId: "job-B", startedAt: 2_000 }),
+      );
+      expect(registry.findByKey("ds-1", "/welcome.pdf")).toBe("job-B");
+    });
+
+    it("is unaffected by update — identity fields are immutable per the §11 contract", () => {
+      const registry = createDownloadRegistry();
+      registry.set(makeEntry({ downloadJobId: "job-A" }));
+      registry.update("job-A", { bytesDownloaded: 524_288, contentLength: 1_048_576 });
+      // The reverse index still resolves to "job-A" — `update` only mutates
+      // bytesDownloaded / contentLength.
+      expect(registry.findByKey("ds-1", "/welcome.pdf")).toBe("job-A");
+    });
+
+    it("distinct (datasourceId, sourcePath) pairs each map to their own downloadJobId", () => {
+      const registry = createDownloadRegistry();
+      registry.set(makeEntry({ downloadJobId: "job-A" }));
+      registry.set(
+        makeEntry({
+          downloadJobId: "job-B",
+          datasourceId: "ds-2",
+          sourcePath: "/other.pdf",
+          startedAt: 2_000,
+        }),
+      );
+      expect(registry.findByKey("ds-1", "/welcome.pdf")).toBe("job-A");
+      expect(registry.findByKey("ds-2", "/other.pdf")).toBe("job-B");
+    });
+
+    it("delete is a no-op on an unknown id and does not corrupt the reverse index", () => {
+      const registry = createDownloadRegistry();
+      registry.set(makeEntry({ downloadJobId: "job-A" }));
+      registry.delete("nope");
+      expect(registry.findByKey("ds-1", "/welcome.pdf")).toBe("job-A");
+    });
+  });
 });

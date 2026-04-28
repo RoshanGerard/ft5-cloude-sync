@@ -43,9 +43,11 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<CommandMap["files:search"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:remove"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:rename"]>().not.toBeNever();
+    expectTypeOf<CommandMap["files:download"]>().not.toBeNever();
+    expectTypeOf<CommandMap["sync:cancel-download"]>().not.toBeNever();
   });
 
-  it("FilesErrorTag is the exact six-variant union", () => {
+  it("FilesErrorTag is the exact seven-variant union (Conflict + Cancelled)", () => {
     expectTypeOf<FilesErrorTag>().toEqualTypeOf<
       | "auth-revoked"
       | "disconnected"
@@ -53,6 +55,7 @@ describe("sync-service files:* command contract", () => {
       | "other"
       | "invalid-datasource"
       | "conflict"
+      | "cancelled"
     >();
   });
 
@@ -62,7 +65,8 @@ describe("sync-service files:* command contract", () => {
       | "files:stat"
       | "files:search"
       | "files:remove"
-      | "files:rename";
+      | "files:rename"
+      | "files:download";
     expectTypeOf<ExpectedFiles>().toMatchTypeOf<CommandName>();
   });
 
@@ -73,6 +77,8 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<"files:search">().toMatchTypeOf<Names>();
     expectTypeOf<"files:remove">().toMatchTypeOf<Names>();
     expectTypeOf<"files:rename">().toMatchTypeOf<Names>();
+    expectTypeOf<"files:download">().toMatchTypeOf<Names>();
+    expectTypeOf<"sync:cancel-download">().toMatchTypeOf<Names>();
   });
 
   // -- files:list -----------------------------------------------------------
@@ -195,6 +201,43 @@ describe("sync-service files:* command contract", () => {
     // mirrors retryAfterMs.
     type Shape = FilesCommandErrorShape;
     expectTypeOf<Shape["existingPath"]>().toEqualTypeOf<string | undefined>();
+  });
+
+  // -- files:download (add-engine-rename-download §13) ---------------------
+
+  it("files:download params carry datasourceId / path / required toPath", () => {
+    expectTypeOf<CommandParams<"files:download">>().toEqualTypeOf<{
+      readonly datasourceId: string;
+      readonly path: string;
+      readonly toPath: string;
+    }>();
+  });
+
+  it("files:download result is { savedPath, bytes }", () => {
+    expectTypeOf<CommandResult<"files:download">>().toEqualTypeOf<{
+      readonly savedPath: string;
+      readonly bytes: number;
+    }>();
+  });
+
+  it("files:download error carries the tagged envelope error shape", () => {
+    expectTypeOf<
+      CommandError<"files:download">
+    >().toEqualTypeOf<FilesCommandErrorShape>();
+  });
+
+  // -- sync:cancel-download (add-engine-rename-download §13.15) -----------
+
+  it("sync:cancel-download params are { downloadJobId }", () => {
+    expectTypeOf<CommandParams<"sync:cancel-download">>().toEqualTypeOf<{
+      readonly downloadJobId: string;
+    }>();
+  });
+
+  it("sync:cancel-download result is { cancelled: boolean } (idempotent)", () => {
+    expectTypeOf<CommandResult<"sync:cancel-download">>().toEqualTypeOf<{
+      readonly cancelled: boolean;
+    }>();
   });
 
   // -- Envelope shape --------------------------------------------------------

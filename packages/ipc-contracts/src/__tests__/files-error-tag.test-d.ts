@@ -12,7 +12,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { FilesErrorTag } from "../files.js";
 
 describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
-  it("exposes a runtime const object with exactly the 6 documented members", () => {
+  it("exposes a runtime const object with exactly the 7 documented members", () => {
     expect(FilesErrorTag).toStrictEqual({
       AuthRevoked: "auth-revoked",
       Disconnected: "disconnected",
@@ -20,10 +20,11 @@ describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
       Other: "other",
       InvalidDatasource: "invalid-datasource",
       Conflict: "conflict",
+      Cancelled: "cancelled",
     });
   });
 
-  it("derived type is the documented 6-string union", () => {
+  it("derived type is the documented 7-string union", () => {
     expectTypeOf<FilesErrorTag>().toEqualTypeOf<
       | "auth-revoked"
       | "disconnected"
@@ -31,6 +32,7 @@ describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
       | "other"
       | "invalid-datasource"
       | "conflict"
+      | "cancelled"
     >();
   });
 
@@ -51,5 +53,15 @@ describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
     expectTypeOf<"conflict">().toMatchTypeOf<FilesErrorTag>();
     const fromConst: FilesErrorTag = FilesErrorTag.Conflict;
     expect(fromConst).toBe("conflict");
+  });
+
+  it("includes Cancelled tag for download cancellation (add-engine-rename-download §13)", () => {
+    // `Cancelled: "cancelled"` is added by add-engine-rename-download §13
+    // for the user-driven `files:download` cancel path (per spec.md
+    // "Cancel mid-stream" scenario). Distinct from `"other"` because the
+    // renderer's download toaster surfaces cancellation as a soft-state.
+    expectTypeOf<"cancelled">().toMatchTypeOf<FilesErrorTag>();
+    const fromConst: FilesErrorTag = FilesErrorTag.Cancelled;
+    expect(fromConst).toBe("cancelled");
   });
 });
