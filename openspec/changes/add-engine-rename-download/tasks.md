@@ -260,9 +260,9 @@ The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-F
 
 ## 22. Renderer — settings dialog Downloads section
 
-- [ ] 22.1 Write unit tests for the new section in `settings-dialog.tsx`: renders DOWNLOADS heading, Default folder row (path display, Open + Change buttons), Always-ask Switch row; Open invokes `showSavedInFolder`; Change opens the OS picker and updates the store; Switch toggles the Always-ask key
-- [ ] 22.2 Implement; rerun → green
-- [ ] 22.3 Verify focus-trap continues to work across the new section (Tab from Motion's Switch reaches the Downloads section's Open button, etc.); update the existing settings-dialog test if it asserted on tab order
+- [x] 22.1 Write unit tests for the new section in `settings-dialog.tsx`: renders DOWNLOADS heading, Default folder row (path display, Open + Change buttons), Always-ask Switch row; Open invokes `showSavedInFolder`; Change opens the OS picker and updates the store; Switch toggles the Always-ask key
+- [x] 22.2 Implement; rerun → green
+- [x] 22.3 Verify focus-trap continues to work across the new section (Tab from Motion's Switch reaches the Downloads section's Open button, etc.); update the existing settings-dialog test if it asserted on tab order. **Done 2026-04-28**: extended `settings-dialog.tsx` with a sibling Downloads section (heading + Default-folder row with Open/Change buttons + Always-ask Switch row). Open invokes `window.api.files.showSavedInFolder`; Open is disabled when `useDefaultFolder()` returns null (a user can open Settings before any download — runtime guard against a null-folder dispatch). Change… invokes `window.api.dialog.showOpenDialog` with `properties: ['openDirectory', 'createDirectory']` — reuses the §21 prerequisite extension. Switch toggles `ft5.downloads.alwaysAsk` via the §20 `setAlwaysAsk` setter. Focus-trap verified by asserting DOM order of focusable controls (Motion switch → Open → Change → Always-ask switch) — Tab order follows DOM order because none of the controls override `tabIndex`. apps/desktop 1137 → 1147 (+10). typecheck + lint clean.
 
 ## 23. Renderer — download orchestrator
 
