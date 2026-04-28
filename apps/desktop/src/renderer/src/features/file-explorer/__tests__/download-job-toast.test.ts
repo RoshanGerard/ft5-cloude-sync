@@ -215,6 +215,82 @@ describe("createDownloadJobToaster (§24.1)", () => {
     expect(tree).toBeDefined();
   });
 
+  it("(c-postsmoke) on file-downloaded after a prior loading toast, dismiss is called BEFORE custom (clears Sonner's loading-variant chrome incl. spinner)", () => {
+    // Post-archive smoke (2026-04-28): users reported the success toast
+    // mounting alongside a leftover spinner. Root cause: re-using the
+    // same toast id with `toast.custom(..., { id })` does NOT clear
+    // Sonner's loading-variant template — the spinner is part of the
+    // loading template, not our custom render. The fix is an explicit
+    // `toast.dismiss(toastId)` before the custom spawn so Sonner tears
+    // down the loading chrome before mounting the success render.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "file-downloaded",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 2048,
+      },
+    });
+
+    // The dismiss for the loading toast must precede the custom spawn,
+    // ordered by invocation. Both calls reference the same toast id.
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+    expect(toast.custom).toHaveBeenCalledTimes(1);
+    const dismissOrder = toast.dismiss.mock.invocationCallOrder[0]!;
+    const customOrder = toast.custom.mock.invocationCallOrder[0]!;
+    expect(dismissOrder).toBeLessThan(customOrder);
+
+    // Sanity: the custom render itself does not include a spinner —
+    // the success template is plain divs + buttons (Show in folder /
+    // Open). Render the tree and assert no role="status" with a
+    // spinner indicator, and no "loading" text.
+    const [renderFn, opts] = toast.custom.mock.calls[0] as [
+      (id: string | number) => unknown,
+      { id?: string | number } | undefined,
+    ];
+    const tree = renderFn(opts!.id!) as {
+      type: string;
+      props: { role?: string; children?: unknown };
+    };
+    expect(tree.type).toBe("div");
+    // The render is a plain element tree; no "loading"/"spinner"
+    // identifier appears anywhere in the className/role surface.
+    const serialized = JSON.stringify(tree);
+    expect(serialized).not.toMatch(/spinner/i);
+    expect(serialized).not.toMatch(/loading/i);
+    expect(serialized).toContain("Downloaded");
+    expect(serialized).toContain("Open");
+    expect(serialized).toContain("Show in folder");
+  });
+
+  it("(c-postsmoke-no-prior) on file-downloaded as the FIRST event for a jobId, dismiss is NOT called (nothing to tear down)", () => {
+    // Defence against accidentally always-dismissing: when there is no
+    // prior loading toast (terminal-as-first-event path, e.g. hydrated
+    // jobs that completed before the listener attached), spawning the
+    // success toast must not fire a stray dismiss for a non-existent id.
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit({
+      kind: "file-downloaded",
+      payload: {
+        downloadJobId: "job-X",
+        datasourceId: "ds-1",
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 2048,
+      },
+    });
+
+    expect(toast.dismiss).not.toHaveBeenCalled();
+    expect(toast.custom).toHaveBeenCalledTimes(1);
+  });
+
   it("(c2) the success toast's [Open] action invokes window.api.files.openSavedPath", () => {
     toast.loading.mockReturnValueOnce("toast-A");
     const openSavedPath: Mock = vi.fn(async () => {});

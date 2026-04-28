@@ -296,6 +296,37 @@ function isFolder(file: DriveFile): boolean {
 }
 
 /**
+ * Map a Google Apps native mime to a short, user-friendly noun for the
+ * "can't be downloaded directly" error. Caller MUST ensure the mime
+ * starts with `application/vnd.google-apps.` AND is not the folder
+ * mime; this helper does not re-guard. Unknown apps subtypes (e.g., a
+ * future mime Google adds) fall back to "Apps file".
+ *
+ * Used only for the user-facing error path in `doDownloadFileImpl`. See
+ * the parked follow-up `add-drive-docs-editors-export` for the actual
+ * export-API routing that closes the gap.
+ */
+function humanizeGoogleAppsMime(mime: string): string {
+  const subtype = mime.slice("application/vnd.google-apps.".length);
+  switch (subtype) {
+    case "document":
+      return "Doc";
+    case "spreadsheet":
+      return "Sheet";
+    case "presentation":
+      return "Slide";
+    case "drawing":
+      return "Drawing";
+    case "form":
+      return "Form";
+    case "script":
+      return "Apps Script";
+    default:
+      return "Apps file";
+  }
+}
+
+/**
  * Parse a `Content-Range` header (HTTP RFC 7233) into the engine's
  * `{ start, end, total }` shape. Returns `undefined` for headers we can't
  * parse, including the unknown-range form (`bytes [asterisk]/[total]`)
@@ -1741,6 +1772,51 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   ): Promise<DownloadResult> {
     const { fileId } = await this.resolveTarget(target);
     const path = target.kind === "path" ? target.path : target.handle;
+
+    // Post-archive smoke (2026-04-28): pre-fetch metadata to detect
+    // Google Apps native files (Docs / Sheets / Slides / Drawings /
+    // Forms / Apps Script). Drive's `files.get?alt=media` only works
+    // for files with binary content; Google Apps files require
+    // `files.export` with a target export mime — that's the scope of
+    // the parked follow-up `add-drive-docs-editors-export`. For this
+    // change we refuse early with a friendly message instead of
+    // letting the user see the raw 403 `fileNotDownloadable` JSON.
+    //
+    // Trade-off: this adds one round-trip per download (no cache layer
+    // serves this metadata fetch — Drive's path↔fileId LRU only stores
+    // ids, not mime types). Acceptable cost for a clean error path; the
+    // proper fix lives in the follow-up which routes binary vs export
+    // upstream of this call.
+    let metaName: string | undefined;
+    let metaMimeType: string | undefined;
+    try {
+      const probe = await this.drive().files.get({
+        fileId,
+        fields: "name, mimeType",
+      });
+      const data = probe.data as DriveFile;
+      metaName = data.name;
+      metaMimeType = data.mimeType;
+    } catch (err) {
+      throw this.normalizeErrorImpl(err);
+    }
+    if (
+      metaMimeType !== undefined &&
+      metaMimeType.startsWith("application/vnd.google-apps.") &&
+      metaMimeType !== DRIVE_FOLDER_MIME
+    ) {
+      const displayName = metaName ?? path;
+      const kindLabel = humanizeGoogleAppsMime(metaMimeType);
+      throw new DatasourceError<"google-drive">({
+        tag: "unsupported",
+        datasourceType: "google-drive",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: { kind: "google-apps-not-downloadable", mimeType: metaMimeType },
+        message: `${displayName} is a Google ${kindLabel} and can't be downloaded directly. Open it in Drive and use File → Download to export as PDF/DOCX/CSV. Native export support is tracked in change 'add-drive-docs-editors-export'.`,
+      });
+    }
+
     const headers: Record<string, string> = {};
     if (options.rangeStart !== undefined && options.rangeStart > 0) {
       headers.Range = `bytes=${options.rangeStart}-`;

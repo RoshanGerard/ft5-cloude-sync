@@ -653,6 +653,19 @@ const fixture: StrategyContractFixture = {
         ],
       }),
     });
+    // Metadata pre-fetch for the post-archive Google Apps detection
+    // path (`fields: "name, mimeType"`). The strategy issues this
+    // BEFORE the alt=media stream call so it can refuse Google Apps
+    // files with a friendly error. Plain binary mime → no refusal,
+    // continues to the stream.
+    gets.push({
+      fileId,
+      handler: () => ({
+        id: fileId,
+        name: terminal,
+        mimeType: "text/plain",
+      }),
+    });
     getStreams.push({
       fileId,
       handler: () => {
@@ -687,6 +700,16 @@ const fixture: StrategyContractFixture = {
             createdTime: "2024-01-01T00:00:00Z",
           },
         ],
+      }),
+    });
+    // Metadata pre-fetch for Google Apps detection path (see
+    // primeDownloadOk note).
+    gets.push({
+      fileId,
+      handler: () => ({
+        id: fileId,
+        name: terminal,
+        mimeType: "text/plain",
       }),
     });
     getStreams.push({

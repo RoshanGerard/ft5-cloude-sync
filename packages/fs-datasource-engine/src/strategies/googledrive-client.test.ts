@@ -3036,6 +3036,20 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
           }),
         },
       ],
+      // Post-archive (2026-04-28): the strategy issues a metadata
+      // pre-fetch (`fields: "name, mimeType"`) before the alt=media
+      // stream call to detect Google Apps files. The fake routes
+      // non-`alt=media` `files.get` calls to this matcher.
+      gets: [
+        {
+          fileId: "DL-ID",
+          handler: () => ({
+            id: "DL-ID",
+            name: "hello.txt",
+            mimeType: "text/plain",
+          }),
+        },
+      ],
       getStreams: [
         {
           fileId: "DL-ID",
@@ -3074,9 +3088,15 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
       result.stream.on("error", reject);
     });
     expect(Buffer.concat(chunks).toString()).toBe(fixture.toString());
-    expect(calls.get).toHaveLength(1);
+    // Two `files.get` calls now: (1) metadata pre-fetch for Google
+    // Apps detection (`fields: "name, mimeType"`); (2) the alt=media
+    // stream call. The metadata call must NOT carry `alt=media`.
+    expect(calls.get).toHaveLength(2);
     expect(calls.get[0]!.params.fileId).toBe("DL-ID");
-    expect(calls.get[0]!.params.alt).toBe("media");
+    expect(calls.get[0]!.params.alt).toBeUndefined();
+    expect(calls.get[0]!.params.fields).toBe("name, mimeType");
+    expect(calls.get[1]!.params.fileId).toBe("DL-ID");
+    expect(calls.get[1]!.params.alt).toBe("media");
 
     const downloadings = h.events.filter((e) => e.event === "downloading");
     const downloaded = h.events.filter((e) => e.event === "file-downloaded");
@@ -3095,6 +3115,18 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
     const total = 1024;
     const start = 16;
     const { client, calls } = makeFakeDrive({
+      // Metadata pre-fetch for Google Apps detection — see test (1)
+      // above for the rationale.
+      gets: [
+        {
+          fileId: "RANGE-ID",
+          handler: () => ({
+            id: "RANGE-ID",
+            name: "range-fixture.bin",
+            mimeType: "application/octet-stream",
+          }),
+        },
+      ],
       getStreams: [
         {
           fileId: "RANGE-ID",
@@ -3136,7 +3168,9 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
       result.stream.on("end", () => resolve());
       result.stream.on("error", reject);
     });
-    expect(calls.get).toHaveLength(1);
+    // Two `files.get` calls (metadata + alt=media) per the post-archive
+    // Google Apps detection pre-fetch.
+    expect(calls.get).toHaveLength(2);
   });
 });
 
@@ -3144,6 +3178,16 @@ describe("GoogleDriveClient — doDownloadFileImpl AbortSignal forwarding", () =
   it("aborting the consumer signal makes the SDK reject AbortError; bus emits exactly one download-cancelled with the byte counts at abort time; no download-failed", async () => {
     const controller = new AbortController();
     const { client } = makeFakeDrive({
+      gets: [
+        {
+          fileId: "CANCEL-ID",
+          handler: () => ({
+            id: "CANCEL-ID",
+            name: "cancel-fixture.bin",
+            mimeType: "application/octet-stream",
+          }),
+        },
+      ],
       getStreams: [
         {
           fileId: "CANCEL-ID",
@@ -3209,6 +3253,16 @@ describe("GoogleDriveClient — doDownloadFileImpl AbortSignal forwarding", () =
 describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired → download-failed", () => {
   it("normalizes a mid-stream 401 to tag:auth-expired; bus emits exactly one download-failed whose payload IS the SerializedDatasourceError; no download-cancelled", async () => {
     const { client } = makeFakeDrive({
+      gets: [
+        {
+          fileId: "401-ID",
+          handler: () => ({
+            id: "401-ID",
+            name: "401-fixture.bin",
+            mimeType: "application/octet-stream",
+          }),
+        },
+      ],
       getStreams: [
         {
           fileId: "401-ID",
@@ -3263,5 +3317,170 @@ describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expir
     });
     expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
     expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// doDownloadFileImpl — Google Apps native files refuse with friendly error
+// (post-archive smoke 2026-04-28; parked follow-up `add-drive-docs-editors-export`)
+// ---------------------------------------------------------------------------
+
+describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", () => {
+  it("Google Doc (mimeType application/vnd.google-apps.document) throws DatasourceError tag:'unsupported' with a friendly message that names the file and the follow-up change; no alt=media call is issued", async () => {
+    // The strategy's metadata pre-fetch must catch the Google Apps mime
+    // BEFORE the alt=media stream call. The user-facing message must
+    // (a) identify the file by name, (b) name the type ("Doc"), and
+    // (c) reference the parked follow-up so the failure is actionable.
+    const { client, calls } = makeFakeDrive({
+      gets: [
+        {
+          fileId: "DOC-ID",
+          handler: () => ({
+            id: "DOC-ID",
+            name: "DT-206 Code Review",
+            mimeType: "application/vnd.google-apps.document",
+          }),
+        },
+      ],
+      // No `getStreams` — the strategy must refuse before it would
+      // dispatch the alt=media call. If the refusal misses, the fake
+      // throws `no-get-stream-responder` and the test still surfaces
+      // a failure (via a different error message).
+    });
+    const h = makeHarness({ drive: client });
+    let caught: unknown;
+    try {
+      await h.client.downloadFile({ kind: "handle", handle: "DOC-ID" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const e = caught as DatasourceError<"google-drive">;
+    expect(e.tag).toBe("unsupported");
+    expect(e.retryable).toBe(false);
+    expect(e.message).toContain("DT-206 Code Review");
+    expect(e.message).toContain("Doc");
+    expect(e.message).toContain("add-drive-docs-editors-export");
+
+    // Only ONE files.get call — the metadata pre-fetch. No alt=media.
+    expect(calls.get).toHaveLength(1);
+    expect(calls.get[0]!.params.alt).toBeUndefined();
+    expect(calls.get[0]!.params.fields).toBe("name, mimeType");
+
+    // The base's downloadFile wrapper MUST emit `download-failed` even
+    // for `tag: "unsupported"` throws from `doDownloadFileImpl` —
+    // otherwise the renderer's toaster never sees the failure and the
+    // user gets silent nothing (worse than the raw 403 they had before
+    // this fix). Verify the event reaches the bus carrying the
+    // friendly message the renderer renders.
+    const failed = h.events.filter((e) => e.event === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.payload).toMatchObject({
+      tag: "unsupported",
+      datasourceType: "google-drive",
+      datasourceId: "ds-gd-1",
+    });
+    const failedPayload = failed[0]!.payload as { message?: string };
+    expect(failedPayload.message).toContain("DT-206 Code Review");
+    expect(failedPayload.message).toContain("Doc");
+    expect(failedPayload.message).toContain("add-drive-docs-editors-export");
+  });
+
+  it("each Google Apps subtype (sheet/presentation/drawing/form/script) is refused with the matching humanized noun", async () => {
+    const cases: Array<{ subtype: string; noun: string }> = [
+      { subtype: "spreadsheet", noun: "Sheet" },
+      { subtype: "presentation", noun: "Slide" },
+      { subtype: "drawing", noun: "Drawing" },
+      { subtype: "form", noun: "Form" },
+      { subtype: "script", noun: "Apps Script" },
+    ];
+    for (const { subtype, noun } of cases) {
+      const fileId = `APPS-${subtype.toUpperCase()}`;
+      const { client } = makeFakeDrive({
+        gets: [
+          {
+            fileId,
+            handler: () => ({
+              id: fileId,
+              name: `fixture-${subtype}`,
+              mimeType: `application/vnd.google-apps.${subtype}`,
+            }),
+          },
+        ],
+      });
+      const h = makeHarness({ drive: client });
+      let caught: unknown;
+      try {
+        await h.client.downloadFile({ kind: "handle", handle: fileId });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(DatasourceError);
+      const e = caught as DatasourceError<"google-drive">;
+      expect(e.tag).toBe("unsupported");
+      expect(e.message).toContain(noun);
+      expect(e.message).toContain(`fixture-${subtype}`);
+    }
+  });
+
+  it("an unknown application/vnd.google-apps.<future> subtype falls back to 'Apps file' and still refuses (defence-in-depth against new Google types)", async () => {
+    const { client } = makeFakeDrive({
+      gets: [
+        {
+          fileId: "FUTURE-ID",
+          handler: () => ({
+            id: "FUTURE-ID",
+            name: "future-thing",
+            mimeType: "application/vnd.google-apps.somethingnew",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    let caught: unknown;
+    try {
+      await h.client.downloadFile({ kind: "handle", handle: "FUTURE-ID" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const e = caught as DatasourceError<"google-drive">;
+    expect(e.tag).toBe("unsupported");
+    expect(e.message).toContain("Apps file");
+  });
+
+  it("DRIVE_FOLDER_MIME (application/vnd.google-apps.folder) is NOT caught by the Google Apps refusal — folder downloads have their own existing failure path (kind='folder' upstream)", async () => {
+    // Sanity: if we ever lower the folder check we must not break the
+    // existing folder-handling path. The Google Apps detection
+    // explicitly excludes the folder mime so the refusal does not
+    // alias as a "folder download" case. Here we verify by giving the
+    // pre-fetch a folder mime and checking that the strategy proceeds
+    // to the (missing) alt=media call — which should then fail in the
+    // fake with `no-get-stream-responder`, not the friendly Apps msg.
+    const { client } = makeFakeDrive({
+      gets: [
+        {
+          fileId: "FOLDER-ID",
+          handler: () => ({
+            id: "FOLDER-ID",
+            name: "Untitled folder",
+            mimeType: "application/vnd.google-apps.folder",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    let caught: unknown;
+    try {
+      await h.client.downloadFile({ kind: "handle", handle: "FOLDER-ID" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    // The error must NOT be the friendly Apps message (different code
+    // path); the fake's missing-stream responder bubbles up via
+    // normalizeErrorImpl.
+    const errMsg = (caught as Error).message ?? "";
+    expect(errMsg).not.toContain("add-drive-docs-editors-export");
   });
 });

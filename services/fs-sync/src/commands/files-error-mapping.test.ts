@@ -182,6 +182,80 @@ describe("normalizeFilesError", () => {
     expect(normalizeFilesError({ shape: "neither" }).tag).toBe("other");
   });
 
+  it("substitutes a friendly message when a DatasourceError carries Drive's fileNotDownloadable reason (post-archive Docs-Editors fallback)", () => {
+    // Defence-in-depth (post-archive smoke 2026-04-28): if the engine's
+    // upstream Google Apps detection misses (e.g. a future subtype),
+    // the alt=media 403 surfaces here as a `provider-error` carrying
+    // the raw Google JSON in the message. The JSON includes the
+    // documented reason `fileNotDownloadable`. Detect either signature
+    // and substitute a friendly message; the tag still collapses to
+    // "other" per the existing mapping.
+    const rawJson = JSON.stringify({
+      error: {
+        code: 403,
+        message:
+          "Only files with binary content can be downloaded. Use Export with Docs Editors files.",
+        errors: [{ reason: "fileNotDownloadable" }],
+      },
+    });
+    const err = new DatasourceError({
+      tag: "provider-error",
+      datasourceType: "google-drive",
+      datasourceId: "ds-docs-fallback",
+      retryable: false,
+      message: rawJson,
+    });
+    const result = normalizeFilesError(err);
+    expect(result.tag).toBe("other");
+    expect(result.message).toContain(
+      "Google Doc, Sheet, or Slide",
+    );
+    expect(result.message).toContain("add-drive-docs-editors-export");
+    // The raw JSON noise should not leak through to the renderer.
+    expect(result.message).not.toContain("fileNotDownloadable");
+  });
+
+  it("substitutes friendly message when the DatasourceError message contains the Drive 'Use Export with Docs Editors files' phrase (alternate signature)", () => {
+    const err = new DatasourceError({
+      tag: "provider-error",
+      datasourceType: "google-drive",
+      datasourceId: "ds-docs-fallback-2",
+      retryable: false,
+      message:
+        "Drive said: Only files with binary content can be downloaded. Use Export with Docs Editors files.",
+    });
+    const result = normalizeFilesError(err);
+    expect(result.message).toContain(
+      "Google Doc, Sheet, or Slide",
+    );
+  });
+
+  it("substitutes friendly message even for plain Error throws that embed the Drive Docs-Editors signature (non-DatasourceError fallback)", () => {
+    // The engine normalizes most thrown values into DatasourceError;
+    // this case guards against a raw provider error escaping the
+    // normalizer (e.g. the value gets `JSON.stringify`-ed at a higher
+    // layer). The message still gets the friendly substitution.
+    const err = new Error('{"reason":"fileNotDownloadable"}');
+    const result = normalizeFilesError(err);
+    expect(result.tag).toBe("other");
+    expect(result.message).toContain(
+      "Google Doc, Sheet, or Slide",
+    );
+  });
+
+  it("does NOT substitute when the message is a benign DatasourceError message (regression guard for the substitution)", () => {
+    const err = new DatasourceError({
+      tag: "auth-revoked",
+      datasourceType: "google-drive",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: "refresh token revoked",
+    });
+    const result = normalizeFilesError(err);
+    expect(result.message).toBe("refresh token revoked");
+    expect(result.message).not.toContain("Google Doc");
+  });
+
   it("omits retryAfterMs when the DatasourceError did not carry one", () => {
     const err = new DatasourceError({
       tag: "rate-limited",

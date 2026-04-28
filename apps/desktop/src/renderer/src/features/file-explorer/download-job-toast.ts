@@ -423,6 +423,17 @@ export function createDownloadJobToaster(
         void filesApi.showSavedInFolder(savedPath);
         toast.dismiss(toastId);
       };
+      // Post-archive smoke (2026-04-28) — explicit dismiss-then-spawn:
+      // simply re-using the same toast id with `toast.custom(..., { id })`
+      // does NOT clear Sonner's loading-variant chrome (the spinner is
+      // part of Sonner's `toast.loading` template, not our custom render).
+      // Without the dismiss, the success render mounts but the original
+      // loading toast's spinner persists in the DOM. Dismissing first
+      // forces Sonner to tear down the loading chrome before the custom
+      // render mounts, so the user sees only the success layout.
+      if (existing !== undefined) {
+        toast.dismiss(toastId);
+      }
       toast.custom(
         (id) => buildSuccessRender(id, basename, onOpen, onShowInFolder),
         {
