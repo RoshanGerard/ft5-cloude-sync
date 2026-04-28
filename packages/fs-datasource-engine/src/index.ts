@@ -41,6 +41,8 @@ export type {
   BaseClientInit,
   ConflictPolicy,
   DatasourceClient,
+  DownloadOptions,
+  DownloadResult,
 } from "./base-client.js";
 
 // Phase 4: CredentialStore port. The concrete implementation

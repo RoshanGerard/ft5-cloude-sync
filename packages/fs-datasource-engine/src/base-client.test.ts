@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 
 import type {
   AuthIntent,
@@ -60,9 +61,26 @@ interface FakeConfig {
     newName: string,
     conflictPolicy: "fail" | "overwrite" | "keep-both",
   ) => Promise<DatasourceFileEntry<FakeType>>;
+  doDownloadFile?: (
+    target: Target,
+    options: DownloadOptions,
+  ) => Promise<DownloadResult>;
   doGetQuota?: () => Promise<Quota>;
   refreshToken?: () => Promise<AuthResult>;
   normalizeError?: (raw: unknown) => DatasourceError<FakeType>;
+}
+
+interface DownloadOptions {
+  rangeStart?: number;
+  signal?: AbortSignal;
+  onProgress?: (loaded: number, total: number | null) => void;
+  emitDownloading?: (loaded: number, total: number | null) => void;
+}
+
+interface DownloadResult {
+  stream: Readable;
+  contentLength: number | null;
+  contentRange?: { start: number; end: number; total: number };
 }
 
 function makeEntry(path = "/demo.txt"): DatasourceFileEntry<FakeType> {
@@ -122,6 +140,9 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
       conflictPolicy: "fail" | "overwrite" | "keep-both",
     ) => Promise<DatasourceFileEntry<FakeType>>
   >();
+  readonly doDownloadFile = vi.fn<
+    (target: Target, options: DownloadOptions) => Promise<DownloadResult>
+  >();
   readonly doGetQuotaSpy = vi.fn<() => Promise<Quota>>();
   readonly refreshTokenSpy = vi.fn<() => Promise<AuthResult>>();
   readonly normalizeErrorSpy = vi.fn<(raw: unknown) => DatasourceError<FakeType>>();
@@ -167,6 +188,14 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
 
     if (cfg.doRename) this.doRename.mockImplementation(cfg.doRename);
     else this.doRename.mockResolvedValue(makeEntry());
+
+    if (cfg.doDownloadFile)
+      this.doDownloadFile.mockImplementation(cfg.doDownloadFile);
+    else
+      this.doDownloadFile.mockResolvedValue({
+        stream: Readable.from([]),
+        contentLength: 0,
+      });
 
     if (cfg.doGetQuota)
       this.doGetQuotaSpy.mockImplementation(cfg.doGetQuota);
@@ -229,6 +258,12 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
     conflictPolicy: "fail" | "overwrite" | "keep-both",
   ): Promise<DatasourceFileEntry<FakeType>> {
     return this.doRename(target, newName, conflictPolicy);
+  }
+  protected doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult> {
+    return this.doDownloadFile(target, options);
   }
   protected doGetQuotaImpl(): Promise<Quota> {
     return this.doGetQuotaSpy();
@@ -1515,6 +1550,402 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
       message: "exhausted keep-both attempts",
       via: "rename",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadFile — base-class primitive (add-engine-rename-download §5)
+// ---------------------------------------------------------------------------
+//
+// The base wraps the strategy's `doDownloadFileImpl` with `withRefresh`
+// (one-shot auth-expired retry on the initial HTTP call) and emits the
+// engine bus's four download lifecycle events: `downloading` (per chunk),
+// `file-downloaded` (on stream end), `download-failed` (on stream error),
+// `download-cancelled` (on AbortSignal). Per design.md Decision 3, the
+// engine does NOT mint a transaction ID, does NOT carry per-download
+// state across calls, and does NOT splice/retry mid-stream — those
+// orchestration responsibilities live in fs-sync.
+//
+// Per the user's task description: ONE byte-counting hook in the strategy
+// fires both the consumer's `onProgress` callback AND the bus emission.
+// The base provides a `protected emitDownloading(path, loaded, total)`
+// helper that strategies invoke from their progress hook; the helper
+// emits the bus event AND captures the latest counts so the
+// cancel-path event can populate `bytesDownloaded` / `bytesTotal`.
+
+describe("BaseDatasourceClient — downloadFile success path", () => {
+  it("returns the strategy's shape unchanged via withRefresh; emits one or more `downloading` then exactly one `file-downloaded` on clean stream end; no `download-failed` or `download-cancelled`", async () => {
+    const target: Target = { kind: "path", path: "/folder/big.bin" };
+    const stream = new Readable({ read() {} });
+    const { client, events } = makeHarness({
+      doDownloadFile: async (_t, options) => {
+        // Simulate the strategy's byte-counting hook: emit two ticks via
+        // the base helper (which fires both bus emission + closure tracking)
+        // then deliver the stream's data + end events.
+        const callBaseHelper = (
+          loaded: number,
+          total: number | null,
+        ): void => {
+          (
+            client as unknown as {
+              emitDownloading: (
+                path: string,
+                loaded: number,
+                total: number | null,
+              ) => void;
+            }
+          ).emitDownloading("/folder/big.bin", loaded, total);
+        };
+        callBaseHelper(2048, 4096);
+        callBaseHelper(4096, 4096);
+        // Defer chunk-push to after the consumer wires up listeners.
+        setImmediate(() => {
+          stream.push(Buffer.alloc(2048));
+          stream.push(Buffer.alloc(2048));
+          stream.push(null);
+        });
+        void options;
+        return {
+          stream,
+          contentLength: 4096,
+        };
+      },
+    });
+
+    const result = await client.downloadFile(target);
+    // Shape echoes what the strategy returned, unchanged.
+    expect(result.contentLength).toBe(4096);
+    expect(result.stream).toBe(stream);
+    // Drain the stream so the base's `end`-listener fires `file-downloaded`.
+    await new Promise<void>((resolve, reject) => {
+      const sink = new Readable({ read() {} });
+      void sink;
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", reject);
+    });
+
+    const downloadings = events.filter((e) => e.event === "downloading");
+    const downloaded = events.filter((e) => e.event === "file-downloaded");
+    expect(downloadings.length).toBeGreaterThanOrEqual(1);
+    expect(downloaded).toHaveLength(1);
+    expect(downloaded[0]?.payload).toEqual({
+      path: "/folder/big.bin",
+      bytes: 4096,
+    });
+    expect(events.some((e) => e.event === "download-failed")).toBe(false);
+    expect(events.some((e) => e.event === "download-cancelled")).toBe(false);
+    // Envelope fields on the terminal event.
+    expect(downloaded[0]?.datasourceId).toBe("ds-1");
+    expect(downloaded[0]?.datasourceType).toBe("amazon-s3");
+  });
+});
+
+describe("BaseDatasourceClient — downloadFile rangeStart propagation", () => {
+  it("forwards rangeStart unchanged into doDownloadFileImpl and returns the strategy's contentRange unchanged", async () => {
+    const target: Target = { kind: "path", path: "/large.bin" };
+    let receivedOptions: DownloadOptions | undefined;
+    const stream = new Readable({ read() {} });
+    const { client } = makeHarness({
+      doDownloadFile: async (_t, options) => {
+        receivedOptions = options;
+        setImmediate(() => stream.push(null));
+        return {
+          stream,
+          contentLength: 1_000_000 - 1024,
+          contentRange: { start: 1024, end: 999_999, total: 1_000_000 },
+        };
+      },
+    });
+
+    const result = await client.downloadFile(target, { rangeStart: 1024 });
+
+    expect(receivedOptions?.rangeStart).toBe(1024);
+    expect(result.contentRange).toEqual({
+      start: 1024,
+      end: 999_999,
+      total: 1_000_000,
+    });
+  });
+});
+
+describe("BaseDatasourceClient — downloadFile signal propagation", () => {
+  it("aborting the consumer-supplied AbortSignal causes the strategy's underlying call to reject with AbortError; the rejection propagates to the consumer", async () => {
+    const target: Target = { kind: "path", path: "/abortable.bin" };
+    const controller = new AbortController();
+    const { client } = makeHarness({
+      doDownloadFile: async (_t, options) => {
+        // Mirror a real SDK call: hang waiting for the signal, reject on abort.
+        return new Promise<DownloadResult>((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            reject(
+              Object.assign(new Error("aborted"), { name: "AbortError" }),
+            );
+          });
+        });
+      },
+    });
+
+    const promise = client.downloadFile(target, { signal: controller.signal });
+    controller.abort();
+    await expect(promise).rejects.toBeInstanceOf(DatasourceError);
+  });
+});
+
+describe("BaseDatasourceClient — downloadFile onProgress propagation", () => {
+  it("invokes the consumer's `onProgress(loaded, total)` synchronously as the strategy reports progress", async () => {
+    const target: Target = { kind: "path", path: "/p.bin" };
+    const onProgress = vi.fn<
+      (loaded: number, total: number | null) => void
+    >();
+    const stream = new Readable({ read() {} });
+    const { client } = makeHarness({
+      doDownloadFile: async (_t, options) => {
+        // Strategy invokes the consumer's callback synchronously per byte tick.
+        options.onProgress?.(2048, 4096);
+        options.onProgress?.(4096, 4096);
+        setImmediate(() => stream.push(null));
+        return { stream, contentLength: 4096 };
+      },
+    });
+
+    await client.downloadFile(target, { onProgress });
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 2048, 4096);
+    expect(onProgress).toHaveBeenNthCalledWith(2, 4096, 4096);
+  });
+});
+
+describe("BaseDatasourceClient — downloadFile bus emission of `downloading` events", () => {
+  it("for each (loaded, total) the strategy reports, the bus observes a `downloading { path, loaded, total }` event with envelope-level datasourceType/datasourceId/ts; the consumer's onProgress fires from the same byte-flow source", async () => {
+    // The bus's streaming-event coalescer (event-bus.ts) suppresses rapid-
+    // succession emissions for the same `(datasourceId, transactionId)` key
+    // unless either (a) >= throttleMs have elapsed or (b) the progress-delta
+    // crosses progressDeltaPct. The `downloading` payload carries
+    // `(loaded, total)` rather than `progress`, so the progress-delta rule
+    // doesn't help — the test drives a controllable clock so each tick is
+    // time-eligible and delivers immediately, proving the contract that
+    // every `emitDownloading` call from the strategy reaches the bus.
+    const target: Target = { kind: "path", path: "/dual.bin" };
+    const onProgress = vi.fn<
+      (loaded: number, total: number | null) => void
+    >();
+    const stream = new Readable({ read() {} });
+
+    // Custom harness: identical to makeHarness() except the bus uses a
+    // controllable clock so the test can advance time between ticks.
+    let nowMs = 0;
+    const bus = createEventBus({
+      clock: {
+        now: () => nowMs,
+        setTimeout: (fn, ms) =>
+          globalThis.setTimeout(fn, ms) as unknown as ReturnType<
+            typeof globalThis.setTimeout
+          >,
+        clearTimeout: (timer) =>
+          globalThis.clearTimeout(
+            timer as unknown as ReturnType<typeof globalThis.setTimeout>,
+          ),
+      },
+    });
+    const events = collect(bus);
+    const store = makeStore();
+    const descriptor = makeProviderDescriptor();
+    const client = new FakeDatasourceClient(
+      {
+        datasourceId: "ds-1",
+        ctx: { bus, credentialStore: store, providerDescriptor: descriptor },
+      },
+      {
+        doDownloadFile: async (_t, options) => {
+          // ONE byte-counting hook in the strategy fires BOTH the consumer's
+          // onProgress AND the bus emission via the base's helper. Real
+          // strategies (§7-§9) attach this hook to their SDK stream's `data`
+          // events; the test fixture invokes it directly to assert the dual
+          // emission contract.
+          const tick = (loaded: number, total: number | null): void => {
+            options.onProgress?.(loaded, total);
+            (
+              client as unknown as {
+                emitDownloading: (
+                  path: string,
+                  loaded: number,
+                  total: number | null,
+                ) => void;
+              }
+            ).emitDownloading("/dual.bin", loaded, total);
+          };
+          tick(1024, 8192);
+          // Advance past the throttle window so the next tick is time-eligible.
+          nowMs += 1100;
+          tick(4096, 8192);
+          nowMs += 1100;
+          tick(8192, 8192);
+          setImmediate(() => stream.push(null));
+          return { stream, contentLength: 8192 };
+        },
+      },
+    );
+
+    await client.downloadFile(target, { onProgress });
+
+    // Three onProgress callbacks fired (synchronous from the same hook).
+    expect(onProgress).toHaveBeenCalledTimes(3);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 1024, 8192);
+    expect(onProgress).toHaveBeenNthCalledWith(2, 4096, 8192);
+    expect(onProgress).toHaveBeenNthCalledWith(3, 8192, 8192);
+
+    // Three matching `downloading` bus events, in order, with matching counts.
+    const downloadings = events.filter((e) => e.event === "downloading");
+    expect(downloadings).toHaveLength(3);
+    const payloads = downloadings.map((e) => e.payload as {
+      path: string;
+      loaded: number;
+      total: number | null;
+    });
+    expect(payloads).toEqual([
+      { path: "/dual.bin", loaded: 1024, total: 8192 },
+      { path: "/dual.bin", loaded: 4096, total: 8192 },
+      { path: "/dual.bin", loaded: 8192, total: 8192 },
+    ]);
+    // Envelope-level fields set by the base for every emission.
+    for (const e of downloadings) {
+      expect(e.datasourceId).toBe("ds-1");
+      expect(e.datasourceType).toBe("amazon-s3");
+      expect(typeof e.ts).toBe("number");
+      // streaming flag set on every `downloading` emission so the bus's
+      // coalescer can do its job downstream.
+      expect(e.streaming).toBe(true);
+    }
+  });
+});
+
+describe("BaseDatasourceClient — downloadFile mid-stream error → `download-failed`", () => {
+  it("strategy resolves a stream that errors mid-flight; bus observes `downloading` events then exactly one `download-failed { ...SerializedDatasourceError<T> }`; no `file-downloaded` or `download-cancelled`", async () => {
+    const target: Target = { kind: "path", path: "/midflight.bin" };
+    const stream = new Readable({ read() {} });
+    const { client, events } = makeHarness({
+      doDownloadFile: async (_t, _options) => {
+        // Tick once, then schedule a stream error.
+        (
+          client as unknown as {
+            emitDownloading: (
+              path: string,
+              loaded: number,
+              total: number | null,
+            ) => void;
+          }
+        ).emitDownloading("/midflight.bin", 1024, 4096);
+        setImmediate(() => {
+          stream.destroy(
+            new DatasourceError<FakeType>({
+              tag: "network-error",
+              datasourceType: "amazon-s3",
+              datasourceId: "ds-1",
+              retryable: true,
+              message: "stream interrupted",
+            }),
+          );
+        });
+        return { stream, contentLength: 4096 };
+      },
+    });
+
+    const result = await client.downloadFile(target);
+    // Drive the stream — base attaches its error/end listeners. The error
+    // surfaces synchronously to the consumer's pipe via an `error` event.
+    let caught: unknown;
+    await new Promise<void>((resolve) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", (err) => {
+        caught = err;
+        resolve();
+      });
+    });
+
+    expect(caught).toBeInstanceOf(DatasourceError);
+    expect((caught as DatasourceError).tag).toBe("network-error");
+
+    const downloadings = events.filter((e) => e.event === "downloading");
+    const failed = events.filter((e) => e.event === "download-failed");
+    expect(downloadings.length).toBeGreaterThanOrEqual(1);
+    expect(failed).toHaveLength(1);
+    // Per contracts (`download-failed: SerializedDatasourceError<T>`), the
+    // payload IS the serialized error — no `error:` wrapper. `path` is NOT
+    // in the payload; subscribers correlate via the envelope's `datasourceId`.
+    expect(failed[0]?.payload).toMatchObject({
+      tag: "network-error",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: true,
+      message: "stream interrupted",
+    });
+    expect(events.some((e) => e.event === "file-downloaded")).toBe(false);
+    expect(events.some((e) => e.event === "download-cancelled")).toBe(false);
+  });
+});
+
+describe("BaseDatasourceClient — downloadFile cancel via AbortSignal → `download-cancelled`", () => {
+  it("strategy stream aborts via options.signal; bus observes `downloading` then exactly one `download-cancelled { path, bytesDownloaded, bytesTotal }`; no `download-failed`", async () => {
+    const target: Target = { kind: "path", path: "/cancellable.bin" };
+    const controller = new AbortController();
+    const stream = new Readable({ read() {} });
+    const { client, events } = makeHarness({
+      doDownloadFile: async (_t, options) => {
+        // Tick a couple of times so the cancel event reflects real byte counts.
+        (
+          client as unknown as {
+            emitDownloading: (
+              path: string,
+              loaded: number,
+              total: number | null,
+            ) => void;
+          }
+        ).emitDownloading("/cancellable.bin", 1024, 16_384);
+        (
+          client as unknown as {
+            emitDownloading: (
+              path: string,
+              loaded: number,
+              total: number | null,
+            ) => void;
+          }
+        ).emitDownloading("/cancellable.bin", 4096, 16_384);
+        // Wire the abort listener so a `controller.abort()` after the call
+        // resolves causes the stream to error with AbortError.
+        options.signal?.addEventListener("abort", () => {
+          stream.destroy(
+            Object.assign(new Error("aborted"), { name: "AbortError" }),
+          );
+        });
+        return { stream, contentLength: 16_384 };
+      },
+    });
+
+    const result = await client.downloadFile(target, {
+      signal: controller.signal,
+    });
+    // Drive the stream and abort mid-flow.
+    const drained = new Promise<void>((resolve) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", () => resolve());
+    });
+    controller.abort();
+    await drained;
+
+    const downloadings = events.filter((e) => e.event === "downloading");
+    const cancelled = events.filter((e) => e.event === "download-cancelled");
+    expect(downloadings.length).toBeGreaterThanOrEqual(1);
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]?.payload).toEqual({
+      path: "/cancellable.bin",
+      bytesDownloaded: 4096,
+      bytesTotal: 16_384,
+    });
+    expect(events.some((e) => e.event === "download-failed")).toBe(false);
   });
 });
 

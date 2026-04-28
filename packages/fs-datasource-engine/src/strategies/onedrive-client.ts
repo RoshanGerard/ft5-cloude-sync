@@ -77,6 +77,8 @@ import {
   BaseDatasourceClient,
   type BaseClientContext,
   type ConflictPolicy,
+  type DownloadOptions,
+  type DownloadResult,
 } from "../base-client.js";
 import {
   type CredentialShapeValidator,
@@ -947,6 +949,32 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       datasourceId: this.datasourceId,
       retryable: false,
       message: "rename not yet implemented for OneDrive",
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // downloadFile — placeholder until §8 wires the Graph-specific path
+  // -------------------------------------------------------------------------
+
+  /**
+   * Stub override for §8 to replace with OneDrive's
+   * `GET /me/drive/items/{id}/content` (Web ReadableStream → Node Readable)
+   * download path. Mirrors the `doRenameImpl` placeholder pattern: throws
+   * `unsupported` so the now-abstract base contract holds while §8 lands
+   * the real implementation.
+   */
+  protected override doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult> {
+    void target;
+    void options;
+    throw new DatasourceError<"onedrive">({
+      tag: "unsupported",
+      datasourceType: "onedrive",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      message: "downloadFile not yet implemented for OneDrive",
     });
   }
 

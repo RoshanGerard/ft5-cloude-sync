@@ -99,6 +99,8 @@ import {
   BaseDatasourceClient,
   type BaseClientContext,
   type ConflictPolicy,
+  type DownloadOptions,
+  type DownloadResult,
 } from "../base-client.js";
 import {
   type CredentialShapeValidator,
@@ -1414,6 +1416,32 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       datasourceId: this.datasourceId,
       retryable: false,
       message: "rename not yet implemented for Google Drive",
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // downloadFile — placeholder until §7 wires the Drive-specific path
+  // -------------------------------------------------------------------------
+
+  /**
+   * Stub override for §7 to replace with Drive's `files.get({alt: "media"},
+   * {responseType: "stream"})` download path. Mirrors the
+   * `doRenameImpl` placeholder pattern: throws `unsupported` so the
+   * now-abstract base contract holds while §7 lands the real
+   * implementation.
+   */
+  protected override doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult> {
+    void target;
+    void options;
+    throw new DatasourceError<"google-drive">({
+      tag: "unsupported",
+      datasourceType: "google-drive",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      message: "downloadFile not yet implemented for Google Drive",
     });
   }
 

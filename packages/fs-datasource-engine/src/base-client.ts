@@ -46,6 +46,8 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, serializeDatasourceError } from "@ft5/ipc-contracts";
 
+import type { Readable } from "node:stream";
+
 import type { CredentialStore } from "./credential-store.js";
 import type { EventBus } from "./event-bus.js";
 
@@ -75,6 +77,53 @@ export type { CredentialStore } from "./credential-store.js";
  * directory).
  */
 export type ConflictPolicy = "fail" | "overwrite" | "keep-both";
+
+/**
+ * Options accepted by `downloadFile` (per add-engine-rename-download
+ * design.md Decision 3). Each call is a one-shot HTTP primitive — the
+ * engine forwards these options unchanged to the strategy's
+ * `doDownloadFileImpl` and does NOT carry per-download state across calls.
+ *
+ * - `rangeStart` (optional): when set, the strategy attaches
+ *   `Range: bytes=<rangeStart>-` to the provider request. fs-sync uses
+ *   this to resume after a mid-stream auth-expired or network error
+ *   (per Decision 3's handler retry loop).
+ * - `signal` (optional): consumer-supplied AbortSignal. The strategy
+ *   threads it into the underlying SDK / fetch so an abort propagates
+ *   to the in-flight provider request and the returned stream errors
+ *   with AbortError. The base distinguishes AbortError / `tag:
+ *   "cancelled"` from other failures and routes terminal emission to
+ *   `download-cancelled` rather than `download-failed`.
+ * - `onProgress` (optional): synchronous consumer callback fired from
+ *   the strategy's byte-counting hook. Per design.md, the SAME hook
+ *   that calls `onProgress` ALSO calls the base's
+ *   `protected emitDownloading(...)` helper so the bus and the
+ *   consumer callback observe the same byte-flow source.
+ */
+export interface DownloadOptions {
+  rangeStart?: number;
+  signal?: AbortSignal;
+  onProgress?: (loaded: number, total: number | null) => void;
+}
+
+/**
+ * Result of `downloadFile`. The engine returns the raw stream and
+ * metadata unchanged; consumers (fs-sync) own the pipe-to-disk step.
+ *
+ * - `stream`: the provider response body as a Node `Readable`.
+ * - `contentLength`: total bytes the provider advertises in the response,
+ *   or `null` when the provider does not advertise a length (rare on
+ *   `GetObject` / `files.get`; possible on Graph chunked responses).
+ * - `contentRange`: present iff the provider returned 206 Partial Content
+ *   in response to a `Range:` request. fs-sync's retry loop validates
+ *   `contentRange.start === rangeStart` before resuming the local pipe
+ *   (Decision 3's range-not-honored safeguard).
+ */
+export interface DownloadResult {
+  stream: Readable;
+  contentLength: number | null;
+  contentRange?: { start: number; end: number; total: number };
+}
 
 /**
  * The engine's public Strategy surface. Consumers program against this
@@ -136,6 +185,27 @@ export interface DatasourceClient<T extends DatasourceType> {
     newName: string,
     conflictPolicy: ConflictPolicy,
   ): Promise<DatasourceFileEntry<T>>;
+  /**
+   * Download `target`'s contents (per add-engine-rename-download
+   * design.md Decision 3). The engine is a one-shot HTTP primitive —
+   * each call issues exactly ONE provider GET, wrapped in `withRefresh`
+   * for the existing one-shot auth-expired refresh-and-retry on the
+   * INITIAL request. The engine does NOT retry mid-stream, does NOT
+   * mint a transaction id, does NOT track per-download state across
+   * calls. Consumer-domain orchestration of resume (calling
+   * `downloadFile` again with `rangeStart = bytesWritten`) lives in
+   * fs-sync.
+   *
+   * The base emits `downloading` per progress tick (driven by the
+   * strategy's byte-counting hook), `file-downloaded` on the
+   * stream's `end` event, `download-failed` on stream error, and
+   * `download-cancelled` on AbortSignal (or normalized
+   * `tag: "cancelled"`).
+   */
+  downloadFile(
+    target: Target,
+    options?: DownloadOptions,
+  ): Promise<DownloadResult>;
   getQuota(): Promise<Quota>;
 }
 
@@ -317,6 +387,35 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     newName: string,
     conflictPolicy: ConflictPolicy,
   ): Promise<DatasourceFileEntry<T>>;
+  /**
+   * Primitive for `downloadFile()`. Per add-engine-rename-download
+   * design.md Decision 3, each call issues exactly ONE provider GET
+   * request — wrapped at the base layer in `withRefresh` for the
+   * existing one-shot auth-expired retry. Strategies SHALL:
+   *   - Pass `options.signal` (if any) into the underlying SDK / fetch
+   *     so abort propagates to the in-flight provider request.
+   *   - Attach `Range: bytes=<options.rangeStart>-` when
+   *     `options.rangeStart > 0`; populate the returned `contentRange`
+   *     from the response's `Content-Range` header so fs-sync can
+   *     validate `range-not-honored` (provider returned 200 instead
+   *     of 206) and `range-mismatch` cases.
+   *   - Run a byte-counting hook against the provider stream that
+   *     fires BOTH `options.onProgress(loaded, total)` AND
+   *     `this.emitDownloading(path, loaded, total)` from the same
+   *     source, so the consumer callback and the bus emission stay
+   *     in lockstep (per spec.md Requirement: "downloadFile is a
+   *     stateless one-shot HTTP primitive" + the four download
+   *     lifecycle events).
+   *
+   * Per-strategy implementations land in §7 (Drive), §8 (OneDrive),
+   * and §9 (S3). Section 5's strategy placeholders throw
+   * `tag: "unsupported"` until those sections wire the real provider
+   * paths.
+   */
+  protected abstract doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult>;
   protected abstract doGetQuotaImpl(): Promise<Quota>;
 
   /**
@@ -686,6 +785,184 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       }
       throw normalized;
     }
+  }
+
+  /**
+   * Per-call download progress tracker. Set by the public `downloadFile`
+   * at the start of each call and cleared in the finally branch; updated
+   * by the `protected emitDownloading` helper whenever a strategy reports
+   * a byte-tick. Used to populate `download-cancelled`'s `bytesDownloaded`
+   * / `bytesTotal` from the closure-captured last counts at abort time.
+   *
+   * Section 5 does NOT support concurrent `downloadFile` calls on the
+   * same client instance (no test asserts it; tracker is a single slot,
+   * not a map). fs-sync enforces at most one in-flight download per
+   * `(datasourceId, path)` at the service layer (§13.23). Should a
+   * future requirement need concurrent downloads on one client, the
+   * tracker would need keying — but that change is out of scope here.
+   */
+  private currentDownloadProgressHook:
+    | ((loaded: number, total: number | null) => void)
+    | null = null;
+
+  /**
+   * Emit a `downloading` event on the bus AND notify the active
+   * download's progress tracker (so `download-cancelled` can carry the
+   * last-reported byte counts). Strategies invoke this from the same
+   * byte-counting hook that fires the consumer's `onProgress` callback,
+   * so the bus and the consumer stay in lockstep on a single source of
+   * truth (per design.md / tasks.md §5.7-§5.8).
+   *
+   * Cast note: TS does not distribute `PayloadMap[T]["downloading"]`
+   * to the literal payload shape when T is a generic parameter
+   * (indexed-access-on-generic limitation, same as `entry-renamed` and
+   * `authentication-failed`). At every concrete instantiation the types
+   * are equal — see the test-d assertions.
+   */
+  protected emitDownloading(
+    path: string,
+    loaded: number,
+    total: number | null,
+  ): void {
+    if (this.currentDownloadProgressHook !== null) {
+      this.currentDownloadProgressHook(loaded, total);
+    }
+    this.emit(
+      "downloading",
+      true,
+      { path, loaded, total } as PayloadMap[T]["downloading"],
+    );
+  }
+
+  /**
+   * Download wrapper (per add-engine-rename-download design.md Decision 3).
+   * The base wraps `doDownloadFileImpl` with `withRefresh` for the
+   * existing one-shot auth-expired retry on the initial HTTP call,
+   * attaches stream-end / stream-error listeners to drive
+   * `file-downloaded` / `download-failed` / `download-cancelled`, and
+   * keeps closure-local last-byte-counts so the cancel path's payload
+   * is populated with real numbers.
+   *
+   * The shape returned to the consumer is the strategy's shape
+   * unchanged — the base does NOT replace the stream, mutate
+   * `contentLength`, or strip `contentRange`. fs-sync's retry loop
+   * relies on those values to validate `range-not-honored` /
+   * `range-mismatch` (Decision 3's safeguards).
+   */
+  async downloadFile(
+    target: Target,
+    options: DownloadOptions = {},
+  ): Promise<DownloadResult> {
+    const path = target.kind === "path" ? target.path : target.handle;
+    let lastLoaded = 0;
+    let lastTotal: number | null = null;
+    this.currentDownloadProgressHook = (loaded, total) => {
+      lastLoaded = loaded;
+      lastTotal = total;
+    };
+    let result: DownloadResult;
+    try {
+      result = await this.withRefresh(() =>
+        this.doDownloadFileImpl(target, options),
+      );
+    } catch (err) {
+      // Initial-call failure (no stream returned). The strategy's
+      // `withRefresh` already attempted the one-shot refresh; this is
+      // terminal. Cancel takes precedence over failure when the
+      // consumer's signal is already aborted (e.g., abort fired before
+      // the SDK call settled).
+      this.currentDownloadProgressHook = null;
+      const normalized = this.ensureNormalized(err);
+      if (
+        options.signal?.aborted ||
+        normalized.tag === "cancelled" ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        this.emit(
+          "download-cancelled",
+          false,
+          {
+            path,
+            bytesDownloaded: lastLoaded,
+            bytesTotal: lastTotal ?? 0,
+          } as PayloadMap[T]["download-cancelled"],
+        );
+        throw new DatasourceError<T>({
+          tag: "cancelled",
+          datasourceType: this.type,
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message: "download cancelled",
+        });
+      }
+      this.emit(
+        "download-failed",
+        false,
+        serializeDatasourceError(
+          normalized,
+        ) as PayloadMap[T]["download-failed"],
+      );
+      throw normalized;
+    }
+    // Stream is open. Attach observational listeners so the bus's terminal
+    // event fires when the consumer's pipe drains (or errors / aborts).
+    // Capture `contentLength` for the cancel-path `bytesTotal` fallback.
+    const contentLength = result.contentLength;
+    let terminalEmitted = false;
+    const emitTerminal = (kind: "end" | "error" | "abort", err?: unknown): void => {
+      if (terminalEmitted) return;
+      terminalEmitted = true;
+      this.currentDownloadProgressHook = null;
+      if (kind === "end") {
+        this.emit(
+          "file-downloaded",
+          false,
+          {
+            path,
+            bytes: lastLoaded || (contentLength ?? 0),
+          } as PayloadMap[T]["file-downloaded"],
+        );
+        return;
+      }
+      // Failure / cancel branch. Distinguish AbortError / `tag: "cancelled"`
+      // / aborted-signal from other failures.
+      const isAbortError =
+        err instanceof Error && err.name === "AbortError";
+      const isCancelTag =
+        err instanceof DatasourceError && err.tag === "cancelled";
+      if (kind === "abort" || isAbortError || isCancelTag || options.signal?.aborted) {
+        this.emit(
+          "download-cancelled",
+          false,
+          {
+            path,
+            bytesDownloaded: lastLoaded,
+            bytesTotal: contentLength,
+          } as PayloadMap[T]["download-cancelled"],
+        );
+        return;
+      }
+      const normalized = this.ensureNormalized(err);
+      this.emit(
+        "download-failed",
+        false,
+        serializeDatasourceError(
+          normalized,
+        ) as PayloadMap[T]["download-failed"],
+      );
+    };
+    result.stream.on("end", () => emitTerminal("end"));
+    result.stream.on("error", (err) => emitTerminal("error", err));
+    // AbortSignal-driven cancel: the strategy's signal-listener typically
+    // destroys the stream with AbortError, which fires our `error` listener
+    // above. This redundant abort listener handles the edge case where the
+    // strategy did not wire abort to a stream-error (e.g., the SDK simply
+    // ends the stream without erroring) — the base still routes terminal
+    // emission to `download-cancelled`.
+    options.signal?.addEventListener("abort", () => emitTerminal("abort"), {
+      once: true,
+    });
+    return result;
   }
 
   /**

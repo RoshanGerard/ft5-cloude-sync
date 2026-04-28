@@ -69,6 +69,8 @@ import {
   BaseDatasourceClient,
   type BaseClientContext,
   type ConflictPolicy,
+  type DownloadOptions,
+  type DownloadResult,
 } from "../base-client.js";
 import {
   type CredentialShapeValidator,
@@ -673,6 +675,32 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       datasourceId: this.datasourceId,
       retryable: false,
       message: "rename not yet implemented for Amazon S3",
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // downloadFile — placeholder until §9 wires the S3-specific path
+  // -------------------------------------------------------------------------
+
+  /**
+   * Stub override for §9 to replace with S3's
+   * `GetObjectCommand({ Bucket, Key, Range, abortSignal })` download path.
+   * Mirrors the `doRenameImpl` placeholder pattern: throws `unsupported`
+   * so the now-abstract base contract holds while §9 lands the real
+   * implementation.
+   */
+  protected override doDownloadFileImpl(
+    target: Target,
+    options: DownloadOptions,
+  ): Promise<DownloadResult> {
+    void target;
+    void options;
+    throw new DatasourceError<"amazon-s3">({
+      tag: "unsupported",
+      datasourceType: "amazon-s3",
+      datasourceId: this.datasourceId,
+      retryable: false,
+      message: "downloadFile not yet implemented for Amazon S3",
     });
   }
 
