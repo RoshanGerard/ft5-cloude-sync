@@ -30,9 +30,11 @@
 // task description this is acceptable for v1 — threading
 // `app.getPath("downloads")` from the preload is out of scope.
 //
-// Filename note: the radii-ceiling guardrail permits `rounded-lg`
-// only on files whose basename contains `dialog` or `modal` —
-// `first-download-modal.tsx` qualifies.
+// Filename note: the radii-ceiling guardrail (`scripts/radii-ceiling.test.ts`)
+// only exempts files whose basename contains the literal `dialog` token —
+// this file's basename is `first-download-modal.tsx` (no `dialog`), so it
+// cannot use the larger `lg`/`xl`/`2xl`/`3xl`/`full` rounded-* classes; the
+// implementation below sticks to the default `sm`/`md` end of the scale.
 
 import { useCallback, useId, useState } from "react";
 

@@ -286,10 +286,10 @@ The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-F
 
 ## 26. Renderer — full vitest suite + typecheck
 
-- [ ] 26.1 Run `pnpm -F @ft5/desktop` vitest; all green
-- [ ] 26.2 Run `pnpm typecheck`; all green
-- [ ] 26.3 Run `pnpm lint`; all green
-- [ ] 26.4 Run the full repo vitest suite; capture the test count delta vs baseline
+- [x] 26.1 Run `pnpm -F @ft5/desktop` vitest; all green. **Done 2026-04-28**: `pnpm vitest run apps/desktop` → 155 files / 1175 passed / 0 type errors / 0 skipped (apps/desktop alone counts §25's +13 over §24's 1162).
+- [x] 26.2 Run `pnpm typecheck`; all green. **Done 2026-04-28**: workspace-wide `tsc -b` exits 0.
+- [x] 26.3 Run `pnpm lint`; all green. **Done 2026-04-28**: `eslint .` exits 0.
+- [x] 26.4 Run the full repo vitest suite; capture the test count delta vs baseline. **Done 2026-04-28**: `pnpm vitest run` → 293 files / 2432 passed / 9 skipped / 1 failed (the §1.3-baseline `scripts/preload-bundle.test.ts` flake; isolated re-run confirms it's the same pre-existing flake the baseline anticipated). Test-level delta vs §1.3 baseline (2115 passed): **2115 → 2432 = +317 tests added by this change**. File-level delta: 271 → 293 = +22 files. Discovered + fixed during §26: `first-download-modal.tsx:33-35` carried a comment claiming the radii-ceiling guardrail permits `rounded-lg` for files whose basename contains `dialog` OR `modal`, but the guardrail at `scripts/radii-ceiling.test.ts:87,92` only exempts `dialog`. The literal `\`rounded-lg\`` token in the backticked comment matched the guardrail's class-token regex (whitespace/quote/backtick boundary), causing a false-positive violation. Reworded the comment to drop the literal token; guardrail now passes. Pre-existing miss from §21, surfaced by §26's full-repo run; not a §25 regression.
 
 ## 27. End-to-end smoke (manual, deferred to PENDING_TC.MD per CLAUDE.md verification rules)
 
