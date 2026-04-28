@@ -45,6 +45,10 @@ import {
   ConflictResolutionDialog,
   useConflictResolutionDialog,
 } from "./conflict-resolution-dialog";
+import {
+  RenameConflictDialog,
+  useRenameConflictDialog,
+} from "./rename-conflict-dialog";
 import { DetailsPane } from "./details-pane";
 import { DropZone, type DropZoneStatus } from "./drop-zone";
 import { FirstDownloadModal } from "./first-download-modal";
@@ -249,6 +253,17 @@ export function FileExplorer({
   const { resolver: defaultConflictResolver, dialogProps: conflictDialogProps } =
     useConflictResolutionDialog();
   const conflictResolver = conflictResolverProp ?? defaultConflictResolver;
+  // add-engine-rename-download §25 — instantiate the rename-conflict
+  // dialog once per mount. The hook's `prompt` is wired into the store
+  // via `setRenameConflictPrompt` in a `useEffect` below so a
+  // `tag: "conflict"` rename envelope re-prompts before the renderer
+  // surfaces an error toast. See design.md Decision 7 (renderer-wiring
+  // deviation note 2026-04-28) for why rename uses a parallel dialog
+  // rather than the upload component.
+  const {
+    prompt: renameConflictPrompt,
+    dialogProps: renameConflictDialogProps,
+  } = useRenameConflictDialog();
   const router = useRouter();
   // Grab the per-datasource store directly — the module-level cache
   // ensures this is the same instance for every mount with the same id.
@@ -281,6 +296,17 @@ export function FileExplorer({
     store.getSnapshot,
     store.getSnapshot,
   );
+
+  // add-engine-rename-download §25 — register the rename-conflict prompt
+  // with the store so `store.rename`'s loop can re-prompt on
+  // `tag: "conflict"`. Detach on unmount + on store identity change so
+  // we don't leak a closed-over prompt to a stale store instance.
+  useEffect(() => {
+    store.setRenameConflictPrompt(renameConflictPrompt);
+    return () => {
+      store.setRenameConflictPrompt(null);
+    };
+  }, [store, renameConflictPrompt]);
 
   // Kick off the data-loading effect. Re-fires whenever `currentPath`
   // on the store changes; stale-response guard lives in the hook.
@@ -780,6 +806,10 @@ export function FileExplorer({
           state; both the drop-zone and the Upload dialog share the same
           resolver so a single dialog mount suffices. */}
       <ConflictResolutionDialog {...conflictDialogProps} />
+      {/* Rename-conflict dialog (add-engine-rename-download §25) — Radix
+          portal. Opens only when `store.rename` hits a `tag: "conflict"`
+          envelope and invokes the registered prompt. */}
+      <RenameConflictDialog {...renameConflictDialogProps} />
       {/* Upload dialog, opened by the toolbar's Upload button. Default
           destination = file-explorer's currentPath (spec line 30). The
           dialog internally resets its Files list + navigation state on

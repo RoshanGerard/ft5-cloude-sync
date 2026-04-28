@@ -561,6 +561,30 @@ the same surface keeps the test matrix small.
 inline UX should not silently overwrite a sibling without explicit
 user consent. The renderer always re-prompts with the dialog.
 
+**Renderer wiring (§25 deviation, 2026-04-28).** The §25 implementation
+surfaced a structural mismatch between rename's single-collision
+re-prompt and the upload `ConflictResolutionDialog`'s queue-walker
+shape: the upload dialog is built around `ConflictInfo`
+(`file.basename` + `existing.sizeBytes` + `existing.modifiedAt` + an
+"Apply this choice to the remaining N conflicts" checkbox) and
+choices `"overwrite" | "duplicate" | "skip"`. Rename has only
+`existingPath`, no batch context, and choices
+`"overwrite" | "keep-both" | <cancel>`. Forcing the upload component
+to do double duty would either feed it synthetic placeholder
+`ConflictInfo` (wrong copy displayed to the user) or make it
+mode-aware (broader blast radius into stable upload code). Instead a
+parallel `rename-conflict-dialog.tsx` ships with the same shadcn
+`<Dialog>` primitives + amber Overwrite styling so the visual
+language matches; "existing dialog" in the spec scenario at
+specs/file-explorer/spec.md:84 is satisfied in the visual-language
+sense rather than the literal-component sense. Store-side wiring is
+a `setRenameConflictPrompt(prompt | null)` setter that the file-
+explorer registers from the rename dialog hook in a `useEffect`;
+`store.rename` runs an internal loop (initial dispatch with
+`"fail"` → on `tag: "conflict"` invoke the prompt with
+`existingPath` → re-dispatch with the user's policy or clear
+pendingOp on cancel).
+
 ### Decision 8 — Renderer download orchestrator + toast are decoupled via the global event stream (NOT via the dispatch return value)
 
 **Context.** The original spec.md "Download a file from S3" scenario
