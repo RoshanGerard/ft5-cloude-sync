@@ -61,10 +61,9 @@ describe("normalizeFilesError", () => {
     });
   });
 
-  it("collapses not-found, conflict, unsupported, provider-error, cancelled into 'other'", () => {
+  it("collapses not-found, unsupported, provider-error, cancelled into 'other' (conflict has its own tag — see test below)", () => {
     const tags = [
       "not-found",
-      "conflict",
       "unsupported",
       "provider-error",
       "cancelled",
@@ -80,6 +79,58 @@ describe("normalizeFilesError", () => {
       expect(normalizeFilesError(err).tag).toBe("other");
       expect(normalizeFilesError(err).message).toBe(`simulated ${tag}`);
     }
+  });
+
+  it("conflict surfaces as tag:'conflict' with existingPath threaded from raw (add-engine-rename-download Decision 7)", () => {
+    // Per design.md Decision 7 + spec.md "Rename conflict re-prompts via
+    // ConflictResolutionDialog": the wire-layer envelope MUST carry both
+    // `tag: "conflict"` and the colliding sibling path on `existingPath`
+    // so the renderer's dialog can prompt the user with the exact path.
+    // The engine puts the path on `DatasourceError.raw = { existingPath }`.
+    const err = new DatasourceError({
+      tag: "conflict",
+      datasourceType: "google-drive",
+      datasourceId: "ds-1",
+      retryable: false,
+      raw: { existingPath: "/parent/bar.pdf" },
+      message: "name already exists at /parent/bar.pdf",
+    });
+    const result = normalizeFilesError(err);
+    expect(result.tag).toBe("conflict");
+    expect(result.message).toBe("name already exists at /parent/bar.pdf");
+    expect(result.retryable).toBe(false);
+    expect(result.existingPath).toBe("/parent/bar.pdf");
+  });
+
+  it("conflict without raw.existingPath omits the field (defensive shape preservation)", () => {
+    // If the engine ever throws a conflict-tagged error WITHOUT the
+    // expected `raw.existingPath` shape, the wire layer surfaces the tag
+    // but omits the existingPath field — flat-optional, mirroring
+    // retryAfterMs.
+    const err = new DatasourceError({
+      tag: "conflict",
+      datasourceType: "google-drive",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: "conflict without raw payload",
+    });
+    const result = normalizeFilesError(err);
+    expect(result.tag).toBe("conflict");
+    expect("existingPath" in result).toBe(false);
+  });
+
+  it("conflict with non-object raw (defensive — string raw) omits existingPath", () => {
+    const err = new DatasourceError({
+      tag: "conflict",
+      datasourceType: "google-drive",
+      datasourceId: "ds-1",
+      retryable: false,
+      raw: "opaque-provider-string",
+      message: "conflict with opaque raw",
+    });
+    const result = normalizeFilesError(err);
+    expect(result.tag).toBe("conflict");
+    expect("existingPath" in result).toBe(false);
   });
 
   it("maps plain Error to tag:'other' with the message and retryable:false", () => {

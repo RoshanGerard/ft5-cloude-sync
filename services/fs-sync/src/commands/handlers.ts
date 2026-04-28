@@ -34,6 +34,7 @@ import { makeFilesListHandler } from "./files-list.js";
 import { makeFilesStatHandler } from "./files-stat.js";
 import { makeFilesSearchHandler } from "./files-search.js";
 import { makeFilesRemoveHandler } from "./files-remove.js";
+import { makeFilesRenameHandler } from "./files-rename.js";
 import type { ServiceConfigStore } from "../config/service-config-store.js";
 import type { AuthCorrelationStore } from "../state/auth-correlation-store.js";
 import type { OAuthLoopbackBroker } from "../oauth/loopback-broker.js";
@@ -310,6 +311,9 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
             resolveClient: deps.resolveClient,
           }),
           "files:remove": makeFilesRemoveHandler({
+            resolveClient: deps.resolveClient,
+          }),
+          "files:rename": makeFilesRenameHandler({
             resolveClient: deps.resolveClient,
           }),
         }

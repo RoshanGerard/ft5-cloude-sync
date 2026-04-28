@@ -439,12 +439,20 @@ export type { FilesErrorTag };
  * only when the provider surfaced a concrete backoff (typically paired
  * with `tag: "rate-limited"`); callers MUST treat its absence as
  * "unknown — use your own policy", not as "retry immediately".
+ *
+ * `existingPath` is populated only when `tag === "conflict"` (per
+ * add-engine-rename-download design.md Decision 7) — surfaces the
+ * colliding remote sibling path so the renderer's
+ * ConflictResolutionDialog can prompt the user with the exact path.
+ * Flat-optional shape mirrors `retryAfterMs` (NOT a discriminated
+ * union) so callers can read the field without re-narrowing on tag.
  */
 export interface FilesCommandErrorShape extends ErrorShape {
   readonly tag: FilesErrorTag;
   readonly message: string;
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
+  readonly existingPath?: string;
 }
 
 // Canonical `FilesRemoveEntryResult` lives in `../files.ts`. Re-exported
@@ -513,6 +521,29 @@ interface FilesRemoveCommand {
   };
   readonly result: {
     readonly results: readonly FilesRemoveEntryResult[];
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `files:rename` (add-engine-rename-download §12). The handler resolves
+// the engine client for `datasourceId`, builds the engine `Target` from
+// `path` plus optional `handle` (the same handle-first convention as
+// `files:remove`), and forwards `(target, newName, conflictPolicy)` to
+// `client.rename`. The handler does NOT inspect or carry `kind` — the
+// strategy resolves kind within its own provider context (per
+// design.md Decision 1). Error envelope's `existingPath` lights up
+// for `tag: "conflict"` per design.md Decision 7.
+interface FilesRenameCommand {
+  readonly command: "files:rename";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly path: string;
+    readonly handle?: string;
+    readonly newName: string;
+    readonly conflictPolicy: "fail" | "overwrite" | "keep-both";
+  };
+  readonly result: {
+    readonly entry: FileEntry;
   };
   readonly error: FilesCommandErrorShape;
 }
@@ -595,6 +626,7 @@ export interface CommandMap {
   "files:stat": FilesStatCommand;
   "files:search": FilesSearchCommand;
   "files:remove": FilesRemoveCommand;
+  "files:rename": FilesRenameCommand;
   "downloads:list-active": DownloadsListActiveCommand;
 }
 
@@ -628,5 +660,6 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "files:stat",
   "files:search",
   "files:remove",
+  "files:rename",
   "downloads:list-active",
 ] as const;

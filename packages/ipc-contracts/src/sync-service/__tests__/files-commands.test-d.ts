@@ -37,11 +37,12 @@ type FilesEnvelope<T> =
 // ---- Tests ----------------------------------------------------------------
 
 describe("sync-service files:* command contract", () => {
-  it("CommandMap registers all four files:* commands", () => {
+  it("CommandMap registers every files:* command", () => {
     expectTypeOf<CommandMap["files:list"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:stat"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:search"]>().not.toBeNever();
     expectTypeOf<CommandMap["files:remove"]>().not.toBeNever();
+    expectTypeOf<CommandMap["files:rename"]>().not.toBeNever();
   });
 
   it("FilesErrorTag is the exact six-variant union", () => {
@@ -60,7 +61,8 @@ describe("sync-service files:* command contract", () => {
       | "files:list"
       | "files:stat"
       | "files:search"
-      | "files:remove";
+      | "files:remove"
+      | "files:rename";
     expectTypeOf<ExpectedFiles>().toMatchTypeOf<CommandName>();
   });
 
@@ -70,6 +72,7 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<"files:stat">().toMatchTypeOf<Names>();
     expectTypeOf<"files:search">().toMatchTypeOf<Names>();
     expectTypeOf<"files:remove">().toMatchTypeOf<Names>();
+    expectTypeOf<"files:rename">().toMatchTypeOf<Names>();
   });
 
   // -- files:list -----------------------------------------------------------
@@ -160,6 +163,38 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<
       CommandError<"files:remove">
     >().toEqualTypeOf<FilesCommandErrorShape>();
+  });
+
+  // -- files:rename ---------------------------------------------------------
+
+  it("files:rename params carry path / handle? / newName / conflictPolicy (no kind — Decision 1)", () => {
+    expectTypeOf<CommandParams<"files:rename">>().toEqualTypeOf<{
+      readonly datasourceId: string;
+      readonly path: string;
+      readonly handle?: string;
+      readonly newName: string;
+      readonly conflictPolicy: "fail" | "overwrite" | "keep-both";
+    }>();
+  });
+
+  it("files:rename result is { entry: FileEntry }", () => {
+    expectTypeOf<CommandResult<"files:rename">>().toEqualTypeOf<{
+      readonly entry: FileEntry;
+    }>();
+  });
+
+  it("files:rename error carries the tagged envelope error shape (existingPath populated when tag === 'conflict')", () => {
+    expectTypeOf<
+      CommandError<"files:rename">
+    >().toEqualTypeOf<FilesCommandErrorShape>();
+  });
+
+  it("FilesCommandErrorShape.existingPath is a flat-optional string (Decision 7)", () => {
+    // The field exists on every envelope but is only populated for
+    // tag: "conflict" — flat-optional shape (NOT a discriminated union)
+    // mirrors retryAfterMs.
+    type Shape = FilesCommandErrorShape;
+    expectTypeOf<Shape["existingPath"]>().toEqualTypeOf<string | undefined>();
   });
 
   // -- Envelope shape --------------------------------------------------------
