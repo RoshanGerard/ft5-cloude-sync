@@ -135,9 +135,13 @@ The engine bus emits four download lifecycle events alongside the
 synchronous `options.onProgress` callback:
 
 - `downloading { datasourceId, path, loaded, total }`
-- `file-downloaded { datasourceId, path, savedPath, bytes }`
+- `file-downloaded { datasourceId, path, bytes }`
 - `download-failed { datasourceId, path, error: SerializedDatasourceError<T> }`
 - `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }`
+
+The engine never writes to disk and so cannot know `savedPath`; that
+field belongs to fs-sync's transformed desktop-facing event, populated
+from the handler's pipe target after the integrity check resolves.
 
 These events are raw vendor-API facts emitted on the engine's
 broadcast bus — the same shape and cadence regardless of provider.
