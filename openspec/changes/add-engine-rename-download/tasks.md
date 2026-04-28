@@ -249,8 +249,8 @@ The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-F
 
 ## 20. Renderer — `downloads-store` (preferences)
 
-- [ ] 20.1 Write unit tests for `apps/desktop/src/renderer/src/features/settings/__tests__/downloads-store.test.ts`: `getDefaultFolder` returns `null` when localStorage key is absent; `setDefaultFolder(path)` writes the key; `getAlwaysAsk` returns `false` by default, `true` when the key is `"yes"`; `useDefaultFolder()` and `useAlwaysAsk()` hooks subscribe via `useSyncExternalStore`
-- [ ] 20.2 Implement `apps/desktop/src/renderer/src/features/settings/downloads-store.ts` modeled on `motion-store.ts`; rerun → green
+- [x] 20.1 Write unit tests for `apps/desktop/src/renderer/src/features/settings/__tests__/downloads-store.test.ts`: `getDefaultFolder` returns `null` when localStorage key is absent; `setDefaultFolder(path)` writes the key; `getAlwaysAsk` returns `false` by default, `true` when the key is `"yes"`; `useDefaultFolder()` and `useAlwaysAsk()` hooks subscribe via `useSyncExternalStore`
+- [x] 20.2 Implement `apps/desktop/src/renderer/src/features/settings/downloads-store.ts` modeled on `motion-store.ts`; rerun → green. **Done 2026-04-28**: keys `ft5.downloads.defaultFolder` (path string) + `ft5.downloads.alwaysAsk` (`"yes"` only); reads from localStorage; `setDefaultFolder` mirrors into the main-process slot via `window.api.preferences.setDefaultDownloadsFolder` (defensive access, fire-and-forget) per §18.2 contract; `useDefaultFolder` + `useAlwaysAsk` hooks via `useSyncExternalStore` with cross-tab `storage` event listeners. apps/desktop 1103 → 1122 (+19). Cross-package 2265 → 2284 (+19). typecheck + lint clean.
 
 ## 21. Renderer — first-run downloads modal
 
