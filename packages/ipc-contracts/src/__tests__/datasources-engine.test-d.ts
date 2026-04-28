@@ -363,10 +363,15 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
       DownloadingShape
     >();
 
+    // `file-downloaded` carries only `path` and `bytes` on the engine bus.
+    // The engine never writes to disk — it emits when the strategy's response
+    // stream fires `end` cleanly, with `bytes` reflecting the total bytes that
+    // flowed from the provider. fs-sync (which DOES pipe the stream to disk)
+    // emits its own desktop-facing `file-downloaded { downloadJobId, savedPath, bytes }`
+    // event with `savedPath` populated from its pipe target.
     type FileDownloadedShape = {
-      savedPath: string;
-      bytes: number;
       path: string;
+      bytes: number;
     };
     expectTypeOf<PayloadMap["amazon-s3"]["file-downloaded"]>().toEqualTypeOf<
       FileDownloadedShape

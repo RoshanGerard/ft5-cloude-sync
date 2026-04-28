@@ -128,10 +128,12 @@ The engine bus payload shapes are:
 
 ```typescript
 "downloading":         { datasourceId, path, loaded: number, total: number };
-"file-downloaded":     { datasourceId, path, savedPath: string, bytes: number };
+"file-downloaded":     { datasourceId, path, bytes: number };
 "download-failed":     { datasourceId, path, error: SerializedDatasourceError<T> };
 "download-cancelled":  { datasourceId, path, bytesDownloaded: number, bytesTotal: number };
 ```
+
+(`datasourceId` shown for reader clarity but lives at the `DatasourceEvent<T, K>` envelope level; the inner payload omits it.) The engine emits `file-downloaded` based on its own stream observability — when the strategy's response stream fires `end` cleanly — NOT on consumer feedback. The engine never writes to disk, so it cannot know `savedPath`; that field belongs to fs-sync's transformed desktop-facing event (see fs-sync-service spec).
 
 The `downloading` event is streaming-tagged (subject to the same
 coalescer the engine bus already applies to `uploading`). The three
@@ -151,8 +153,8 @@ invocation-id; subscribers correlate by `(datasourceId, path)`.
 
 #### Scenario: Successful download emits `downloading` then `file-downloaded`
 
-- **WHEN** `engine.downloadFile(target)` resolves and the consumer pipes the returned stream to disk to completion
-- **THEN** the bus observes one or more `downloading { datasourceId, path, loaded, total }` events as bytes flow (subject to streaming coalescing), followed by exactly one `file-downloaded { datasourceId, path, savedPath, bytes }` event when the consumer reports terminal success; no `download-failed` or `download-cancelled` event is emitted
+- **WHEN** `engine.downloadFile(target)` resolves and the returned stream's `end` event fires cleanly after all bytes flow
+- **THEN** the bus observes one or more `downloading { datasourceId, path, loaded, total }` events as bytes flow (subject to streaming coalescing), followed by exactly one `file-downloaded { datasourceId, path, bytes }` event when the underlying stream completes successfully; no `download-failed` or `download-cancelled` event is emitted
 
 #### Scenario: Mid-stream error emits `downloading` then `download-failed`
 

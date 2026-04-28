@@ -189,9 +189,18 @@ interface CanonicalEventPayloads<T extends DatasourceType = DatasourceType> {
    * `GetObject` / `files.get`, possible on `OneDrive` chunked
    * responses without `@odata.size`). Consumers render an indeterminate
    * progress bar in that case.
+   *
+   * `file-downloaded` carries only `path` and `bytes` — the engine
+   * never writes to disk, so it cannot know `savedPath`. The engine
+   * emits this event when the strategy's response stream fires `end`
+   * cleanly, with `bytes` reflecting the total bytes that flowed from
+   * the provider. fs-sync (the consumer that pipes the stream to disk)
+   * runs the integrity check and emits its OWN desktop-facing
+   * `file-downloaded { downloadJobId, savedPath, bytes }` event with
+   * `savedPath` populated from its pipe target.
    */
   downloading: { loaded: number; total: number | null; path: string };
-  "file-downloaded": { savedPath: string; bytes: number; path: string };
+  "file-downloaded": { path: string; bytes: number };
   "download-cancelled": {
     bytesDownloaded: number;
     bytesTotal: number | null;

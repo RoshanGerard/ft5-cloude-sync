@@ -221,7 +221,7 @@ A client subscribed via `sync:subscribe-events` for a specific `datasourceId` SH
 The fs-sync service SHALL subscribe to the engine bus's four download lifecycle events (`downloading`, `file-downloaded`, `download-failed`, `download-cancelled`) and treat that subscription as the canonical source for DownloadRegistry state transitions. The mapping from engine bus event to registry mutation is:
 
 - `downloading { datasourceId, path, loaded, total }` → look up the `downloadJobId` for `(datasourceId, path)` in the registry; update the entry's `bytesDownloaded = loaded` and `contentLength = total` (subject to throttling).
-- `file-downloaded { datasourceId, path, savedPath, bytes }` → look up the `downloadJobId` for `(datasourceId, path)`; remove the registry entry; emit fs-sync's `file-downloaded { downloadJobId, savedPath, bytes }` after the integrity check.
+- `file-downloaded { datasourceId, path, bytes }` → look up the `downloadJobId` for `(datasourceId, path)`; remove the registry entry; emit fs-sync's `file-downloaded { downloadJobId, savedPath, bytes }` after the integrity check (`savedPath` populated from the handler's pipe target — fs-sync owns it; the engine never writes to disk).
 - `download-failed { datasourceId, path, error }` → look up the `downloadJobId` for `(datasourceId, path)`; remove the registry entry; emit fs-sync's `download-failed { downloadJobId, tag, message }` (or, when retry policy applies, retain the entry and dispatch a fresh `engine.downloadFile` call instead of emitting terminal).
 - `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }` → look up the `downloadJobId` for `(datasourceId, path)`; remove the registry entry; emit fs-sync's `download-cancelled { downloadJobId, bytesDownloaded, bytesTotal, reason }`.
 
@@ -236,7 +236,7 @@ The handler's synchronous `options.onProgress` callback SHALL fire from the same
 
 #### Scenario: Engine `file-downloaded` removes registry entry
 
-- **WHEN** the engine bus emits `file-downloaded { datasourceId: "ds-1", path: "/welcome.pdf", savedPath, bytes }` and the registry contains a job entry for `(ds-1, /welcome.pdf)` with `downloadJobId: "job-A"`
+- **WHEN** the engine bus emits `file-downloaded { datasourceId: "ds-1", path: "/welcome.pdf", bytes }` and the registry contains a job entry for `(ds-1, /welcome.pdf)` with `downloadJobId: "job-A"`
 - **THEN** after the handler's integrity check resolves, the registry no longer contains `job-A`; fs-sync emits `file-downloaded { downloadJobId: "job-A", savedPath, bytes }` on the IPC event channel exactly once
 
 #### Scenario: Engine `download-cancelled` removes registry entry
