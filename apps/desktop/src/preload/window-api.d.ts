@@ -99,6 +99,9 @@ declare global {
       preferences: {
         setDefaultDownloadsFolder(folder: string): Promise<void>;
         getDefaultDownloadsFolder(): Promise<string | null>;
+        // Post-archive bug-fix follow-up — `app.getPath("downloads")`
+        // exposure for the first-run downloads modal pre-fill.
+        getOSDefaultDownloadsFolder(): Promise<string>;
       };
       dialog: {
         // Electron's `SaveDialogOptions` and `SaveDialogReturnValue` are

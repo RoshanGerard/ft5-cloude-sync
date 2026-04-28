@@ -1,4 +1,4 @@
-import { clipboard, dialog, ipcMain, shell, type BrowserWindow } from "electron";
+import { app, clipboard, dialog, ipcMain, shell, type BrowserWindow } from "electron";
 
 import {
   DATASOURCES_CHANNELS,
@@ -55,6 +55,7 @@ import { handleFilesUpload } from "./files/upload.js";
 import { handlePing } from "./ping.js";
 import {
   handleGetDefaultDownloadsFolder,
+  handleGetOSDefaultDownloadsFolder,
   handleSetDefaultDownloadsFolder,
 } from "./preferences.js";
 import { handleSyncAuthenticateCancel } from "./sync/authenticate-cancel.js";
@@ -245,6 +246,16 @@ export function registerIpcHandlers(
   );
   ipcMain.handle("preferences:getDefaultDownloadsFolder", () =>
     handleGetDefaultDownloadsFolder(),
+  );
+
+  // Post-archive bug-fix follow-up — exposure for `app.getPath("downloads")`
+  // so the first-run downloads modal can pre-fill a REAL absolute path
+  // instead of the broken `"~/Downloads/ft5"` placeholder. See
+  // `preferences.ts` for the handler-side rationale.
+  ipcMain.handle("preferences:getOSDefaultDownloadsFolder", () =>
+    handleGetOSDefaultDownloadsFolder({
+      getOSDefaultDownloadsFolder: () => app.getPath("downloads"),
+    }),
   );
 
   // §18.3-§18.6 — download-success toast CTAs (Open + Show in folder).

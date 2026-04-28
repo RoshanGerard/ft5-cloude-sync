@@ -171,23 +171,35 @@ function resolveApi(
 // --- Path joining ----------------------------------------------------
 
 /**
- * Compose `<folder>/<filename>` defensively. The folder may come from
- * an OS picker (Windows backslashes) or from the v1 fallback string
- * (`~/Downloads/ft5`). We don't normalize separators here — the host OS
- * tolerates either; what matters is that we don't double-slash. Mirrors
- * `joinDatasourcePath` from `use-upload-orchestrator.ts`.
+ * Compose `<folder>/<filename>` host-aware. The folder is supplied by
+ * either Electron's directory picker (host-native separator — `\` on
+ * Windows, `/` elsewhere) or by `app.getPath("downloads")` (also host-
+ * native). The renderer doesn't have `node:path`, so we derive the
+ * separator from the folder string itself: if the folder contains a
+ * backslash we use `\`, otherwise `/`.
+ *
+ * Bug-fix history: the original implementation hard-coded `/` between
+ * folder and filename. On Windows that produced `C:\Users\...\ft5/file`,
+ * which the service's `path.normalize(input) === input` validator
+ * (the post-archive defence-in-depth check from §6.5) rejects as
+ * "contains traversal" because Windows' `path.normalize` rewrites the
+ * mixed `/` to `\`. Every download silently failed at validation and
+ * the renderer voided the response, so the user saw "nothing happens".
+ *
+ * Exported so the first-download-modal can use the same logic when it
+ * appends `ft5` to the OS-resolved downloads folder.
  */
-function joinFolderAndName(folder: string, filename: string): string {
-  const trimmedFolder = folder.endsWith("/") || folder.endsWith("\\")
-    ? folder.slice(0, -1)
-    : folder;
-  const trimmedName = filename.startsWith("/") || filename.startsWith("\\")
-    ? filename.slice(1)
-    : filename;
-  // Folder paths picked from the OS use the host separator; the v1
-  // fallback uses POSIX. Use `/` here — Electron's `dialog.showSaveDialog`
-  // and Node's fs accept forward slashes on Windows too.
-  return `${trimmedFolder}/${trimmedName}`;
+export function joinFolderAndName(folder: string, filename: string): string {
+  const stripped = folder.replace(/[/\\]+$/, "");
+  const trimmedName = filename.replace(/^[/\\]+/, "");
+  // Determine the separator from the folder's existing separators.
+  // Windows-style absolute paths always contain `\`; POSIX paths never
+  // do. If the folder is just a drive letter (`C:`) with no separator
+  // yet, fall back to `\` to match Windows convention.
+  const useBackslash =
+    stripped.includes("\\") || /^[A-Za-z]:$/.test(stripped);
+  const sep = useBackslash ? "\\" : "/";
+  return stripped + sep + trimmedName;
 }
 
 // --- Hook ------------------------------------------------------------

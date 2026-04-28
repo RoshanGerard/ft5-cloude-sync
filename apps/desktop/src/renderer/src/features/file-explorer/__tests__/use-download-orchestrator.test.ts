@@ -41,6 +41,7 @@ import {
 
 // Subject under test (NOT YET IMPLEMENTED — these imports drive the RED).
 import {
+  joinFolderAndName,
   useDownloadOrchestrator,
   type DownloadOrchestratorApi,
 } from "../use-download-orchestrator.js";
@@ -289,5 +290,54 @@ describe("useDownloadOrchestrator — first-run modal queueing (§23.3)", () => 
     });
     // Modal closes after commit.
     expect(result.current.modalOpen).toBe(false);
+  });
+});
+
+// Post-archive bug-fix follow-up — Bug 2: host-aware join.
+// The pre-fix `joinFolderAndName` hard-coded `/` between folder and
+// filename. On Windows a folder picked via Electron's directory picker
+// arrives as `C:\Users\dev2\Downloads\ft5` (backslashes); joining with
+// `/` produced `C:\Users\dev2\Downloads\ft5/welcome.pdf` (mixed
+// separators). The service's `path.normalize(input) === input`
+// validator (the post-archive defence-in-depth from §6.5) rejects that
+// because Windows' `path.normalize` rewrites the `/` to `\`. Every
+// download silently failed at validation. The post-fix joiner derives
+// the separator from the folder string itself.
+describe("joinFolderAndName — host-aware separator (post-archive bug fix)", () => {
+  it("uses '/' for a POSIX folder", () => {
+    expect(
+      joinFolderAndName("/Users/alice/Downloads/ft5", "welcome.pdf"),
+    ).toBe("/Users/alice/Downloads/ft5/welcome.pdf");
+  });
+
+  it("uses '\\' for a Windows folder containing backslashes", () => {
+    // Source string at runtime is `C:\Users\dev2\Downloads\ft5`.
+    expect(
+      joinFolderAndName(
+        "C:\\Users\\dev2\\Downloads\\ft5",
+        "welcome.pdf",
+      ),
+    ).toBe("C:\\Users\\dev2\\Downloads\\ft5\\welcome.pdf");
+  });
+
+  it("strips a trailing '/' on the folder before joining", () => {
+    expect(
+      joinFolderAndName("/Users/alice/Downloads/ft5/", "welcome.pdf"),
+    ).toBe("/Users/alice/Downloads/ft5/welcome.pdf");
+  });
+
+  it("strips a trailing '\\' on the folder before joining", () => {
+    expect(
+      joinFolderAndName(
+        "C:\\Users\\dev2\\Downloads\\ft5\\",
+        "welcome.pdf",
+      ),
+    ).toBe("C:\\Users\\dev2\\Downloads\\ft5\\welcome.pdf");
+  });
+
+  it("strips a leading separator on the filename before joining", () => {
+    expect(
+      joinFolderAndName("/Users/alice/Downloads/ft5", "/welcome.pdf"),
+    ).toBe("/Users/alice/Downloads/ft5/welcome.pdf");
   });
 });

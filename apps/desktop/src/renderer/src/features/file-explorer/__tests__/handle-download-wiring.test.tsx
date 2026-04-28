@@ -45,6 +45,26 @@ vi.mock("next/navigation", () => ({
   }),
 }));
 
+// Post-archive bug-fix follow-up — Bug 3: surface error envelope to a
+// user-visible toast. We assert that when `dispatchDownload` resolves
+// to `{ ok: false, error }` the renderer calls `toast.error(...)`; the
+// pre-fix code did `void downloadOrchestrator.dispatchDownload(...)`
+// and the failure was silently dropped (the user reported "nothing
+// happens"). The mock module replaces sonner's `toast` so we observe
+// the call without rendering an actual Toaster.
+const toastErrorMock = vi.fn();
+vi.mock("sonner", () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn(),
+    loading: vi.fn(),
+    dismiss: vi.fn(),
+    custom: vi.fn(),
+  },
+}));
+
 import { FileExplorer } from "../file-explorer.js";
 import { __resetExplorerStoreCacheForTests } from "../store.js";
 import { DOWNLOADS_DEFAULT_FOLDER_KEY } from "../../settings/downloads-store.js";
@@ -93,12 +113,24 @@ function installApiMock(entries: FileEntry[]): void {
     dialog: {
       showSaveDialog: showSaveDialogMock,
     },
+    // Defensive — the first-run modal resolves the OS default downloads
+    // folder via this bridge on mount. The current test pre-seeds the
+    // localStorage default folder so the modal never renders, but the
+    // mock keeps the surface uniform for future copies of this fixture.
+    preferences: {
+      getOSDefaultDownloadsFolder: vi
+        .fn()
+        .mockResolvedValue("/Users/alice/Downloads"),
+      setDefaultDownloadsFolder: vi.fn().mockResolvedValue(undefined),
+      getDefaultDownloadsFolder: vi.fn().mockResolvedValue(null),
+    },
   };
 }
 
 beforeEach(() => {
   window.localStorage.clear();
   __resetExplorerStoreCacheForTests();
+  toastErrorMock.mockReset();
 });
 
 afterEach(() => {
@@ -155,5 +187,54 @@ describe("FileExplorer handleDownload wiring (§23/§24 follow-up)", () => {
     });
     // No save-as dialog (no Shift, no Always-ask).
     expect(showSaveDialogMock).not.toHaveBeenCalled();
+    // No error toast on the success branch — the success toast is
+    // event-driven via createDownloadJobToaster and is out of scope
+    // for the click handler.
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  // Post-archive bug fix — Bug 3: surfaces the failure envelope as a
+  // user-visible Sonner toast. Pre-fix the click handler did
+  // `void dispatchDownload(...)` and the failure response was silently
+  // dropped, so the user reported "nothing happens".
+  it("on { ok: false, error } envelope, surfaces a toast.error with the message", async () => {
+    window.localStorage.setItem(
+      DOWNLOADS_DEFAULT_FOLDER_KEY,
+      "/Users/alice/Downloads/ft5",
+    );
+
+    const entry = seedEntry({
+      id: "f1",
+      name: "welcome.pdf",
+      path: "/welcome.pdf",
+    });
+    installApiMock([entry]);
+    // Override the default success mock with a failure envelope.
+    downloadMock.mockReset();
+    downloadMock.mockResolvedValue({
+      ok: false,
+      error: { tag: "other", message: "boom" },
+    });
+
+    render(<FileExplorer datasourceId="ds-1" />);
+
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>(
+        '[data-testid="explorer-row"]',
+      );
+      if (found === null) throw new Error("row not found");
+      return found;
+    });
+
+    fireEvent.contextMenu(row);
+    const downloadItem = await screen.findByTestId(
+      "file-context-menu-download",
+    );
+    fireEvent.click(downloadItem);
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledTimes(1);
+    });
+    expect(toastErrorMock).toHaveBeenCalledWith("Download failed: boom");
   });
 });

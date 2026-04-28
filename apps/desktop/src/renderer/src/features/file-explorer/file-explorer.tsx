@@ -33,6 +33,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 import type { FileEntry, FilesRemoveTarget } from "@ft5/ipc-contracts";
 
@@ -553,11 +554,28 @@ export function FileExplorer({
       handleDownload(entry);
     };
     toasterRef.current?.registerRetry(datasourceId, entry.path, retry);
-    void downloadOrchestrator.dispatchDownload(
-      entry,
-      { shiftKey: false },
-      datasourceId,
-    );
+    // Post-archive bug fix: previously this was `void downloadOrchestrator.
+    // dispatchDownload(...)`, which discarded the orchestrator's response.
+    // When the service returned `{ ok: false, error }` the renderer was
+    // silently dropping the failure — the user reported "nothing happens"
+    // because no toast surfaced. Surface the error envelope here; the
+    // event-driven success toaster (`createDownloadJobToaster`) handles
+    // the success and progress lifecycle separately, so we only toast
+    // on the failure branch. Resolutions to `null` mean the modal queued
+    // the dispatch OR the user cancelled the save-as dialog — neither
+    // is an error, so no toast.
+    downloadOrchestrator
+      .dispatchDownload(entry, { shiftKey: false }, datasourceId)
+      .then((response) => {
+        if (response !== null && response.ok === false) {
+          toast.error(`Download failed: ${response.error.message}`);
+        }
+      })
+      .catch((err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : "unexpected error";
+        toast.error(`Download failed: ${message}`);
+      });
   };
 
   // Click on a search result: remember the entry id + target parent path,

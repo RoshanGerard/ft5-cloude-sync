@@ -25,10 +25,13 @@
 // that care about lifecycle events can subscribe, but the modal will
 // not flip itself closed.
 //
-// V1 default-folder fallback: the OS-default value is approximated
-// as the platform-agnostic string `~/Downloads/ft5`. Per the §21
-// task description this is acceptable for v1 — threading
-// `app.getPath("downloads")` from the preload is out of scope.
+// Default-folder pre-fill: post-archive bug fix wires the modal to
+// `app.getPath("downloads")` via the preload bridge
+// (`window.api.preferences.getOSDefaultDownloadsFolder`) and appends
+// `ft5` with the host's path separator. The earlier placeholder string
+// `"~/Downloads/ft5"` was NOT absolute and failed the service-side
+// `path.isAbsolute` validator on every host — the user could press
+// "Use this folder" and every subsequent download would silently drop.
 //
 // Filename note: the radii-ceiling guardrail (`scripts/radii-ceiling.test.ts`)
 // only exempts files whose basename contains the literal `dialog` token —
@@ -36,7 +39,7 @@
 // cannot use the larger `lg`/`xl`/`2xl`/`3xl`/`full` rounded-* classes; the
 // implementation below sticks to the default `sm`/`md` end of the scale.
 
-import { useCallback, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -51,14 +54,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 import { setDefaultFolder } from "../settings/downloads-store";
-
-/**
- * V1 OS-default-folder pre-fill. Hard-coded string rather than threading
- * `app.getPath("downloads")` from the preload — out of scope for §21
- * per the task description. The user can edit the input or use Browse
- * to override before committing.
- */
-export const DEFAULT_DOWNLOADS_FOLDER_FALLBACK = "~/Downloads/ft5";
+import { joinFolderAndName } from "./use-download-orchestrator";
 
 export interface FirstDownloadModalProps {
   /**
@@ -88,11 +84,52 @@ export function FirstDownloadModal({
   onCommit,
   onOpenChange,
 }: FirstDownloadModalProps) {
-  const [folder, setFolder] = useState<string>(
-    DEFAULT_DOWNLOADS_FOLDER_FALLBACK,
-  );
+  // The pre-fill is resolved asynchronously via the preload bridge
+  // (`app.getPath("downloads")`), so the input starts empty and the
+  // commit CTA is disabled until either resolution completes or the
+  // user types / picks a folder. This is the post-archive bug fix:
+  // gating the CTA on a non-empty value prevents the user from
+  // committing the previous `"~/Downloads/ft5"` placeholder, which the
+  // service-side `path.isAbsolute` validator rejected.
+  const [folder, setFolder] = useState<string>("");
   const inputId = useId();
   const descId = useId();
+
+  // Resolve the OS default downloads folder lazily on mount. We don't
+  // overwrite a user-typed value: the effect only seeds the input when
+  // it's still empty by the time the bridge resolves.
+  useEffect(() => {
+    let cancelled = false;
+    const bridge = (
+      globalThis as unknown as {
+        window?: {
+          api?: {
+            preferences?: {
+              getOSDefaultDownloadsFolder?: () => Promise<string>;
+            };
+          };
+        };
+      }
+    ).window?.api?.preferences?.getOSDefaultDownloadsFolder;
+    if (typeof bridge !== "function") return;
+    void (async () => {
+      try {
+        const downloads = await bridge();
+        if (cancelled) return;
+        // Only seed if the user hasn't already typed something.
+        setFolder((current) =>
+          current === "" ? joinFolderAndName(downloads, "ft5") : current,
+        );
+      } catch {
+        // Bridge failure leaves the input empty — the user can still
+        // type or use Browse. Better than persisting a non-absolute
+        // placeholder.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleBrowse = useCallback(async () => {
     const bridge = (
@@ -128,6 +165,7 @@ export function FirstDownloadModal({
   }, [folder]);
 
   const handleCommit = useCallback(() => {
+    if (folder === "") return;
     setDefaultFolder(folder);
     onCommit(folder);
   }, [folder, onCommit]);
@@ -186,7 +224,11 @@ export function FirstDownloadModal({
         </div>
 
         <DialogFooter>
-          <Button type="button" onClick={handleCommit}>
+          <Button
+            type="button"
+            onClick={handleCommit}
+            disabled={folder === ""}
+          >
             Use this folder
           </Button>
         </DialogFooter>

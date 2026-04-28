@@ -95,6 +95,11 @@ declare global {
       preferences: {
         setDefaultDownloadsFolder(folder: string): Promise<void>;
         getDefaultDownloadsFolder(): Promise<string | null>;
+        // Post-archive bug-fix follow-up — `app.getPath("downloads")`
+        // exposure used by the first-run downloads modal to pre-fill a
+        // REAL absolute path. The renderer composes `<resolved>/ft5`
+        // with the host's separator.
+        getOSDefaultDownloadsFolder(): Promise<string>;
       };
       // §18.7-§18.8: thin pass-through to Electron's `dialog.showSaveDialog`
       // for the download orchestrator's Shift+Click / Always-ask paths.

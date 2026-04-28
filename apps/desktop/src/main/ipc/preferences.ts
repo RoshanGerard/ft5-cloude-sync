@@ -27,6 +27,28 @@ export function handleGetDefaultDownloadsFolder(): string | null {
   return currentDefaultDownloadsFolder;
 }
 
+// Post-archive bug-fix follow-up — `app.getPath("downloads")` exposure
+// for the first-run modal (§21). The original task description deferred
+// this and used the literal string `"~/Downloads/ft5"` as a placeholder;
+// that placeholder fails the service-side `path.isAbsolute` check on
+// every host, so every first-run download silently dropped server-side.
+// Resolving the OS default here returns a real absolute path
+// (`C:\Users\<u>\Downloads` on Windows, `/Users/<u>/Downloads` on macOS
+// / Linux) which the renderer composes into `<dl>/ft5`.
+//
+// Dependency-injection shape mirrors the open-saved / show-saved
+// handlers: the bound port is supplied by `registerIpcHandlers` so this
+// module stays Electron-free for unit tests.
+export interface OSDownloadsFolderProvider {
+  getOSDefaultDownloadsFolder: () => string;
+}
+
+export function handleGetOSDefaultDownloadsFolder(
+  deps: OSDownloadsFolderProvider,
+): string {
+  return deps.getOSDefaultDownloadsFolder();
+}
+
 /**
  * Test-only reset of the in-memory slot. Production callers must NOT
  * use this — the slot is intentionally session-scoped and is reseeded

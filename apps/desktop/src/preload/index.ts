@@ -296,6 +296,12 @@ const api = {
       ipcRenderer.invoke("preferences:setDefaultDownloadsFolder", folder),
     getDefaultDownloadsFolder: (): Promise<string | null> =>
       ipcRenderer.invoke("preferences:getDefaultDownloadsFolder"),
+    // Post-archive bug-fix follow-up — exposes `app.getPath("downloads")`
+    // so the first-run downloads modal can pre-fill a REAL absolute
+    // path instead of the placeholder `"~/Downloads/ft5"` that fails
+    // the service-side `path.isAbsolute` validator on every host.
+    getOSDefaultDownloadsFolder: (): Promise<string> =>
+      ipcRenderer.invoke("preferences:getOSDefaultDownloadsFolder"),
   },
   // §18.7-§18.8: thin pass-through to Electron's `dialog.showSaveDialog`
   // for the download orchestrator's Shift+Click / Always-ask paths

@@ -59,6 +59,14 @@ beforeEach(() => {
 
 let showOpenDialogMock: Mock;
 let setDefaultDownloadsFolderMock: Mock;
+let getOSDefaultDownloadsFolderMock: Mock;
+
+// Post-archive bug-fix follow-up — the modal pre-fills via
+// `window.api.preferences.getOSDefaultDownloadsFolder()`. Tests stub the
+// bridge with a fixed POSIX-style path; production uses `app.getPath
+// ("downloads")` per the new IPC handler in `main/ipc/preferences.ts`.
+const FIXTURE_OS_DOWNLOADS = "/Users/alice/Downloads";
+const EXPECTED_PREFILL = "/Users/alice/Downloads/ft5";
 
 function installApiMock(): void {
   showOpenDialogMock = vi.fn(async () => ({
@@ -66,12 +74,14 @@ function installApiMock(): void {
     filePaths: [] as readonly string[],
   }));
   setDefaultDownloadsFolderMock = vi.fn(async () => {});
+  getOSDefaultDownloadsFolderMock = vi.fn(async () => FIXTURE_OS_DOWNLOADS);
   (window as unknown as { api: unknown }).api = {
     dialog: {
       showOpenDialog: showOpenDialogMock,
     },
     preferences: {
       setDefaultDownloadsFolder: setDefaultDownloadsFolderMock,
+      getOSDefaultDownloadsFolder: getOSDefaultDownloadsFolderMock,
     },
   };
 }
@@ -99,7 +109,7 @@ describe("FirstDownloadModal — first-run defaults collection", () => {
     expect(body).toMatch(/Save as/i);
   });
 
-  it("pre-fills the path input with the OS-default-style fallback", () => {
+  it("pre-fills the path input with the OS-resolved downloads folder + 'ft5'", async () => {
     installApiMock();
     render(<FirstDownloadModal open={true} onCommit={() => {}} />);
 
@@ -107,9 +117,61 @@ describe("FirstDownloadModal — first-run defaults collection", () => {
       /downloads folder/i,
     ) as HTMLInputElement;
     expect(input).toBeInTheDocument();
-    // The renderer falls back to a sensible string — `~/Downloads/ft5`
-    // — when no preload-exposed OS-default is available.
-    expect(input.value).toBe("~/Downloads/ft5");
+    // Post-archive bug fix: the modal resolves the real OS default via
+    // `window.api.preferences.getOSDefaultDownloadsFolder` and appends
+    // `ft5` with the host-correct separator (the `joinFolderAndName`
+    // helper from `use-download-orchestrator`). The earlier hard-coded
+    // `"~/Downloads/ft5"` is gone — that string is not absolute and
+    // failed the service-side `path.isAbsolute` validator.
+    await waitFor(() => {
+      expect(getOSDefaultDownloadsFolderMock).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(input.value).toBe(EXPECTED_PREFILL);
+    });
+  });
+
+  it("pre-fills with a Windows-style path when the OS default contains backslashes", async () => {
+    installApiMock();
+    // Use a real Windows-shaped fixture (drive + backslashes) so the
+    // host-aware joiner picks `\` as the separator. The TS string
+    // literal uses doubled backslashes so the runtime value is
+    // `C:\Users\dev2\Downloads`.
+    getOSDefaultDownloadsFolderMock.mockResolvedValueOnce(
+      "C:\\Users\\dev2\\Downloads",
+    );
+    render(<FirstDownloadModal open={true} onCommit={() => {}} />);
+
+    const input = screen.getByLabelText(
+      /downloads folder/i,
+    ) as HTMLInputElement;
+    await waitFor(() => {
+      expect(input.value).toBe("C:\\Users\\dev2\\Downloads\\ft5");
+    });
+  });
+
+  it("starts with an empty input and disables the CTA until the OS default resolves", async () => {
+    installApiMock();
+    // Stall the resolution so we can observe the initial empty + disabled state.
+    let resolveOSDefault!: (v: string) => void;
+    getOSDefaultDownloadsFolderMock.mockImplementationOnce(
+      () =>
+        new Promise<string>((res) => {
+          resolveOSDefault = res;
+        }),
+    );
+    render(<FirstDownloadModal open={true} onCommit={() => {}} />);
+
+    const input = screen.getByLabelText(
+      /downloads folder/i,
+    ) as HTMLInputElement;
+    expect(input.value).toBe("");
+    const cta = screen.getByRole("button", { name: /use this folder/i });
+    expect(cta).toBeDisabled();
+
+    resolveOSDefault(FIXTURE_OS_DOWNLOADS);
+    await waitFor(() => expect(input.value).toBe(EXPECTED_PREFILL));
+    expect(cta).not.toBeDisabled();
   });
 
   it("renders Browse button and a single 'Use this folder' CTA", () => {
@@ -229,7 +291,7 @@ describe("FirstDownloadModal — first-run defaults collection", () => {
     });
   });
 
-  it("on Browse cancel, leaves the path input untouched", async () => {
+  it("on Browse cancel, leaves the path input at the OS-resolved pre-fill", async () => {
     installApiMock();
     showOpenDialogMock.mockResolvedValueOnce({
       canceled: true,
@@ -237,31 +299,42 @@ describe("FirstDownloadModal — first-run defaults collection", () => {
     });
     render(<FirstDownloadModal open={true} onCommit={() => {}} />);
 
+    // Wait for the OS-default-folder pre-fill before clicking Browse.
+    const input = screen.getByLabelText(
+      /downloads folder/i,
+    ) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe(EXPECTED_PREFILL));
+
     fireEvent.click(screen.getByRole("button", { name: /browse/i }));
     await Promise.resolve();
     await Promise.resolve();
 
-    const input = screen.getByLabelText(
-      /downloads folder/i,
-    ) as HTMLInputElement;
-    expect(input.value).toBe("~/Downloads/ft5");
+    expect(input.value).toBe(EXPECTED_PREFILL);
   });
 
-  it("on commit, persists via setDefaultFolder and invokes onCommit with the chosen path", () => {
+  it("on commit, persists via setDefaultFolder and invokes onCommit with the OS-resolved path", async () => {
     installApiMock();
     const onCommit = vi.fn();
     render(<FirstDownloadModal open={true} onCommit={onCommit} />);
+
+    // Wait for the OS-default-folder pre-fill to land in the input
+    // before clicking the CTA — the CTA is disabled until the bridge
+    // resolves, so a synchronous click would be a no-op.
+    const input = screen.getByLabelText(
+      /downloads folder/i,
+    ) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe(EXPECTED_PREFILL));
 
     fireEvent.click(
       screen.getByRole("button", { name: /use this folder/i }),
     );
 
     expect(localStorage.getItem(DOWNLOADS_DEFAULT_FOLDER_KEY)).toBe(
-      "~/Downloads/ft5",
+      EXPECTED_PREFILL,
     );
-    expect(getDefaultFolder()).toBe("~/Downloads/ft5");
+    expect(getDefaultFolder()).toBe(EXPECTED_PREFILL);
     expect(onCommit).toHaveBeenCalledTimes(1);
-    expect(onCommit).toHaveBeenCalledWith("~/Downloads/ft5");
+    expect(onCommit).toHaveBeenCalledWith(EXPECTED_PREFILL);
   });
 });
 
@@ -336,7 +409,7 @@ describe("FirstDownloadModal — integration with deferred download trigger", ()
     expect(onDispatch).not.toHaveBeenCalled();
   });
 
-  it("on modal commit, dispatches the deferred download against the now-set folder", () => {
+  it("on modal commit, dispatches the deferred download against the now-set folder", async () => {
     installApiMock();
     const onDispatch = vi.fn();
     render(<TriggerHarness onDispatch={onDispatch} />);
@@ -344,12 +417,15 @@ describe("FirstDownloadModal — integration with deferred download trigger", ()
     fireEvent.click(
       screen.getByRole("button", { name: /trigger download/i }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: /use this folder/i }),
-    );
+    // Wait for the modal's OS-default-folder pre-fill to land before
+    // committing — the post-archive bug fix gates the CTA on a non-empty
+    // folder string so the user can't ship the placeholder.
+    const cta = screen.getByRole("button", { name: /use this folder/i });
+    await waitFor(() => expect(cta).not.toBeDisabled());
+    fireEvent.click(cta);
 
     expect(onDispatch).toHaveBeenCalledTimes(1);
-    expect(onDispatch).toHaveBeenCalledWith("~/Downloads/ft5");
-    expect(getDefaultFolder()).toBe("~/Downloads/ft5");
+    expect(onDispatch).toHaveBeenCalledWith(EXPECTED_PREFILL);
+    expect(getDefaultFolder()).toBe(EXPECTED_PREFILL);
   });
 });
