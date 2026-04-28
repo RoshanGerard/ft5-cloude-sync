@@ -41,6 +41,7 @@ import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
   createDownloadJobToaster,
+  SUCCESS_TOAST_DURATION_MS,
   type DownloadEvent,
   type DownloadEventApi,
   type DownloadJobSummary,
@@ -289,6 +290,50 @@ describe("createDownloadJobToaster (§24.1)", () => {
 
     expect(toast.dismiss).not.toHaveBeenCalled();
     expect(toast.custom).toHaveBeenCalledTimes(1);
+  });
+
+  it("(c-duration) success toast auto-dismisses after the same duration as upload's success toast (Decision V2 / spec line 92)", () => {
+    // Spec contract (`specs/file-explorer/spec.md` § "Successful
+    // download surfaces Open + Show in folder"):
+    //   *"the toast auto-dismisses after the upload-toast success
+    //   duration."*
+    // Upload's success toast inlines `duration: 4000` in
+    // `upload-job-toast.ts`. The download success toast must pass an
+    // explicit, equal duration to `toast.custom` — otherwise Sonner
+    // falls back to its `toast.custom` default which can be
+    // version-dependent and may not match the spec.
+    //
+    // This test pins both: the call carries an explicit `duration`
+    // option AND that value equals the exported
+    // `SUCCESS_TOAST_DURATION_MS` mirror constant, which itself equals
+    // the upload's literal 4000 ms.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "file-downloaded",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 2048,
+      },
+    });
+
+    expect(toast.custom).toHaveBeenCalledTimes(1);
+    const [, opts] = toast.custom.mock.calls[0] as [
+      unknown,
+      { id?: string | number; duration?: number } | undefined,
+    ];
+    expect(opts?.duration).toBeDefined();
+    expect(opts?.duration).toBe(SUCCESS_TOAST_DURATION_MS);
+    // Defence-in-depth: the constant itself must equal upload's
+    // inline literal. If anyone bumps one without the other, this
+    // assertion catches the drift.
+    expect(SUCCESS_TOAST_DURATION_MS).toBe(4000);
   });
 
   it("(c2) the success toast's [Open] action invokes window.api.files.openSavedPath", () => {

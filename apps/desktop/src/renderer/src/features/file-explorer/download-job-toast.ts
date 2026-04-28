@@ -293,6 +293,23 @@ function resolveFilesApi(
   };
 }
 
+// --- Constants -------------------------------------------------------
+
+/**
+ * Auto-dismiss duration (ms) for the V2 success toast (Open + Show in
+ * folder). Mirrors the inline `4000` value used by the upload success
+ * toast in `upload-job-toast.ts` (search: `toast.success(`Uploaded`).
+ *
+ * Spec contract (`openspec/specs/file-explorer/spec.md` § "Successful
+ * download surfaces Open + Show in folder"): *"the toast auto-dismisses
+ * after the upload-toast success duration."* Pinned by test
+ * `(c-duration)` in `__tests__/download-job-toast.test.ts`.
+ *
+ * If the upload value ever changes, update both call sites or extract
+ * to a shared constant in a renderer-scoped util.
+ */
+export const SUCCESS_TOAST_DURATION_MS = 4000;
+
 // --- Helpers ---------------------------------------------------------
 
 function basenameFromPath(path: string): string {
@@ -438,7 +455,13 @@ export function createDownloadJobToaster(
         (id) => buildSuccessRender(id, basename, onOpen, onShowInFolder),
         {
           id: toastId,
-          duration: 4000,
+          // Mirror upload-job-toast.ts's inline `4000` ms for the
+          // success variant — see SUCCESS_TOAST_DURATION_MS docstring.
+          // Without an explicit `duration` here, Sonner's default for
+          // `toast.custom` (~4000 ms but version-dependent) governs and
+          // can feel too short before the user can click [Open] /
+          // [Show in folder]. Pinned by test (c-duration).
+          duration: SUCCESS_TOAST_DURATION_MS,
           actions: { onOpen, onShowInFolder },
         },
       );
