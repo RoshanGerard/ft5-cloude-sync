@@ -450,3 +450,109 @@ above; without that follow-up, even a successful Reconnect lands the
 credentials in `noopCredentialStore` and the next list call re-enters
 the invalid-datasource state. §13.3's dashboard-banner flow inherits
 the same dependencies because it shares the consent path with §13.1.
+
+---
+
+## add-engine-rename-download — §27 manual smoke (deferred)
+
+The eight §27 subtasks defined in this change's `tasks.md` are HUMAN-only
+end-to-end smoke flows against real Google Drive / OneDrive / S3
+datasources and the dev build. None can be exercised automatically; per
+CLAUDE.md they are recorded here with a one-line pointer to the unit /
+integration test that proves the equivalent code path is correct in
+isolation. The implementation closed via 1175 desktop tests + 2432
+full-repo tests passing on commit `c021fba`.
+
+- **§27.1** Boot the dev build with a real Drive datasource; rename a
+  file; download a file; confirm the file lands at the configured
+  default folder; click Open and Show in folder. **Covered in isolation
+  by:** `packages/fs-datasource-engine/src/strategies/googledrive-client.test.ts`
+  (§7.1–§7.12) + `packages/fs-datasource-engine/src/strategies/googledrive-client.contract.test.ts`
+  (§10.1) + `services/fs-sync/src/commands/files-rename.test.ts` (§12.1)
+  + `services/fs-sync/src/commands/__tests__/files-download.test.ts` (§13)
+  + `apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-download-orchestrator.test.ts`
+  (§23) and `download-job-toast.test.ts` (§24) for the Open / Show in
+  folder Sonner CTAs.
+- **§27.2** Same flow with a real OneDrive datasource. **Covered in
+  isolation by:** `packages/fs-datasource-engine/src/strategies/onedrive-client.test.ts`
+  + `packages/fs-datasource-engine/src/strategies/onedrive-client.contract.test.ts`
+  (§8.x parity arms — rename via PATCH, download via `/content` GET with
+  Range) + the same `files-rename.test.ts` / `files-download.test.ts`
+  service handlers (provider-agnostic: they resolve via the engine factory).
+- **§27.3** Same flow with a real S3 datasource (file rename uses
+  copy+delete; folder rename surfaces the disabled tooltip). **Covered
+  in isolation by:** `packages/fs-datasource-engine/src/strategies/s3-client.test.ts`
+  + `packages/fs-datasource-engine/src/strategies/s3-client.contract.test.ts`
+  (§9.x — file rename via `CopyObject` + `DeleteObject`, folder rename
+  rejects with `tag:"unsupported"`); renderer-side disabled-tooltip arm
+  in `apps/desktop/src/renderer/src/features/file-explorer/__tests__/context-menu.test.tsx`
+  (§22 S3-folder-rename branch).
+- **§27.4** Boot the dev build, start a download against a large
+  fixture, close the app mid-download; reopen the app; verify the toast
+  hydrates and the download completes. **Covered in isolation by:**
+  `apps/desktop/src/renderer/src/features/file-explorer/__tests__/download-job-toast.test.ts`
+  (§24.3 hydration test — `onJobHydrated` mounts toast bound to existing
+  jobId + subscribes to in-flight progress feed) +
+  `apps/desktop/src/main/sync/on-connect-hydrate-downloads.test.ts`
+  (§18.9 — on-supervisor-connect queries `downloads:list-active` and
+  forwards the snapshot to the renderer) + service-side
+  `services/fs-sync/src/downloads/__tests__/registry.test.ts` (registry
+  retains in-flight jobs across the IPC reconnect).
+- **§27.5** Boot the dev build, start a download that will exceed
+  1 hour (or simulate via a token-expiry mock); verify the auth-resume
+  splice happens transparently and the download completes. **Covered in
+  isolation by:** `googledrive-client.test.ts` mid-stream auth-expired
+  arms (§7.11 — synthetic 401-after-N-bytes, assert single refresh +
+  Range request issued + content joined byte-exactly) + the parallel
+  `onedrive-client.test.ts` and `s3-client.test.ts` auth-resume arms +
+  `services/fs-sync/src/commands/__tests__/files-download.test.ts`
+  retry-loop (§13.5 — handler advances `rangeStart` from
+  `fs.stat(toPath).size` and validates `contentRange.start === rangeStart`
+  before resuming the local pipe).
+- **§27.6** Boot the dev build, toggle "Always ask where to save";
+  verify every Download click opens the save dialog. **Covered in
+  isolation by:** `apps/desktop/src/renderer/src/features/settings/__tests__/downloads-store.test.ts`
+  (§20 — `alwaysAsk` + `defaultFolder` localStorage round-trip) +
+  `apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-download-orchestrator.test.ts`
+  (§23 — orchestrator routes through `dialog.showSaveDialog` when
+  `alwaysAsk === true` OR Shift+Click modifier set, and through
+  `defaultFolder` otherwise).
+- **§27.7** Boot the dev build with
+  `localStorage.removeItem("ft5.downloads.defaultFolder")`; click
+  Download; verify the first-run modal appears and blocks dismiss.
+  **Covered in isolation by:**
+  `apps/desktop/src/renderer/src/features/file-explorer/__tests__/first-download-modal.test.tsx`
+  (§21 — modal renders iff `defaultFolder == null`, blocks dismiss until
+  user picks a folder, "Use this folder" sets store + closes modal,
+  "Browse…" opens OS picker) +
+  `apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-download-orchestrator.test.ts`
+  (§23.3 — orchestrator opens the modal before dispatching when no
+  default folder exists).
+- **§27.8** Trigger a rename conflict on Drive; verify
+  `RenameConflictDialog` appears and re-dispatch with each policy works.
+  **Covered in isolation by:**
+  `apps/desktop/src/renderer/src/features/file-explorer/__tests__/rename-conflict-dialog.test.tsx`
+  (dialog render + Overwrite/Keep both/Cancel CTA wiring) +
+  `apps/desktop/src/renderer/src/features/file-explorer/__tests__/store.test.ts`
+  rename re-prompt arms (§25 — initial dispatch with
+  `conflictPolicy:"fail"`; on `tag:"conflict"`, prompt with
+  `existingPath`; user choice drives a re-dispatch with the new policy
+  and refreshes `pendingOp.startedAt`; Cancel clears `pendingOp`
+  without surfacing an error) + the engine's per-strategy rename
+  conflict tag arms (`googledrive-client.test.ts` / `onedrive-client.test.ts`
+  / `s3-client.test.ts` rename-conflict cases).
+
+**Status:** PENDING — eight HUMAN-only smoke flows. The codebase is
+unit-test green; the deferred items only require the dev build with
+real provider credentials to verify end-to-end. Items §27.4 and §27.5
+are the trickiest to bench-reproduce (mid-flight close+reopen for
+hydration; 1-hour wait or token-expiry mock for auth-resume).
+
+**Re-verification command:** With a populated
+`~/ft5/sync_app/config.json` (per `add-drive-oauth-browser-consent §1`)
+and at least one real datasource registered, run
+`pnpm -F @ft5/desktop dev` and walk each scenario.
+
+**Owner:** unassigned. To do during the next environment-loop pass,
+likely paired with the still-open §13.1 / §13.2 / §13.3 flows and
+`implement-datasource-onboarding §33.x`.
