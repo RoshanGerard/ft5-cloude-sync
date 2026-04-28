@@ -248,6 +248,24 @@ export function encodeDriveQuery(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+/**
+ * Split a filename into `{ base, ext }` for the `keep-both` suffix loop.
+ * The split mirrors `path.basename` / `path.extname` semantics so candidate
+ * names preserve the extension across attempts: `foo.pdf` → `{base:"foo",
+ * ext:".pdf"}` → candidate `foo-2.pdf`. Extensionless names like `Makefile`
+ * → `{base:"Makefile", ext:""}` → candidate `Makefile-2`. Hidden files like
+ * `.gitignore` (leading dot, no other dots) are treated as extensionless to
+ * avoid pathological `{base:"", ext:".gitignore"}` results — `.gitignore` →
+ * `{base:".gitignore", ext:""}` → `.gitignore-2`.
+ */
+function splitNameForSuffix(name: string): { base: string; ext: string } {
+  const dotIdx = name.lastIndexOf(".");
+  // No dot, or leading-dot hidden file with no other separator → treat as
+  // extensionless. Index 0 means the dot is the first character.
+  if (dotIdx <= 0) return { base: name, ext: "" };
+  return { base: name.slice(0, dotIdx), ext: name.slice(dotIdx) };
+}
+
 function mimeFamilyFromMime(mime?: string): DatasourceMimeFamily {
   if (!mime) return "other";
   if (mime === DRIVE_FOLDER_MIME) return "folder";
@@ -1471,13 +1489,20 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   //                   `drive().files.delete({fileId})` (NOT `this.deleteFile`
   //                   — that primitive is internal cleanup, not a public
   //                   deletion event), then issue the rename.
-  //   - "keep-both" → suffix-retry loop is deferred to a follow-up; for
-  //                   now the strategy passes the policy through to
-  //                   `files.update` directly without retrying. The bus
-  //                   observes one entry-renamed; on collision Drive
-  //                   silently allows ambiguous (parent, name) — the
-  //                   `keep-both` semantic is not yet implemented.
-  //                   See §4.10 / tasks.md follow-up for the suffix loop.
+  //   - "keep-both" → strategy-side suffix-retry loop. Issue a sibling-list
+  //                   query for the candidate name (starting with the
+  //                   original `newName`); on collision retry with
+  //                   `<base>-2.<ext>`, `<base>-3.<ext>`, ..., preserving
+  //                   the file extension across attempts. The original
+  //                   counts as attempt #1, so suffixes 2..99 cover up to
+  //                   99 total attempts. Cap at 99 → throw
+  //                   `DatasourceError { tag: "other", message:
+  //                   "exhausted keep-both attempts" }` per spec.md
+  //                   `specs/fs-datasource-engine/spec.md:191-193`.
+  //                   Drive silently allows ambiguous (parent, name)
+  //                   tuples (see class-header path-ambiguity note), so
+  //                   the strategy MUST do the explicit pre-check rather
+  //                   than relying on Drive to reject duplicates.
   protected override async doRenameImpl(
     target: Target,
     newName: string,
@@ -1485,11 +1510,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   ): Promise<DatasourceFileEntry<"google-drive">> {
     const { fileId } = await this.resolveTarget(target);
 
-    // Pre-resolve the target's parent — both `fail` and `overwrite` paths
-    // need it for the sibling list query, and reusing the resolution
-    // saves a `files.get` round-trip.
+    // Pre-resolve the target's parent — `fail`, `overwrite`, AND
+    // `keep-both` all need it for the sibling list query. Reusing the
+    // resolution saves a `files.get` round-trip per attempt.
     const parentInfo =
-      conflictPolicy === "fail" || conflictPolicy === "overwrite"
+      conflictPolicy === "fail" ||
+      conflictPolicy === "overwrite" ||
+      conflictPolicy === "keep-both"
         ? await this.resolveRenameParent(target, fileId)
         : null;
 
@@ -1582,11 +1609,59 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       }
     }
 
+    // `keep-both` suffix-retry loop. Issue a sibling-list query for each
+    // candidate (starting with the original `newName`); on collision,
+    // bump the suffix and retry. The original counts as attempt #1, so
+    // suffixes 2..99 cover 99 total attempts. On exhaustion, throw
+    // `tag: "other"` per spec. The chosen `effectiveName` is then fed
+    // into the single `files.update` below — there's exactly one
+    // mutation, regardless of how many list-checks ran.
+    let effectiveName = newName;
+    if (conflictPolicy === "keep-both") {
+      const { base, ext } = splitNameForSuffix(newName);
+      let chosen: string | null = null;
+      for (let attempt = 1; attempt <= 99; attempt++) {
+        const candidate = attempt === 1 ? newName : `${base}-${attempt}${ext}`;
+        const q = `name='${encodeDriveQuery(candidate)}' and '${parentInfo!.parentFileId}' in parents and trashed=false`;
+        let resp: DriveListResponse;
+        try {
+          const result = await this.drive().files.list({
+            q,
+            fields: DEFAULT_LIST_FIELDS,
+            pageSize: 1,
+          });
+          resp = result.data;
+        } catch (err) {
+          throw this.normalizeErrorImpl(err);
+        }
+        const matches = resp.files ?? [];
+        if (matches.length === 0) {
+          chosen = candidate;
+          break;
+        }
+      }
+      if (chosen === null) {
+        // Engine taxonomy uses `provider-error` for "no-better-tag"
+        // exhaustion failures; the wire-layer (`normalizeFilesError` in
+        // services/fs-sync) collapses `provider-error` → `tag: "other"`
+        // for the renderer. The user-visible behavior matches the spec
+        // scenario at `specs/fs-datasource-engine/spec.md:191-193`.
+        throw new DatasourceError<"google-drive">({
+          tag: "provider-error",
+          datasourceType: "google-drive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          message: "exhausted keep-both attempts",
+        });
+      }
+      effectiveName = chosen;
+    }
+
     let updated: DriveFile;
     try {
       const result = await this.drive().files.update({
         fileId,
-        requestBody: { name: newName },
+        requestBody: { name: effectiveName },
         fields: DEFAULT_FILE_FIELDS,
       });
       updated = result.data;
@@ -1605,9 +1680,10 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       const segs = pathSegments(target.path);
       segs.pop();
       const parent = segs.length === 0 ? "" : `/${segs.join("/")}`;
-      entryPath = parent === "" ? `/${newName}` : `${parent}/${newName}`;
+      entryPath =
+        parent === "" ? `/${effectiveName}` : `${parent}/${effectiveName}`;
     } else {
-      entryPath = `/${newName}`;
+      entryPath = `/${effectiveName}`;
     }
     return this.buildFileEntry(updated, { path: entryPath });
   }

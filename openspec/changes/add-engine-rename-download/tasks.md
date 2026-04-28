@@ -107,6 +107,9 @@ Final state (Section 7): 254 → 263 engine tests (+9 across 5 describe blocks: 
 - `keep-both` strategy-side suffix-retry loop is not yet implemented in Drive — the policy currently passes through to `files.update` directly. On collision, Drive will silently allow the duplicate (Drive permits ambiguous (parent, name) tuples per the class header's path-ambiguity note). Track in §4.10 follow-up.
 - The constructor's bus subscription evicts the path↔fileId LRU on `deleted` and `file-created` events but NOT on `entry-renamed` — after a successful rename, the OLD path stays cached pointing to the (now-renamed) fileId. Subsequent `getMetadata({path: oldPath})` would resolve via cache, fetch the file by its current fileId, and return an entry with `path: oldPath` but `name: newName`. Inconsistent display state, not data-loss. Track as a follow-up cache-invalidation task.
 
+- [x] 7.13 Write a unit test for `conflictPolicy: "keep-both"` retry on Drive: strategy issues a sibling-list query for `<newName>`, on collision retries with `<base>-2.<ext>`, `<base>-3.<ext>`, ..., until a sibling-list returns empty; then performs `files.update`. Cap at 99 attempts. Test fails.
+- [x] 7.14 Implement Drive keep-both suffix-retry inside `doRenameImpl` (extension preserved across attempts; cap at 99 → throw `DatasourceError { tag: "provider-error", retryable: false, message: "exhausted keep-both attempts" }` — engine taxonomy lacks an `"other"` tag, so `provider-error` is the canonical no-better-tag engine value; the wire-layer at `services/fs-sync/src/commands/files-error-mapping.ts` collapses provider-error → `tag: "other"` before the renderer sees it, matching the spec scenario at `specs/fs-datasource-engine/spec.md:191-193`); rerun → green.
+
 ## 8. Engine — OneDrive strategy
 
 - [ ] 8.1 Write/implement `doRenameImpl` calling `PATCH /me/drive/items/{id}` with body `{ name }` for both files and folders (Graph API is uniform; populate the new entry's `kind` from the response's `folder` vs `file` facet)
@@ -116,6 +119,7 @@ Final state (Section 7): 254 → 263 engine tests (+9 across 5 describe blocks: 
 - [ ] 8.5 Write/implement `doDownloadFileImpl(target, options?)` calling `fetch('/me/drive/items/{id}/content', { headers: rangeStart > 0 ? { Range: \`bytes=${rangeStart}-\` } : {}, signal: options?.signal })`. Read `Content-Length` and `Content-Range` from response headers; convert response.body Web ReadableStream to a Node Readable (or use the Microsoft Graph SDK's stream API if it returns Node streams natively). Hook progress callbacks into `options.onProgress` if provided.
 - [ ] 8.6 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — bus emits `download-cancelled` exactly once on abort
 - [ ] 8.7 Write/implement mid-stream auth-expired surfacing (parallel to Drive's 7.11-7.12) — bus emits exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` with `payload.tag === "auth-expired"` on the surfaced 401
+- [ ] 8.8 Write/implement OneDrive `keep-both` retry (parallel to Drive §7.13/§7.14): suffix `-2`/`-3`/.../`-99` via children pre-check; on exhaustion throw `tag: "provider-error", message: "exhausted keep-both attempts"` (engine taxonomy lacks `"other"`; wire-layer collapses provider-error → `tag: "other"` for the renderer per Drive §7.14 precedent)
 
 ## 9. Engine — S3 strategy
 
@@ -137,6 +141,8 @@ Final state (Section 7): 254 → 263 engine tests (+9 across 5 describe blocks: 
 - [ ] 9.16 Implement; rerun → green
 - [ ] 9.17 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — S3 SDK's `abortSignal` parameter on the client invocation; bus emits `download-cancelled` exactly once on abort.
 - [ ] 9.18 Write/implement mid-stream auth-expired surfacing — S3's auth-expired manifests as an SDK error with a specific shape (e.g., `ExpiredToken`); the strategy's `normalizeErrorImpl` maps it to `tag: "auth-expired"`; bus emits exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` with `payload.tag === "auth-expired"` on the surfaced error.
+- [ ] 9.19 Write a unit test for `conflictPolicy: "keep-both"` retry on S3: strategy uses `HeadObject` to detect collision, retries with `<base>-2.<ext>`, ..., until `HeadObject` returns 404; then performs `CopyObject` + `DeleteObject`. Cap at 99 attempts. Test fails.
+- [ ] 9.20 Implement S3 keep-both suffix-retry inside the file-rename branch; cap at 99 → throw `DatasourceError { tag: "provider-error", retryable: false, message: "exhausted keep-both attempts" }` (engine taxonomy lacks `"other"`; wire-layer collapses provider-error → `tag: "other"` for the renderer per Drive §7.14 precedent); rerun → green.
 
 ## 10. Engine — strategy-contract test sweep
 

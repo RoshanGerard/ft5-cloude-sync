@@ -2805,6 +2805,212 @@ describe("GoogleDriveClient — doRenameImpl directory-overwrite refusal", () =>
 });
 
 // ---------------------------------------------------------------------------
+// rename — `keep-both` policy: suffix-retry loop (§7.13-§7.14)
+// ---------------------------------------------------------------------------
+//
+// Strategy-side suffix-retry loop per design.md Decision 1. The strategy
+// issues a sibling-list query for the candidate name (starting with the
+// original `newName`); on collision, retries with `<base>-2.<ext>`,
+// `<base>-3.<ext>`, ..., preserving the file extension across attempts.
+// The original counts as attempt #1, so suffixes 2..99 cover up to 99
+// total attempts. On exhaustion (99 collisions), throws
+// `DatasourceError { tag: "provider-error", message: "exhausted keep-both
+// attempts" }` — the engine taxonomy at
+// `packages/ipc-contracts/src/fs-datasource-engine.ts:400-413` lacks an
+// `"other"` tag, so `provider-error` is the canonical no-better-tag
+// engine-side value; the wire-layer (`services/fs-sync/src/commands/
+// files-error-mapping.ts`) collapses it to `tag: "other"` before the
+// renderer sees the error. Spec scenario at
+// `specs/fs-datasource-engine/spec.md:191-193` describes the user-visible
+// shape.
+//
+// Extension preservation uses the path-style basename / extname split:
+// `foo.pdf` → base `foo`, ext `.pdf` → candidate `foo-2.pdf`.
+// Extensionless names like `Makefile` → base `Makefile`, ext `""` →
+// candidate `Makefile-2`.
+
+describe("GoogleDriveClient — doRenameImpl `keep-both` policy retries with suffix until success", () => {
+  it("first sibling-list collides for `bar.pdf`, second collides for `bar-2.pdf`, third returns empty for `bar-3.pdf`; then files.update with name='bar-3.pdf'; bus emits one entry-renamed with to.name='bar-3.pdf'", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        // Path resolution: /foo.pdf
+        {
+          qMatch: "name='foo.pdf'",
+          handler: () => ({
+            files: [
+              {
+                id: "FOO-FILE",
+                name: "foo.pdf",
+                mimeType: "application/pdf",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        // Sibling check: bar.pdf collides.
+        {
+          qMatch: "name='bar.pdf'",
+          handler: () => ({
+            files: [
+              {
+                id: "BAR-EXISTING",
+                name: "bar.pdf",
+                mimeType: "application/pdf",
+                parents: ["root"],
+                createdTime: "2024-02-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        // Sibling check: bar-2.pdf collides.
+        {
+          qMatch: "name='bar-2.pdf'",
+          handler: () => ({
+            files: [
+              {
+                id: "BAR2-EXISTING",
+                name: "bar-2.pdf",
+                mimeType: "application/pdf",
+                parents: ["root"],
+                createdTime: "2024-02-02T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        // Sibling check: bar-3.pdf is free.
+        {
+          qMatch: "name='bar-3.pdf'",
+          handler: () => ({ files: [] }),
+        },
+      ],
+      updates: [
+        {
+          fileId: "FOO-FILE",
+          handler: (params) => {
+            const rb = (params.requestBody ?? {}) as { name?: string };
+            expect(rb.name).toBe("bar-3.pdf");
+            return {
+              id: "FOO-FILE",
+              name: "bar-3.pdf",
+              mimeType: "application/pdf",
+              parents: ["root"],
+              size: "12",
+              modifiedTime: "2024-06-02T00:00:00Z",
+              createdTime: "2024-01-01T00:00:00Z",
+            };
+          },
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const entry = await h.client.rename(
+      { kind: "path", path: "/foo.pdf" },
+      "bar.pdf",
+      "keep-both",
+    );
+    expect(entry.name).toBe("bar-3.pdf");
+    expect(entry.handle).toBe("FOO-FILE");
+    // Exactly one update call — the loop only fires update on the first
+    // collision-free candidate.
+    expect(calls.update).toHaveLength(1);
+    expect(
+      (calls.update[0]!.requestBody as { name?: string } | undefined)?.name,
+    ).toBe("bar-3.pdf");
+
+    const renames = h.events.filter((e) => e.event === "entry-renamed");
+    expect(renames).toHaveLength(1);
+    expect(
+      (renames[0]!.payload as { to?: { name?: string } }).to?.name,
+    ).toBe("bar-3.pdf");
+    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
+  });
+
+  it("after 99 collisions (newName + suffixes 2..99), throws DatasourceError { tag: 'provider-error', message: 'exhausted keep-both attempts' } (wire-layer collapses provider-error → 'other' downstream); no files.update issued", async () => {
+    // The fake's lookup uses substring matching on the q parameter — when
+    // every sibling query returns a collision, no list responder needs to
+    // be name-specific. A single permissive responder that matches the
+    // shared `'root' in parents and trashed=false` substring covers every
+    // sibling-check call. Path resolution for /foo.pdf still needs its own
+    // handler keyed on `name='foo.pdf'` first (substring match grabs the
+    // first responder; we list it first so resolution wins).
+    let listCalls = 0;
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        // Path resolution: /foo.pdf — must come first (substring would
+        // otherwise be eaten by the catch-all). The catch-all below uses
+        // the broader `' in parents and trashed=false'` substring so it
+        // doesn't cannibalize this one's `name='foo.pdf'` query first.
+        {
+          qMatch: "name='foo.pdf'",
+          handler: () => {
+            // Path resolution counts ONCE; subsequent `name='foo.pdf'`
+            // queries from the keep-both loop won't happen because the
+            // candidate names progress to `foo-2.pdf` etc. We don't use
+            // `foo.pdf` as the new name — we use `bar.pdf` — so the
+            // path-resolution handler fires exactly once.
+            return {
+              files: [
+                {
+                  id: "FOO-FILE",
+                  name: "foo.pdf",
+                  mimeType: "application/pdf",
+                  parents: ["root"],
+                  createdTime: "2024-01-01T00:00:00Z",
+                },
+              ],
+            };
+          },
+        },
+        // Catch-all collision responder for every sibling-check query.
+        {
+          qMatch: "in parents and trashed=false",
+          handler: () => {
+            listCalls++;
+            return {
+              files: [
+                {
+                  id: `COLLIDER-${listCalls}`,
+                  name: "collide",
+                  mimeType: "application/pdf",
+                  parents: ["root"],
+                  createdTime: "2024-02-01T00:00:00Z",
+                },
+              ],
+            };
+          },
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+
+    let caught: unknown;
+    try {
+      await h.client.rename(
+        { kind: "path", path: "/foo.pdf" },
+        "bar.pdf",
+        "keep-both",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"google-drive">;
+    // Engine taxonomy uses `provider-error` for exhaustion (no `"other"`
+    // tag exists in `DatasourceErrorTag`); the wire layer's
+    // `normalizeFilesError` (services/fs-sync) maps provider-error →
+    // tag: "other" before the renderer sees it.
+    expect(err.tag).toBe("provider-error");
+    expect(err.retryable).toBe(false);
+    expect(err.message).toBe("exhausted keep-both attempts");
+    // 99 collision-check calls (newName + suffixes 2..99 = 99 candidates).
+    expect(listCalls).toBe(99);
+    // No update issued — every candidate collided.
+    expect(calls.update).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // downloadFile — files.get({alt: "media"}, {responseType: "stream", ...})
 // (add-engine-rename-download §7.7-§7.12)
 // ---------------------------------------------------------------------------
