@@ -12,9 +12,12 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -639,5 +642,603 @@ describe("S3Client — testConnection / status", () => {
     s3Mock.on(HeadBucketCommand).resolves({});
     const { client } = makeHarness();
     await expect(client.status()).resolves.toBe("connected");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — file/folder introspection (§9.1-§9.2)
+// ---------------------------------------------------------------------------
+//
+// S3 has no native rename. For file targets we issue CopyObject + DeleteObject;
+// for folder targets we refuse (unsupported). The strategy's introspection
+// helper distinguishes the two via:
+//   - HeadObject(key) → 200 → file
+//   - HeadObject(key) → 404, then ListObjectsV2(Prefix=key+"/", MaxKeys=1) →
+//     at least one key → folder (S3's "virtual folder" — a prefix with at
+//     least one descendant key)
+//   - both 404 → not-found
+//
+// Helpers below build the AWS-shaped errors so the rename branches see the
+// same shape `normalizeErrorImpl` already understands.
+
+function awsNotFoundError(): Error {
+  const err = new Error("NotFound");
+  (err as { name: string }).name = "NotFound";
+  (err as { $metadata?: { httpStatusCode: number } }).$metadata = {
+    httpStatusCode: 404,
+  };
+  return err;
+}
+
+describe("S3Client — doRenameImpl introspection (file vs virtual-folder vs not-found)", () => {
+  it("HeadObject 200 → file branch: issues CopyObject + DeleteObject; emits entry-renamed", async () => {
+    // HeadObject answers 200 for the source key.
+    s3Mock.on(HeadObjectCommand, { Key: "old.txt" }).resolves({
+      ContentLength: 12,
+      LastModified: new Date("2024-06-01"),
+      ETag: '"old-etag"',
+    });
+    // Sibling pre-check (HeadObject on the target) → 404 (no collision).
+    s3Mock.on(HeadObjectCommand, { Key: "new.txt" }).rejects(awsNotFoundError());
+    s3Mock.on(CopyObjectCommand).resolves({
+      CopyObjectResult: { ETag: '"new-etag"', LastModified: new Date("2024-06-02") },
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    const { client, events } = makeHarness();
+    const entry = await client.rename(
+      { kind: "path", path: "/old.txt" },
+      "new.txt",
+      "fail",
+    );
+    expect(entry.kind).toBe("file");
+    expect(entry.handle).toBe("new.txt");
+    expect(entry.path).toBe("/new.txt");
+    expect(entry.providerMetadata.key).toBe("new.txt");
+    expect((events as Array<{ event: string }>).map((e) => e.event)).toContain(
+      "entry-renamed",
+    );
+  });
+
+  it("HeadObject 404 + ListObjectsV2 returns ≥1 key → folder branch: throws unsupported with the S3-folder-rename message; no Copy/Delete issued", async () => {
+    s3Mock.on(HeadObjectCommand).rejects(awsNotFoundError());
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [{ Key: "photos/inner.jpg" }],
+    });
+    const { client } = makeHarness();
+    await expect(
+      client.rename({ kind: "path", path: "/photos" }, "pictures", "fail"),
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        e instanceof DatasourceError &&
+        e.tag === "unsupported" &&
+        e.message === "S3 folder rename is not supported in this version",
+    );
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+
+  it("HeadObject 404 AND ListObjectsV2 returns no keys → not-found", async () => {
+    s3Mock.on(HeadObjectCommand).rejects(awsNotFoundError());
+    s3Mock.on(ListObjectsV2Command).resolves({ Contents: [] });
+    const { client } = makeHarness();
+    await expect(
+      client.rename({ kind: "path", path: "/missing.txt" }, "new.txt", "fail"),
+    ).rejects.toSatisfy(
+      (e: unknown) => e instanceof DatasourceError && e.tag === "not-found",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — file-rename branch (§9.3-§9.4)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doRenameImpl file-rename CopyObject + DeleteObject", () => {
+  it("issues CopyObject with CopySource '<bucket>/<oldKey>' / Key '<newKey>' / Bucket '<bucket>', then DeleteObject for the original key; resolves with the new entry", async () => {
+    s3Mock.on(HeadObjectCommand, { Key: "docs/old.pdf" }).resolves({
+      ContentLength: 99,
+      LastModified: new Date("2024-06-01"),
+      ETag: '"old-etag"',
+    });
+    s3Mock.on(HeadObjectCommand, { Key: "docs/new.pdf" }).rejects(awsNotFoundError());
+    s3Mock.on(CopyObjectCommand).resolves({
+      CopyObjectResult: { ETag: '"new-etag"', LastModified: new Date("2024-06-02") },
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    const { client } = makeHarness();
+    const entry = await client.rename(
+      { kind: "path", path: "/docs/old.pdf" },
+      "new.pdf",
+      "fail",
+    );
+    expect(entry.handle).toBe("docs/new.pdf");
+    expect(entry.path).toBe("/docs/new.pdf");
+    expect(entry.name).toBe("new.pdf");
+    expect(entry.kind).toBe("file");
+    expect(entry.providerMetadata.bucket).toBe("test-bucket");
+    expect(entry.providerMetadata.key).toBe("docs/new.pdf");
+    expect(entry.providerMetadata.etag).toBe('"new-etag"');
+    // CopyObject input verification.
+    const copyCalls = s3Mock.commandCalls(CopyObjectCommand);
+    expect(copyCalls).toHaveLength(1);
+    const copyInput = copyCalls[0]!.args[0].input;
+    expect(copyInput.Bucket).toBe("test-bucket");
+    expect(copyInput.Key).toBe("docs/new.pdf");
+    expect(copyInput.CopySource).toBe("test-bucket/docs/old.pdf");
+    // DeleteObject input verification — issued on the OLD key.
+    const delCalls = s3Mock.commandCalls(DeleteObjectCommand);
+    expect(delCalls).toHaveLength(1);
+    expect(delCalls[0]!.args[0].input.Key).toBe("docs/old.pdf");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — orphan-tolerance on DeleteObject failure (§9.5-§9.6)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doRenameImpl orphan-tolerance on DeleteObject failure", () => {
+  it("when CopyObject succeeds but DeleteObject fails, still resolves with the renamed entry; bus emits one entry-renamed (per Decision 2: rename succeeded from user's perspective)", async () => {
+    s3Mock.on(HeadObjectCommand, { Key: "old.txt" }).resolves({
+      ContentLength: 5,
+      LastModified: new Date("2024-06-01"),
+    });
+    s3Mock.on(HeadObjectCommand, { Key: "new.txt" }).rejects(awsNotFoundError());
+    s3Mock.on(CopyObjectCommand).resolves({
+      CopyObjectResult: { ETag: '"new"', LastModified: new Date("2024-06-02") },
+    });
+    // DeleteObject fails after the copy lands (orphan scenario).
+    s3Mock.on(DeleteObjectCommand).rejects(new Error("delete-blew-up"));
+    const { client, events } = makeHarness();
+    const entry = await client.rename(
+      { kind: "path", path: "/old.txt" },
+      "new.txt",
+      "fail",
+    );
+    expect(entry.handle).toBe("new.txt");
+    expect(entry.kind).toBe("file");
+    const eventNames = (events as Array<{ event: string }>).map((e) => e.event);
+    expect(eventNames.filter((n) => n === "entry-renamed")).toHaveLength(1);
+    // No public delete-failed event for the orphan; the rename succeeded
+    // from the user's perspective per design.md Decision 2.
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — folder refusal (§9.7-§9.8) covered above in §9.1-§9.2 introspection
+// (kept here as a focused redundant assertion for cross-reference clarity).
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doRenameImpl folder refusal (no CopyObject / DeleteObject)", () => {
+  it("when introspection identifies a folder (HeadObject 404 + ListObjectsV2 has results), no CopyObject/DeleteObject are issued; throws DatasourceError tag='unsupported'", async () => {
+    s3Mock.on(HeadObjectCommand).rejects(awsNotFoundError());
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [{ Key: "albums/2024/img.jpg" }],
+    });
+    const { client } = makeHarness();
+    let caught: unknown;
+    try {
+      await client.rename(
+        { kind: "path", path: "/albums" },
+        "newAlbums",
+        "fail",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    expect((caught as DatasourceError<"amazon-s3">).tag).toBe("unsupported");
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — sibling-collision pre-check on `fail` (§9.9-§9.10)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doRenameImpl sibling-collision pre-check on `fail`", () => {
+  it("HeadObject for the target key returns 200 → throws conflict { existingPath: '/<newKey>' }; no CopyObject / DeleteObject issued", async () => {
+    // Source HeadObject is a file.
+    s3Mock.on(HeadObjectCommand, { Key: "foo.txt" }).resolves({
+      ContentLength: 1,
+      LastModified: new Date(),
+    });
+    // Target HeadObject says 200 (collision).
+    s3Mock.on(HeadObjectCommand, { Key: "bar.txt" }).resolves({
+      ContentLength: 1,
+      LastModified: new Date(),
+    });
+    const { client } = makeHarness();
+    let caught: unknown;
+    try {
+      await client.rename({ kind: "path", path: "/foo.txt" }, "bar.txt", "fail");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"amazon-s3">;
+    expect(err.tag).toBe("conflict");
+    expect((err.raw as { existingPath?: string }).existingPath).toBe(
+      "/bar.txt",
+    );
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+
+  it("HeadObject for the target key returns 404 → proceeds with CopyObject + DeleteObject", async () => {
+    s3Mock.on(HeadObjectCommand, { Key: "foo.txt" }).resolves({
+      ContentLength: 1,
+      LastModified: new Date(),
+    });
+    s3Mock.on(HeadObjectCommand, { Key: "bar.txt" }).rejects(awsNotFoundError());
+    s3Mock.on(CopyObjectCommand).resolves({
+      CopyObjectResult: { ETag: '"e"', LastModified: new Date() },
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    const { client } = makeHarness();
+    const entry = await client.rename(
+      { kind: "path", path: "/foo.txt" },
+      "bar.txt",
+      "fail",
+    );
+    expect(entry.handle).toBe("bar.txt");
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — `overwrite` on file uses S3's natural CopyObject overwrite (§9.11-§9.12)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doRenameImpl overwrite on file (S3 natural overwrite via CopyObject)", () => {
+  it("when conflictPolicy='overwrite' on a file, issues CopyObject (overwrites existing) + DeleteObject for the original; no explicit pre-delete (S3's CopyObject is naturally overwriting, unlike Drive/OneDrive)", async () => {
+    s3Mock.on(HeadObjectCommand, { Key: "old.txt" }).resolves({
+      ContentLength: 9,
+      LastModified: new Date(),
+    });
+    // Target key already exists — overwrite path proceeds anyway.
+    s3Mock.on(HeadObjectCommand, { Key: "new.txt" }).resolves({
+      ContentLength: 4,
+      LastModified: new Date(),
+    });
+    s3Mock.on(CopyObjectCommand).resolves({
+      CopyObjectResult: { ETag: '"new"', LastModified: new Date() },
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    const { client } = makeHarness();
+    const entry = await client.rename(
+      { kind: "path", path: "/old.txt" },
+      "new.txt",
+      "overwrite",
+    );
+    expect(entry.handle).toBe("new.txt");
+    // Exactly one CopyObject; exactly one DeleteObject (for the original).
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(1);
+    const delCalls = s3Mock.commandCalls(DeleteObjectCommand);
+    expect(delCalls).toHaveLength(1);
+    expect(delCalls[0]!.args[0].input.Key).toBe("old.txt");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — directory-overwrite refusal (§9.13-§9.14)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doRenameImpl directory-overwrite refusal", () => {
+  it("when introspection resolves folder + conflictPolicy='overwrite', throws unsupported with the directory-overwrite message; no CopyObject / DeleteObject issued", async () => {
+    s3Mock.on(HeadObjectCommand).rejects(awsNotFoundError());
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [{ Key: "dir/inner.txt" }],
+    });
+    const { client } = makeHarness();
+    let caught: unknown;
+    try {
+      await client.rename(
+        { kind: "path", path: "/dir" },
+        "newDir",
+        "overwrite",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"amazon-s3">;
+    expect(err.tag).toBe("unsupported");
+    expect(err.message).toBe(
+      "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
+    );
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadFile — GetObject stream (§9.15-§9.16)
+// ---------------------------------------------------------------------------
+//
+// S3 GetObjectCommand returns a `Body` typed as `StreamingBlobTypes`. In Node
+// runtimes the SDK reaches a Node Readable; tests pass a plain `Readable`
+// instance as the mocked Body (the strategy code casts to Readable and pipes
+// through a Transform).
+
+describe("S3Client — doDownloadFileImpl (GetObject stream + Range + abortSignal)", () => {
+  it("calls GetObject with Bucket+Key (no Range when rangeStart is undefined); resolves with stream + ContentLength; bus emits downloading + file-downloaded after consumer drains", async () => {
+    const fixture = Buffer.from("hello-from-s3");
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: Readable.from(fixture) as unknown as undefined,
+      ContentLength: fixture.length,
+    });
+    const { client, events } = makeHarness();
+    const result = await client.downloadFile({
+      kind: "path",
+      path: "/hello.txt",
+    });
+    expect(result.contentLength).toBe(fixture.length);
+    expect(result.contentRange).toBeUndefined();
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", (c: Buffer) => chunks.push(c));
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", reject);
+    });
+    expect(Buffer.concat(chunks).toString()).toBe(fixture.toString());
+    const getInput = s3Mock.commandCalls(GetObjectCommand)[0]!.args[0].input;
+    expect(getInput.Bucket).toBe("test-bucket");
+    expect(getInput.Key).toBe("hello.txt");
+    expect(getInput.Range).toBeUndefined();
+    const eventNames = (events as Array<{ event: string }>).map((e) => e.event);
+    expect(eventNames.filter((n) => n === "downloading").length).toBeGreaterThanOrEqual(1);
+    expect(eventNames.filter((n) => n === "file-downloaded")).toHaveLength(1);
+    expect(eventNames).not.toContain("download-failed");
+    expect(eventNames).not.toContain("download-cancelled");
+  });
+
+  it("forwards options.rangeStart > 0 as Range:bytes=<n>- on GetObject; parses ContentRange from the 206-equivalent response", async () => {
+    const partial = Buffer.from("PARTIAL");
+    const total = 1024;
+    const start = 16;
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: Readable.from(partial) as unknown as undefined,
+      ContentLength: partial.length,
+      ContentRange: `bytes ${start}-${start + partial.length - 1}/${total}`,
+    });
+    const { client } = makeHarness();
+    const result = await client.downloadFile(
+      { kind: "handle", handle: "RANGE-KEY" },
+      { rangeStart: start },
+    );
+    expect(result.contentLength).toBe(partial.length);
+    expect(result.contentRange).toEqual({
+      start,
+      end: start + partial.length - 1,
+      total,
+    });
+    // Drain so the base emits file-downloaded.
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", reject);
+    });
+    const getInput = s3Mock.commandCalls(GetObjectCommand)[0]!.args[0].input;
+    expect(getInput.Range).toBe(`bytes=${start}-`);
+    expect(getInput.Key).toBe("RANGE-KEY");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadFile — AbortSignal forwarding (§9.17)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doDownloadFileImpl AbortSignal forwarding", () => {
+  it("aborting the consumer signal propagates AbortError; bus emits exactly one download-cancelled with byte counts at abort time; no download-failed", async () => {
+    const controller = new AbortController();
+    // GetObject mock returns a Readable that pushes one chunk then awaits abort.
+    let pushedFirstChunk = false;
+    const body = new Readable({
+      read() {
+        if (!pushedFirstChunk) {
+          pushedFirstChunk = true;
+          this.push(Buffer.alloc(2048));
+          // Don't end the stream — wait for abort.
+        }
+      },
+    });
+    // Wire abort: when the consumer signal aborts, error the body with AbortError.
+    controller.signal.addEventListener(
+      "abort",
+      () => {
+        body.destroy(
+          Object.assign(new Error("aborted"), { name: "AbortError" }),
+        );
+      },
+      { once: true },
+    );
+    s3Mock.on(GetObjectCommand).callsFake(() =>
+      Promise.resolve({
+        Body: body,
+        ContentLength: 16384,
+      }),
+    );
+    const { client, events } = makeHarness();
+    const result = await client.downloadFile(
+      { kind: "handle", handle: "CANCEL-KEY" },
+      { signal: controller.signal },
+    );
+    let bytesSeen = 0;
+    await new Promise<void>((resolve) => {
+      result.stream.on("data", (c: Buffer) => {
+        bytesSeen += c.length;
+        if (bytesSeen >= 2048) controller.abort();
+      });
+      result.stream.on("error", () => resolve());
+      result.stream.on("end", () => resolve());
+    });
+    const cancelled = (events as Array<{ event: string; payload: unknown }>).filter(
+      (e) => e.event === "download-cancelled",
+    );
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]!.payload).toMatchObject({
+      path: "CANCEL-KEY",
+      bytesDownloaded: 2048,
+    });
+    expect(
+      (events as Array<{ event: string }>).some((e) => e.event === "download-failed"),
+    ).toBe(false);
+    expect(
+      (events as Array<{ event: string }>).some((e) => e.event === "file-downloaded"),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadFile — mid-stream ExpiredToken → auth-expired → download-failed (§9.18)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doDownloadFileImpl mid-stream ExpiredToken → auth-expired", () => {
+  it("when the body errors mid-stream with name='ExpiredToken', normalizeErrorImpl maps to tag:auth-expired; bus emits one download-failed carrying the SerializedDatasourceError; no download-cancelled / file-downloaded", async () => {
+    let pushedFirst = false;
+    let scheduledError = false;
+    const body = new Readable({
+      read() {
+        if (!pushedFirst) {
+          pushedFirst = true;
+          this.push(Buffer.alloc(512));
+        }
+        if (!scheduledError) {
+          scheduledError = true;
+          setTimeout(() => {
+            const err = Object.assign(new Error("token expired"), {
+              name: "ExpiredToken",
+            });
+            this.destroy(err);
+          }, 5);
+        }
+      },
+    });
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: body as unknown as undefined,
+      ContentLength: 8192,
+    });
+    const { client, events } = makeHarness();
+    const result = await client.downloadFile({
+      kind: "handle",
+      handle: "EXP-KEY",
+    });
+    await new Promise<void>((resolve) => {
+      result.stream.on("data", () => {});
+      result.stream.on("end", () => resolve());
+      result.stream.on("error", () => resolve());
+    });
+    const failed = (events as Array<{ event: string; payload: unknown }>).filter(
+      (e) => e.event === "download-failed",
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.payload).toMatchObject({
+      tag: "auth-expired",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-s3-1",
+    });
+    expect(
+      (events as Array<{ event: string }>).some((e) => e.event === "download-cancelled"),
+    ).toBe(false);
+    expect(
+      (events as Array<{ event: string }>).some((e) => e.event === "file-downloaded"),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortError + ExpiredToken normalization branches (§9.17 + §9.18 — unit-level)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — normalizeError AbortError + ExpiredToken branches", () => {
+  function normalize(client: S3Client, raw: unknown): DatasourceError<"amazon-s3"> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (client as any).normalizeErrorImpl(raw);
+  }
+
+  it("AbortError name → tag:cancelled (NOT network-error; placed before the network branch)", () => {
+    const { client } = makeHarness();
+    const err = Object.assign(new Error("abort"), { name: "AbortError" });
+    expect(normalize(client, err).tag).toBe("cancelled");
+  });
+
+  it("ExpiredToken name → tag:auth-expired (NOT auth-revoked) — surfaces mid-stream STS-temporary-credential expiry to fs-sync's retry loop", () => {
+    const { client } = makeHarness();
+    expect(normalize(client, { name: "ExpiredToken" }).tag).toBe("auth-expired");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename — `keep-both` policy retries with suffix until success (§9.19-§9.20)
+// ---------------------------------------------------------------------------
+
+describe("S3Client — doRenameImpl keep-both suffix retry", () => {
+  it("first HeadObject for `bar.pdf` collides; second collides for `bar-2.pdf`; third returns 404 for `bar-3.pdf`; then CopyObject + DeleteObject; entry.name='bar-3.pdf'", async () => {
+    // Source key.
+    s3Mock.on(HeadObjectCommand, { Key: "foo.pdf" }).resolves({
+      ContentLength: 100,
+      LastModified: new Date(),
+    });
+    // Two collisions, then a 404.
+    s3Mock.on(HeadObjectCommand, { Key: "bar.pdf" }).resolves({
+      ContentLength: 1,
+      LastModified: new Date(),
+    });
+    s3Mock.on(HeadObjectCommand, { Key: "bar-2.pdf" }).resolves({
+      ContentLength: 1,
+      LastModified: new Date(),
+    });
+    s3Mock.on(HeadObjectCommand, { Key: "bar-3.pdf" }).rejects(awsNotFoundError());
+    s3Mock.on(CopyObjectCommand).resolves({
+      CopyObjectResult: { ETag: '"new"', LastModified: new Date() },
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    const { client, events } = makeHarness();
+    const entry = await client.rename(
+      { kind: "path", path: "/foo.pdf" },
+      "bar.pdf",
+      "keep-both",
+    );
+    expect(entry.name).toBe("bar-3.pdf");
+    expect(entry.handle).toBe("bar-3.pdf");
+    // CopyObject issued exactly once with the chosen name.
+    const copyCalls = s3Mock.commandCalls(CopyObjectCommand);
+    expect(copyCalls).toHaveLength(1);
+    expect(copyCalls[0]!.args[0].input.Key).toBe("bar-3.pdf");
+    expect(copyCalls[0]!.args[0].input.CopySource).toBe("test-bucket/foo.pdf");
+    expect(
+      (events as Array<{ event: string }>).filter((e) => e.event === "entry-renamed"),
+    ).toHaveLength(1);
+  });
+
+  it("after 99 collisions (newName + suffixes 2..99), throws DatasourceError { tag:'provider-error', message:'exhausted keep-both attempts' }; no CopyObject issued", async () => {
+    // Source HeadObject always 200.
+    s3Mock.on(HeadObjectCommand, { Key: "foo.pdf" }).resolves({
+      ContentLength: 1,
+      LastModified: new Date(),
+    });
+    // All other HeadObject targets respond 200 (collision).
+    s3Mock.on(HeadObjectCommand).resolves({
+      ContentLength: 1,
+      LastModified: new Date(),
+    });
+    const { client } = makeHarness();
+    let caught: unknown;
+    try {
+      await client.rename(
+        { kind: "path", path: "/foo.pdf" },
+        "bar.pdf",
+        "keep-both",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"amazon-s3">;
+    expect(err.tag).toBe("provider-error");
+    expect(err.retryable).toBe(false);
+    expect(err.message).toBe("exhausted keep-both attempts");
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
   });
 });

@@ -123,26 +123,26 @@ Final state (Section 7): 254 → 263 engine tests (+9 across 5 describe blocks: 
 
 ## 9. Engine — S3 strategy
 
-- [ ] 9.1 Write a unit test for `S3Client.doRenameImpl` introspection: `HeadObject(key)` returns 200 → file path; `HeadObject(key)` returns 404 then `ListObjectsV2(Prefix=key+"/", MaxKeys=1)` returns at least one key → folder path; both 404 → not-found. Test fails — `doRenameImpl` doesn't exist yet
-- [ ] 9.2 Implement the introspection helper; rerun → green
-- [ ] 9.3 Write a unit test for the file-rename branch: `CopyObjectCommand` (with `CopySource`/`Bucket`/`Key`) followed by `DeleteObjectCommand` (with the original `Key`); resolves with the new entry. Test fails
-- [ ] 9.4 Implement the file-rename branch; rerun → green
-- [ ] 9.5 Write a unit test for `CopyObject` succeeds + `DeleteObject` fails: the strategy logs the orphan-old-key but still resolves with the renamed entry (rename succeeded from user perspective per design.md Decision 2); test fails
-- [ ] 9.6 Implement the failure-tolerant branch; rerun → green
-- [ ] 9.7 Write a unit test for the folder-rename branch: when the introspection identifies the target as a folder, throw `DatasourceError { tag: "unsupported", message: "S3 folder rename is not supported in this version" }`; test fails
-- [ ] 9.8 Implement (one-line throw inside the branch); rerun → green
-- [ ] 9.9 Write a unit test for sibling-collision pre-check on `conflictPolicy: "fail"`: before `CopyObject`, the strategy issues a `HeadObject` for the target key. If 200, throw conflict with `existingPath`. Test fails
-- [ ] 9.10 Implement the pre-check; rerun → green
-- [ ] 9.11 Write a unit test for `conflictPolicy: "overwrite"` on a file: `HeadObject` for target may return 200 (existing); the strategy proceeds with `CopyObject` (S3 default overwrite) + `DeleteObject` for the original; resolves with the new entry. Test fails
-- [ ] 9.12 Implement the overwrite branch; rerun → green
-- [ ] 9.13 Write a unit test for the directory-overwrite refusal (matches Drive 7.5/7.6 — but kicks in at the introspection-resolves-folder + overwrite combination)
-- [ ] 9.14 Implement; rerun → green
-- [ ] 9.15 Write a unit test for `doDownloadFileImpl(target, options?)` calling `GetObjectCommand({ Bucket, Key, Range: rangeStart > 0 ? \`bytes=${rangeStart}-\` : undefined })` with `{ abortSignal: options?.signal }` on the client invocation. Returns `{ stream: response.Body, contentLength: response.ContentLength, contentRange: parseContentRangeFromS3(response.ContentRange) }`. Hook S3 SDK progress events into `options.onProgress` if available, or count bytes manually on the stream.
-- [ ] 9.16 Implement; rerun → green
-- [ ] 9.17 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — S3 SDK's `abortSignal` parameter on the client invocation; bus emits `download-cancelled` exactly once on abort.
-- [ ] 9.18 Write/implement mid-stream auth-expired surfacing — S3's auth-expired manifests as an SDK error with a specific shape (e.g., `ExpiredToken`); the strategy's `normalizeErrorImpl` maps it to `tag: "auth-expired"`; bus emits exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` with `payload.tag === "auth-expired"` on the surfaced error.
-- [ ] 9.19 Write a unit test for `conflictPolicy: "keep-both"` retry on S3: strategy uses `HeadObject` to detect collision, retries with `<base>-2.<ext>`, ..., until `HeadObject` returns 404; then performs `CopyObject` + `DeleteObject`. Cap at 99 attempts. Test fails.
-- [ ] 9.20 Implement S3 keep-both suffix-retry inside the file-rename branch; cap at 99 → throw `DatasourceError { tag: "provider-error", retryable: false, message: "exhausted keep-both attempts" }` (engine taxonomy lacks `"other"`; wire-layer collapses provider-error → `tag: "other"` for the renderer per Drive §7.14 precedent); rerun → green.
+- [x] 9.1 Write a unit test for `S3Client.doRenameImpl` introspection: `HeadObject(key)` returns 200 → file path; `HeadObject(key)` returns 404 then `ListObjectsV2(Prefix=key+"/", MaxKeys=1)` returns at least one key → folder path; both 404 → not-found. Test fails — `doRenameImpl` doesn't exist yet
+- [x] 9.2 Implement the introspection helper; rerun → green
+- [x] 9.3 Write a unit test for the file-rename branch: `CopyObjectCommand` (with `CopySource`/`Bucket`/`Key`) followed by `DeleteObjectCommand` (with the original `Key`); resolves with the new entry. Test fails
+- [x] 9.4 Implement the file-rename branch; rerun → green
+- [x] 9.5 Write a unit test for `CopyObject` succeeds + `DeleteObject` fails: the strategy logs the orphan-old-key but still resolves with the renamed entry (rename succeeded from user perspective per design.md Decision 2); test fails
+- [x] 9.6 Implement the failure-tolerant branch; rerun → green
+- [x] 9.7 Write a unit test for the folder-rename branch: when the introspection identifies the target as a folder, throw `DatasourceError { tag: "unsupported", message: "S3 folder rename is not supported in this version" }`; test fails
+- [x] 9.8 Implement (one-line throw inside the branch); rerun → green
+- [x] 9.9 Write a unit test for sibling-collision pre-check on `conflictPolicy: "fail"`: before `CopyObject`, the strategy issues a `HeadObject` for the target key. If 200, throw conflict with `existingPath`. Test fails
+- [x] 9.10 Implement the pre-check; rerun → green
+- [x] 9.11 Write a unit test for `conflictPolicy: "overwrite"` on a file: `HeadObject` for target may return 200 (existing); the strategy proceeds with `CopyObject` (S3 default overwrite) + `DeleteObject` for the original; resolves with the new entry. Test fails
+- [x] 9.12 Implement the overwrite branch; rerun → green
+- [x] 9.13 Write a unit test for the directory-overwrite refusal (matches Drive 7.5/7.6 — but kicks in at the introspection-resolves-folder + overwrite combination)
+- [x] 9.14 Implement; rerun → green
+- [x] 9.15 Write a unit test for `doDownloadFileImpl(target, options?)` calling `GetObjectCommand({ Bucket, Key, Range: rangeStart > 0 ? \`bytes=${rangeStart}-\` : undefined })` with `{ abortSignal: options?.signal }` on the client invocation. Returns `{ stream: response.Body, contentLength: response.ContentLength, contentRange: parseContentRangeFromS3(response.ContentRange) }`. Hook S3 SDK progress events into `options.onProgress` if available, or count bytes manually on the stream.
+- [x] 9.16 Implement; rerun → green
+- [x] 9.17 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — S3 SDK's `abortSignal` parameter on the client invocation; bus emits `download-cancelled` exactly once on abort.
+- [x] 9.18 Write/implement mid-stream auth-expired surfacing — S3's auth-expired manifests as an SDK error with a specific shape (e.g., `ExpiredToken`); the strategy's `normalizeErrorImpl` maps it to `tag: "auth-expired"`; bus emits exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` with `payload.tag === "auth-expired"` on the surfaced error.
+- [x] 9.19 Write a unit test for `conflictPolicy: "keep-both"` retry on S3: strategy uses `HeadObject` to detect collision, retries with `<base>-2.<ext>`, ..., until `HeadObject` returns 404; then performs `CopyObject` + `DeleteObject`. Cap at 99 attempts. Test fails.
+- [x] 9.20 Implement S3 keep-both suffix-retry inside the file-rename branch; cap at 99 → throw `DatasourceError { tag: "provider-error", retryable: false, message: "exhausted keep-both attempts" }` (engine taxonomy lacks `"other"`; wire-layer collapses provider-error → `tag: "other"` for the renderer per Drive §7.14 precedent); rerun → green.
 
 ## 10. Engine — strategy-contract test sweep
 
