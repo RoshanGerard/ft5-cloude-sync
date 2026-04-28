@@ -168,16 +168,20 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     void ({} as OneDrivePayloads);
   });
 
-  it("PayloadMap declares the twelve canonical event names for every provider", () => {
+  it("PayloadMap declares the seventeen canonical event names for every provider", () => {
     // The assertion is compile-time: every provider's key set must be
-    // EXACTLY the canonical 12 — bidirectional equality, not one-way
+    // EXACTLY the canonical set — bidirectional equality, not one-way
     // subtype. This catches both accidental drop (a provider missing
     // "rate-limited") and accidental drift (a provider adding a new
     // event name without updating the others).
     //
     // The twelfth name, `"upload-cancelled"`, lands with
-    // `add-fs-engine-cancellation` — any future proposal that adds a
-    // 13th event name MUST update this enumeration in the same change.
+    // `add-fs-engine-cancellation`. The 13th–17th names land with
+    // `add-engine-rename-download`: the four download-lifecycle events
+    // (`downloading`, `file-downloaded`, `download-failed`,
+    // `download-cancelled`) and `entry-renamed`. Any future proposal
+    // that adds an 18th event name MUST update this enumeration in
+    // the same change.
     type S3Keys = keyof PayloadMap["amazon-s3"];
     type DriveKeys = keyof PayloadMap["google-drive"];
     type OneDriveKeys = keyof PayloadMap["onedrive"];
@@ -193,7 +197,12 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
       | "token-refreshed"
       | "token-expired"
       | "status-changed"
-      | "rate-limited";
+      | "rate-limited"
+      | "downloading"
+      | "file-downloaded"
+      | "download-failed"
+      | "download-cancelled"
+      | "entry-renamed";
     expectTypeOf<S3Keys>().toEqualTypeOf<Canonical>();
     expectTypeOf<DriveKeys>().toEqualTypeOf<Canonical>();
     expectTypeOf<OneDriveKeys>().toEqualTypeOf<Canonical>();
@@ -294,6 +303,107 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     expectTypeOf<S3Cancel>().toEqualTypeOf<Expected>();
     expectTypeOf<DriveCancel>().toEqualTypeOf<Expected>();
     expectTypeOf<OneDriveCancel>().toEqualTypeOf<Expected>();
+  });
+
+  it("entry-renamed payload is { from: Target; to: DatasourceFileEntry<T> } pinned per provider (add-engine-rename-download §3.5/§3.6)", () => {
+    // The base class emits exactly one `entry-renamed` per successful
+    // `rename` call regardless of how many provider API calls the
+    // strategy made internally (per design.md Decision 2). The `from`
+    // carries the original target so subscribers can identify the
+    // pre-rename entry; the `to` is the full new entry shape and is
+    // generic over `T` so Drive's `fileId`, S3's `bucket`/`key`, etc.
+    // narrow correctly when consumers branch on `datasourceType`.
+    type S3Renamed = PayloadMap["amazon-s3"]["entry-renamed"];
+    type DriveRenamed = PayloadMap["google-drive"]["entry-renamed"];
+    type OneDriveRenamed = PayloadMap["onedrive"]["entry-renamed"];
+
+    expectTypeOf<S3Renamed>().toEqualTypeOf<{
+      from: Target;
+      to: DatasourceFileEntry<"amazon-s3">;
+    }>();
+    expectTypeOf<DriveRenamed>().toEqualTypeOf<{
+      from: Target;
+      to: DatasourceFileEntry<"google-drive">;
+    }>();
+    expectTypeOf<OneDriveRenamed>().toEqualTypeOf<{
+      from: Target;
+      to: DatasourceFileEntry<"onedrive">;
+    }>();
+  });
+
+  it("the four download-lifecycle event payloads are pinned with the documented shapes (add-engine-rename-download §3.3/§3.4)", () => {
+    // `downloading`, `file-downloaded`, `download-cancelled` carry
+    // base-level byte-counter / placement state identical across
+    // providers — pinned in `CanonicalEventPayloads` so the renderer's
+    // toaster receives a uniform payload regardless of which strategy
+    // emitted the event. `download-failed` mirrors the existing
+    // `authentication-failed` pattern: the payload is the full
+    // `SerializedDatasourceError<T>` so subscribers reconstruct retry
+    // affordances (`retryable` / `retryAfterMs` / `tag`) without
+    // round-tripping the class identity through structured-clone.
+    //
+    // None of these payloads carry `datasourceId` or `datasourceType`
+    // — the standard `DatasourceEvent<T, K>` envelope already carries
+    // those (plus `ts` and `streaming?`). Each payload DOES carry
+    // `path` because the envelope does NOT (per the established
+    // engine convention — see `UploadCancelledPayload` for the
+    // analogous case).
+    type DownloadingShape = {
+      loaded: number;
+      total: number | null;
+      path: string;
+    };
+    expectTypeOf<PayloadMap["amazon-s3"]["downloading"]>().toEqualTypeOf<
+      DownloadingShape
+    >();
+    expectTypeOf<PayloadMap["google-drive"]["downloading"]>().toEqualTypeOf<
+      DownloadingShape
+    >();
+    expectTypeOf<PayloadMap["onedrive"]["downloading"]>().toEqualTypeOf<
+      DownloadingShape
+    >();
+
+    type FileDownloadedShape = {
+      savedPath: string;
+      bytes: number;
+      path: string;
+    };
+    expectTypeOf<PayloadMap["amazon-s3"]["file-downloaded"]>().toEqualTypeOf<
+      FileDownloadedShape
+    >();
+    expectTypeOf<PayloadMap["google-drive"]["file-downloaded"]>().toEqualTypeOf<
+      FileDownloadedShape
+    >();
+    expectTypeOf<PayloadMap["onedrive"]["file-downloaded"]>().toEqualTypeOf<
+      FileDownloadedShape
+    >();
+
+    type DownloadCancelledShape = {
+      bytesDownloaded: number;
+      bytesTotal: number | null;
+      path: string;
+    };
+    expectTypeOf<PayloadMap["amazon-s3"]["download-cancelled"]>().toEqualTypeOf<
+      DownloadCancelledShape
+    >();
+    expectTypeOf<
+      PayloadMap["google-drive"]["download-cancelled"]
+    >().toEqualTypeOf<DownloadCancelledShape>();
+    expectTypeOf<PayloadMap["onedrive"]["download-cancelled"]>().toEqualTypeOf<
+      DownloadCancelledShape
+    >();
+
+    // `download-failed` is provider-pinned — narrowing on
+    // `datasourceType` carries through to the serialized error.
+    expectTypeOf<PayloadMap["amazon-s3"]["download-failed"]>().toEqualTypeOf<
+      SerializedDatasourceError<"amazon-s3">
+    >();
+    expectTypeOf<PayloadMap["google-drive"]["download-failed"]>().toEqualTypeOf<
+      SerializedDatasourceError<"google-drive">
+    >();
+    expectTypeOf<PayloadMap["onedrive"]["download-failed"]>().toEqualTypeOf<
+      SerializedDatasourceError<"onedrive">
+    >();
   });
 });
 

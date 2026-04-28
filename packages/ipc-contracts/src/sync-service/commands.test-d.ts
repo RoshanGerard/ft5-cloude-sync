@@ -23,7 +23,10 @@ describe("sync-service command contract", () => {
     // three-command authenticate split (`-start` / `-complete` / `-cancel`)
     // is the only path that writes credentials. `sync:get-config` /
     // `sync:set-config` / `sync:delete-credentials` were added by the same
-    // change.
+    // change. `downloads:list-active` was added by
+    // `add-engine-rename-download` (tasks §3.1/§3.2) — it carries the
+    // service-side download registry snapshot the renderer hydrates on
+    // first connect.
     type Expected =
       | "sync:enqueue-upload"
       | "sync:enqueue-mirror"
@@ -44,7 +47,8 @@ describe("sync-service command contract", () => {
       | "files:list"
       | "files:stat"
       | "files:search"
-      | "files:remove";
+      | "files:remove"
+      | "downloads:list-active";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });
 

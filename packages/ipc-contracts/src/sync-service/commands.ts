@@ -517,6 +517,61 @@ interface FilesRemoveCommand {
   readonly error: FilesCommandErrorShape;
 }
 
+// ---- downloads:* commands (add-engine-rename-download §3.1/§3.2) ---------
+//
+// `downloads:list-active` returns the live snapshot of in-flight download
+// jobs the service is tracking in its `DownloadRegistry` (see design.md
+// Decision 3 + tasks §11). Each `DownloadJob` is keyed by the per-job
+// business-domain id (`downloadJobId`) — the engine bus's
+// `(datasourceId, path)` is reverse-indexed in the registry, but the
+// list response uses the consumer-facing key.
+//
+// The renderer hydrates its toaster strip on first connect from this
+// snapshot; the live progress feed thereafter arrives through fs-sync's
+// `downloading` events on the `sync:subscribe-events` stream.
+
+/**
+ * One in-flight download job, as observed by the service's
+ * `DownloadRegistry`. `bytesDownloaded` advances over the job's lifetime;
+ * `contentLength` is `null` when the provider did not advertise it
+ * upfront (the renderer renders an indeterminate progress bar in that
+ * case). `startedAt` is epoch milliseconds (UTC) and is the response's
+ * stable ordering key.
+ */
+export interface DownloadJob {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesDownloaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
+
+/**
+ * Wire-shape alias for the `downloads:list-active` request. Empty params
+ * — the service returns all live jobs across every datasource. (Filtered
+ * variants are out of scope for v1; the renderer fans out the snapshot
+ * across its toaster strip.)
+ */
+export type DownloadsListActiveRequest = Record<string, never>;
+
+/**
+ * Wire-shape alias for the `downloads:list-active` response, expressed
+ * as the standard tagged envelope used across the sync-service surface.
+ * Subscribers branch on `ok` to pick out `value.jobs` vs `error`.
+ */
+export type DownloadsListActiveResponse =
+  | { readonly ok: true; readonly value: { readonly jobs: readonly DownloadJob[] } }
+  | { readonly ok: false; readonly error: FilesCommandErrorShape };
+
+interface DownloadsListActiveCommand {
+  readonly command: "downloads:list-active";
+  readonly params: DownloadsListActiveRequest;
+  readonly result: { readonly jobs: readonly DownloadJob[] };
+  readonly error: FilesCommandErrorShape;
+}
+
 // ---- Command map + derived helpers ---------------------------------------
 
 export interface CommandMap {
@@ -540,6 +595,7 @@ export interface CommandMap {
   "files:stat": FilesStatCommand;
   "files:search": FilesSearchCommand;
   "files:remove": FilesRemoveCommand;
+  "downloads:list-active": DownloadsListActiveCommand;
 }
 
 export type CommandName = keyof CommandMap;
@@ -572,4 +628,5 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "files:stat",
   "files:search",
   "files:remove",
+  "downloads:list-active",
 ] as const;

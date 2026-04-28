@@ -47,13 +47,13 @@ A second subagent discovered that `packages/ipc-contracts/src/**/*.test-d.ts` fi
 
 ## 3. Contracts — `downloads:list-active` command + `downloading` event + cancel command
 
-- [ ] 3.1 Write a typed test asserting `DownloadsListActiveRequest` and `DownloadsListActiveResponse` are present in `@ft5/ipc-contracts/sync-service`; the response carries `{ ok: true, value: { jobs: DownloadJob[] } }` with `DownloadJob = { downloadJobId, datasourceId, sourcePath, targetPath, bytesDownloaded, contentLength, startedAt }`; test fails
-- [ ] 3.2 Add the request/response types + `DownloadJob` shape to the sync-service contracts; add `"downloads:list-active"` to `COMMAND_NAMES`; rerun typed test → green
-- [ ] 3.3 Write a typed test asserting `DownloadingEvent`, `FileDownloadedEvent`, `DownloadCancelledEvent`, `DownloadFailedEvent` payload shapes are present in the engine event taxonomy; test fails (these are new bus events)
-- [ ] 3.4 Extend the event payload union types in `packages/ipc-contracts/src/fs-datasource-engine.ts` (where `PayloadMap` is defined at line 214); rerun → green
-- [ ] 3.5 Write a typed test asserting a new `EntryRenamedEvent { from: Target, to: DatasourceFileEntry<T> }` is present
-- [ ] 3.6 Add the event type; rerun → green
-- [ ] 3.7 Run the full ipc-contracts vitest suite; verify no regressions
+- [x] 3.1 Write a typed test asserting `DownloadsListActiveRequest` and `DownloadsListActiveResponse` are present in `@ft5/ipc-contracts/sync-service`; the response carries `{ ok: true, value: { jobs: DownloadJob[] } }` with `DownloadJob = { downloadJobId, datasourceId, sourcePath, targetPath, bytesDownloaded, contentLength, startedAt }`; test fails. **Done 2026-04-28**: new test file at `packages/ipc-contracts/src/sync-service/__tests__/downloads-commands.test-d.ts` (8 tests).
+- [x] 3.2 Add the request/response types + `DownloadJob` shape to the sync-service contracts; add `"downloads:list-active"` to `COMMAND_NAMES`; rerun typed test → green. **Done 2026-04-28**: `DownloadJob`, `DownloadsListActiveRequest`, `DownloadsListActiveResponse`, `DownloadsListActiveCommand` added to `commands.ts`; index re-exports updated; closed-set assertions in `commands.test-d.ts:48` + `authenticate-onboarding.test-d.ts:286` extended with the new name (contract-broken-test fixes).
+- [x] 3.3 Write a typed test asserting `DownloadingEvent`, `FileDownloadedEvent`, `DownloadCancelledEvent`, `DownloadFailedEvent` payload shapes are present in the engine event taxonomy; test fails (these are new bus events). **Done 2026-04-28**: assertion added to `datasources-engine.test-d.ts` events describe block; the existing 12-name canonical-keys assertion at `:171` widened to 17 (contract-broken-test fix).
+- [x] 3.4 Extend the event payload union types in `packages/ipc-contracts/src/fs-datasource-engine.ts` (where `PayloadMap` is defined at line 214); rerun → green. **Done 2026-04-28**: extended `CanonicalEventPayloads<T>` (line 155) with `downloading`, `file-downloaded`, `download-cancelled`, `download-failed`. `download-failed: SerializedDatasourceError<T>` mirrors the existing `authentication-failed` per-provider pinning.
+- [x] 3.5 Write a typed test asserting a new `EntryRenamedEvent { from: Target, to: DatasourceFileEntry<T> }` is present. **Done 2026-04-28**: separate test added in the same file under the events describe block.
+- [x] 3.6 Add the event type; rerun → green. **Done 2026-04-28**: `entry-renamed: { from: Target; to: DatasourceFileEntry<T> }` added to `CanonicalEventPayloads<T>`.
+- [x] 3.7 Run the full ipc-contracts vitest suite; verify no regressions. **Done 2026-04-28**: 423 → 443 tests (+20: 10 new `it` blocks counted twice each — vitest runs typed tests under both the typecheck pass and a no-op runtime pass; 8 new in `downloads-commands.test-d.ts`, 2 new in `datasources-engine.test-d.ts`); 42 → 44 files (+1 new test file, +1 from including the previously-uncounted `downloads-commands` file); 0 type errors. Final verification: `pnpm typecheck` clean, `pnpm lint` clean, `pnpm -F @ft5/ipc-contracts build` clean.
 
 ## 4. Engine — `rename` base-class primitive
 

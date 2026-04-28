@@ -282,7 +282,8 @@ describe("CommandMap exhaustive — new commands present, retired commands gone"
       | "files:list"
       | "files:stat"
       | "files:search"
-      | "files:remove";
+      | "files:remove"
+      | "downloads:list-active";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });
 
