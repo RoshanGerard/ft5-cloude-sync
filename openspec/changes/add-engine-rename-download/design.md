@@ -561,6 +561,57 @@ the same surface keeps the test matrix small.
 inline UX should not silently overwrite a sibling without explicit
 user consent. The renderer always re-prompts with the dialog.
 
+### Decision 8 — Renderer download orchestrator + toast are decoupled via the global event stream (NOT via the dispatch return value)
+
+**Context.** The original spec.md "Download a file from S3" scenario
+reads as if `window.api.files.download(...)` returns a `downloadJobId`
+that the toast binds to. Implementation surfaced a flaw in that
+framing: the canonical `FilesDownloadResponse` contract
+(`packages/ipc-contracts/src/files.ts`) carries only
+`{ savedPath, bytes }` — there is no `downloadJobId` on the response,
+and `files.download` is a long-running call that resolves at terminal
+completion, not at dispatch. Widening that contract would touch
+`packages/*` and `apps/desktop/src/main/`, which §23/§24 are scoped
+out of.
+
+**What.** The renderer download orchestrator (§23) and the renderer
+download toast (§24) are decoupled. The orchestrator is purely the
+dispatcher: resolves `toPath`, optionally opens `showSaveDialog`,
+optionally opens the first-run modal + queues, then calls
+`window.api.files.download(...)` and returns the response (or `null`
+when the user cancels mid-resolve). The orchestrator does NOT return
+a `downloadJobId`.
+
+The toast (§24) subscribes to `window.api.sync.onEvent` filtered to
+the four download lifecycle event names (`downloading` /
+`file-downloaded` / `download-failed` / `download-cancelled`).
+Spawning is event-driven: the FIRST event for a previously-unseen
+`downloadJobId` spawns a toast; subsequent events for the same id
+update it; terminal events flip to the success / failure / silent-
+dismiss variants.
+
+App-launch hydration uses the SAME spawn path: each `DownloadJob`
+from `onActiveDownloadsHydrate(jobs)` registers its `downloadJobId`
+in the spawn-tracker with seeded initial progress, so the next live
+event updates an existing toast rather than creating a duplicate.
+
+**Why decoupling rather than mirroring the upload pattern verbatim.**
+Upload binds toast → jobId via the IPC return value because
+`FilesUploadResponse` carries `{ jobId }` at dispatch. Download has
+no per-job channel like `onUploadProgress` and no `downloadJobId`
+at dispatch — only the global `window.api.sync.onEvent`. Faking a
+correlation in the orchestrator (e.g., racing `downloading` events
+to associate with a dispatch in flight) would couple the dispatcher
+to the event stream brittlely; decoupling is the correct shape.
+
+**Risk.** The orchestrator can no longer pre-create a placeholder
+toast at click-time — the user sees the toast appear only when the
+first `downloading` event lands (or `file-downloaded` for very small
+files). For typical download latency this is invisible; for the
+edge case of a sub-millisecond completion, the spawn-on-first-event
+path handles terminal-as-first events correctly (spawn-and-immediately-
+flip-to-success).
+
 ## Visual direction
 
 These four decisions came out of the Visual Companion brainstorming
