@@ -136,7 +136,7 @@ synchronous `options.onProgress` callback:
 
 - `downloading { datasourceId, path, loaded, total }`
 - `file-downloaded { datasourceId, path, bytes }`
-- `download-failed { datasourceId, path, error: SerializedDatasourceError<T> }`
+- `download-failed`: payload IS `SerializedDatasourceError<T>` directly (per the `authentication-failed` precedent on the engine bus — error events are pinned to the serialized error so subscribers narrow on the envelope's `datasourceType` and read the error fields without wrapper unwrap). `datasourceId` lives on the envelope; `path` is NOT on this payload.
 - `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }`
 
 The engine never writes to disk and so cannot know `savedPath`; that

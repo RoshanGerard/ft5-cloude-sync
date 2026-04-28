@@ -788,30 +788,37 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   }
 
   /**
-   * Per-call download progress tracker. Set by the public `downloadFile`
-   * at the start of each call and cleared in the finally branch; updated
-   * by the `protected emitDownloading` helper whenever a strategy reports
-   * a byte-tick. Used to populate `download-cancelled`'s `bytesDownloaded`
-   * / `bytesTotal` from the closure-captured last counts at abort time.
+   * Per-call progress hooks for in-flight `downloadFile` calls, keyed
+   * by `path`. Each entry is the closure-local `recordProgress`
+   * callback that the call's own `lastLoaded` / `lastTotal` live
+   * inside; `emitDownloading(path, …)` looks the entry up so a tick
+   * threads through to the right call's closure when multiple
+   * downloads run concurrently on the same client (different paths).
    *
-   * Section 5 does NOT support concurrent `downloadFile` calls on the
-   * same client instance (no test asserts it; tracker is a single slot,
-   * not a map). fs-sync enforces at most one in-flight download per
-   * `(datasourceId, path)` at the service layer (§13.23). Should a
-   * future requirement need concurrent downloads on one client, the
-   * tracker would need keying — but that change is out of scope here.
+   * The architecture allows concurrent downloads on the same client:
+   * fs-sync enforces single-flight per `(datasourceId, path)` at the
+   * service layer (§13.23), NOT per `(datasourceId)`. The same client
+   * instance therefore legitimately serves multiple concurrent
+   * downloads on different paths. Two simultaneous calls for the
+   * SAME path on one client are a fs-sync invariant violation; if it
+   * ever happens, the second `set` clobbers the first — the same
+   * failure mode as the original single-slot design, which is
+   * acceptable since fs-sync's reverse index already prevents it.
    */
-  private currentDownloadProgressHook:
-    | ((loaded: number, total: number | null) => void)
-    | null = null;
+  private readonly activeDownloads = new Map<
+    string,
+    (loaded: number, total: number | null) => void
+  >();
 
   /**
    * Emit a `downloading` event on the bus AND notify the active
-   * download's progress tracker (so `download-cancelled` can carry the
-   * last-reported byte counts). Strategies invoke this from the same
-   * byte-counting hook that fires the consumer's `onProgress` callback,
-   * so the bus and the consumer stay in lockstep on a single source of
-   * truth (per design.md / tasks.md §5.7-§5.8).
+   * download's per-call progress hook (so `download-cancelled` /
+   * `download-failed` can carry the last-reported byte counts from
+   * the call's own closure, not a shared instance slot). Strategies
+   * invoke this from the same byte-counting hook that fires the
+   * consumer's `onProgress` callback, so the bus and the consumer
+   * stay in lockstep on a single source of truth (per design.md /
+   * tasks.md §5.7-§5.8).
    *
    * Cast note: TS does not distribute `PayloadMap[T]["downloading"]`
    * to the literal payload shape when T is a generic parameter
@@ -824,8 +831,9 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     loaded: number,
     total: number | null,
   ): void {
-    if (this.currentDownloadProgressHook !== null) {
-      this.currentDownloadProgressHook(loaded, total);
+    const recordProgress = this.activeDownloads.get(path);
+    if (recordProgress !== undefined) {
+      recordProgress(loaded, total);
     }
     this.emit(
       "downloading",
@@ -854,12 +862,21 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     options: DownloadOptions = {},
   ): Promise<DownloadResult> {
     const path = target.kind === "path" ? target.path : target.handle;
+    // Per-call byte-tracking lives entirely in this method's closure. Each
+    // concurrent invocation captures its OWN `lastLoaded` / `lastTotal` so
+    // a cancel / failure on one call cannot read the byte counts of another
+    // call running on the same client instance (different path). The
+    // closure-local `recordProgress` is registered in `activeDownloads`
+    // by path so `emitDownloading(path, …)` routes a tick to the right
+    // call's closure; the cancel / failure-path emits below read from the
+    // closure variables directly, never from the map.
     let lastLoaded = 0;
     let lastTotal: number | null = null;
-    this.currentDownloadProgressHook = (loaded, total) => {
+    const recordProgress = (loaded: number, total: number | null): void => {
       lastLoaded = loaded;
       lastTotal = total;
     };
+    this.activeDownloads.set(path, recordProgress);
     let result: DownloadResult;
     try {
       result = await this.withRefresh(() =>
@@ -871,7 +888,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       // terminal. Cancel takes precedence over failure when the
       // consumer's signal is already aborted (e.g., abort fired before
       // the SDK call settled).
-      this.currentDownloadProgressHook = null;
+      this.activeDownloads.delete(path);
       const normalized = this.ensureNormalized(err);
       if (
         options.signal?.aborted ||
@@ -912,7 +929,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     const emitTerminal = (kind: "end" | "error" | "abort", err?: unknown): void => {
       if (terminalEmitted) return;
       terminalEmitted = true;
-      this.currentDownloadProgressHook = null;
+      this.activeDownloads.delete(path);
       if (kind === "end") {
         this.emit(
           "file-downloaded",

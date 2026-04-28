@@ -1950,6 +1950,129 @@ describe("BaseDatasourceClient — downloadFile cancel via AbortSignal → `down
 });
 
 // ---------------------------------------------------------------------------
+// Concurrent downloads on the SAME client (different paths) must not
+// cross-contaminate per-call progress tracking. Regression for the
+// original single-slot `currentDownloadProgressHook` design: starting
+// a second concurrent call clobbered the first call's hook (the field
+// was a single instance slot, not keyed by path), so progress ticks
+// emitted via the strategy's `emitDownloading(path, …)` helper for
+// path A AFTER path B had set the slot would silently route to B's
+// closure — freezing A's `lastLoaded` at zero AND polluting B's.
+// On cancel of A, `download-cancelled.bytesDownloaded` would read 0
+// instead of A's actual progress. Refactor moved per-call tracking
+// into closure-local state with a `Map<path, recordProgress>` lookup
+// inside the protected `emitDownloading` helper so each tick routes
+// to the correct call's closure.
+// ---------------------------------------------------------------------------
+
+describe("BaseDatasourceClient — concurrent downloadFile calls on same client emit per-call byte counts on cancel", () => {
+  it("two concurrent calls on different paths each carry their own bytesDownloaded in `download-cancelled`; emitDownloading after both calls are in flight routes to the correct call's closure", async () => {
+    const targetA: Target = { kind: "path", path: "/concurrent/a.bin" };
+    const targetB: Target = { kind: "path", path: "/concurrent/b.bin" };
+    const streamA = new Readable({ read() {} });
+    const streamB = new Readable({ read() {} });
+    const controllerA = new AbortController();
+    const controllerB = new AbortController();
+
+    // Strategy mock returns the streams without ticking — the test
+    // ticks `emitDownloading` from the test body AFTER both calls are
+    // in flight, so under the buggy single-slot design the second
+    // call's hook-set has already overwritten the first's by the time
+    // a tick for path A arrives, and A's tick silently routes to B's
+    // closure. This is the regression-discriminator the per-instance
+    // slot design fails on.
+    const { client, events } = makeHarness({
+      doDownloadFile: async (t, options) => {
+        const path = t.kind === "path" ? t.path : t.handle;
+        const stream = path === targetA.path ? streamA : streamB;
+        options.signal?.addEventListener("abort", () => {
+          stream.destroy(
+            Object.assign(new Error("aborted"), { name: "AbortError" }),
+          );
+        });
+        return { stream, contentLength: 16_384 };
+      },
+    });
+
+    // Start both calls concurrently on the SAME client instance.
+    const [resultA, resultB] = await Promise.all([
+      client.downloadFile(targetA, { signal: controllerA.signal }),
+      client.downloadFile(targetB, { signal: controllerB.signal }),
+    ]);
+
+    // Both downloads are now in flight. Tick `emitDownloading` for
+    // each path — the helper MUST route each tick to the matching
+    // call's closure. Under the buggy single-slot design, the second
+    // `downloadFile` call had overwritten the instance hook with B's
+    // closure, so a tick for path A would update B's `lastLoaded`
+    // (not A's), leaving A's closure-captured `lastLoaded` at 0.
+    const helper = client as unknown as {
+      emitDownloading: (p: string, loaded: number, total: number | null) => void;
+    };
+    helper.emitDownloading(targetA.path, 1024, 16_384);
+    helper.emitDownloading(targetB.path, 4096, 16_384);
+
+    // Drain both streams so the base's listeners fire on cancel.
+    const drainedA = new Promise<void>((resolve) => {
+      resultA.stream.on("data", () => {});
+      resultA.stream.on("end", () => resolve());
+      resultA.stream.on("error", () => resolve());
+    });
+    const drainedB = new Promise<void>((resolve) => {
+      resultB.stream.on("data", () => {});
+      resultB.stream.on("end", () => resolve());
+      resultB.stream.on("error", () => resolve());
+    });
+
+    // Abort A first; assert A's cancel event carries A's own byte
+    // count (1024). Under the buggy single-slot design, A's
+    // closure-captured `lastLoaded` would be 0 (the tick for A had
+    // routed to B's closure), so A's cancel would emit
+    // `bytesDownloaded: 0`.
+    controllerA.abort();
+    await drainedA;
+
+    const cancelledA = events.filter(
+      (e) =>
+        e.event === "download-cancelled" &&
+        (e.payload as { path: string }).path === targetA.path,
+    );
+    expect(cancelledA).toHaveLength(1);
+    expect(cancelledA[0]?.payload).toEqual({
+      path: targetA.path,
+      bytesDownloaded: 1024,
+      bytesTotal: 16_384,
+    });
+
+    // Now abort B; B's cancel event must carry B's own byte count
+    // (4096). Under the buggy single-slot design, B's closure would
+    // have ALSO captured A's tick (since A's tick routed to B's
+    // closure), so B's `lastLoaded` would be 4096 — but A's tick
+    // would have first set it to 1024 then B's tick overwrote to
+    // 4096, so B happens to land on the correct value here. The
+    // distinguishing assertion is A's, above; B's is included for
+    // completeness so the test exercises both cancel paths.
+    controllerB.abort();
+    await drainedB;
+
+    const cancelledB = events.filter(
+      (e) =>
+        e.event === "download-cancelled" &&
+        (e.payload as { path: string }).path === targetB.path,
+    );
+    expect(cancelledB).toHaveLength(1);
+    expect(cancelledB[0]?.payload).toEqual({
+      path: targetB.path,
+      bytesDownloaded: 4096,
+      bytesTotal: 16_384,
+    });
+
+    // Sanity: no cross-contamination produces a stray `download-failed`.
+    expect(events.some((e) => e.event === "download-failed")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Strategies cannot emit events directly
 // ---------------------------------------------------------------------------
 

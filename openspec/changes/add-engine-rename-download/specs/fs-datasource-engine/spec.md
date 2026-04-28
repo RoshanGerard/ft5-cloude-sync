@@ -127,13 +127,15 @@ different payload shapes (`downloadJobId`-keyed, business-decorated).
 The engine bus payload shapes are:
 
 ```typescript
-"downloading":         { datasourceId, path, loaded: number, total: number };
+"downloading":         { datasourceId, path, loaded: number, total: number | null };
 "file-downloaded":     { datasourceId, path, bytes: number };
-"download-failed":     { datasourceId, path, error: SerializedDatasourceError<T> };
-"download-cancelled":  { datasourceId, path, bytesDownloaded: number, bytesTotal: number };
+"download-failed":     SerializedDatasourceError<T>;
+"download-cancelled":  { datasourceId, path, bytesDownloaded: number, bytesTotal: number | null };
 ```
 
 (`datasourceId` shown for reader clarity but lives at the `DatasourceEvent<T, K>` envelope level; the inner payload omits it.) The engine emits `file-downloaded` based on its own stream observability — when the strategy's response stream fires `end` cleanly — NOT on consumer feedback. The engine never writes to disk, so it cannot know `savedPath`; that field belongs to fs-sync's transformed desktop-facing event (see fs-sync-service spec).
+
+`download-failed`'s payload IS the `SerializedDatasourceError<T>` directly — no `{ datasourceId, path, error }` wrapper. This mirrors the existing `authentication-failed` per-provider pinning convention (`packages/ipc-contracts/src/fs-datasource-engine.ts:172`): error events on the engine bus are pinned to `SerializedDatasourceError<T>` so subscribers narrow on the envelope's `datasourceType` and read the error fields (`tag`, `retryable`, `retryAfterMs`, `raw`, `message`) directly without a wrapper unwrap. Subscribers that need to correlate a failure to a specific in-flight download key off the envelope's `datasourceId` plus their own out-of-band `(datasourceId, path) → downloadJobId` reverse index (fs-sync owns this mapping per fs-sync-service spec).
 
 The `downloading` event is streaming-tagged (subject to the same
 coalescer the engine bus already applies to `uploading`). The three
@@ -159,7 +161,7 @@ invocation-id; subscribers correlate by `(datasourceId, path)`.
 #### Scenario: Mid-stream error emits `downloading` then `download-failed`
 
 - **WHEN** `engine.downloadFile(target)` resolves and the returned stream errors mid-flight (auth-expired, network, 5xx, etc.) before the consumer reports terminal success
-- **THEN** the bus observes the `downloading` events that fired up to the failure point, followed by exactly one `download-failed { datasourceId, path, error: SerializedDatasourceError<T> }` event whose `error` carries the normalized `DatasourceError`; no `file-downloaded` or `download-cancelled` event is emitted
+- **THEN** the bus observes the `downloading` events that fired up to the failure point, followed by exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` for the normalized `DatasourceError` (per the `authentication-failed` precedent — payload is the error directly, no wrapper); no `file-downloaded` or `download-cancelled` event is emitted
 
 #### Scenario: AbortSignal-driven cancel emits `downloading` then `download-cancelled`
 
