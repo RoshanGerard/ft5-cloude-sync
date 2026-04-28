@@ -112,14 +112,14 @@ Final state (Section 7): 254 → 263 engine tests (+9 across 5 describe blocks: 
 
 ## 8. Engine — OneDrive strategy
 
-- [ ] 8.1 Write/implement `doRenameImpl` calling `PATCH /me/drive/items/{id}` with body `{ name }` for both files and folders (Graph API is uniform; populate the new entry's `kind` from the response's `folder` vs `file` facet)
-- [ ] 8.2 Write/implement sibling-collision pre-check on `conflictPolicy: "fail"`: query `GET /me/drive/items/{parentId}/children?$filter=name eq 'newName'` before the rename; if any results, throw conflict
-- [ ] 8.3 Write/implement directory-overwrite refusal (parallel to Drive's 7.5/7.6)
-- [ ] 8.4 Write/implement conflict detection in `normalizeErrorImpl` for Graph 409 errors (in case a race made the pre-check pass but the actual PATCH collided)
-- [ ] 8.5 Write/implement `doDownloadFileImpl(target, options?)` calling `fetch('/me/drive/items/{id}/content', { headers: rangeStart > 0 ? { Range: \`bytes=${rangeStart}-\` } : {}, signal: options?.signal })`. Read `Content-Length` and `Content-Range` from response headers; convert response.body Web ReadableStream to a Node Readable (or use the Microsoft Graph SDK's stream API if it returns Node streams natively). Hook progress callbacks into `options.onProgress` if provided.
-- [ ] 8.6 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — bus emits `download-cancelled` exactly once on abort
-- [ ] 8.7 Write/implement mid-stream auth-expired surfacing (parallel to Drive's 7.11-7.12) — bus emits exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` with `payload.tag === "auth-expired"` on the surfaced 401
-- [ ] 8.8 Write/implement OneDrive `keep-both` retry (parallel to Drive §7.13/§7.14): suffix `-2`/`-3`/.../`-99` via children pre-check; on exhaustion throw `tag: "provider-error", message: "exhausted keep-both attempts"` (engine taxonomy lacks `"other"`; wire-layer collapses provider-error → `tag: "other"` for the renderer per Drive §7.14 precedent)
+- [x] 8.1 Write/implement `doRenameImpl` calling `PATCH /me/drive/items/{id}` with body `{ name }` for both files and folders (Graph API is uniform; populate the new entry's `kind` from the response's `folder` vs `file` facet)
+- [x] 8.2 Write/implement sibling-collision pre-check on `conflictPolicy: "fail"`: query `GET /me/drive/items/{parentId}/children?$filter=name eq 'newName'` before the rename; if any results, throw conflict
+- [x] 8.3 Write/implement directory-overwrite refusal (parallel to Drive's 7.5/7.6)
+- [x] 8.4 Write/implement conflict detection in `normalizeErrorImpl` for Graph 409 errors (in case a race made the pre-check pass but the actual PATCH collided)
+- [x] 8.5 Write/implement `doDownloadFileImpl(target, options?)` calling `fetch('/me/drive/items/{id}/content', { headers: rangeStart > 0 ? { Range: \`bytes=${rangeStart}-\` } : {}, signal: options?.signal })`. Read `Content-Length` and `Content-Range` from response headers; convert response.body Web ReadableStream to a Node Readable (or use the Microsoft Graph SDK's stream API if it returns Node streams natively). Hook progress callbacks into `options.onProgress` if provided.
+- [x] 8.6 Write/implement AbortSignal forwarding (parallel to Drive's 7.9-7.10) — bus emits `download-cancelled` exactly once on abort
+- [x] 8.7 Write/implement mid-stream auth-expired surfacing (parallel to Drive's 7.11-7.12) — bus emits exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` with `payload.tag === "auth-expired"` on the surfaced 401
+- [x] 8.8 Write/implement OneDrive `keep-both` retry (parallel to Drive §7.13/§7.14): suffix `-2`/`-3`/.../`-99` via children pre-check; on exhaustion throw `tag: "provider-error", message: "exhausted keep-both attempts"` (engine taxonomy lacks `"other"`; wire-layer collapses provider-error → `tag: "other"` for the renderer per Drive §7.14 precedent)
 
 ## 9. Engine — S3 strategy
 
