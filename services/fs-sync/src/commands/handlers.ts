@@ -42,6 +42,7 @@ import {
   type EngineBusSubscriber,
   type HashComputer,
 } from "./files-download.js";
+import { makeDownloadsListActiveHandler } from "./downloads-list-active.js";
 import type { DownloadRegistry } from "../downloads/registry.js";
 import type { ServiceConfigStore } from "../config/service-config-store.js";
 import type { AuthCorrelationStore } from "../state/auth-correlation-store.js";
@@ -339,10 +340,15 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
           }),
         }
       : {}),
-    // files:download + sync:cancel-download — wired only when the full
-    // download-bundle is supplied (resolveClient + downloadRegistry +
-    // engineBus + hashComputer). Production bootstrap supplies all four;
-    // pre-§13 tests omit them and the keys simply fall out of the map.
+    // files:download + sync:cancel-download + downloads:list-active —
+    // wired only when the full download-bundle is supplied
+    // (resolveClient + downloadRegistry + engineBus + hashComputer).
+    // Production bootstrap supplies all four; pre-§13 tests omit them
+    // and the keys simply fall out of the map. `downloads:list-active`
+    // strictly only needs `downloadRegistry`, but the bundle stays
+    // atomic — wiring it any time the registry is present would imply
+    // half a feature; keep it gated with the rest per design.md
+    // Decision 4.
     ...(deps.resolveClient &&
     deps.downloadRegistry &&
     deps.engineBus &&
@@ -358,6 +364,9 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
             }),
           ),
           "sync:cancel-download": makeSyncCancelDownloadHandler({
+            registry: deps.downloadRegistry,
+          }),
+          "downloads:list-active": makeDownloadsListActiveHandler({
             registry: deps.downloadRegistry,
           }),
         }

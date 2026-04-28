@@ -196,21 +196,25 @@ The `files:download` handler is fs-sync's business-logic layer for download. It 
 
 ## 14. Service — `downloads:list-active` RPC handler
 
-- [ ] 14.1 Write unit tests for `services/fs-sync/src/commands/downloads-list-active.ts`: returns the registry snapshot ordered by `startedAt` ascending; empty registry returns `{ jobs: [] }`
-- [ ] 14.2 Implement; thread through `commands/handlers.ts`; rerun → green
-- [ ] 14.3 Write a small integration test: with two concurrent `files:download` jobs in flight (one started 1s before the other), `downloads:list-active` returns both in startedAt order, with their current `bytesDownloaded` values
+- [x] 14.1 Write unit tests for `services/fs-sync/src/commands/downloads-list-active.ts`: returns the registry snapshot ordered by `startedAt` ascending; empty registry returns `{ jobs: [] }`
+- [x] 14.2 Implement; thread through `commands/handlers.ts`; rerun → green
+- [x] 14.3 Write a small integration test: with two concurrent `files:download` jobs in flight (one started 1s before the other), `downloads:list-active` returns both in startedAt order, with their current `bytesDownloaded` values
 
 ## 15. Service — `downloading` event forwarding
 
 The events that flow to a `sync:subscribe-events` client are fs-sync's DESKTOP-FACING events (downloadJobId-keyed, business-decorated), NOT the raw engine bus events. The engine bus is consumed inside fs-sync (§13.21-§13.26); only fs-sync's transformed events cross the IPC channel to subscribers.
 
-- [ ] 15.1 Write a unit test for the event-stream subscription path delivering fs-sync's `downloading` events to a `sync:subscribe-events` client; assert throttling matches the upload coalescer; assert the payload shape is fs-sync's `{ downloadJobId, datasourceId, progress, path }` (NOT the engine bus's `{ datasourceId, path, loaded, total }`)
-- [ ] 15.2 Implement / verify the bridge applies the bus → fs-sync transformation (§13.25-§13.26) before forwarding; rerun → green
+- [x] 15.1 Write a unit test for the event-stream subscription path delivering fs-sync's `downloading` events to a `sync:subscribe-events` client; assert throttling matches the upload coalescer; assert the payload shape is fs-sync's `{ downloadJobId, datasourceId, progress, path }` (NOT the engine bus's `{ datasourceId, path, loaded, total }`)
+- [x] 15.2 Implement / verify the bridge applies the bus → fs-sync transformation (§13.25-§13.26) before forwarding; rerun → green
+
+**§14 + §15 done 2026-04-28**: Handler at `services/fs-sync/src/commands/downloads-list-active.ts` projects internal `DownloadJobEntry` (with `abortController`) to wire-shape `DownloadJob` via destructure-drop. `registry.snapshot()` already returns entries ordered by `startedAt` ascending; the handler trusts that. Wired in `commands/handlers.ts` under the existing `resolveClient && downloadRegistry && engineBus && hashComputer` gate (kept atomic with the §13 download bundle even though list-active strictly only needs the registry). §15 was a verification step — §13's `files-download.ts` lines 452-489 already wire the engine-bus subscription that drives the throttled `downloading` IPC emission via `transformDownloadingEvent` + `fsSyncBus.emit`. No new code for §15; the new test asserts the full path: engine-bus `downloading` event → bus subscription transform → `fsSyncBus.emit("downloading", …)` → SubscriptionRegistry attached to bus → connected client's `sendEvent` callback receives the fs-sync downloadJobId-keyed payload. Throttling is single-layer: the engine bus's coalescer is the throttle; fs-sync's bus subscription is a 1:1 passthrough (3 engine events → 3 fs-sync events at the subscriber).
 
 ## 16. Service — full vitest suite
 
-- [ ] 16.1 Run the full `services/fs-sync` vitest suite; all green
-- [ ] 16.2 Run service typecheck; all green
+- [x] 16.1 Run the full `services/fs-sync` vitest suite; all green
+- [x] 16.2 Run service typecheck; all green
+
+**§16 done 2026-04-28**: services/fs-sync vitest 381 → 387 (+6 from new `downloads-list-active.test.ts`); 9 skipped unchanged; 61 test files (was 60). `pnpm typecheck` (workspace-wide `tsc -b`) clean. `pnpm lint` clean. Cross-package run (`packages/ipc-contracts apps/desktop services/fs-sync packages/fs-datasource-engine`) all green.
 
 ## 17. Main IPC — `files/rename.ts` + `files/download.ts` swap
 
