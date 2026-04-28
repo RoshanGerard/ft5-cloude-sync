@@ -297,16 +297,21 @@ describe("createDownloadJobToaster (§24.1)", () => {
     // download surfaces Open + Show in folder"):
     //   *"the toast auto-dismisses after the upload-toast success
     //   duration."*
-    // Upload's success toast inlines `duration: 4000` in
-    // `upload-job-toast.ts`. The download success toast must pass an
-    // explicit, equal duration to `toast.custom` — otherwise Sonner
-    // falls back to its `toast.custom` default which can be
-    // version-dependent and may not match the spec.
+    // The download success toast must pass an explicit, sufficient
+    // duration to `toast.custom` — otherwise Sonner falls back to its
+    // `toast.custom` default (~4000 ms, version-dependent), which is
+    // too short for the user to register the [Open] / [Show in folder]
+    // affordance before the toast disappears.
     //
-    // This test pins both: the call carries an explicit `duration`
-    // option AND that value equals the exported
-    // `SUCCESS_TOAST_DURATION_MS` mirror constant, which itself equals
-    // the upload's literal 4000 ms.
+    // Per the 2026-04-29 product call (in-session UX feedback) the
+    // value is 8000 ms — deliberately longer than upload's 4000 ms.
+    // Upload uses `toast.success(...)` whose intent is "fire-and-forget
+    // ack"; download uses `toast.custom(...)` for its V2 dual-action
+    // layout that invites a user click. Different intents → different
+    // durations. The constant `SUCCESS_TOAST_DURATION_MS` is the
+    // exported value; this test pins (1) that the call carries an
+    // explicit `duration`, (2) it equals the exported constant, and
+    // (3) the constant itself equals the agreed 8000 ms.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
 
@@ -330,10 +335,10 @@ describe("createDownloadJobToaster (§24.1)", () => {
     ];
     expect(opts?.duration).toBeDefined();
     expect(opts?.duration).toBe(SUCCESS_TOAST_DURATION_MS);
-    // Defence-in-depth: the constant itself must equal upload's
-    // inline literal. If anyone bumps one without the other, this
-    // assertion catches the drift.
-    expect(SUCCESS_TOAST_DURATION_MS).toBe(4000);
+    // Defence-in-depth: pin the constant to the agreed product value
+    // so any silent bump surfaces here instead of in user-perceived
+    // UX.
+    expect(SUCCESS_TOAST_DURATION_MS).toBe(8000);
   });
 
   it("(c2) the success toast's [Open] action invokes window.api.files.openSavedPath", () => {

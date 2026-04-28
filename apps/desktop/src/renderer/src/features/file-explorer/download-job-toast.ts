@@ -297,18 +297,19 @@ function resolveFilesApi(
 
 /**
  * Auto-dismiss duration (ms) for the V2 success toast (Open + Show in
- * folder). Mirrors the inline `4000` value used by the upload success
- * toast in `upload-job-toast.ts` (search: `toast.success(`Uploaded`).
+ * folder). Originally mirrored upload's inline `4000`; bumped to `8000`
+ * on 2026-04-29 per user feedback that 4 s was too short for the user
+ * to register the toast and click [Open] / [Show in folder] before it
+ * disappeared. Download's success-toast UX intent is "user is invited
+ * to take the next action on the saved file", which warrants more dwell
+ * than upload's "fire-and-forget" success acknowledgement.
  *
- * Spec contract (`openspec/specs/file-explorer/spec.md` § "Successful
- * download surfaces Open + Show in folder"): *"the toast auto-dismisses
- * after the upload-toast success duration."* Pinned by test
- * `(c-duration)` in `__tests__/download-job-toast.test.ts`.
- *
- * If the upload value ever changes, update both call sites or extract
- * to a shared constant in a renderer-scoped util.
+ * Pinned by test `(c-duration)` in
+ * `__tests__/download-job-toast.test.ts`. Upload's value remains 4000
+ * intentionally — bump them in lockstep only if a future product
+ * decision unifies both. Today they are deliberately divergent.
  */
-export const SUCCESS_TOAST_DURATION_MS = 4000;
+export const SUCCESS_TOAST_DURATION_MS = 8000;
 
 // --- Helpers ---------------------------------------------------------
 
@@ -455,12 +456,13 @@ export function createDownloadJobToaster(
         (id) => buildSuccessRender(id, basename, onOpen, onShowInFolder),
         {
           id: toastId,
-          // Mirror upload-job-toast.ts's inline `4000` ms for the
-          // success variant — see SUCCESS_TOAST_DURATION_MS docstring.
-          // Without an explicit `duration` here, Sonner's default for
-          // `toast.custom` (~4000 ms but version-dependent) governs and
-          // can feel too short before the user can click [Open] /
-          // [Show in folder]. Pinned by test (c-duration).
+          // Per SUCCESS_TOAST_DURATION_MS docstring: 8000 ms
+          // (deliberately longer than upload's 4000 — download's V2
+          // success layout invites the user to click [Open] / [Show in
+          // folder] and needs the dwell time to register). Without an
+          // explicit `duration` here, Sonner's default for `toast.custom`
+          // (~4000 ms, version-dependent) would govern. Pinned by test
+          // (c-duration).
           duration: SUCCESS_TOAST_DURATION_MS,
           actions: { onOpen, onShowInFolder },
         },
