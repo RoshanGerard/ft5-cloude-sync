@@ -355,7 +355,9 @@ const WALLTIME_CEILING_MS = 30 * 60 * 1000;
  * Strategy bugs (a non-retryable tag marked retryable=true) flow through
  * to terminal because the allowlist excludes them. No extra logging in §2.
  */
-export function isEnvironmentallyRetryable(err: unknown): boolean {
+export function isEnvironmentallyRetryable(
+  err: unknown,
+): err is DatasourceError {
   return (
     err instanceof DatasourceError &&
     err.tag !== "auth-expired" &&
@@ -574,14 +576,24 @@ export function makeFilesDownloadHandler(
       }
     });
 
-    // 6. Retry loop (per design.md Decision 3 pseudocode). Each
-    // iteration is an independent cycle; auth-expired retries within a
-    // cycle are bounded by MAX_AUTH_RETRIES_PER_CYCLE.
+    // 6. Retry loop (per design.md Decision 3 pseudocode + add-download-
+    // resilience §4 environmental-retry layer). Each outer iteration runs
+    // one HTTP cycle; auth-expired retries within a cycle are bounded by
+    // `MAX_AUTH_RETRIES_PER_CYCLE` (Layer 2). Environmental retries
+    // (network / rate-limited / provider-error) are bounded across the
+    // whole download lifetime by `consecutiveFailureCount` (Layer 3).
     let bytesWritten = 0;
     let cycle = 0;
     let providerHash: ProviderHash | null = null;
     let finalContentLength: number | null = null;
     let finalEntryForHash: DatasourceFileEntry<DatasourceType> | null = null;
+
+    // §4.1 — closure-scoped state for Layer 3 (environmental retry).
+    // `consecutiveFailureCount` resets on byte-progress (Decision 10);
+    // `walltimeStartedAt` is captured BEFORE the outer cycle loop so it
+    // covers the entire download lifetime (Decision 1).
+    let consecutiveFailureCount = 0;
+    const walltimeStartedAt = deps.now();
 
     const target: Target = { kind: "path", path: params.path };
 
@@ -599,6 +611,13 @@ export function makeFilesDownloadHandler(
           if (cycle > 1) {
             bytesWritten = await deps.fs.statSize(params.toPath);
           }
+          // §4.3 — capture bytesWrittenBefore so the post-pipe check
+          // can compare against it for the byte-progress reset rule.
+          // Captured here (per attempt) so it covers BOTH:
+          //   1. The successful-pipe reset after the inner try block.
+          //   2. The env-retry branch's reset on partial mid-stream
+          //      progress (the disk grew vs. before, mid-stream throw).
+          const bytesWrittenBefore = bytesWritten;
           const options: DownloadOptions = {
             rangeStart: bytesWritten,
             signal: abortController.signal,
@@ -670,7 +689,8 @@ export function makeFilesDownloadHandler(
               throw new CancelledError();
             }
             // Mid-stream failure. Decide: auth-expired retry within
-            // this cycle's budget, OR escalate.
+            // this cycle's budget (Layer 2), environmental retry
+            // (Layer 3), OR escalate.
             if (
               err instanceof DatasourceError &&
               err.tag === "auth-expired" &&
@@ -681,6 +701,66 @@ export function makeFilesDownloadHandler(
               bytesWritten = await deps.fs.statSize(params.toPath);
               // Stay inside the inner loop — issue a fresh
               // engine.downloadFile with rangeStart = bytesWritten.
+              continue;
+            }
+            // §4.2 — Layer 3 (environmental retry). Disjoint from
+            // Layer 2 (auth-expired) per Decision 8: this branch is
+            // reached only when isEnvironmentallyRetryable returns
+            // true, which excludes auth-expired by construction.
+            if (isEnvironmentallyRetryable(err)) {
+              // Re-stat the disk so byte-progress check sees current
+              // state (a mid-stream partial write counts as progress).
+              const bytesWrittenAfter = await deps.fs.statSize(
+                params.toPath,
+              );
+              // Decision 10: reset env count ONLY on byte progress
+              // strictly greater than the iteration's start.
+              if (bytesWrittenAfter > bytesWrittenBefore) {
+                consecutiveFailureCount = 0;
+              }
+              consecutiveFailureCount++;
+              const engineCause = err.tag;
+              // (b) Count-budget exhaustion.
+              if (consecutiveFailureCount > CONSECUTIVE_FAIL_LIMIT) {
+                throw new ExhaustedRetriesError(engineCause);
+              }
+              // (c) Walltime ceiling already exceeded.
+              const elapsed = deps.now() - walltimeStartedAt;
+              if (elapsed > WALLTIME_CEILING_MS) {
+                throw new WalltimeExceededError(engineCause);
+              }
+              // (d) Wait formula: max(retryAfterMs, expBackoff(n)).
+              const retryAfter = err.retryAfterMs ?? 0;
+              const wait = Math.max(
+                retryAfter,
+                expBackoff(consecutiveFailureCount),
+              );
+              // (e) The chosen sleep would overshoot the ceiling.
+              if (wait > WALLTIME_CEILING_MS - elapsed) {
+                throw new WalltimeExceededError(engineCause);
+              }
+              // (f) Emit `download-retrying` BEFORE the sleep so the
+              // renderer's toast switches to "Reconnecting…" subtext
+              // synchronously (Decision 5).
+              deps.fsSyncBus.emit("download-retrying", {
+                downloadJobId,
+                datasourceId: params.datasourceId,
+                attempt: consecutiveFailureCount,
+                limit: CONSECUTIVE_FAIL_LIMIT,
+                waitMs: wait,
+                engineCause,
+              });
+              // (g) Cancellable sleep — `sync:cancel-download` aborts
+              // the controller, the sleep resolves, the next-iteration
+              // top of inner loop re-checks aborted state.
+              await sleepCancellable(wait, abortController.signal);
+              if (abortController.signal.aborted) {
+                throw new CancelledError();
+              }
+              // (h) Re-stat bytesWritten from disk (a slow partial
+              // write that arrived during the sleep would shift this).
+              bytesWritten = await deps.fs.statSize(params.toPath);
+              // (i) continue the inner loop.
               continue;
             }
             // Unrecoverable: re-throw to the outer catch which emits
@@ -699,6 +779,14 @@ export function makeFilesDownloadHandler(
             // failure (spec line 178). Don't retry — fresh re-pipe
             // would not change the outcome.
             throw new ByteCountMismatchError();
+          }
+          // §4.3 — byte-progress-strict counter reset (Decision 10).
+          // After a successful pipe drain, if the disk grew vs. the
+          // start of the iteration, reset the env-retry budget. The
+          // env-retry branch above does its own reset on mid-stream
+          // partial progress — this covers the all-good-no-error path.
+          if (bytesWritten > bytesWrittenBefore) {
+            consecutiveFailureCount = 0;
           }
           cycleSucceeded = true;
         }
@@ -763,6 +851,27 @@ export function makeFilesDownloadHandler(
             },
           };
         }
+        // §4.6 — Disposition policy (Decision 6). Before any terminal
+        // `download-failed` emission, delete the partial on disk if the
+        // error class is in `DELETE_ON_TERMINAL`. The unlink runs
+        // BEFORE the bus emit so a renderer subscribing to
+        // `download-failed` and inspecting disk sees the consistent
+        // post-disposition state. Failure is non-fatal — logged-warn
+        // and the user may clean up manually.
+        if (
+          err !== null &&
+          typeof err === "object" &&
+          DELETE_ON_TERMINAL.has(
+            (err as { constructor: ErrorConstructor }).constructor,
+          )
+        ) {
+          await deps.fs.unlink(params.toPath).catch((unlinkErr) => {
+            console.warn(
+              `[files-download] unlink(${params.toPath}) failed after terminal ${(err as Error).name}:`,
+              unlinkErr,
+            );
+          });
+        }
         if (err instanceof RangeNotHonoredError) {
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
@@ -824,6 +933,44 @@ export function makeFilesDownloadHandler(
               tag: "other",
               message: "integrity check failed",
               retryable: false,
+            },
+          };
+        }
+        // §4.5 — Environmental-retry budget exhaustion. Both
+        // `ExhaustedRetriesError` and `WalltimeExceededError` collapse
+        // to wire `tag: "exhausted-retries"` (Decision 7); the
+        // discriminator lives in the message.
+        if (err instanceof ExhaustedRetriesError) {
+          const message = `exhausted-retries: ${err.engineCause}`;
+          deps.fsSyncBus.emit("download-failed", {
+            downloadJobId,
+            datasourceId,
+            tag: "exhausted-retries",
+            message,
+          });
+          return {
+            ok: false,
+            error: {
+              tag: "exhausted-retries",
+              message,
+              retryable: true,
+            },
+          };
+        }
+        if (err instanceof WalltimeExceededError) {
+          const message = `walltime-exceeded: ${err.engineCause}`;
+          deps.fsSyncBus.emit("download-failed", {
+            downloadJobId,
+            datasourceId,
+            tag: "exhausted-retries",
+            message,
+          });
+          return {
+            ok: false,
+            error: {
+              tag: "exhausted-retries",
+              message,
+              retryable: true,
             },
           };
         }
@@ -923,6 +1070,45 @@ export class IntegrityFailedError extends Error {
   constructor() {
     super("integrity check failed");
     this.name = "IntegrityFailedError";
+  }
+}
+
+/**
+ * Terminal sentinel for the environmental-retry budget being exhausted by
+ * `consecutiveFailureCount > CONSECUTIVE_FAIL_LIMIT` (per design.md
+ * Decision 1). Outer terminal catch maps to the wire `download-failed`
+ * with `tag: "exhausted-retries"` and message
+ * `"exhausted-retries: <engineCause>"`.
+ */
+export class ExhaustedRetriesError extends Error {
+  /** Engine-side error tag of the last failed attempt — diagnostic-only
+   * (per Decision 9), surfaced through the message and the
+   * `download-retrying.engineCause` payload. */
+  public readonly engineCause: string;
+  constructor(engineCause: string) {
+    super(`exhausted retries: ${engineCause}`);
+    this.name = "ExhaustedRetriesError";
+    this.engineCause = engineCause;
+  }
+}
+
+/**
+ * Terminal sentinel for the wall-time ceiling being exceeded — either at
+ * the pre-sleep check (`now() - walltimeStartedAt > WALLTIME_CEILING_MS`)
+ * or because the chosen wait would overshoot the remaining ceiling
+ * budget. Outer terminal catch maps to wire `download-failed` with
+ * `tag: "exhausted-retries"` and message `"walltime-exceeded: <engineCause>"`.
+ *
+ * Both `ExhaustedRetriesError` and `WalltimeExceededError` collapse to
+ * the same wire tag (per Decision 7) — the message field carries the
+ * discriminator.
+ */
+export class WalltimeExceededError extends Error {
+  public readonly engineCause: string;
+  constructor(engineCause: string) {
+    super(`walltime exceeded: ${engineCause}`);
+    this.name = "WalltimeExceededError";
+    this.engineCause = engineCause;
   }
 }
 

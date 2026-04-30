@@ -157,6 +157,12 @@ function makeFakeFs(opts: { writableParents?: string[] } = {}): FakeFs {
         });
       });
     },
+    // Default unlink — removes the in-memory entry. Tests that need to
+    // observe the call (e.g. §6.11-§6.13, §6.15) override this with a
+    // `vi.fn` spy via `fakeFs.unlink = ...`.
+    unlink: async (path: string) => {
+      files.delete(path);
+    },
   };
   return fakeFs;
 }
@@ -526,7 +532,7 @@ describe("files:download — mid-stream auth-expired retry loop (§13.5, §13.6)
 // ---------------------------------------------------------------------------
 
 describe("files:download — range-not-honored detection (§13.7, §13.8)", () => {
-  it("on retry where contentRange === undefined: does NOT pipe; emits download-failed { tag:'other', message:'range not supported on this resource' }; partial file left on disk", async () => {
+  it("on retry where contentRange === undefined: does NOT pipe; emits download-failed { tag:'other', message:'range not supported on this resource' }; partial deleted (per add-download-resilience Decision 6)", async () => {
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     let call = 0;
     const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
@@ -577,8 +583,10 @@ describe("files:download — range-not-honored detection (§13.7, §13.8)", () =
       tag: "other",
       message: "range not supported on this resource",
     });
-    // Partial file remains on disk (not auto-deleted).
-    expect(fakeFs.files.get(TO_PATH)?.length).toBe(512);
+    // Decision 6: range-not-honored → partial deleted. The default
+    // FakeFs `unlink` removes the in-memory entry; tests that pin
+    // ordering (unlink-before-emit) live in §6.11.
+    expect(fakeFs.files.has(TO_PATH)).toBe(false);
   });
 });
 
@@ -1492,5 +1500,1030 @@ describe("DELETE_ON_TERMINAL (§3.3, Decision 6 disposition policy)", () => {
 
   it("has exactly three members (catches future accidental additions)", () => {
     expect(DELETE_ON_TERMINAL.size).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-download-resilience §4 — handler retry-loop integration (§6.4-§6.16)
+//
+// Each test below exercises ONE branch of the §4 retry-loop logic in
+// `files-download.ts`. The fakes drive the engine via successive
+// `client.downloadFile` calls; `vi.useFakeTimers()` controls the
+// `sleepCancellable` wait between attempts so a single test can advance
+// past a 1s+ sleep without real-clock cost.
+//
+// The pump helper drains microtasks + advances the fake clock by `ms` so
+// `download-retrying` → sleep → next `engine.downloadFile` → pipe completes
+// inside one call site. Tests that need to interleave (e.g. fire `cancel`
+// mid-sleep) call the helper twice with a smaller advance the second time.
+// ---------------------------------------------------------------------------
+
+async function pump(ms: number): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
+  // Two extra microtask flushes so the env-retry branch's `await
+  // deps.fs.statSize(...)` and the next `await client.downloadFile(...)`
+  // both settle before the test reads events.
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+/** Sequence-driven engine fake: consume one entry per `downloadFile` call. */
+type DownloadStep =
+  | { kind: "throw-pre-stream"; error: unknown }
+  | {
+      kind: "throw-mid-stream";
+      bytesBefore: number;
+      error: unknown;
+      contentLength?: number;
+      contentRange?: { start: number; end: number; total: number };
+    }
+  | {
+      kind: "succeed";
+      bytes: number;
+      contentLength: number;
+      contentRange?: { start: number; end: number; total: number };
+    }
+  | {
+      kind: "succeed-no-range";
+      bytes: number;
+      contentLength: number;
+    };
+
+/**
+ * Build a `client.downloadFile` mock that emits the next `DownloadStep`
+ * each call. Uses the supplied `fakeFs` to set on-disk bytes for
+ * `throw-mid-stream` so the env-retry branch's `statSize` reflects the
+ * partial state.
+ */
+function makeStepDownloadFile(
+  fakeFs: FakeFs,
+  toPath: string,
+  steps: DownloadStep[],
+): {
+  fn: (
+    target: unknown,
+    options: { rangeStart?: number; signal?: AbortSignal },
+  ) => Promise<DownloadResult>;
+  callCount: () => number;
+  lastRangeStart: () => number | undefined;
+} {
+  let i = 0;
+  let lastRangeStart: number | undefined;
+  const fn = async (target: unknown, options: { rangeStart?: number; signal?: AbortSignal }): Promise<DownloadResult> => {
+    lastRangeStart = options?.rangeStart;
+    const step = steps[i++];
+    if (step === undefined) {
+      throw new Error(`engine fake exhausted at call ${i}`);
+    }
+    switch (step.kind) {
+      case "throw-pre-stream":
+        throw step.error;
+      case "throw-mid-stream": {
+        const error = step.error;
+        const bytesBefore = step.bytesBefore;
+        const stream = Readable.from(
+          (async function* () {
+            // Lay down the partial bytes so statSize sees the right
+            // value when the env-retry branch re-stats. The bytes are a
+            // fill so the buffer-comparison check (none in the v1 test
+            // surface) is happy.
+            if (bytesBefore > 0) {
+              fakeFs.files.set(toPath, Buffer.alloc(bytesBefore, 0xab));
+              yield Buffer.alloc(bytesBefore, 0xab);
+            } else {
+              fakeFs.files.set(toPath, Buffer.alloc(0));
+            }
+            throw error;
+          })(),
+        );
+        const r: DownloadResult = {
+          stream,
+          contentLength: step.contentLength ?? 1024,
+        };
+        if (step.contentRange !== undefined) {
+          (r as { contentRange?: { start: number; end: number; total: number } }).contentRange = step.contentRange;
+        }
+        return r;
+      }
+      case "succeed": {
+        const r: DownloadResult = {
+          stream: streamFromBytes(Buffer.alloc(step.bytes, 0xcd)),
+          contentLength: step.contentLength,
+        };
+        if (step.contentRange !== undefined) {
+          (r as { contentRange?: { start: number; end: number; total: number } }).contentRange = step.contentRange;
+        }
+        return r;
+      }
+      case "succeed-no-range": {
+        return {
+          stream: streamFromBytes(Buffer.alloc(step.bytes, 0xcd)),
+          contentLength: step.contentLength,
+        };
+      }
+    }
+  };
+  return {
+    fn,
+    callCount: () => i,
+    lastRangeStart: () => lastRangeStart,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// §6.4 — Network drop mid-stream recovers transparently
+// ---------------------------------------------------------------------------
+
+describe("files:download — network drop mid-stream recovers (§6.4)", () => {
+  it("emits exactly one download-retrying { attempt: 1, waitMs: 1000, engineCause: 'network-error' } and completes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const steps: DownloadStep[] = [
+        {
+          kind: "throw-mid-stream",
+          bytesBefore: 0,
+          error: new DatasourceError({
+            tag: "network-error",
+            datasourceType: "google-drive",
+            datasourceId: "ds-1",
+            retryable: true,
+            message: "ECONNRESET mid-stream",
+          }),
+          contentLength: 1024,
+        },
+        {
+          kind: "succeed",
+          bytes: 1024,
+          contentLength: 1024,
+        },
+      ];
+      const stepper = makeStepDownloadFile(fakeFs, TO_PATH, steps);
+      const downloadFile = vi.fn(stepper.fn);
+      const getMetadata = vi.fn().mockResolvedValue({
+        ...sampleEntry,
+        providerMetadata: {},
+      });
+      const client = makeFakeClient({ downloadFile, getMetadata });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Drive past the env-retry sleep (expBackoff(1) = 1000ms).
+      await pump(1000);
+      const result = await inflight;
+      expect(result.ok).toBe(true);
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      expect(retrying).toHaveLength(1);
+      expect(retrying[0]?.payload).toMatchObject({
+        datasourceId: "ds-1",
+        attempt: 1,
+        limit: 5,
+        waitMs: 1000,
+        engineCause: "network-error",
+      });
+      expect(stepper.callCount()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.5 — Five consecutive environmental failures exhaust the budget
+// ---------------------------------------------------------------------------
+
+describe("files:download — exhausts env budget after CONSECUTIVE_FAIL_LIMIT (§6.5)", () => {
+  it("5 retrying events (attempt 1..5) then download-failed { tag: 'exhausted-retries' } with partial kept (no unlink)", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const unlinkSpy = vi.fn(async () => { /* ok */ });
+      fakeFs.unlink = unlinkSpy;
+      const netError = () =>
+        new DatasourceError({
+          tag: "network-error",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: true,
+          message: "ECONNRESET",
+        });
+      // 6 throws total: 5 retried (attempts 1..5) + 6th tripping the
+      // > limit check (consecutive=6 > 5 → ExhaustedRetriesError). All
+      // throws lay down zero bytes (no progress → no reset).
+      const steps: DownloadStep[] = Array.from({ length: 6 }).map(() => ({
+        kind: "throw-mid-stream" as const,
+        bytesBefore: 0,
+        error: netError(),
+        contentLength: 1024,
+      }));
+      const stepper = makeStepDownloadFile(fakeFs, TO_PATH, steps);
+      const downloadFile = vi.fn(stepper.fn);
+      const client = makeFakeClient({ downloadFile });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Pump enough fake time to drain all five sleeps:
+      // expBackoff: 1000, 2000, 4000, 8000, 16000 = 31000ms.
+      await pump(35_000);
+      const result = await inflight;
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.tag).toBe("exhausted-retries");
+        expect(result.error.message).toBe(
+          "exhausted-retries: network-error",
+        );
+        expect(result.error.retryable).toBe(true);
+      }
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      expect(retrying).toHaveLength(5);
+      retrying.forEach((e, idx) => {
+        expect(e.payload).toMatchObject({
+          attempt: idx + 1,
+          limit: 5,
+          engineCause: "network-error",
+        });
+      });
+      const failed = events.filter((e) => e.name === "download-failed");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.payload).toMatchObject({
+        tag: "exhausted-retries",
+        message: "exhausted-retries: network-error",
+      });
+      expect(unlinkSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.6 — Successful byte progress resets the consecutive counter
+// ---------------------------------------------------------------------------
+
+describe("files:download — byte-progress resets counter (§6.6)", () => {
+  it("error-no-progress → error-with-progress → error-no-progress: each retry sees attempt=1 (counter resets on byte progress per Decision 10)", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const netError = () =>
+        new DatasourceError({
+          tag: "network-error",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: true,
+          message: "ECONNRESET",
+        });
+      // Sequence (all mid-stream throws — exercises the env-retry branch's
+      // own reset rule per Decision 10):
+      // 1. throw, 0 bytes laid down  (before=0, after=0 → no reset; ++ → 1)
+      //    → retrying attempt 1, sleep 1000ms
+      // 2. throw, 512 bytes laid down (before=0, after=512 → RESET to 0; ++ → 1)
+      //    → retrying attempt 1 (KEY assertion — NOT 2)
+      //    sleep 1000ms
+      // 3. succeed 512 more bytes from rangeStart=512.
+      const steps: DownloadStep[] = [
+        {
+          kind: "throw-mid-stream",
+          bytesBefore: 0,
+          error: netError(),
+          contentLength: 1024,
+        },
+        {
+          kind: "throw-mid-stream",
+          bytesBefore: 512,
+          error: netError(),
+          contentLength: 1024,
+        },
+        {
+          kind: "succeed",
+          bytes: 512,
+          contentLength: 1024,
+          contentRange: { start: 512, end: 1023, total: 1024 },
+        },
+      ];
+      const stepper = makeStepDownloadFile(fakeFs, TO_PATH, steps);
+      const downloadFile = vi.fn(stepper.fn);
+      const getMetadata = vi.fn().mockResolvedValue({
+        ...sampleEntry,
+        providerMetadata: {},
+      });
+      const client = makeFakeClient({ downloadFile, getMetadata });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Two 1000ms sleeps (each at attempt=1 after reset).
+      await pump(1000);
+      await pump(1000);
+      const result = await inflight;
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.result.bytes).toBe(1024);
+      }
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      expect(retrying).toHaveLength(2);
+      // First retry after the error-without-progress (count: 0→1).
+      expect(retrying[0]?.payload).toMatchObject({
+        attempt: 1,
+        engineCause: "network-error",
+      });
+      // KEY: second retry attempt is ALSO 1 (counter reset by 512-byte
+      // mid-stream progress in step 2's throw, then ++ to 1 again).
+      expect(retrying[1]?.payload).toMatchObject({
+        attempt: 1,
+        engineCause: "network-error",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.7 — Wall-time ceiling supersedes count budget
+// ---------------------------------------------------------------------------
+
+describe("files:download — walltime ceiling supersedes count (§6.7)", () => {
+  it("when deps.now() advances past the ceiling: download-failed { message: 'walltime-exceeded: <engineCause>' }, partial kept", async () => {
+    // Note: this test does NOT need fake timers — the walltime branch
+    // throws WalltimeExceededError synchronously without scheduling a
+    // sleep (the check fires BEFORE sleepCancellable). Using fake
+    // timers here would freeze the await microtask plumbing under
+    // some Vitest version interactions; real timers + a stubbed
+    // `deps.now()` is sufficient.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const unlinkSpy = vi.fn(async () => { /* ok */ });
+    fakeFs.unlink = unlinkSpy;
+    // The handler calls `deps.now()` at TWO synchronous sites before
+    // any retry decision: (1) registry entry's `startedAt`, (2) the
+    // walltime baseline `walltimeStartedAt`. The third+ calls happen
+    // inside the env-retry branch's elapsed calculation. Stub all of
+    // them: first two return START, the rest return PAST_CEILING.
+    const START = 1_000_000;
+    const PAST_CEILING = START + 30 * 60 * 1000 + 1;
+    const nowFn = vi.fn(() => PAST_CEILING);
+    nowFn.mockReturnValueOnce(START); // (1) registry startedAt
+    nowFn.mockReturnValueOnce(START); // (2) walltimeStartedAt
+    // (3+) env-retry branch's `deps.now() - walltimeStartedAt` and
+    // anywhere else: returns PAST_CEILING via the base impl.
+    const netError = () =>
+      new DatasourceError({
+        tag: "network-error",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: true,
+        message: "ECONNRESET",
+      });
+    const steps: DownloadStep[] = [
+      {
+        kind: "throw-mid-stream",
+        bytesBefore: 256,
+        error: netError(),
+        contentLength: 1024,
+      },
+    ];
+    const stepper = makeStepDownloadFile(fakeFs, TO_PATH, steps);
+    const downloadFile = vi.fn(stepper.fn);
+    const client = makeFakeClient({ downloadFile });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+        now: nowFn,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("exhausted-retries");
+      expect(result.error.message).toBe(
+        "walltime-exceeded: network-error",
+      );
+    }
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({
+      tag: "exhausted-retries",
+      message: "walltime-exceeded: network-error",
+    });
+    // Walltime exhaustion → partial kept.
+    expect(unlinkSpy).not.toHaveBeenCalled();
+    // Partial bytes still on disk.
+    expect(fakeFs.files.has(TO_PATH)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.8 — Rate-limited honors retryAfterMs
+// ---------------------------------------------------------------------------
+
+describe("files:download — rate-limited honors retryAfterMs (§6.8)", () => {
+  it("when retryAfterMs=5000 dominates expBackoff(1)=1000: download-retrying.waitMs === 5000 and the sleep matches", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const rateLimited = new DatasourceError({
+        tag: "rate-limited",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: true,
+        retryAfterMs: 5000,
+        message: "rate limited",
+      });
+      const steps: DownloadStep[] = [
+        {
+          kind: "throw-mid-stream",
+          bytesBefore: 0,
+          error: rateLimited,
+          contentLength: 1024,
+        },
+        {
+          kind: "succeed",
+          bytes: 1024,
+          contentLength: 1024,
+        },
+      ];
+      const stepper = makeStepDownloadFile(fakeFs, TO_PATH, steps);
+      const downloadFile = vi.fn(stepper.fn);
+      const getMetadata = vi.fn().mockResolvedValue({
+        ...sampleEntry,
+        providerMetadata: {},
+      });
+      const client = makeFakeClient({ downloadFile, getMetadata });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Advance 4999ms — sleep should still be pending.
+      await pump(4999);
+      const partialEvents = events.filter(
+        (e) => e.name === "download-retrying",
+      );
+      expect(partialEvents).toHaveLength(1);
+      expect(partialEvents[0]?.payload).toMatchObject({
+        waitMs: 5000,
+        engineCause: "rate-limited",
+      });
+      // Cross the boundary; second downloadFile should fire.
+      await pump(2);
+      const result = await inflight;
+      expect(result.ok).toBe(true);
+      expect(stepper.callCount()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.9 — Cancel during retry sleep terminates immediately
+// ---------------------------------------------------------------------------
+
+describe("files:download — cancel during retry sleep (§6.9)", () => {
+  it("download-retrying emits, abort fires mid-sleep → download-cancelled emits, no further download-retrying", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const netError = () =>
+        new DatasourceError({
+          tag: "network-error",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: true,
+          message: "ECONNRESET",
+        });
+      // First throw enters env-retry branch; we cancel during the sleep.
+      // Second step is provided as a guard — if the test ever
+      // mistakenly progresses past cancel, it would issue a fresh
+      // engine call and fail the "no further retrying" assertion.
+      const steps: DownloadStep[] = [
+        {
+          kind: "throw-mid-stream",
+          bytesBefore: 256,
+          error: netError(),
+          contentLength: 1024,
+        },
+        {
+          kind: "succeed",
+          bytes: 1024,
+          contentLength: 1024,
+        },
+      ];
+      const stepper = makeStepDownloadFile(fakeFs, TO_PATH, steps);
+      const downloadFile = vi.fn(stepper.fn);
+      const client = makeFakeClient({ downloadFile });
+      const registry = createDownloadRegistry();
+      const { bus, events } = captureFsSyncEvents();
+      const unlinkSpy = vi.fn(async () => { /* ok */ });
+      fakeFs.unlink = unlinkSpy;
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+          registry,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Advance past the throw; we need the download-retrying event +
+      // the start of the sleep.
+      await pump(0);
+      const beforeCancel = events.filter(
+        (e) => e.name === "download-retrying",
+      );
+      expect(beforeCancel).toHaveLength(1);
+      // Half-way through the 1000ms backoff.
+      await pump(500);
+      // Fire the cancel.
+      const cancelHandler = makeSyncCancelDownloadHandler({ registry });
+      const cancelResult = await cancelHandler(
+        { downloadJobId: "job-1" },
+        ctx,
+      );
+      expect(cancelResult).toEqual({ ok: true, result: { cancelled: true } });
+      // Drain microtasks; the abort should resolve sleepCancellable.
+      await pump(0);
+      // Advance past where the original sleep would have ended — to
+      // confirm no further retrying fires after cancel.
+      await pump(2000);
+      const result = await inflight;
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.tag).toBe("cancelled");
+      }
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      // Still exactly one — cancel preempted the second attempt.
+      expect(retrying).toHaveLength(1);
+      const cancelled = events.filter((e) => e.name === "download-cancelled");
+      expect(cancelled).toHaveLength(1);
+      // Partial kept on cancel.
+      expect(unlinkSpy).not.toHaveBeenCalled();
+      expect(fakeFs.files.has(TO_PATH)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.10 — Non-retryable tag bypasses the environmental budget
+// ---------------------------------------------------------------------------
+
+describe("files:download — non-retryable tag bypasses env budget (§6.10)", () => {
+  it("auth-revoked (retryable=false) → immediate download-failed { tag: 'auth-revoked' }, no retrying, partial kept", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const unlinkSpy = vi.fn(async () => { /* ok */ });
+      fakeFs.unlink = unlinkSpy;
+      const authRevoked = new DatasourceError({
+        tag: "auth-revoked",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: false,
+        message: "refresh token revoked",
+      });
+      const steps: DownloadStep[] = [
+        {
+          kind: "throw-mid-stream",
+          bytesBefore: 256,
+          error: authRevoked,
+          contentLength: 1024,
+        },
+      ];
+      const stepper = makeStepDownloadFile(fakeFs, TO_PATH, steps);
+      const downloadFile = vi.fn(stepper.fn);
+      const client = makeFakeClient({ downloadFile });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const result = await handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.tag).toBe("auth-revoked");
+      }
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      expect(retrying).toHaveLength(0);
+      const failed = events.filter((e) => e.name === "download-failed");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.payload).toMatchObject({
+        tag: "auth-revoked",
+      });
+      expect(unlinkSpy).not.toHaveBeenCalled();
+      expect(fakeFs.files.has(TO_PATH)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.11 — Range-not-honored deletes the partial
+// ---------------------------------------------------------------------------
+
+describe("files:download — range-not-honored deletes partial (§6.11)", () => {
+  it("second engine call returns 200 OK with no contentRange → fs.unlink fires BEFORE download-failed; correct event", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const unlinkOrder: string[] = [];
+    const unlinkSpy = vi.fn(async (path: string) => {
+      unlinkOrder.push(`unlink:${path}`);
+    });
+    fakeFs.unlink = unlinkSpy;
+    let call = 0;
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
+      call++;
+      if (call === 1) {
+        const stream = Readable.from(
+          (async function* () {
+            fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
+            yield Buffer.alloc(512, 0xaa);
+            throw new DatasourceError({
+              tag: "auth-expired",
+              datasourceType: "google-drive",
+              datasourceId: "ds-1",
+              retryable: true,
+              message: "expired",
+            });
+          })(),
+        );
+        return { stream, contentLength: 1024 };
+      }
+      return {
+        stream: streamFromBytes(Buffer.alloc(1024, 0xbb)),
+        contentLength: 1024,
+      };
+    });
+    const client = makeFakeClient({ downloadFile });
+    const { bus, events } = captureFsSyncEvents();
+    // Hook the bus to record order of emit vs unlink.
+    bus.subscribe((name, _payload) => {
+      unlinkOrder.push(`emit:${name}`);
+    });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("other");
+      expect(result.error.message).toBe(
+        "range not supported on this resource",
+      );
+    }
+    expect(unlinkSpy).toHaveBeenCalledWith(TO_PATH);
+    // Order: unlink fires BEFORE download-failed emit.
+    const unlinkIdx = unlinkOrder.findIndex((s) => s.startsWith("unlink:"));
+    const failedIdx = unlinkOrder.findIndex(
+      (s) => s === "emit:download-failed",
+    );
+    expect(unlinkIdx).toBeGreaterThanOrEqual(0);
+    expect(failedIdx).toBeGreaterThanOrEqual(0);
+    expect(unlinkIdx).toBeLessThan(failedIdx);
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({
+      tag: "other",
+      message: "range not supported on this resource",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.12 — Range-mismatch deletes the partial
+// ---------------------------------------------------------------------------
+
+describe("files:download — range-mismatch deletes partial (§6.12)", () => {
+  it("contentRange.start !== bytesWritten → unlink + correct event", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const unlinkSpy = vi.fn(async () => { /* ok */ });
+    fakeFs.unlink = unlinkSpy;
+    let call = 0;
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
+      call++;
+      if (call === 1) {
+        const stream = Readable.from(
+          (async function* () {
+            fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
+            yield Buffer.alloc(512, 0xaa);
+            throw new DatasourceError({
+              tag: "auth-expired",
+              datasourceType: "google-drive",
+              datasourceId: "ds-1",
+              retryable: true,
+              message: "expired",
+            });
+          })(),
+        );
+        return { stream, contentLength: 1024 };
+      }
+      // 206 Partial Content with WRONG start (0 instead of 512).
+      return {
+        stream: streamFromBytes(Buffer.alloc(1024, 0xbb)),
+        contentLength: 1024,
+        contentRange: { start: 0, end: 1023, total: 1024 },
+      };
+    });
+    const client = makeFakeClient({ downloadFile });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe("range mismatch on this resource");
+    }
+    expect(unlinkSpy).toHaveBeenCalledWith(TO_PATH);
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({
+      tag: "other",
+      message: "range mismatch on this resource",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.13 — Integrity-failed deletes the partial
+// ---------------------------------------------------------------------------
+
+describe("files:download — integrity-failed deletes partial (§6.13)", () => {
+  it("provider-hash mismatch on post-pipe check → unlink + 'integrity check failed' event", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const unlinkSpy = vi.fn(async () => { /* ok */ });
+    fakeFs.unlink = unlinkSpy;
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(Buffer.alloc(1024, 0xab)),
+      contentLength: 1024,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+        // Hash mismatch: local "feedface" ≠ provider "deadbeef".
+        hash: makeHash({ [TO_PATH]: "feedface" }),
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("other");
+      expect(result.error.message).toBe("integrity check failed");
+    }
+    expect(unlinkSpy).toHaveBeenCalledWith(TO_PATH);
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({
+      tag: "other",
+      message: "integrity check failed",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.14 — Byte-count-mismatch keeps the partial
+// ---------------------------------------------------------------------------
+
+describe("files:download — byte-count-mismatch keeps partial (§6.14)", () => {
+  it("bytesWritten ≠ contentLength → download-failed { tag: 'other', message: 'byte count mismatch' }; unlink NOT called", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const unlinkSpy = vi.fn(async () => { /* ok */ });
+    fakeFs.unlink = unlinkSpy;
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(Buffer.alloc(512, 0xab)),
+      contentLength: 1024,
+    }));
+    const client = makeFakeClient({ downloadFile });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("other");
+      expect(result.error.message).toBe("byte count mismatch");
+    }
+    expect(unlinkSpy).not.toHaveBeenCalled();
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({
+      tag: "other",
+      message: "byte count mismatch",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.15 — unlink failure is non-fatal
+// ---------------------------------------------------------------------------
+
+describe("files:download — unlink failure is non-fatal (§6.15)", () => {
+  it("delete-disposition path with unlink rejecting EACCES still emits download-failed", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const unlinkSpy = vi.fn(async () => {
+      const err = new Error("EACCES: permission denied");
+      throw err;
+    });
+    fakeFs.unlink = unlinkSpy;
+    // Drive the integrity-failed path (one of the DELETE_ON_TERMINAL set).
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(Buffer.alloc(1024, 0xab)),
+      contentLength: 1024,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+        hash: makeHash({ [TO_PATH]: "feedface" }),
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe("integrity check failed");
+    }
+    expect(unlinkSpy).toHaveBeenCalled();
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.16 — Auth-expired co-exists with environmental retry
+// ---------------------------------------------------------------------------
+
+describe("files:download — auth-expired co-exists with env retry (§6.16)", () => {
+  it("network-error → recover → mid-stream auth-expired → recover → success: env count and auth slot are independent", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      let call = 0;
+      const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+        call++;
+        if (call === 1) {
+          // Mid-stream network-error after no progress (env retry, attempt 1).
+          const stream = Readable.from(
+            (async function* () {
+              fakeFs.files.set(TO_PATH, Buffer.alloc(0));
+              throw new DatasourceError({
+                tag: "network-error",
+                datasourceType: "google-drive",
+                datasourceId: "ds-1",
+                retryable: true,
+                message: "ECONNRESET",
+              });
+            })(),
+          );
+          return { stream, contentLength: 1024 };
+        }
+        if (call === 2) {
+          // Cycle 2: drains 256 bytes, then auth-expired mid-stream
+          // (Layer 2 slot inside the cycle).
+          const stream = Readable.from(
+            (async function* () {
+              fakeFs.files.set(TO_PATH, Buffer.alloc(256, 0xaa));
+              yield Buffer.alloc(256, 0xaa);
+              throw new DatasourceError({
+                tag: "auth-expired",
+                datasourceType: "google-drive",
+                datasourceId: "ds-1",
+                retryable: true,
+                message: "token expired mid-stream",
+              });
+            })(),
+          );
+          return { stream, contentLength: 1024 };
+        }
+        // call === 3 — Layer 2's continue re-issues at rangeStart=256.
+        // Verify we're picking up the bytes already on disk.
+        expect(options?.rangeStart).toBe(256);
+        return {
+          stream: streamFromBytes(Buffer.alloc(768, 0xbb)),
+          contentLength: 1024,
+          contentRange: { start: 256, end: 1023, total: 1024 },
+        };
+      });
+      const getMetadata = vi.fn().mockResolvedValue({
+        ...sampleEntry,
+        providerMetadata: {},
+      });
+      const client = makeFakeClient({ downloadFile, getMetadata });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Drain the env-retry sleep (1000ms).
+      await pump(1000);
+      const result = await inflight;
+      expect(result.ok).toBe(true);
+      // Exactly one env-retry event (the network-error, attempt 1). The
+      // auth-expired Layer 2 path emits NO download-retrying event
+      // (Decision 5 — auth retries are fast, no event).
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      expect(retrying).toHaveLength(1);
+      expect(retrying[0]?.payload).toMatchObject({
+        attempt: 1,
+        engineCause: "network-error",
+      });
+      // 3 engine calls total: cycle1 (errored), cycle2 (auth-expired
+      // mid-stream), Layer-2 retry inside cycle2 (success).
+      expect(downloadFile).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
