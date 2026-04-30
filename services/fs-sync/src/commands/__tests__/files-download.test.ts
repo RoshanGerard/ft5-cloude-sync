@@ -29,6 +29,9 @@ import {
   transformDownloadingEvent,
   transformFileDownloadedEvent,
   transformDownloadCancelledEvent,
+  isEnvironmentallyRetryable,
+  expBackoff,
+  sleepCancellable,
   type EngineBusEvent,
   type EngineBusSubscriber,
   type FilesDownloadDeps,
@@ -1246,5 +1249,209 @@ describe("files:download — fs-sync IPC event wire shapes (spec.md line 203-208
       reason: "user",
     };
     expect(sample.reason).toBe("user");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-download-resilience §2 / §6.1 — isEnvironmentallyRetryable predicate
+// ---------------------------------------------------------------------------
+
+describe("isEnvironmentallyRetryable (§6.1, Decision 2 four-clause AND)", () => {
+  // Full Cartesian: every DatasourceErrorTag value × { retryable: true, false }.
+  // The truth table per design.md Decision 2:
+  //   - Returns TRUE iff err is DatasourceError AND tag in
+  //     {network-error, rate-limited, provider-error} AND retryable === true
+  //     AND tag !== "auth-expired" (defensive double-guard against future
+  //     taxonomy expansion that adds a retryable=true auth-expired variant).
+  //   - All other DatasourceError combinations return FALSE.
+  //   - Non-DatasourceError values (Error, string, null, undefined, plain
+  //     object) return FALSE.
+  const tags = [
+    "auth-expired",
+    "auth-revoked",
+    "not-found",
+    "conflict",
+    "unsupported",
+    "rate-limited",
+    "network-error",
+    "provider-error",
+    "cancelled",
+    "invalid-datasource",
+  ] as const;
+
+  const allowlist = new Set([
+    "network-error",
+    "rate-limited",
+    "provider-error",
+  ]);
+
+  for (const tag of tags) {
+    for (const retryable of [true, false]) {
+      const expected =
+        retryable === true && tag !== "auth-expired" && allowlist.has(tag);
+      it(`returns ${expected} for DatasourceError { tag: "${tag}", retryable: ${retryable} }`, () => {
+        const err = new DatasourceError({
+          tag,
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable,
+        });
+        expect(isEnvironmentallyRetryable(err)).toBe(expected);
+      });
+    }
+  }
+
+  it("explicitly: auth-expired with retryable=true returns false (excluded by clause 2 even if a future tag-mapping change put it in the allowlist)", () => {
+    const err = new DatasourceError({
+      tag: "auth-expired",
+      datasourceType: "google-drive",
+      datasourceId: "ds-1",
+      retryable: true,
+    });
+    expect(isEnvironmentallyRetryable(err)).toBe(false);
+  });
+
+  it("returns false for a plain Error", () => {
+    expect(isEnvironmentallyRetryable(new Error("boom"))).toBe(false);
+  });
+
+  it("returns false for a string", () => {
+    expect(isEnvironmentallyRetryable("network-error")).toBe(false);
+  });
+
+  it("returns false for null", () => {
+    expect(isEnvironmentallyRetryable(null)).toBe(false);
+  });
+
+  it("returns false for undefined", () => {
+    expect(isEnvironmentallyRetryable(undefined)).toBe(false);
+  });
+
+  it("returns false for a plain object that mimics the shape", () => {
+    expect(
+      isEnvironmentallyRetryable({
+        tag: "network-error",
+        retryable: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-download-resilience §2 / §6.2 — expBackoff schedule
+// ---------------------------------------------------------------------------
+
+describe("expBackoff (§6.2)", () => {
+  it("returns the expected schedule 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000 for n ∈ {1..8} (cap at 30s)", () => {
+    expect(expBackoff(1)).toBe(1000);
+    expect(expBackoff(2)).toBe(2000);
+    expect(expBackoff(3)).toBe(4000);
+    expect(expBackoff(4)).toBe(8000);
+    expect(expBackoff(5)).toBe(16000);
+    expect(expBackoff(6)).toBe(30000);
+    expect(expBackoff(7)).toBe(30000);
+    expect(expBackoff(8)).toBe(30000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-download-resilience §2 / §6.3 — sleepCancellable
+// ---------------------------------------------------------------------------
+
+describe("sleepCancellable (§6.3)", () => {
+  it("(a) resolves on timer fire when the signal never aborts", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      let resolved = false;
+      const p = sleepCancellable(1000, controller.signal).then(() => {
+        resolved = true;
+      });
+      // Before timer fires.
+      expect(resolved).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      await p;
+      expect(resolved).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("(b) resolves immediately on a pre-aborted signal", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      let resolved = false;
+      const p = sleepCancellable(10_000, controller.signal).then(() => {
+        resolved = true;
+      });
+      // Allow microtasks to run; do NOT advance timers — the resolve must
+      // not require the original timer to fire.
+      await vi.advanceTimersByTimeAsync(0);
+      await p;
+      expect(resolved).toBe(true);
+      // No timers should be left pending — pre-aborted path must not
+      // schedule a timer that outlives the call.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("(c) resolves immediately when the signal aborts mid-sleep", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      let resolved = false;
+      const p = sleepCancellable(10_000, controller.signal).then(() => {
+        resolved = true;
+      });
+      // Advance partway through the sleep.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(resolved).toBe(false);
+      controller.abort();
+      // Microtask flush — the abort listener resolves the promise without
+      // waiting for the timer to fire.
+      await vi.advanceTimersByTimeAsync(0);
+      await p;
+      expect(resolved).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("(d) clears the timer on abort — no callback fires after, no pending timer left", async () => {
+    vi.useFakeTimers();
+    try {
+      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+      const controller = new AbortController();
+      const p = sleepCancellable(10_000, controller.signal);
+      // Abort mid-sleep.
+      await vi.advanceTimersByTimeAsync(1000);
+      controller.abort();
+      await p;
+      // The timer must have been cleared on the abort path.
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+      // Advance past the original fire time — nothing should be pending,
+      // and (since the promise already resolved exactly once) no spurious
+      // resolve fires.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never rejects — even on abort, the returned promise resolves", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      // If the promise rejects, this `await` would throw and fail the test.
+      await sleepCancellable(1000, controller.signal);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

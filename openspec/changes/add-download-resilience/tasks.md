@@ -9,11 +9,11 @@
 
 ## 2. Handler retry-loop helpers (`services/fs-sync/src/commands/files-download.ts`)
 
-- [ ] 2.1 Add `isEnvironmentallyRetryable(err: unknown): boolean` near the top of the file. Returns true iff `err instanceof DatasourceError && err.tag !== "auth-expired" && err.retryable === true && (err.tag === "network-error" || err.tag === "rate-limited" || err.tag === "provider-error")`. Otherwise false.
-- [ ] 2.2 Add `expBackoff(attempt: number): number` returning `Math.min(1000 * 2 ** (attempt - 1), 30000)`. Pure function; unit-tested in §6.
-- [ ] 2.3 Add `sleepCancellable(ms: number, signal: AbortSignal): Promise<void>` — wraps `setTimeout` + a `signal.addEventListener("abort", …)` pair so an abort resolves the sleep immediately and clears the timer (`clearTimeout`). Returns void on either resolution path; never rejects.
-- [ ] 2.4 Add the constants `CONSECUTIVE_FAIL_LIMIT = 5` and `WALLTIME_CEILING_MS = 30 * 60 * 1000` to the file's existing constant block alongside `MAX_AUTH_RETRIES_PER_CYCLE`.
-- [ ] 2.5 Rename internal sentinel `RangeNotSupportedError` to `RangeNotHonoredError` (class declaration + every reference in this file). The error message string stays the same so existing wire-shape compatibility holds.
+- [x] 2.1 Add `isEnvironmentallyRetryable(err: unknown): boolean` near the top of the file. Returns true iff `err instanceof DatasourceError && err.tag !== "auth-expired" && err.retryable === true && (err.tag === "network-error" || err.tag === "rate-limited" || err.tag === "provider-error")`. Otherwise false.
+- [x] 2.2 Add `expBackoff(attempt: number): number` returning `Math.min(1000 * 2 ** (attempt - 1), 30000)`. Pure function; unit-tested in §6.
+- [x] 2.3 Add `sleepCancellable(ms: number, signal: AbortSignal): Promise<void>` — wraps `setTimeout` + a `signal.addEventListener("abort", …)` pair so an abort resolves the sleep immediately and clears the timer (`clearTimeout`). Returns void on either resolution path; never rejects.
+- [x] 2.4 Add the constants `CONSECUTIVE_FAIL_LIMIT = 5` and `WALLTIME_CEILING_MS = 30 * 60 * 1000` to the file's existing constant block alongside `MAX_AUTH_RETRIES_PER_CYCLE`.
+- [x] 2.5 Rename internal sentinel `RangeNotSupportedError` to `RangeNotHonoredError` (class declaration + every reference in this file). The error message string stays the same so existing wire-shape compatibility holds.
 
 ## 3. Filesystem boundary extension (`services/fs-sync/src/commands/files-download.ts`)
 
@@ -37,9 +37,9 @@
 
 ## 6. Handler unit + integration tests (`services/fs-sync/src/commands/__tests__/files-download.test.ts`)
 
-- [ ] 6.1 Unit-test `isEnvironmentallyRetryable` against the full Cartesian: every `DatasourceErrorTag` value × `retryable: true | false`. Assert the truth table: only `network-error`, `rate-limited`, `provider-error` with `retryable: true` return true; auth-expired returns false even when retryable=true; non-`DatasourceError` instances return false.
-- [ ] 6.2 Unit-test `expBackoff` returns `1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000` for n ∈ {1..8}. Confirm cap.
-- [ ] 6.3 Unit-test `sleepCancellable`. Cases: (a) resolves on timer fire, (b) resolves immediately on pre-aborted signal, (c) resolves immediately when signal aborts mid-sleep, (d) clears the timer when aborted (no callback fires after).
+- [x] 6.1 Unit-test `isEnvironmentallyRetryable` against the full Cartesian: every `DatasourceErrorTag` value × `retryable: true | false`. Assert the truth table: only `network-error`, `rate-limited`, `provider-error` with `retryable: true` return true; auth-expired returns false even when retryable=true; non-`DatasourceError` instances return false.
+- [x] 6.2 Unit-test `expBackoff` returns `1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000` for n ∈ {1..8}. Confirm cap.
+- [x] 6.3 Unit-test `sleepCancellable`. Cases: (a) resolves on timer fire, (b) resolves immediately on pre-aborted signal, (c) resolves immediately when signal aborts mid-sleep, (d) clears the timer when aborted (no callback fires after).
 - [ ] 6.4 Integration test "Network drop mid-stream recovers transparently" per the spec scenario. Drive the engine fake to error mid-stream once with `tag: "network-error", retryable: true`; second call succeeds. Assert exactly one `download-retrying` event with `attempt: 1, waitMs: 1000, engineCause: "network-error"`. File downloads completely. Use `vi.useFakeTimers()` to fast-forward the sleep.
 - [ ] 6.5 Integration test "Five consecutive environmental failures exhaust the budget" per the spec scenario. Drive 5 errors in a row with no progress. Assert 5 `download-retrying` events (`attempt: 1..5`). Then assert exactly one `download-failed { tag: "exhausted-retries", message: "exhausted-retries: network-error" }`. Assert `deps.fs.unlink` was NOT called (partial kept).
 - [ ] 6.6 Integration test "Successful byte progress resets the consecutive counter" per the spec scenario. Sequence: error → success drains 50MB → error → success drains the rest. Assert the second `download-retrying` has `attempt: 1` (not 2).

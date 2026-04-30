@@ -324,6 +324,84 @@ export interface FilesDownloadDeps {
 }
 
 const MAX_AUTH_RETRIES_PER_CYCLE = 1;
+const CONSECUTIVE_FAIL_LIMIT = 5;
+const WALLTIME_CEILING_MS = 30 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Retry-loop helpers (add-download-resilience §2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Predicate gating the environmental retry layer (Layer 3 per design.md
+ * Decision 8). Returns true iff the error is a `DatasourceError` whose
+ * tag is in the strict allowlist `{network-error, rate-limited,
+ * provider-error}`, the strategy marked it `retryable: true`, AND the
+ * tag is not `auth-expired` (Layer 2's slot — never folded in).
+ *
+ * The four-clause AND is intentional. The `tag !== "auth-expired"` clause
+ * is structurally redundant against the allowlist today, but it is a
+ * defensive double-guard against future taxonomy expansion: if a strategy
+ * ever marked an `auth-expired` instance retryable=true and a future
+ * mapping accidentally added it to the allowlist, this guard still
+ * routes it to Layer 2. See design.md Decision 2.
+ *
+ * Strategy bugs (a non-retryable tag marked retryable=true) flow through
+ * to terminal because the allowlist excludes them. No extra logging in §2.
+ */
+export function isEnvironmentallyRetryable(err: unknown): boolean {
+  return (
+    err instanceof DatasourceError &&
+    err.tag !== "auth-expired" &&
+    err.retryable === true &&
+    (err.tag === "network-error" ||
+      err.tag === "rate-limited" ||
+      err.tag === "provider-error")
+  );
+}
+
+/**
+ * Exponential backoff schedule capped at 30 seconds. `attempt` is
+ * 1-indexed (the first retry uses attempt=1 → 1000ms). Schedule:
+ * 1s, 2s, 4s, 8s, 16s, 30s, 30s, ... See design.md Decision 2.
+ */
+export function expBackoff(attempt: number): number {
+  return Math.min(1000 * 2 ** (attempt - 1), 30_000);
+}
+
+/**
+ * Cancellable sleep. Resolves either when the timer fires or when
+ * `signal` aborts — never rejects. On abort, clears the timer with
+ * `clearTimeout` so no callback runs after. Safe to call with an
+ * already-aborted signal (resolves on the next microtask without
+ * scheduling a timer).
+ *
+ * Used by the handler's environmental-retry branch as the cancel-driven
+ * sleep — `sync:cancel-download` aborts the controller, this resolves,
+ * the inner loop exits with `CancelledError`. See design.md Decision 5.
+ */
+export function sleepCancellable(
+  ms: number,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      // Resolve on next microtask — no timer to schedule, nothing to clear.
+      resolve();
+      return;
+    }
+    let settled = false;
+    const onDone = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = () => onDone();
+    const timer: ReturnType<typeof setTimeout> = setTimeout(onDone, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /**
  * Default dependency bundle — wraps `node:` modules. Tests build their
@@ -558,7 +636,7 @@ export function makeFilesDownloadHandler(
           if (bytesWritten > 0) {
             if (result.contentRange === undefined) {
               // Range-not-honored: provider ignored the Range header.
-              throw new RangeNotSupportedError();
+              throw new RangeNotHonoredError();
             }
             if (result.contentRange.start !== bytesWritten) {
               throw new RangeMismatchError();
@@ -677,7 +755,7 @@ export function makeFilesDownloadHandler(
             },
           };
         }
-        if (err instanceof RangeNotSupportedError) {
+        if (err instanceof RangeNotHonoredError) {
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
             datasourceId,
@@ -812,10 +890,10 @@ class CancelledError extends Error {
     this.name = "CancelledError";
   }
 }
-class RangeNotSupportedError extends Error {
+class RangeNotHonoredError extends Error {
   constructor() {
     super("range not supported on this resource");
-    this.name = "RangeNotSupportedError";
+    this.name = "RangeNotHonoredError";
   }
 }
 class RangeMismatchError extends Error {
