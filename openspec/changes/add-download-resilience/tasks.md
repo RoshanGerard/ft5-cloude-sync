@@ -2,10 +2,10 @@
 
 ## 1. Wire-level type extensions (`@ft5/ipc-contracts`)
 
-- [ ] 1.1 Add `"exhausted-retries"` to the `FilesErrorTag` const-object + type alias in `packages/ipc-contracts/src/<...>` (alongside `"cancelled"`, `"auth-revoked"`, `"disconnected"`, `"rate-limited"`, `"invalid-datasource"`, `"other"`).
-- [ ] 1.2 Add the `download-retrying` event type to the sync-service event payload map: `{ downloadJobId: string, datasourceId: string, attempt: number, limit: number, waitMs: number, engineCause: DatasourceErrorTag }`. Confirm `DatasourceErrorTag` import path is acceptable for diagnostic-only consumption.
-- [ ] 1.3 Update the `test-d` files in `packages/ipc-contracts/src/__tests__/` to lock down (a) `FilesErrorTag` includes the new value as a literal-union member, (b) the `download-retrying` event payload shape compiles with the expected fields, (c) `engineCause` field is `DatasourceErrorTag` typed.
-- [ ] 1.4 Run `pnpm --filter @ft5/ipc-contracts test` and `pnpm --filter @ft5/ipc-contracts build` to confirm the type extensions compile cleanly.
+- [x] 1.1 Added `ExhaustedRetries: "exhausted-retries"` to the `FilesErrorTag` const-object + type alias in `packages/ipc-contracts/src/files.ts`.
+- [x] 1.2 Added `DownloadRetryingPayload { downloadJobId, datasourceId, attempt, limit, waitMs, engineCause }` to `packages/ipc-contracts/src/sync-service/events.ts` plus its `EventPayloadMap` and `EVENT_NAMES` registrations. `engineCause` typed `string` (engine `DatasourceErrorTag` is itself a string union; keeping the wire field as `string` avoids cross-package coupling). Also widened `DownloadFailedPayload.tag` to include `"exhausted-retries"`.
+- [x] 1.3 Updated test-d files (`__tests__/files-error-tag.test-d.ts`, `sync-service/__tests__/files-commands.test-d.ts`, `sync-service/events.test-d.ts`) plus a downstream fix in `__tests__/files.test-d.ts` for hardcoded tag-union expectations. Asserts (a) `FilesErrorTag` includes the new value, (b) `DownloadRetryingPayload` shape, (c) `DownloadFailedPayload.tag` includes `"exhausted-retries"`.
+- [x] 1.4 `pnpm --filter @ft5/ipc-contracts build` clean. `pnpm exec vitest run packages/ipc-contracts/` — 44 test files / 469 tests passed, no type errors. Full-repo `pnpm typecheck` clean.
 
 ## 2. Handler retry-loop helpers (`services/fs-sync/src/commands/files-download.ts`)
 

@@ -213,13 +213,50 @@ export interface FileDownloadedPayload {
  * `FilesErrorTag` (range-not-supported, range-mismatch, byte-count-mismatch,
  * and integrity-failed all collapse to `tag: "other"` with descriptive
  * messages per spec.md line 73 / 115). The raw engine error is NOT
- * forwarded — only `tag` + `message` cross the wire. */
+ * forwarded — only `tag` + `message` cross the wire.
+ *
+ * Per add-download-resilience design.md Decision 7, the tag union also
+ * includes `"exhausted-retries"` for terminal failure after the handler's
+ * environmental-retry budget is spent — both consecutive-failure
+ * exhaustion AND wall-time ceiling share this tag, with the message field
+ * carrying the discriminator (`"exhausted-retries: <engineCause>"` or
+ * `"walltime-exceeded: <engineCause>"`).
+ */
 export interface DownloadFailedPayload {
   readonly downloadJobId: string;
   readonly datasourceId: string;
   readonly tag: "auth-revoked" | "disconnected" | "rate-limited" | "other"
-    | "invalid-datasource";
+    | "invalid-datasource" | "exhausted-retries";
   readonly message: string;
+}
+
+/** Streaming-style retry signal emitted at the START of each
+ * environmental-retry sleep (per add-download-resilience design.md
+ * Decision 5). NOT emitted for the auth-expired Layer 2 branch — that
+ * retry is fast (no sleep) and the user does not need a separate
+ * "refreshing token" indicator.
+ *
+ * The fs-sync IPC bus is uncoalesced (the engine-bus coalescer that
+ * throttles `downloading` does not apply here). Every retry attempt
+ * emits exactly one `download-retrying` event.
+ *
+ * `engineCause` carries the engine-side `DatasourceErrorTag` verbatim —
+ * a deliberate engine-taxonomy leak scoped to diagnostic decoration
+ * only. The renderer SHALL NOT branch behavior on its value; the
+ * wire-level identity for "we're retrying" is the event itself, not
+ * the cause string. Telemetry consumers may aggregate on `engineCause`
+ * for cause analysis. */
+export interface DownloadRetryingPayload {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  /** Current consecutiveFailureCount (1-indexed). */
+  readonly attempt: number;
+  /** CONSECUTIVE_FAIL_LIMIT — always 5 in v1. */
+  readonly limit: number;
+  /** Chosen sleep duration in ms (max(retryAfterMs, expBackoff)). */
+  readonly waitMs: number;
+  /** Engine-side error tag verbatim (diagnostic-only). */
+  readonly engineCause: string;
 }
 
 /** Terminal cancel. `bytesDownloaded` is the last value the engine reported
@@ -261,6 +298,9 @@ export interface EventPayloadMap {
   // add-engine-rename-download §13 — fs-sync's downloadJobId-keyed
   // download lifecycle events (DERIVED from the engine bus, NOT relayed).
   "downloading": DownloadingPayload;
+  // add-download-resilience — emitted at the start of each environmental
+  // retry sleep (NOT for the auth-expired Layer 2 branch).
+  "download-retrying": DownloadRetryingPayload;
   "file-downloaded": FileDownloadedPayload;
   "download-failed": DownloadFailedPayload;
   "download-cancelled": DownloadCancelledPayload;
@@ -295,6 +335,7 @@ export const EVENT_NAMES: ReadonlyArray<EventName> = [
   "oauth-open-url",
   "credential-persisted",
   "downloading",
+  "download-retrying",
   "file-downloaded",
   "download-failed",
   "download-cancelled",

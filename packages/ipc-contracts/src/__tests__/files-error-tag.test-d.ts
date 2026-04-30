@@ -12,7 +12,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { FilesErrorTag } from "../files.js";
 
 describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
-  it("exposes a runtime const object with exactly the 7 documented members", () => {
+  it("exposes a runtime const object with exactly the 8 documented members", () => {
     expect(FilesErrorTag).toStrictEqual({
       AuthRevoked: "auth-revoked",
       Disconnected: "disconnected",
@@ -21,10 +21,11 @@ describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
       InvalidDatasource: "invalid-datasource",
       Conflict: "conflict",
       Cancelled: "cancelled",
+      ExhaustedRetries: "exhausted-retries",
     });
   });
 
-  it("derived type is the documented 7-string union", () => {
+  it("derived type is the documented 8-string union", () => {
     expectTypeOf<FilesErrorTag>().toEqualTypeOf<
       | "auth-revoked"
       | "disconnected"
@@ -33,6 +34,7 @@ describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
       | "invalid-datasource"
       | "conflict"
       | "cancelled"
+      | "exhausted-retries"
     >();
   });
 
@@ -63,5 +65,17 @@ describe("FilesErrorTag — `as const` object shape (Decision 1)", () => {
     expectTypeOf<"cancelled">().toMatchTypeOf<FilesErrorTag>();
     const fromConst: FilesErrorTag = FilesErrorTag.Cancelled;
     expect(fromConst).toBe("cancelled");
+  });
+
+  it("includes ExhaustedRetries tag for environmental retry exhaustion (add-download-resilience)", () => {
+    // `ExhaustedRetries: "exhausted-retries"` is added by add-download-resilience
+    // for the `files:download` handler's environmental-retry exhaustion paths
+    // (consecutive-failure budget exhausted OR wall-time ceiling exceeded).
+    // Both exhaustion modes share the same tag; the discriminator (count vs
+    // wall-time) lives in the message field as
+    // `"exhausted-retries: <engineCause>"` or `"walltime-exceeded: <engineCause>"`.
+    expectTypeOf<"exhausted-retries">().toMatchTypeOf<FilesErrorTag>();
+    const fromConst: FilesErrorTag = FilesErrorTag.ExhaustedRetries;
+    expect(fromConst).toBe("exhausted-retries");
   });
 });

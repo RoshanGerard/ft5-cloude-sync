@@ -47,7 +47,7 @@ describe("sync-service files:* command contract", () => {
     expectTypeOf<CommandMap["sync:cancel-download"]>().not.toBeNever();
   });
 
-  it("FilesErrorTag is the exact seven-variant union (Conflict + Cancelled)", () => {
+  it("FilesErrorTag is the exact eight-variant union (Conflict + Cancelled + ExhaustedRetries)", () => {
     expectTypeOf<FilesErrorTag>().toEqualTypeOf<
       | "auth-revoked"
       | "disconnected"
@@ -56,6 +56,7 @@ describe("sync-service files:* command contract", () => {
       | "invalid-datasource"
       | "conflict"
       | "cancelled"
+      | "exhausted-retries"
     >();
   });
 

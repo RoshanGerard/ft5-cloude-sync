@@ -33,10 +33,32 @@ describe("sync-service event contract", () => {
       | "oauth-open-url"
       | "credential-persisted"
       | "downloading"
+      | "download-retrying"
       | "file-downloaded"
       | "download-failed"
       | "download-cancelled";
     expectTypeOf<EventName>().toEqualTypeOf<Expected>();
+  });
+
+  it("download-retrying payload carries attempt/limit/waitMs/engineCause (add-download-resilience)", () => {
+    // The handler emits this event at the start of each environmental-retry
+    // sleep — NOT for the auth-expired Layer 2 branch. `engineCause` is a
+    // diagnostic-only engine-taxonomy leak; the renderer SHALL NOT branch
+    // behavior on its value.
+    type Payload = EventPayloadMap["download-retrying"];
+    expectTypeOf<Payload>().toMatchTypeOf<{
+      readonly downloadJobId: string;
+      readonly datasourceId: string;
+      readonly attempt: number;
+      readonly limit: number;
+      readonly waitMs: number;
+      readonly engineCause: string;
+    }>();
+  });
+
+  it("download-failed payload tag union includes exhausted-retries (add-download-resilience)", () => {
+    type Tag = EventPayloadMap["download-failed"]["tag"];
+    expectTypeOf<"exhausted-retries">().toMatchTypeOf<Tag>();
   });
 
   it("EVENT_NAMES tuple contains every EventName", () => {
