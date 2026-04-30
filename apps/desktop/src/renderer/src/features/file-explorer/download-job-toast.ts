@@ -519,6 +519,10 @@ export function createDownloadJobToaster(
           }),
         { id: toastId },
       );
+      // Carry `existing?.retry` forward — for hydrated-from-disk jobs
+      // (no orchestrator pre-dispatch through `registerRetry`) this is
+      // undefined, so a subsequent failure-toast falls back to dismiss-
+      // only on Retry (see ToastEntry.retry docstring).
       tracker.set(downloadJobId, {
         toastId,
         basename,

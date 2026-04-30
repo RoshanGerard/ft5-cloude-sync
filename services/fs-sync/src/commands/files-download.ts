@@ -645,15 +645,12 @@ export function makeFilesDownloadHandler(
             ) {
               throw new CancelledError();
             }
-            // Auth-expired here means the engine's withRefresh tried
-            // and the post-refresh GET still came back auth-expired —
-            // the refresh token is dead. Surface as auth-revoked.
-            if (
-              err instanceof DatasourceError &&
-              (err.tag === "auth-expired" || err.tag === "auth-revoked")
-            ) {
-              throw err;
-            }
+            // Anything else (incl. auth-expired / auth-revoked) propagates
+            // to the outer catch; `normalizeFilesError` collapses both
+            // auth tags onto wire `tag: "auth-revoked"` (see
+            // files-error-mapping.ts). Auth-expired here means the engine's
+            // withRefresh tried and the post-refresh GET still came back
+            // auth-expired — the refresh token is dead.
             throw err;
           }
 

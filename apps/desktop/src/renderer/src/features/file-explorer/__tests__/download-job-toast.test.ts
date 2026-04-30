@@ -1040,4 +1040,76 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     expect(errorCall[1].richColors).toBe(true);
     expect(errorCall[1].action?.label).toMatch(/retry/i);
   });
+
+  it("(8.cov-1) download-retrying as the FIRST event for an unseen jobId spawns a custom toast with a freshly-minted id and the default 'download' basename", () => {
+    // Pins the defensive code path at download-job-toast.ts where
+    // `tracker.get(downloadJobId)` returns undefined and the handler
+    // falls back to a fresh id + default basename. Reachable in
+    // production if a hydrated download immediately receives a retry
+    // event without an intervening `downloading` event, or in any
+    // ordering where the bridge delivers retrying before downloading.
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(retryingEvent("job-X", { attempt: 1, limit: 5 }));
+
+    expect(toast.custom).toHaveBeenCalledTimes(1);
+    const [renderFn, opts] = toast.custom.mock.calls[0] as [
+      (id: string | number) => unknown,
+      { id?: string | number } | undefined,
+    ];
+    // Freshly-minted id (pattern is `download-toast-<n>`); not a stub
+    // value because no prior loading toast minted one.
+    expect(opts?.id).toMatch(/^download-toast-\d+$/);
+    const tree = renderFn(opts!.id!);
+    const serialized = serializeTree(tree);
+    // Default fallback basename when no `downloading` event preceded.
+    expect(serialized).toContain("Downloading download");
+    expect(serialized).toContain("Reconnecting");
+    expect(serialized).toContain("1/5");
+  });
+
+  it("(8.cov-2) retrying → failed: download-failed during retrying state renders the error toast on the same id with Retry wired", () => {
+    // Most-likely-live path for tag: 'exhausted-retries' — the budget
+    // exhausts after one or more retries, so the handler emits
+    // download-retrying events before the terminal failure. Pins that
+    // the retrying flag does not block the failure handler and the
+    // registered retry callback survives the transition.
+    toast.loading.mockReturnValueOnce("toast-A");
+    const retryFn = vi.fn();
+    const t = createDownloadJobToaster({ toast, eventApi });
+    t.registerRetry("ds-1", "/welcome.pdf", retryFn);
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(retryingEvent("job-A", { attempt: 3, limit: 5 }));
+    expect(toast.custom).toHaveBeenCalledTimes(1);
+
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "exhausted-retries",
+        message: "exhausted-retries: network-error",
+      },
+    });
+
+    // Failure toast lands on the SAME id (chrome replaces in-place).
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      {
+        id?: string | number;
+        action?: { label: string; onClick: () => void };
+      },
+    ];
+    expect(errorCall[1].id).toBe("toast-A");
+    expect(errorCall[0]).toContain("exhausted-retries: network-error");
+    // Retry callback registered pre-dispatch survives the
+    // downloading → retrying → failed transition; clicking Retry
+    // invokes the original orchestrator callback, not a no-op.
+    errorCall[1].action!.onClick();
+    expect(retryFn).toHaveBeenCalledTimes(1);
+  });
 });
