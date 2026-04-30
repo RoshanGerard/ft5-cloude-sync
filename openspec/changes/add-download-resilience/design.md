@@ -381,6 +381,26 @@ Mitigation: `Retry-After` honor still works (server-side rate-limit
 responses arrive before 60s in practice), and the 5-attempt budget
 gives 5×60s = 5min of patience before terminal.
 
+**Layer 3 routing also covers the pre-stream catch site.** Implementation
+of §11.2 surfaced an inconsistency in the pre-fix handler: the inner-loop
+mid-stream catch had Layer 3 (env-retry) as a documented branch, but the
+PRE-STREAM catch (the GET itself rejecting before any bytes flow) had only
+`throw err` — a real `network-error retryable=true` rejecting before the
+stream opened went straight to terminal, contradicting Decision 8's
+"Layer 3 catches network/rate-limit/provider-error and retries with
+budget." The §11.2 fix routes the synthesized timeout error through
+Layer 3 from BOTH catch sites; for symmetry and to honor Decision 8's
+intent, real env-retryable errors at the pre-stream site take the same
+Layer 3 path. Side effect: an immediate `ECONNREFUSED` (or any pre-stream
+`network-error retryable=true`) now retries up to budget instead of
+failing immediately. This is the intended behavior under Decision 8 +
+Decision 12; the prior pre-stream-only-throw behavior was a latent gap
+that the §9.4 hang exposed (the request never even rejected, so the
+hang was the symptom, but the underlying handler was inconsistent
+across catch sites). Pinned by §11.7-§11.9 integration tests + the
+pre-existing §6.5 budget-exhaustion test (which exercises the same
+counter+budget path the pre-stream branch now uses).
+
 ## Risks / Trade-offs
 
 - **[Risk] Strategy bug marks non-retryable error as retryable=true** →
