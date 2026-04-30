@@ -127,6 +127,23 @@ floor. Wall-time ceiling caps the upper.
 
 ### Decision 3: Range-not-honored is hard-fail, NOT retry-budget-burn
 
+> **Note (post-§9.4 smoke, 2026-04-30)** — the §11.10 re-smoke surfaced
+> a real-world cost of Decision 3: providers whose Range support is
+> flaky across TCP-reconnected sessions hard-fail every wifi blip on
+> long downloads (a 30-second network blip mid-400MB-download = 0%
+> recovered, restart from scratch). The proposal's Open Question 3
+> originally recommended the opposite ("rewrite from 0; emit one
+> `downloading { progress: 0 }` event so the UI rewinds"); Decision 3
+> reversed that for v1 simplicity. Revisiting Decision 3 — adopting
+> the original "rewrite from 0" recommendation, gated by the env-retry
+> budget — is **deferred to `wire-packaged-build-download-resilience`**
+> (the packaged-build E2E follow-up that exercises real-provider Range
+> behavior under mitmproxy fault injection). Until that change lands,
+> the wifi-blip → range-not-honored → terminal path remains the v1
+> behavior; users mitigate by retrying manually (which restarts from
+> byte 0).
+
+
 **What:** When a resume attempt (`bytesWritten > 0`) returns 200 OK without
 `contentRange`, the handler raises `RangeNotHonoredError` immediately. No
 retry within the cycle's environmental budget. Repeated requests with the
