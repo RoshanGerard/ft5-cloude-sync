@@ -52,6 +52,24 @@ export type DownloadEvent =
       };
     }
   | {
+      readonly kind: "download-retrying";
+      readonly payload: {
+        readonly downloadJobId: string;
+        readonly datasourceId: string;
+        readonly attempt: number;
+        readonly limit: number;
+        readonly waitMs: number;
+        // `engineCause` is the engine-side `DatasourceErrorTag` verbatim
+        // (a deliberate engine-taxonomy leak, scoped to diagnostic
+        // decoration only — see add-download-resilience design.md
+        // Decision 9). Kept as `string` here because the renderer SHALL
+        // NOT branch on its value; widening to `string` keeps the wire
+        // contract stable while preventing accidental switch / match
+        // patterns from the renderer side.
+        readonly engineCause: string;
+      };
+    }
+  | {
       readonly kind: "file-downloaded";
       readonly payload: {
         readonly downloadJobId: string;
@@ -69,6 +87,10 @@ export type DownloadEvent =
           | "auth-revoked"
           | "disconnected"
           | "rate-limited"
+          // add-download-resilience §1: terminal tag for both
+          // count-exhaustion and walltime-exhaustion. The discriminator
+          // ("which budget exhausted") lives in the message field.
+          | "exhausted-retries"
           | "other"
           | "invalid-datasource";
         readonly message: string;
@@ -89,6 +111,7 @@ export type DownloadEventKind = DownloadEvent["kind"];
 
 const DOWNLOAD_EVENT_KINDS: ReadonlySet<DownloadEventKind> = new Set([
   "downloading",
+  "download-retrying",
   "file-downloaded",
   "download-failed",
   "download-cancelled",
@@ -373,6 +396,19 @@ interface ToastEntry {
    * paths can plausibly race; this flag is the renderer-side guard.
    */
   readonly terminal?: boolean;
+  /**
+   * Marker set on `download-retrying` events; cleared on the next
+   * `downloading` event for the same jobId (per add-download-resilience
+   * §7.3). Used so the next `downloading` event detects it must revert
+   * the toast chrome from the custom retrying render back to the
+   * loading template — without the marker we'd issue an unnecessary
+   * `toast.loading` update on every progress tick.
+   *
+   * The retry context itself is not retained: the renderer SHALL NOT
+   * branch on `engineCause` per Decision 9, and the spec only requires
+   * the context for the duration of the retrying-state render itself.
+   */
+  readonly retrying?: boolean;
 }
 
 /**
@@ -417,11 +453,24 @@ export function createDownloadJobToaster(
       const basename = basenameFromPath(event.payload.path);
       const existing = tracker.get(downloadJobId);
       if (existing) {
-        // Update in place.
+        // Update in place. If the entry was in retrying state, the
+        // call below transitions the visible chrome back to the
+        // loading template (Sonner replaces the custom render with the
+        // loading variant on the same id slot — see add-download-
+        // resilience §7.3); we clear the `retrying` flag so subsequent
+        // progress ticks don't keep re-clearing it.
         toast.loading(
           formatProgressMessage(existing.basename, event.payload.progress),
           { id: existing.toastId },
         );
+        if (existing.retrying === true) {
+          tracker.set(downloadJobId, {
+            toastId: existing.toastId,
+            basename: existing.basename,
+            retry: existing.retry,
+            terminal: existing.terminal,
+          });
+        }
       } else {
         // Spawn new toast for this jobId. If the orchestrator pre-
         // registered a retry callback for `(datasourceId, sourcePath)`,
@@ -439,6 +488,43 @@ export function createDownloadJobToaster(
         }
         tracker.set(downloadJobId, { toastId, basename, retry });
       }
+      return;
+    }
+
+    if (event.kind === "download-retrying") {
+      // add-download-resilience §7.2: switch to a custom render with
+      // "Reconnecting… (<attempt>/<limit>)" subtext + spinner glyph.
+      // Tooltip carries `Last error: <engineCause>. Waiting <waitMs>ms
+      // before retry.` (Decision 5).
+      const existing = tracker.get(downloadJobId);
+      // Hydration-as-first-event path: no prior `downloading` event ran,
+      // so the entry might not exist. Fall through to spawning the
+      // retrying render on a freshly-minted id. (In practice the
+      // hydrate path pre-seeds the tracker before the listener
+      // attaches; this branch is defensive.)
+      if (existing?.terminal === true) {
+        // Late retry event for an already-terminal job: ignore.
+        return;
+      }
+      const basename = existing?.basename ?? "download";
+      const toastId = existing?.toastId ?? generateToastId();
+      const { attempt, limit, waitMs, engineCause } = event.payload;
+      toast.custom(
+        (id) =>
+          buildRetryingRender(id, basename, {
+            attempt,
+            limit,
+            waitMs,
+            engineCause,
+          }),
+        { id: toastId },
+      );
+      tracker.set(downloadJobId, {
+        toastId,
+        basename,
+        retry: existing?.retry,
+        retrying: true,
+      });
       return;
     }
 
@@ -666,6 +752,65 @@ function buildSuccessRender(
             "bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium",
         },
         "Open",
+      ),
+    ),
+  );
+}
+
+// --- Retrying-state render (add-download-resilience §7.2 / §7.4) -----
+
+interface RetryingContext {
+  readonly attempt: number;
+  readonly limit: number;
+  readonly waitMs: number;
+  readonly engineCause: string;
+}
+
+function buildRetryingRender(
+  _id: string | number,
+  basename: string,
+  ctx: RetryingContext,
+): React.ReactElement {
+  // Per design.md Decision 5: title remains `Downloading <basename>`,
+  // subtext switches to `Reconnecting… (<attempt>/<limit>)` with a
+  // spinner glyph in place of the percentage indicator. The wrapping
+  // element exposes the diagnostic tooltip via the `title` HTML
+  // attribute (browsers render this on hover natively — no library
+  // required, semantically appropriate for a status decoration).
+  const tooltip = `Last error: ${ctx.engineCause}. Waiting ${ctx.waitMs}ms before retry.`;
+  return React.createElement(
+    "div",
+    {
+      className:
+        "bg-popover text-popover-foreground flex flex-col gap-1 rounded-md border p-4 shadow-md",
+      role: "status",
+      title: tooltip,
+    },
+    React.createElement(
+      "div",
+      { className: "text-sm font-medium" },
+      `Downloading ${basename}`,
+    ),
+    React.createElement(
+      "div",
+      {
+        className:
+          "text-muted-foreground flex items-center gap-2 text-xs",
+      },
+      // Spinner glyph — pinned via `data-test` so renderer tests assert
+      // on the structural marker rather than a specific Tailwind icon
+      // class. The visible glyph is a CSS-driven spinner element; the
+      // ARIA label keeps screen readers in sync with the visual cue.
+      React.createElement("span", {
+        "data-test": "retrying-spinner",
+        "aria-label": "Reconnecting",
+        className:
+          "border-muted-foreground/40 border-t-muted-foreground inline-block h-3 w-3 animate-spin rounded-full border-2",
+      }),
+      React.createElement(
+        "span",
+        null,
+        `Reconnecting… (${ctx.attempt}/${ctx.limit})`,
       ),
     ),
   );
