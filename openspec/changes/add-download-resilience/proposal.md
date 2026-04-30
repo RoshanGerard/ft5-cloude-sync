@@ -41,6 +41,37 @@ Mechanically, this change builds entirely on the in-memory registry +
 Range-resume engine that `add-engine-rename-download` already adds —
 no new persistence layer.
 
+## What Changes
+
+- Add wire tag `exhausted-retries` to `FilesErrorTag` and a new
+  `download-retrying` IPC event with payload `{ downloadJobId,
+  datasourceId, attempt, limit, waitMs, engineCause }`. (`engineCause`
+  is typed `string` so the renderer cannot branch on its value — see
+  Decision 9.)
+- Extend the `files:download` handler retry loop in
+  `services/fs-sync/src/commands/files-download.ts` with an
+  environmental-retry branch (Layer 3): five-attempt-per-cycle
+  consecutive-failure budget plus a 30-min wall-time ceiling, with
+  exponential backoff `min(1000 * 2^(n-1), 30000) ms` and `Retry-After`
+  honor when the engine emits one. Layer 1 (engine `withRefresh`) and
+  Layer 2 (handler auth-expired single-shot retry) are unchanged.
+- Add `fsBoundary.unlink` to the filesystem boundary and a
+  `DELETE_ON_TERMINAL` set keying disposition by error-class identity.
+  Range-not-honored, range-mismatch, and integrity-failed delete the
+  partial before the `download-failed` emit; byte-count-mismatch keeps
+  the partial.
+- Renderer toast (`apps/desktop/src/renderer/src/features/file-explorer/download-job-toast.ts`)
+  gains a `retrying` state that swaps the loading-template chrome to a
+  custom render with `Reconnecting… (n/5)` subtext + spinner glyph +
+  diagnostic tooltip. Same toast id is reused so the progress bar
+  position is preserved through the swap (Decision 5). On the next
+  `downloading` event, the toast reverts to the loading template.
+- Failure handler accepts the new `tag: "exhausted-retries"` through
+  the existing tag-agnostic toast.error branch.
+- No engine changes (Decision 8). No new persistence layer. No
+  schema migration. The in-memory `DownloadRegistry` carries no retry
+  fields — retry state lives in handler closure scope.
+
 ## Out of scope
 
 - Service crash / kill recovery. The service is the durable owner;
