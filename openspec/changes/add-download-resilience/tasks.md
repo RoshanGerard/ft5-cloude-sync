@@ -88,6 +88,6 @@
 
 ## 10. Documentation and follow-up
 
-- [ ] 10.1 Update `services/fs-sync/README.md` (if the file documents the download path) with a one-paragraph note on the three-layer retry architecture and link to `design.md`.
-- [ ] 10.2 Cross-reference the two follow-up stubs (`wire-packaged-build-download-resilience`, `add-failed-download-cleanup-affordance`) in this change's `proposal.md` "Provenance" or end-of-file section so reviewers see the deferred scope.
-- [ ] 10.3 If the smoke tests in §9.4 surface unexpected behavior (e.g., `downloading` events fire mid-retry, the toast flickers, etc.), capture in a `PENDING_TC.MD` or follow-up issue rather than block this change.
+- [x] 10.1 Update `services/fs-sync/README.md` (if the file documents the download path) with a one-paragraph note on the three-layer retry architecture and link to `design.md`. [Done: added "Download retry architecture" section between Events and Dev mode, documenting Layer 1 / Layer 2 / Layer 3 with the budget + walltime + disposition rules and a pointer to the (post-archive) design.md path.]
+- [x] 10.2 Cross-reference the two follow-up stubs (`wire-packaged-build-download-resilience`, `add-failed-download-cleanup-affordance`) in this change's `proposal.md` "Provenance" or end-of-file section so reviewers see the deferred scope. [Done: added "Deferred scope (follow-up changes)" section to proposal.md naming both follow-ups with their roles, plus a §9.4 manual-smoke pre-archive note.]
+- [ ] 10.3 If the smoke tests in §9.4 surface unexpected behavior (e.g., `downloading` events fire mid-retry, the toast flickers, etc.), capture in a `PENDING_TC.MD` or follow-up issue rather than block this change. [Pending §9.4 user-driven smoke; only flips to [x] (or expands a PENDING_TC.MD entry) once the smoke is run.]

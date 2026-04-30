@@ -114,3 +114,33 @@ no new persistence layer.
   work, desktop is the indicator." Service-crash recovery is
   intentionally excluded — it would push state out of the durable
   owner and into a disk-shim layer that violates the boundary.
+
+## Deferred scope (follow-up changes)
+
+Two follow-ups carry forward work intentionally not in scope here.
+Reviewers should look at these alongside this change to see the
+full envelope:
+
+- **`wire-packaged-build-download-resilience`** — exercises the §6.4-
+  §6.16 retry scenarios against a packaged build with a fault-injection
+  layer (mitmproxy or similar). v1 verifies range-not-honored /
+  range-mismatch / integrity-failed at the integration-test layer only
+  because a deterministic provider fault that returns 200 OK to a
+  Range request is hard to reproduce against real-world endpoints.
+  This follow-up closes the gap between unit-level coverage and
+  end-to-end packaged behavior.
+- **`add-failed-download-cleanup-affordance`** — surfaces a UI
+  affordance to delete or move kept-partial files. v1 follows browser
+  convention (Chrome `.crdownload`): on terminal failure where the
+  partial is corrupt-but-recoverable (env-budget-exhausted, walltime,
+  byte-count-mismatch, auth-revoked, user-cancellation) the file is
+  preserved on disk so the user can choose what to do with it. Today
+  the only affordances are "the next download to the same target
+  triggers the conflict dialog" or manual file-system cleanup. The
+  follow-up adds an explicit "Delete partial" / "Move to trash" path.
+
+§9.4 (manual wifi-drop smoke) remains pending and is the user-driven
+gate before archive: cold-start desktop, log into a datasource, start
+a 100MB+ download, mid-flight disable wifi for ~10s, re-enable.
+Verify the toast shows `Reconnecting… (1/5)` during the outage and
+resumes when wifi returns.
