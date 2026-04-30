@@ -913,13 +913,17 @@ describe("files:download — registry release on terminal events (§13.19, §13.
 
   it("on download-failed: registry entry is removed", async () => {
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    // §11.3 (Decision 12) — env-retryable pre-stream errors now re-enter
+    // Layer 3 retry instead of going straight to terminal. Use a
+    // non-retryable terminal error (auth-revoked) so this test exercises
+    // the registry-cleanup-on-terminal contract unambiguously.
     const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
       throw new DatasourceError({
-        tag: "network-error",
+        tag: "auth-revoked",
         datasourceType: "google-drive",
         datasourceId: "ds-1",
-        retryable: true,
-        message: "ECONNRESET",
+        retryable: false,
+        message: "refresh token revoked",
       });
     });
     const client = makeFakeClient({ downloadFile });
@@ -2522,6 +2526,291 @@ describe("files:download — auth-expired co-exists with env retry (§6.16)", ()
       // 3 engine calls total: cycle1 (errored), cycle2 (auth-expired
       // mid-stream), Layer-2 retry inside cycle2 (success).
       expect(downloadFile).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-download-resilience §11 — Decision 12 per-attempt request timeout
+//
+// §11.7-§11.9 cover the handler-boundary 60s timeout introduced after the
+// §9.4 manual smoke reproduced "stuck-forever Reconnecting": after
+// `sleepCancellable` returned, the next `engine.downloadFile()` inherited
+// a dead OS-level socket and hung indefinitely (Windows TCP timeout >5
+// minutes), blocking the retry loop. The fix wraps each engine call with
+// a per-attempt `AbortController` whose `setTimeout(...).abort()` fires at
+// `PER_ATTEMPT_TIMEOUT_MS = 60_000`, composed with the user-cancel signal
+// via `AbortSignal.any`. On timeout, the handler synthesizes
+// `DatasourceError({ tag: "network-error", retryable: true })` and feeds
+// the existing Layer 3 env-retry branch identically to a "real" network-
+// error — the synthesized error must produce a `download-retrying` event,
+// count against the 5-attempt budget, and respect cancel precedence.
+// ---------------------------------------------------------------------------
+
+const PER_ATTEMPT_TIMEOUT_MS = 60_000;
+
+/**
+ * Build a `client.downloadFile` mock whose first `hangCount` calls return a
+ * promise that never resolves but rejects with AbortError when the supplied
+ * signal fires. After `hangCount` hangs the mock falls through to `tail`
+ * (e.g. a `succeed` step) so byte-count assertions stay clean.
+ *
+ * Mirrors the real engine's AbortSignal contract — engines accept
+ * `options.signal` and reject with `AbortError` on its abort.
+ */
+function makeHangingDownloadFile(opts: {
+  hangCount: number;
+  tail?: () => Promise<DownloadResult>;
+}): {
+  fn: (
+    target: unknown,
+    options: { signal?: AbortSignal },
+  ) => Promise<DownloadResult>;
+  callCount: () => number;
+} {
+  let i = 0;
+  const fn = async (
+    _target: unknown,
+    options: { signal?: AbortSignal },
+  ): Promise<DownloadResult> => {
+    const calledAt = ++i;
+    if (calledAt <= opts.hangCount) {
+      return new Promise<DownloadResult>((_resolve, reject) => {
+        const signal = options.signal;
+        if (signal === undefined) {
+          // Without a signal there is nothing to break the hang — the
+          // test will time out, which is the desired RED signal in the
+          // pre-impl run.
+          return;
+        }
+        if (signal.aborted) {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          },
+          { once: true },
+        );
+      });
+    }
+    if (opts.tail !== undefined) {
+      return opts.tail();
+    }
+    throw new Error(`hanging engine fake exhausted at call ${calledAt}`);
+  };
+  return { fn, callCount: () => i };
+}
+
+// §11.7 — Per-attempt timeout fires when engine hangs
+//
+// The first engine call hangs forever (returns a promise that only rejects
+// when its signal aborts). The handler's per-attempt timeout fires at
+// PER_ATTEMPT_TIMEOUT_MS, the composed signal aborts, the engine's mock
+// rejects with AbortError. The handler distinguishes user-cancel
+// (abortController.signal.aborted === false) from timeout
+// (attemptCtrl.signal.aborted === true) and synthesizes a
+// DatasourceError({ tag: "network-error", retryable: true, message:
+// "per-attempt timeout (60000ms)" }), which feeds the Layer 3 env-retry
+// branch — exactly one `download-retrying { attempt: 1, engineCause:
+// "network-error" }` emits, the env-retry sleep (expBackoff(1) = 1000ms)
+// runs, and the second engine call is issued.
+
+describe("files:download — per-attempt timeout fires when engine hangs (§11.7)", () => {
+  it("emits exactly one download-retrying { attempt: 1, engineCause: 'network-error' } and issues a second engine call", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const hanging = makeHangingDownloadFile({
+        hangCount: 1,
+        tail: async () => ({
+          stream: streamFromBytes(Buffer.alloc(1024, 0xcd)),
+          contentLength: 1024,
+        }),
+      });
+      const downloadFile = vi.fn(hanging.fn);
+      const getMetadata = vi.fn().mockResolvedValue({
+        ...sampleEntry,
+        providerMetadata: {},
+      });
+      const client = makeFakeClient({ downloadFile, getMetadata });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Advance past the per-attempt timeout — composed signal aborts,
+      // engine fake rejects, handler synthesizes network-error, Layer 3
+      // emits download-retrying and starts the env-retry sleep
+      // (expBackoff(1) = 1000ms).
+      await pump(PER_ATTEMPT_TIMEOUT_MS + 1);
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      expect(retrying).toHaveLength(1);
+      expect(retrying[0]?.payload).toMatchObject({
+        datasourceId: "ds-1",
+        attempt: 1,
+        limit: 5,
+        engineCause: "network-error",
+      });
+      // Drive past the env-retry sleep so the second engine call lands
+      // and the (succeeding) tail completes.
+      await pump(1000);
+      const result = await inflight;
+      expect(result.ok).toBe(true);
+      // Two engine calls total: hung first attempt, succeeding second.
+      expect(hanging.callCount()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// §11.8 — Per-attempt timeout counts against the 5-attempt budget.
+//
+// Five back-to-back hung attempts → consecutiveFailureCount climbs 1..5
+// without any byte-progress reset (no bytes ever written). The sixth
+// attempt's timeout-synthesized error pushes the counter past the limit,
+// the handler raises ExhaustedRetriesError("network-error"), and the
+// outer terminal catch emits `download-failed { tag: "exhausted-retries",
+// message: "exhausted-retries: network-error" }`. Confirms timeout-
+// synthesized errors are budget-eligible (not special-cased).
+
+describe("files:download — per-attempt timeout counts against budget (§11.8)", () => {
+  it("5 hung attempts → download-failed { tag: 'exhausted-retries', message: 'exhausted-retries: network-error' }", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      // 6 hangs total: attempts 1..5 emit download-retrying, the 6th
+      // trips the > limit check.
+      const hanging = makeHangingDownloadFile({ hangCount: 6 });
+      const downloadFile = vi.fn(hanging.fn);
+      const client = makeFakeClient({ downloadFile });
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Each attempt: PER_ATTEMPT_TIMEOUT_MS hang + expBackoff(n) sleep.
+      // Total worst-case: 6*60_000 + (1000+2000+4000+8000+16000) =
+      //   360_000 + 31_000 = 391_000ms. Pump generously.
+      await pump(400_000);
+      const result = await inflight;
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.tag).toBe("exhausted-retries");
+        expect(result.error.message).toBe(
+          "exhausted-retries: network-error",
+        );
+        expect(result.error.retryable).toBe(true);
+      }
+      const retrying = events.filter((e) => e.name === "download-retrying");
+      expect(retrying).toHaveLength(5);
+      retrying.forEach((e, idx) => {
+        expect(e.payload).toMatchObject({
+          attempt: idx + 1,
+          limit: 5,
+          engineCause: "network-error",
+        });
+      });
+      const failed = events.filter((e) => e.name === "download-failed");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.payload).toMatchObject({
+        tag: "exhausted-retries",
+        message: "exhausted-retries: network-error",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// §11.9 — User cancel during a hung attempt fires download-cancelled.
+//
+// The engine hangs; we abort the user-cancel signal halfway through
+// PER_ATTEMPT_TIMEOUT_MS. Both signals will be aborted by the time the
+// engine fake's rejection reaches the catch (the user-cancel triggers the
+// composed-signal abort, which the engine's listener observes). The
+// handler MUST check `abortController.signal.aborted` FIRST — if true,
+// take the existing CancelledError → download-cancelled path. Otherwise
+// the timeout-synthesis branch would mistakenly fire.
+
+describe("files:download — user cancel during hung attempt (§11.9)", () => {
+  it("abort halfway through hang → download-cancelled emits, NOT download-retrying", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+      const hanging = makeHangingDownloadFile({ hangCount: 1 });
+      const downloadFile = vi.fn(hanging.fn);
+      const client = makeFakeClient({ downloadFile });
+      const registry = createDownloadRegistry();
+      const { bus, events } = captureFsSyncEvents();
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          fs: fakeFs,
+          fsSyncBus: bus,
+          registry,
+        }),
+      );
+      const inflight = handler(
+        { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+        ctx,
+      );
+      // Halfway through the per-attempt timeout — engine still hung.
+      await pump(PER_ATTEMPT_TIMEOUT_MS / 2);
+      // Verify pre-cancel state: no retrying yet, no terminal yet.
+      expect(events.filter((e) => e.name === "download-retrying")).toHaveLength(
+        0,
+      );
+      expect(events.filter((e) => e.name === "download-cancelled")).toHaveLength(
+        0,
+      );
+      // Fire the cancel.
+      const cancelHandler = makeSyncCancelDownloadHandler({ registry });
+      const cancelResult = await cancelHandler(
+        { downloadJobId: "job-1" },
+        ctx,
+      );
+      expect(cancelResult).toEqual({ ok: true, result: { cancelled: true } });
+      // Drain microtasks so the engine fake's signal-listener fires and
+      // the handler's catch runs.
+      await pump(0);
+      // Advance well past where the per-attempt timeout would have fired
+      // — to confirm the cancel path took precedence (no retrying).
+      await pump(PER_ATTEMPT_TIMEOUT_MS);
+      const result = await inflight;
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.tag).toBe("cancelled");
+      }
+      // Cancel branch fired, NOT timeout-synthesis.
+      expect(events.filter((e) => e.name === "download-retrying")).toHaveLength(
+        0,
+      );
+      const cancelled = events.filter((e) => e.name === "download-cancelled");
+      expect(cancelled).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

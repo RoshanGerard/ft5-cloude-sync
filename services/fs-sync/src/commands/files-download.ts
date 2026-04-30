@@ -334,6 +334,28 @@ const MAX_AUTH_RETRIES_PER_CYCLE = 1;
 const CONSECUTIVE_FAIL_LIMIT = 5;
 const WALLTIME_CEILING_MS = 30 * 60 * 1000;
 
+/**
+ * Per-attempt request timeout (add-download-resilience §11.1, design.md
+ * Decision 12). Each retry-cycle's `engine.downloadFile()` call is wrapped
+ * with an `AbortController` whose `setTimeout(...).abort()` fires at this
+ * deadline; the controller's signal is composed with the user-cancel
+ * signal via `AbortSignal.any` and passed to the engine.
+ *
+ * On abort, the handler distinguishes user-cancel
+ * (`abortController.signal.aborted === true`) from timeout
+ * (`attemptCtrl.signal.aborted === true`) and, for timeouts, synthesizes
+ * `DatasourceError({ tag: "network-error", retryable: true, message:
+ * \`per-attempt timeout (${PER_ATTEMPT_TIMEOUT_MS}ms)\` })` so the existing
+ * Layer 3 env-retry branch handles it identically to a real
+ * `network-error`. Same `expBackoff(n)` schedule, same 5-attempt budget,
+ * same byte-progress-strict reset (Decision 10).
+ *
+ * 60s is conservative — long enough for legitimate slow GETs (provider
+ * hiccup); short enough to break a hung OS-level socket fast (the §9.4
+ * smoke reproduced a Windows TCP timeout >5 minutes blocking the loop).
+ */
+const PER_ATTEMPT_TIMEOUT_MS = 60_000;
+
 // ---------------------------------------------------------------------------
 // Retry-loop helpers (add-download-resilience §2)
 // ---------------------------------------------------------------------------
@@ -618,9 +640,24 @@ export function makeFilesDownloadHandler(
           //   2. The env-retry branch's reset on partial mid-stream
           //      progress (the disk grew vs. before, mid-stream throw).
           const bytesWrittenBefore = bytesWritten;
+          // §11.2 (Decision 12) — per-attempt request timeout. The
+          // controller's setTimeout fires at PER_ATTEMPT_TIMEOUT_MS; the
+          // composed signal is `(user-cancel) OR (per-attempt timeout)`.
+          // Engines accept the composed signal at their AbortSignal
+          // boundary (Decision 8 — no engine changes). The timer is
+          // cleared on every exit path via `finally`.
+          const attemptCtrl = new AbortController();
+          const attemptTimeoutHandle = setTimeout(
+            () => attemptCtrl.abort(),
+            PER_ATTEMPT_TIMEOUT_MS,
+          );
+          const composedSignal = AbortSignal.any([
+            abortController.signal,
+            attemptCtrl.signal,
+          ]);
           const options: DownloadOptions = {
             rangeStart: bytesWritten,
-            signal: abortController.signal,
+            signal: composedSignal,
             onProgress: (loaded, total) => {
               // Inline, low-overhead path: update registry every tick.
               // The engine-bus subscription path also updates the
@@ -634,24 +671,106 @@ export function makeFilesDownloadHandler(
           };
           let result: DownloadResult;
           try {
-            result = await client.downloadFile(target, options);
+            try {
+              result = await client.downloadFile(target, options);
+            } finally {
+              // §11.2 — clear on success, error, AND cancel exit paths.
+              clearTimeout(attemptTimeoutHandle);
+            }
           } catch (err) {
             // Pre-stream failure (the GET itself rejected, after
             // withRefresh's one-shot retry inside the engine).
+            //
+            // §11.3 — distinguish three cases:
+            //   1. User-cancel — `abortController.signal.aborted` is
+            //      checked FIRST so it always wins over a coincident
+            //      timeout. Existing CancelledError → terminal cancel.
+            //   2. Per-attempt timeout — `attemptCtrl.signal.aborted` is
+            //      true and user-cancel is not. Synthesize a
+            //      DatasourceError({ tag: "network-error", retryable:
+            //      true }) and route into Layer 3 env-retry below — a
+            //      hung GET IS an environmental failure (Decision 12).
+            //   3. Otherwise — re-throw untouched (auth-expired /
+            //      auth-revoked / strategy-mapped tags propagate to the
+            //      outer terminal catch via normalizeFilesError).
             if (
               abortController.signal.aborted ||
-              (err instanceof Error && err.name === "AbortError") ||
               (err instanceof DatasourceError && err.tag === "cancelled")
             ) {
               throw new CancelledError();
             }
-            // Anything else (incl. auth-expired / auth-revoked) propagates
-            // to the outer catch; `normalizeFilesError` collapses both
-            // auth tags onto wire `tag: "auth-revoked"` (see
-            // files-error-mapping.ts). Auth-expired here means the engine's
-            // withRefresh tried and the post-refresh GET still came back
-            // auth-expired — the refresh token is dead.
-            throw err;
+            let routedErr: unknown = err;
+            if (
+              attemptCtrl.signal.aborted ||
+              (err instanceof Error && err.name === "AbortError")
+            ) {
+              // Timeout (or an AbortError when neither user-cancel nor
+              // attempt-timeout is the cause — defensive: treat as
+              // timeout since something the handler owns aborted the
+              // call). Synthesize so Layer 3 env-retry handles it.
+              routedErr = new DatasourceError({
+                tag: "network-error",
+                datasourceType: client.type,
+                datasourceId: params.datasourceId,
+                retryable: true,
+                message: `per-attempt timeout (${PER_ATTEMPT_TIMEOUT_MS}ms)`,
+              });
+            }
+            // §11.3 — route an env-retryable pre-stream error (real or
+            // synthesized) into the same Layer 3 logic as the mid-stream
+            // catch. Without this branch, a synthesized timeout would
+            // flow to the outer terminal catch and emit
+            // download-failed { tag: "network-error" } instead of
+            // download-retrying — defeating the fix.
+            if (isEnvironmentallyRetryable(routedErr)) {
+              const bytesWrittenAfter = await deps.fs.statSize(
+                params.toPath,
+              ).catch(() => bytesWrittenBefore);
+              if (bytesWrittenAfter > bytesWrittenBefore) {
+                consecutiveFailureCount = 0;
+              }
+              consecutiveFailureCount++;
+              const engineCause = routedErr.tag;
+              if (consecutiveFailureCount > CONSECUTIVE_FAIL_LIMIT) {
+                throw new ExhaustedRetriesError(engineCause);
+              }
+              const elapsed = deps.now() - walltimeStartedAt;
+              if (elapsed > WALLTIME_CEILING_MS) {
+                throw new WalltimeExceededError(engineCause);
+              }
+              const retryAfter = routedErr.retryAfterMs ?? 0;
+              const wait = Math.max(
+                retryAfter,
+                expBackoff(consecutiveFailureCount),
+              );
+              if (wait > WALLTIME_CEILING_MS - elapsed) {
+                throw new WalltimeExceededError(engineCause);
+              }
+              deps.fsSyncBus.emit("download-retrying", {
+                downloadJobId,
+                datasourceId: params.datasourceId,
+                attempt: consecutiveFailureCount,
+                limit: CONSECUTIVE_FAIL_LIMIT,
+                waitMs: wait,
+                engineCause,
+              });
+              await sleepCancellable(wait, abortController.signal);
+              if (abortController.signal.aborted) {
+                throw new CancelledError();
+              }
+              bytesWritten = await deps.fs
+                .statSize(params.toPath)
+                .catch(() => bytesWritten);
+              continue;
+            }
+            // Anything else (auth-expired / auth-revoked / non-retryable
+            // strategy-mapped tags) propagates to the outer catch;
+            // `normalizeFilesError` collapses both auth tags onto wire
+            // `tag: "auth-revoked"` (see files-error-mapping.ts).
+            // Auth-expired here means the engine's withRefresh tried
+            // and the post-refresh GET still came back auth-expired —
+            // the refresh token is dead.
+            throw routedErr;
           }
 
           // Validate the response against `rangeStart` (Decision 3
