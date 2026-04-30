@@ -32,8 +32,8 @@
 
 ## 5. Engine bus / event subscription (`services/fs-sync/src/commands/files-download.ts`)
 
-- [ ] 5.1 Confirm the existing engine-bus subscription does NOT need to relay `download-retrying` (it does not — the event is fs-sync-domain, not engine-domain). No new subscription branches required.
-- [ ] 5.2 Confirm the existing `downloads:list-active` snapshot logic is unchanged — retry state is event-stream-only, the registry stores no retry flags. No code change.
+- [x] 5.1 Confirm the existing engine-bus subscription does NOT need to relay `download-retrying` (it does not — the event is fs-sync-domain, not engine-domain). No new subscription branches required. [Verified: `engineBus` is injected as a handler dependency for streaming-event correlation, not as a bootstrap-level translator. `download-retrying` is emitted by the handler (files-download.ts §4 lines 745-752); the engine has no "retrying" concept. No bootstrap subscription change.]
+- [x] 5.2 Confirm the existing `downloads:list-active` snapshot logic is unchanged — retry state is event-stream-only, the registry stores no retry flags. No code change. [Verified: `DownloadJobEntry` has 8 fields, none retry-related; `DownloadJobUpdate` is type-locked to `bytesDownloaded | contentLength` only. §4's `consecutiveFailureCount` + `walltimeStartedAt` live in handler closure scope. `downloads-list-active.ts` is unchanged.]
 
 ## 6. Handler unit + integration tests (`services/fs-sync/src/commands/__tests__/files-download.test.ts`)
 
