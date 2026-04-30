@@ -619,56 +619,62 @@ export function createDownloadJobToaster(
       // — instant auth-revoked / immediate validation reject), no
       // correlation happened and Retry falls back to dismiss-only.
       const retry = existing?.retry;
-      // §11.5 (add-download-resilience post-archive Bug A — surfaced
-      // by §9.4 wifi-drop smoke on commit 02de096): when the prior
-      // render was the retrying-state `toast.custom`, calling
-      // `toast.error(msg, { id })` on the SAME id does NOT replace
-      // the custom toast — Sonner's same-id update only applies in-
-      // place when the previous toast was the same TYPE. Across
-      // types (custom → error) Sonner spawns a new toast, leaving
-      // the retrying render visible alongside the failure render.
+      // §11.5/§11.6 (iter-1, commit `f456678`) tried `toast.dismiss(id)`
+      // + `toast.error(..., { id: \`${id}-failed\` })` for the
+      // retrying→failed case. §11.10 smoke confirmed it doesn't work
+      // in real Sonner runtime — `toast.dismiss(id)` for a custom-
+      // rendered toast loses the race against Sonner's dismiss
+      // animation, leaving both retrying-render and error-render
+      // visible. Mocks passed because `toast.dismiss` is sync in tests.
       //
-      // Mirror the success-path post-archive fix (lines ~575-580):
-      // dismiss the custom-render id BEFORE spawning the error
-      // toast on a deterministic-suffix new id (`<loadingId>-failed`)
-      // so Sonner treats it as a brand-new toast with no stale
-      // chrome. The deterministic suffix keeps the id predictable
-      // for tests and debug logs.
+      // §11.12-§11.14 iter-2 fix: when prior was retrying-state
+      // custom, switch render mode WITHIN `toast.custom` on the SAME
+      // id. Sonner's same-id same-mode (custom→custom) swap is
+      // in-place with no animation transition. ONE toast in the slot.
       //
-      // The non-retrying path (downloading → failed, OR failed-as-
-      // first-event) keeps the same-id behavior because the
-      // loading→error transition shares Sonner's toast slot
-      // correctly — only the custom→error case is broken. Tests (d)
-      // and (8.cov-3) pin the unchanged loading→error path.
-      let failedId: string | number;
-      if (existing?.retrying === true) {
-        toast.dismiss(existing.toastId);
-        failedId = `${String(existing.toastId)}-failed`;
-      } else {
-        failedId = existing?.toastId ?? generateToastId();
-      }
+      // The loading→failed (no retrying state preceded) path stays
+      // on `toast.error` — Sonner's built-in type swap from
+      // `toast.loading` to `toast.error` works correctly with the
+      // same id (no chrome-leak bug here; pinned by tests `(d)`,
+      // `(d2)`, `(8.cov-3)`).
+      const wasRetrying = existing?.retrying === true;
+      const toastId = existing?.toastId ?? generateToastId();
       tracker.set(downloadJobId, {
-        toastId: failedId,
+        toastId,
         basename,
         retry,
         terminal: true,
       });
-      toast.error(`Download failed: ${event.payload.message}`, {
-        id: failedId,
-        duration: Number.POSITIVE_INFINITY,
-        richColors: true,
-        action: {
-          label: "Retry",
-          onClick: () => {
-            // Dismiss the FAILED-id toast (not the long-gone
-            // retrying-state id, which was already torn down above).
-            toast.dismiss(failedId);
-            if (retry !== undefined) {
-              retry();
-            }
+      if (wasRetrying) {
+        toast.custom(
+          (id) =>
+            buildFailureRender(
+              id,
+              basename,
+              event.payload.message,
+              retry,
+              () => {
+                toast.dismiss(toastId);
+              },
+            ),
+          { id: toastId, duration: Number.POSITIVE_INFINITY },
+        );
+      } else {
+        toast.error(`Download failed: ${event.payload.message}`, {
+          id: toastId,
+          duration: Number.POSITIVE_INFINITY,
+          richColors: true,
+          action: {
+            label: "Retry",
+            onClick: () => {
+              toast.dismiss(toastId);
+              if (retry !== undefined) {
+                retry();
+              }
+            },
           },
-        },
-      });
+        });
+      }
       // Terminal marker preserved in tracker — see file-downloaded
       // handler for duplicate-terminal-guard rationale.
       return;
@@ -792,6 +798,121 @@ function buildSuccessRender(
         "Open",
       ),
     ),
+  );
+}
+
+// --- Failure-state render (add-download-resilience §11.12) ----------
+
+/**
+ * Custom render for the failure toast on the retrying→failed transition.
+ *
+ * Iteration-1 fix (commit `f456678`) tried `toast.dismiss(id)` then
+ * `toast.error(..., { id: \`${id}-failed\` })` to clear the prior
+ * retrying-state `toast.custom` render. §11.10 smoke confirmed
+ * `toast.dismiss(id)` for a custom-rendered toast loses the race against
+ * Sonner's dismiss animation in real runtime — both retrying-render and
+ * error-render appeared simultaneously. Mocks passed because dismiss is
+ * synchronous in tests.
+ *
+ * Iteration-2 fix (this helper): when `existing.retrying === true`,
+ * issue `toast.custom(buildFailureRender(...), { id: existing.toastId })`
+ * on the SAME id as the retrying render. Sonner's same-id same-mode
+ * (custom→custom) update replaces the render in-place with no animation
+ * transition. ONE toast in the slot, no race.
+ *
+ * Visual structure mirrors the existing destructive-tinted UX in this
+ * codebase (`text-destructive`, `bg-destructive/10`):
+ *
+ *   ┌─────────────────────────────────────────────┐
+ *   │ ✕ Download failed: <message>          [✕]   │
+ *   │ Retry                                       │
+ *   └─────────────────────────────────────────────┘
+ *
+ * Behavior notes:
+ *   - `role="alert"` for screen-reader urgency (the surface is an error
+ *     status, not a passive notification).
+ *   - Auto-dismiss is `Number.POSITIVE_INFINITY` (sticky) — set by the
+ *     handler that issues this render; matches the prior `toast.error`
+ *     behavior. The close (✕) button is the user's explicit dismiss
+ *     affordance because Sonner's default close-X applies to its built-
+ *     in toast types, not custom renders.
+ *   - Retry button is rendered only when `onRetry !== undefined`. For
+ *     hydrated jobs without a registered retry callback, the button is
+ *     omitted (would otherwise be a confusing dead control).
+ *   - Retry click invokes `onRetry()` then `onDismiss()` — order per
+ *     §11.12 spec wording. Both calls are sync.
+ */
+function buildFailureRender(
+  _id: string | number,
+  basename: string,
+  message: string,
+  onRetry: (() => void) | undefined,
+  onDismiss: () => void,
+): React.ReactElement {
+  // Hand-written React.createElement tree (no JSX). Mirrors the success
+  // render's structure: outer card wrapper, headline row, action row.
+  // Red destructive tint via `bg-destructive/10` + `text-destructive`
+  // — the established convention in this codebase
+  // (see `confirm-delete-dialog.tsx`, `invalid-datasource.tsx`).
+  const headline = `Download failed: ${message}`;
+  void basename; // basename is captured by the tracker for diagnostics; not surfaced in copy because the message text already names the failure mode.
+  const children: React.ReactElement[] = [
+    React.createElement(
+      "div",
+      {
+        key: "row-headline",
+        className: "flex items-start justify-between gap-3",
+      },
+      React.createElement(
+        "div",
+        { className: "text-sm font-medium" },
+        `✕ ${headline}`,
+      ),
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: onDismiss,
+          "aria-label": "Dismiss",
+          className:
+            "text-destructive hover:text-foreground -mr-1 -mt-1 inline-flex h-6 w-6 items-center justify-center rounded-md text-xs",
+        },
+        "✕",
+      ),
+    ),
+  ];
+  if (onRetry !== undefined) {
+    children.push(
+      React.createElement(
+        "div",
+        {
+          key: "row-actions",
+          className: "flex items-center justify-end",
+        },
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            onClick: () => {
+              onRetry();
+              onDismiss();
+            },
+            className:
+              "bg-destructive text-destructive-foreground hover:bg-destructive/90 inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium",
+          },
+          "Retry",
+        ),
+      ),
+    );
+  }
+  return React.createElement(
+    "div",
+    {
+      className:
+        "bg-destructive/10 text-destructive flex flex-col gap-3 rounded-md border border-destructive/30 p-4 shadow-md",
+      role: "alert",
+    },
+    ...children,
   );
 }
 
