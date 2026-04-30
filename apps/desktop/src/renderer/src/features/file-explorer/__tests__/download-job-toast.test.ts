@@ -1068,12 +1068,21 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     expect(serialized).toContain("1/5");
   });
 
-  it("(8.cov-2) retrying → failed: download-failed during retrying state renders the error toast on the same id with Retry wired", () => {
+  it("(8.cov-2) retrying → failed: download-failed dismisses the custom-render toast id BEFORE spawning the error toast on a fresh derived id; Retry callback survives the transition", () => {
     // Most-likely-live path for tag: 'exhausted-retries' — the budget
     // exhausts after one or more retries, so the handler emits
-    // download-retrying events before the terminal failure. Pins that
-    // the retrying flag does not block the failure handler and the
-    // registered retry callback survives the transition.
+    // download-retrying events before the terminal failure.
+    //
+    // §11.5/§11.6 (add-download-resilience post-archive Bug A): when
+    // the prior render was the retrying-state `toast.custom`, calling
+    // `toast.error(msg, { id: toastId })` on the SAME id does NOT
+    // replace the custom toast — Sonner spawns a NEW toast because
+    // the types differ (custom → error). Result on screen: two
+    // simultaneous toasts for one downloadJobId.
+    //
+    // Fix mirrors the success-path post-archive pattern at lines
+    // ~575-580: dismiss the custom-render id first, then spawn the
+    // error on a deterministic-suffix new id (`<loadingId>-failed`).
     toast.loading.mockReturnValueOnce("toast-A");
     const retryFn = vi.fn();
     const t = createDownloadJobToaster({ toast, eventApi });
@@ -1084,6 +1093,9 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     );
     eventApi.emit(retryingEvent("job-A", { attempt: 3, limit: 5 }));
     expect(toast.custom).toHaveBeenCalledTimes(1);
+    // Pre-condition: the retrying-state custom render is still up;
+    // we have NOT dismissed `toast-A` yet.
+    expect(toast.dismiss).not.toHaveBeenCalledWith("toast-A");
 
     eventApi.emit({
       kind: "download-failed",
@@ -1095,7 +1107,9 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       },
     });
 
-    // Failure toast lands on the SAME id (chrome replaces in-place).
+    // Post-condition: retrying-state custom render is dismissed,
+    // failure error toast spawned ONCE on the fresh derived id.
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
     expect(toast.error).toHaveBeenCalledTimes(1);
     const errorCall = toast.error.mock.calls[0] as [
       string,
@@ -1104,12 +1118,66 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
         action?: { label: string; onClick: () => void };
       },
     ];
-    expect(errorCall[1].id).toBe("toast-A");
+    expect(errorCall[1].id).toBe("toast-A-failed");
     expect(errorCall[0]).toContain("exhausted-retries: network-error");
+
+    // Ordering: the dismiss MUST land before the toast.error call so
+    // Sonner's removal of the custom render is queued before the
+    // fresh-id spawn — otherwise the two would briefly coexist.
+    // vi.fn() exposes a shared monotonic invocation counter on
+    // `mock.invocationCallOrder`; first dismiss < first error.
+    const dismissOrder = (toast.dismiss as Mock).mock.invocationCallOrder[0];
+    const errorOrder = (toast.error as Mock).mock.invocationCallOrder[0];
+    expect(dismissOrder).toBeLessThan(errorOrder);
+
     // Retry callback registered pre-dispatch survives the
     // downloading → retrying → failed transition; clicking Retry
-    // invokes the original orchestrator callback, not a no-op.
+    // invokes the original orchestrator callback, not a no-op. The
+    // Retry click also dismisses the FAILED-id toast (not the
+    // long-gone retrying id).
     errorCall[1].action!.onClick();
     expect(retryFn).toHaveBeenCalledTimes(1);
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A-failed");
+  });
+
+  it("(8.cov-3) downloading → failed (no retrying state) stays on the same id (no fresh-id derivation)", () => {
+    // Regression guard for the non-broken transition path: when
+    // there's no prior `download-retrying`, the previous render is
+    // the loading template. `toast.error(msg, { id })` after
+    // `toast.loading` updates in-place because Sonner's loading and
+    // error variants share a slot — no fresh-id derivation needed.
+    //
+    // This test pins that the §11.5 fix only branches when
+    // `existing.retrying === true` and leaves the simpler
+    // loading→error path untouched (the (d) and (8.8) tests already
+    // cover this; (8.cov-3) is the explicit regression marker for
+    // the §11.5 conditional).
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "other",
+        message: "boom",
+      },
+    });
+
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      { id?: string | number },
+    ];
+    // Same id as the loading toast — no dismiss-then-respawn for the
+    // loading→error transition (only the custom→error case needs that).
+    expect(errorCall[1].id).toBe("toast-A");
+    // No pre-spawn dismiss of the loading id (the in-place update
+    // pattern is intact for this transition).
+    expect(toast.dismiss).not.toHaveBeenCalledWith("toast-A");
   });
 });

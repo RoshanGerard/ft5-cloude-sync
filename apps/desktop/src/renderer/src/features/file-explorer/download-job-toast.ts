@@ -613,22 +613,56 @@ export function createDownloadJobToaster(
         return;
       }
       const basename = existing?.basename ?? "download";
-      const toastId = existing?.toastId ?? generateToastId();
       // Retry callback was correlated on the FIRST `downloading` event
       // for this jobId (drained from `pendingRetries` into the
       // ToastEntry). If failure preceded any `downloading` event (rare
       // — instant auth-revoked / immediate validation reject), no
       // correlation happened and Retry falls back to dismiss-only.
       const retry = existing?.retry;
-      tracker.set(downloadJobId, { toastId, basename, retry, terminal: true });
+      // §11.5 (add-download-resilience post-archive Bug A — surfaced
+      // by §9.4 wifi-drop smoke on commit 02de096): when the prior
+      // render was the retrying-state `toast.custom`, calling
+      // `toast.error(msg, { id })` on the SAME id does NOT replace
+      // the custom toast — Sonner's same-id update only applies in-
+      // place when the previous toast was the same TYPE. Across
+      // types (custom → error) Sonner spawns a new toast, leaving
+      // the retrying render visible alongside the failure render.
+      //
+      // Mirror the success-path post-archive fix (lines ~575-580):
+      // dismiss the custom-render id BEFORE spawning the error
+      // toast on a deterministic-suffix new id (`<loadingId>-failed`)
+      // so Sonner treats it as a brand-new toast with no stale
+      // chrome. The deterministic suffix keeps the id predictable
+      // for tests and debug logs.
+      //
+      // The non-retrying path (downloading → failed, OR failed-as-
+      // first-event) keeps the same-id behavior because the
+      // loading→error transition shares Sonner's toast slot
+      // correctly — only the custom→error case is broken. Tests (d)
+      // and (8.cov-3) pin the unchanged loading→error path.
+      let failedId: string | number;
+      if (existing?.retrying === true) {
+        toast.dismiss(existing.toastId);
+        failedId = `${String(existing.toastId)}-failed`;
+      } else {
+        failedId = existing?.toastId ?? generateToastId();
+      }
+      tracker.set(downloadJobId, {
+        toastId: failedId,
+        basename,
+        retry,
+        terminal: true,
+      });
       toast.error(`Download failed: ${event.payload.message}`, {
-        id: toastId,
+        id: failedId,
         duration: Number.POSITIVE_INFINITY,
         richColors: true,
         action: {
           label: "Retry",
           onClick: () => {
-            toast.dismiss(toastId);
+            // Dismiss the FAILED-id toast (not the long-gone
+            // retrying-state id, which was already torn down above).
+            toast.dismiss(failedId);
             if (retry !== undefined) {
               retry();
             }
