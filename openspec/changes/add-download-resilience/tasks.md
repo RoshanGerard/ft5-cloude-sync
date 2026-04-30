@@ -79,12 +79,12 @@
 
 ## 9. Verification
 
-- [ ] 9.1 Run the full repo test suite: `pnpm test` at the workspace root. All existing tests pass; new tests pass; no regressions.
-- [ ] 9.2 Run `pnpm typecheck` and `pnpm lint`. No new errors introduced.
-- [ ] 9.3 Run `openspec validate add-download-resilience`. Change passes validation.
+- [x] 9.1 Run the full repo test suite: `pnpm test` at the workspace root. All existing tests pass; new tests pass; no regressions. [Result: 2544 passed / 9 skipped / 0 failed across 293 test files. Initial run surfaced 1 failure on `scripts/preload-bundle.test.ts` (a state-dependent pre-existing baseline test that asserts the compiled preload artifact at `apps/desktop/dist/preload/index.js` matches the externalize-deps allowlist); after `pnpm --filter @ft5/desktop build` rebuilt the preload artifact, the test passes 2/2. The failing file is unchanged between master and feature branch (`git diff master..feature/add-download-resilience -- scripts/preload-bundle.test.ts` is empty), confirming the failure is environmental, not a regression introduced by add-download-resilience. Net new tests vs master baseline: ~+65 (§1 type-d, §2 helpers, §3 sentinels, §4 integration, §7+§8 renderer).]
+- [x] 9.2 Run `pnpm typecheck` and `pnpm lint`. No new errors introduced. [Result: both exit 0.]
+- [x] 9.3 Run `openspec validate add-download-resilience`. Change passes validation. [Result: `Change 'add-download-resilience' is valid`.]
 - [ ] 9.4 Manual smoke test (single-machine): cold-start desktop app, log in to a datasource, start a 100MB+ download, mid-flight disable wifi for ~10s, re-enable. Verify the toast shows `Reconnecting… (1/5)` during the outage and resumes when wifi returns. The downloaded file's hash matches the provider-advertised hash.
 - [ ] 9.5 Manual smoke test (range-not-honored): difficult to trigger reliably without a fault-injection layer. Document in the PR notes that this scenario is verified via integration test only at v1; the packaged-build E2E follow-up (`wire-packaged-build-download-resilience`) covers it with mitmproxy.
-- [ ] 9.6 Confirm `pnpm --filter @ft5/sync-service test` shows no flake on the new integration tests across 5 consecutive runs.
+- [x] 9.6 Confirm `pnpm --filter @ft5/sync-service test` shows no flake on the new integration tests across 5 consecutive runs. [Result: 5/5 runs identical at 465 passed / 9 skipped / 0 failed (68 test files each). The new §6.4-§6.16 integration tests are deterministic — fake-timer / stubbed-`now()` design eliminates wall-clock flake.]
 
 ## 10. Documentation and follow-up
 
