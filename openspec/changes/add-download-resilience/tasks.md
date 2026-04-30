@@ -90,4 +90,34 @@
 
 - [x] 10.1 Update `services/fs-sync/README.md` (if the file documents the download path) with a one-paragraph note on the three-layer retry architecture and link to `design.md`. [Done: added "Download retry architecture" section between Events and Dev mode, documenting Layer 1 / Layer 2 / Layer 3 with the budget + walltime + disposition rules and a pointer to the (post-archive) design.md path.]
 - [x] 10.2 Cross-reference the two follow-up stubs (`wire-packaged-build-download-resilience`, `add-failed-download-cleanup-affordance`) in this change's `proposal.md` "Provenance" or end-of-file section so reviewers see the deferred scope. [Done: added "Deferred scope (follow-up changes)" section to proposal.md naming both follow-ups with their roles, plus a §9.4 manual-smoke pre-archive note.]
-- [x] 10.3 If the smoke tests in §9.4 surface unexpected behavior (e.g., `downloading` events fire mid-retry, the toast flickers, etc.), capture in a `PENDING_TC.MD` or follow-up issue rather than block this change. [Done preemptively: the same `PENDING_TC.MD` entry created for §9.4 carries the same-id chrome-leak failure-mode watchlist (two spinners / stale percentage / premature dismiss) and the fresh-id fix recipe (`<toastId>-retrying` + `<toastId>-resumed`). When §9.4 is run, any failure-mode reproduction maps directly to the documented fix — no additional PENDING_TC follow-up entry needed.]
+- [x] 10.3 If the smoke tests in §9.4 surface unexpected behavior (e.g., `downloading` events fire mid-retry, the toast flickers, etc.), capture in a `PENDING_TC.MD` or follow-up issue rather than block this change. [Done preemptively: the same `PENDING_TC.MD` entry created for §9.4 carries the same-id chrome-leak failure-mode watchlist (two spinners / stale percentage / premature dismiss) and the fresh-id fix recipe (`<toastId>-retrying` + `<toastId>-resumed`). When §9.4 is run, any failure-mode reproduction maps directly to the documented fix — no additional PENDING_TC follow-up entry needed. SUPERSEDED 2026-04-30 by §11 — manual smoke surfaced two real bugs (Bug A retrying→failed duplicate-toast, Bug B stuck-Reconnecting), both now in scope per Decision 12.]
+
+## 11. Bug fixes from §9.4 manual smoke (2026-04-30)
+
+The §9.4 wifi-drop smoke run on commit `02de096` reproduced two visible regressions:
+
+- **Bug A**: when `download-failed` follows `download-retrying` on the same `downloadJobId`, two toasts appear simultaneously (the retrying-state custom render and the failure-state error toast both visible). Sonner's `toast.X(msg, { id })` only updates in-place when the previous toast was the same TYPE; across types (custom → error) it spawns a new toast.
+- **Bug B**: after a wifi drop and reconnect, the toast stays stuck at `Reconnecting (1/5)` for >5 minutes with no progress. After `sleepCancellable(1000)` returns, the next `engine.downloadFile()` inherits a dead OS-level socket and hangs indefinitely (Windows TCP timeout >5 minutes), blocking the retry loop. v1 has no per-request timeout.
+
+### 11.1 Decision 12 — per-attempt request timeout (handler-level)
+
+- [ ] 11.1 Add `PER_ATTEMPT_TIMEOUT_MS = 60_000` constant to `services/fs-sync/src/commands/files-download.ts` next to the existing `CONSECUTIVE_FAIL_LIMIT` / `WALLTIME_CEILING_MS`.
+- [ ] 11.2 In each retry-cycle's engine-call site (the inner-loop GET issuance), wrap the engine call with a per-attempt `AbortController` whose `setTimeout(...).abort()` fires at `PER_ATTEMPT_TIMEOUT_MS`. Compose with the existing user-cancel signal via `AbortSignal.any([abortController.signal, attemptCtrl.signal])` and pass the composed signal to the engine. `clearTimeout` on every exit path (success / error / cancel).
+- [ ] 11.3 In the catch, distinguish user-cancel from timeout by reading `abortController.signal.aborted` FIRST. If true → existing `CancelledError` path. Otherwise, if the engine threw because the COMPOSED signal aborted, synthesize `new DatasourceError({ tag: "network-error", retryable: true, message: \`per-attempt timeout (\${PER_ATTEMPT_TIMEOUT_MS}ms)\` })` and re-throw so the existing Layer 3 env-retry catch branch picks it up.
+- [ ] 11.4 No engine changes (Decision 8 stays). The composed signal's behavior at the engine boundary already exists — engines accept an `AbortSignal` and surface `AbortError` on its abort.
+
+### 11.2 Bug A — retrying→failed transition fresh-id pattern
+
+- [ ] 11.5 In `apps/desktop/src/renderer/src/features/file-explorer/download-job-toast.ts` failure handler (`event.kind === "download-failed"`), when `existing.retrying === true`, dismiss the existing custom-render toast id BEFORE spawning the error toast on a fresh id (e.g. `\`\${existing.toastId}-failed\``). Mirrors the success-path post-archive fix at lines 469-472. Update `tracker.set(downloadJobId, { toastId: failedId, basename, retry, terminal: true })` to record the new id so duplicate-terminal guard still works.
+- [ ] 11.6 Update existing test `(8.cov-2)` (retrying → failed transition) to assert the dismiss-then-fresh-id ordering: `expect(toast.dismiss).toHaveBeenCalledWith("toast-A")` before `toast.error` is called, and `expect(toast.error.mock.calls[0][1].id).toBe("toast-A-failed")`.
+
+### 11.3 Tests for §11.1 timeout path
+
+- [ ] 11.7 Add fs-sync integration test (alongside §6.4-§6.16) "Per-attempt timeout fires when engine hangs": stub `engine.downloadFile` to return a promise that NEVER resolves (the AbortSignal does the cleanup). Use `vi.useFakeTimers()`; advance `PER_ATTEMPT_TIMEOUT_MS + 1`. Assert exactly one `download-retrying { attempt: 1, engineCause: "network-error" }` event emits (the timeout-synthesized error feeds Layer 3 identically to a real network-error). Assert the second engine call is issued.
+- [ ] 11.8 Add fs-sync integration test "Per-attempt timeout counts against the budget": drive 5 hung attempts → assert `download-failed { tag: "exhausted-retries", message: "exhausted-retries: network-error" }`. Confirms the timeout-synthesized error is budget-eligible.
+- [ ] 11.9 Add fs-sync integration test "User cancel during a hung attempt fires download-cancelled, not download-retrying": stub the engine to hang, then abort the user-cancel signal halfway through `PER_ATTEMPT_TIMEOUT_MS`. Assert the cancel branch fires (NOT the timeout-synthesis branch).
+
+### 11.4 Re-run §9.4 smoke + close-out
+
+- [ ] 11.10 User re-runs §9.4 manual wifi-drop smoke against the post-fix build. Expected: clean swap from `Downloading … 62%` → `Reconnecting… (1/5)` → snaps back to `Downloading … 63%` on resume; no duplicate toasts; no infinite Reconnecting hang.
+- [ ] 11.11 If §11.10 passes: `openspec archive add-download-resilience --yes` (re-archive). If it fails on a different mode, document in PENDING_TC.MD and decide.

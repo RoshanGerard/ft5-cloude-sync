@@ -310,6 +310,77 @@ practice. The variable is retained or removed at implementation discretion;
 its semantic meaning ("split into split-and-rejoin cycles") is reserved
 for a future `add-multi-cycle-download` change that does not exist today.
 
+### Decision 12: Per-attempt request timeout (handler-level)
+
+**What:** Each retry-cycle's `engine.downloadFile()` call is wrapped with a
+per-attempt timeout AbortSignal at the handler boundary. The signal is
+composed with the existing user-cancel signal so either firing aborts the
+attempt; if the timeout fires, the handler synthesizes a
+`DatasourceError({ tag: "network-error", retryable: true })` and feeds it
+to the same Layer 3 catch branch as a "real" network error.
+
+**Why:** §9.4 manual smoke (run on commit `02de096`) reproduced a stuck-
+forever Reconnecting state when wifi dropped and reconnected mid-download.
+After `sleepCancellable(1000)` returned, the next `engine.downloadFile()`
+inherited a dead OS-level socket and hung indefinitely (Windows TCP
+timeout >5 minutes), blocking the retry loop. v1 had no per-request
+timeout; the only AbortController plumbed was the user-cancel signal.
+
+**Mechanics:**
+
+```ts
+const PER_ATTEMPT_TIMEOUT_MS = 60_000;
+
+const attemptCtrl = new AbortController();
+const attemptTimeoutHandle = setTimeout(
+  () => attemptCtrl.abort(),
+  PER_ATTEMPT_TIMEOUT_MS,
+);
+const composed = AbortSignal.any([
+  abortController.signal, // user-cancel
+  attemptCtrl.signal,     // per-attempt timeout
+]);
+try {
+  await engine.downloadFile({ rangeStart, signal: composed, ... });
+} finally {
+  clearTimeout(attemptTimeoutHandle);
+}
+```
+
+In the catch, the handler distinguishes user-cancel from timeout by
+reading `abortController.signal.aborted` FIRST: if true → terminal
+`download-cancelled` (existing path); otherwise the timeout fired and
+the handler synthesizes the network-error and re-enters Layer 3 via
+the existing env-retry branch.
+
+**Concrete values:**
+
+- `PER_ATTEMPT_TIMEOUT_MS = 60_000` (60s). Long enough for legitimate
+  slow responses (provider hiccup); short enough that a hung socket
+  fails fast and the retry loop progresses.
+- Timeout-synthesized error: `tag: "network-error"`, `retryable: true`,
+  `message: "per-attempt timeout (60000ms)"`. `isEnvironmentallyRetryable`
+  catches it identically to an upstream `network-error`.
+- Same `expBackoff(n)` schedule on retry — no separate curve for the
+  timeout sub-class.
+- Counts against the consecutive-failure budget — increments
+  `consecutiveFailureCount`. A hung GET IS an environmental failure;
+  treating it specially adds complexity for no contract benefit.
+- Same byte-progress-strict reset (Decision 10) applies. If the timeout
+  fired AFTER some bytes drained to disk (`bytesWrittenAfter >
+  bytesWrittenBefore`), the counter resets to 0 on next attempt.
+
+**No engine changes** — Decision 8 is preserved. The timeout lives at
+the handler boundary because the handler already owns the retry loop's
+budget + walltime tracking; centralizing all timing concerns there
+keeps Layer 3 self-contained.
+
+**Risk:** a 60s timeout is conservative. If a real provider takes >60s
+for the GET response under heavy load, we'll falsely classify and retry.
+Mitigation: `Retry-After` honor still works (server-side rate-limit
+responses arrive before 60s in practice), and the 5-attempt budget
+gives 5×60s = 5min of patience before terminal.
+
 ## Risks / Trade-offs
 
 - **[Risk] Strategy bug marks non-retryable error as retryable=true** →
