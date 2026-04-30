@@ -170,7 +170,7 @@ wait duration for diagnostic users.
     attempt: number,             // consecutiveFailureCount, 1-indexed
     limit: number,               // CONSECUTIVE_FAIL_LIMIT (5)
     waitMs: number,              // chosen sleep duration
-    engineCause: DatasourceErrorTag, // diagnostic-only; engine taxonomy leak
+    engineCause: string,             // verbatim engine tag; typed `string` (not `DatasourceErrorTag`) so the renderer cannot branch on its value (see Decision 9). Telemetry consumers may still aggregate on it.
   }
 }
 ```
