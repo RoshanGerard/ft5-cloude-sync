@@ -17,9 +17,9 @@
 
 ## 3. Filesystem boundary extension (`services/fs-sync/src/commands/files-download.ts`)
 
-- [ ] 3.1 Add `unlink(path: string): Promise<void>` to the `FsBoundary` interface.
-- [ ] 3.2 Wire the default `FsBoundary` impl in `createDefaultFilesDownloadDeps` to call `node:fs/promises.unlink(path)` for the new method.
-- [ ] 3.3 Add a `DELETE_ON_TERMINAL` constant — a `Set<Function>` of `RangeNotHonoredError`, `RangeMismatchError`, `IntegrityFailedError` (NOT `ByteCountMismatchError`). Confirm by code review that no other sentinel error class is mis-included.
+- [x] 3.1 Add `unlink(path: string): Promise<void>` to the `FsBoundary` interface.
+- [x] 3.2 Wire the default `FsBoundary` impl in `createDefaultFilesDownloadDeps` to call `node:fs/promises.unlink(path)` for the new method.
+- [x] 3.3 Add a `DELETE_ON_TERMINAL` constant — a `Set<Function>` of `RangeNotHonoredError`, `RangeMismatchError`, `IntegrityFailedError` (NOT `ByteCountMismatchError`). Confirm by code review that no other sentinel error class is mis-included.
 
 ## 4. Handler retry-loop integration (`services/fs-sync/src/commands/files-download.ts`)
 

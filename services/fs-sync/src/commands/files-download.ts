@@ -133,6 +133,13 @@ export interface FsBoundary {
     sink: NodeJS.WritableStream,
     signal: AbortSignal,
   ): Promise<void>;
+  /** Remove the file at `path`. Used by the handler's outer terminal
+   * catch (per add-download-resilience §4.6) to enforce the "Delete"
+   * disposition for `DELETE_ON_TERMINAL` errors (range-not-honored,
+   * range-mismatch, integrity-failed). Rejects if the path does not
+   * exist or is not removable; the caller swallows that rejection
+   * (delete-failure is non-fatal — the user can clean up manually). */
+  unlink(path: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +427,7 @@ export function createDefaultFilesDownloadDeps(deps: {
     createWriteStream: (path, options) =>
       nodeFs.createWriteStream(path, options),
     pipeline: (source, sink, signal) => nodePipeline(source, sink, { signal }),
+    unlink: (path) => nodeFsPromises.unlink(path),
   };
   return {
     ...deps,
@@ -880,8 +888,11 @@ export function makeSyncCancelDownloadHandler(
 }
 
 // ---------------------------------------------------------------------------
-// Internal sentinel error classes — used only inside this module to
-// disambiguate the four collapse-to-other branches.
+// Sentinel error classes — used inside this module to disambiguate the
+// four collapse-to-other branches. Exported so tests can pin disposition
+// membership (`DELETE_ON_TERMINAL`) and so future §4 integration work in
+// the outer terminal catch can match `err.constructor` without
+// stringly-typed name comparisons.
 // ---------------------------------------------------------------------------
 
 class CancelledError extends Error {
@@ -890,27 +901,58 @@ class CancelledError extends Error {
     this.name = "CancelledError";
   }
 }
-class RangeNotHonoredError extends Error {
+export class RangeNotHonoredError extends Error {
   constructor() {
     super("range not supported on this resource");
     this.name = "RangeNotHonoredError";
   }
 }
-class RangeMismatchError extends Error {
+export class RangeMismatchError extends Error {
   constructor() {
     super("range mismatch on this resource");
     this.name = "RangeMismatchError";
   }
 }
-class ByteCountMismatchError extends Error {
+export class ByteCountMismatchError extends Error {
   constructor() {
     super("byte count mismatch");
     this.name = "ByteCountMismatchError";
   }
 }
-class IntegrityFailedError extends Error {
+export class IntegrityFailedError extends Error {
   constructor() {
     super("integrity check failed");
     this.name = "IntegrityFailedError";
   }
 }
+
+// ---------------------------------------------------------------------------
+// Disposition policy — terminal causes that delete the on-disk partial
+// (per add-download-resilience design.md Decision 6).
+//
+// | Terminal cause          | Disposition |
+// |-------------------------|-------------|
+// | Environmental exhausted | Keep        |
+// | Wall-time ceiling       | Keep        |
+// | auth-revoked            | Keep        |
+// | User cancellation       | Keep        |
+// | Byte-count-mismatch     | Keep        |  ← preserve bandwidth investment
+// | Range-not-honored       | DELETE      |
+// | Range-mismatch          | DELETE      |
+// | Integrity-failed        | DELETE      |
+//
+// The handler's outer terminal catch (§4.6) tests `err.constructor` against
+// this set before emitting `download-failed`; matches trigger
+// `deps.fs.unlink(toPath)` (failure swallowed). Membership invariants are
+// pinned by the §3.3 unit test — three classes, ByteCountMismatchError
+// explicitly excluded.
+// ---------------------------------------------------------------------------
+
+type ErrorConstructor = new (...args: never[]) => Error;
+
+export const DELETE_ON_TERMINAL: ReadonlySet<ErrorConstructor> =
+  new Set<ErrorConstructor>([
+    RangeNotHonoredError,
+    RangeMismatchError,
+    IntegrityFailedError,
+  ]);

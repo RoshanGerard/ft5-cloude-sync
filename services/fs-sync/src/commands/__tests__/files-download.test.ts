@@ -32,6 +32,11 @@ import {
   isEnvironmentallyRetryable,
   expBackoff,
   sleepCancellable,
+  DELETE_ON_TERMINAL,
+  RangeNotHonoredError,
+  RangeMismatchError,
+  IntegrityFailedError,
+  ByteCountMismatchError,
   type EngineBusEvent,
   type EngineBusSubscriber,
   type FilesDownloadDeps,
@@ -1453,5 +1458,39 @@ describe("sleepCancellable (§6.3)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-download-resilience §3 / §3.3 — DELETE_ON_TERMINAL membership
+//
+// Per design.md Decision 6, exactly three sentinel error classes drive the
+// "delete the partial" disposition: RangeNotHonoredError, RangeMismatchError,
+// IntegrityFailedError. ByteCountMismatchError is explicitly excluded — its
+// disposition is Keep (preserve the user's bandwidth investment in case the
+// prefix is actually valid). The test pins the membership AND the explicit
+// exclusion AND the size to guard against silent regressions if a future
+// edit adds or swaps a class.
+// ---------------------------------------------------------------------------
+
+describe("DELETE_ON_TERMINAL (§3.3, Decision 6 disposition policy)", () => {
+  it("contains RangeNotHonoredError", () => {
+    expect(DELETE_ON_TERMINAL.has(RangeNotHonoredError)).toBe(true);
+  });
+
+  it("contains RangeMismatchError", () => {
+    expect(DELETE_ON_TERMINAL.has(RangeMismatchError)).toBe(true);
+  });
+
+  it("contains IntegrityFailedError", () => {
+    expect(DELETE_ON_TERMINAL.has(IntegrityFailedError)).toBe(true);
+  });
+
+  it("does NOT contain ByteCountMismatchError (Keep disposition)", () => {
+    expect(DELETE_ON_TERMINAL.has(ByteCountMismatchError)).toBe(false);
+  });
+
+  it("has exactly three members (catches future accidental additions)", () => {
+    expect(DELETE_ON_TERMINAL.size).toBe(3);
   });
 });
