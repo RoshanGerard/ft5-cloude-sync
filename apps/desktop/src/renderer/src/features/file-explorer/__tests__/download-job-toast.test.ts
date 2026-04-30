@@ -61,15 +61,17 @@ interface MockToast extends ToastApi {
 function makeToast(): MockToast {
   let next = 1;
   const loading: Mock = vi.fn(
-    (_msg: string, opts?: { id?: string | number }) =>
-      opts?.id ?? `toast-${next++}`,
+    (
+      _msg: string,
+      opts?: { id?: string | number; description?: string },
+    ) => opts?.id ?? `toast-${next++}`,
   );
   const success: Mock = vi.fn(
     (_msg: string, opts?: { id?: string | number }) =>
       opts?.id ?? `toast-${next++}`,
   );
   const error: Mock = vi.fn(
-    (_msg: string, opts?: { id?: string | number }) =>
+    (_msg: string, opts?: { id?: string | number; description?: string }) =>
       opts?.id ?? `toast-${next++}`,
   );
   const dismiss: Mock = vi.fn();
@@ -758,53 +760,6 @@ function retryingEvent(
   };
 }
 
-function serializeTree(tree: unknown): string {
-  // The render fn returns a React element tree built via React.createElement
-  // (no JSX). Its props/children are plain JS values, so JSON.stringify
-  // exposes the rendered text and attributes for content assertions.
-  return JSON.stringify(tree);
-}
-
-interface ReactNodeShape {
-  readonly type?: string;
-  readonly props?: {
-    readonly children?: unknown;
-    readonly onClick?: () => void;
-    readonly [k: string]: unknown;
-  };
-}
-
-/**
- * Walk a React.createElement tree (the kind `buildFailureRender` /
- * `buildSuccessRender` produce — plain object nodes, not mounted DOM)
- * and return the first `<button>` whose text content includes `text`.
- * Used by `(8.cov-2)` to extract and invoke the Retry button's onClick
- * without mounting the tree.
- */
-function findButtonByText(
-  node: unknown,
-  text: string,
-): ReactNodeShape | null {
-  if (node === null || typeof node !== "object") return null;
-  const candidate = node as ReactNodeShape;
-  const kids = candidate.props?.children;
-  if (
-    candidate.type === "button" &&
-    JSON.stringify(kids ?? "").includes(text)
-  ) {
-    return candidate;
-  }
-  if (Array.isArray(kids)) {
-    for (const child of kids) {
-      const found = findButtonByText(child, text);
-      if (found !== null) return found;
-    }
-  } else if (kids !== undefined && kids !== null) {
-    return findButtonByText(kids, text);
-  }
-  return null;
-}
-
 describe("createDownloadJobToaster — retrying state (§8)", () => {
   let toast: MockToast;
   let eventApi: MockEventApi;
@@ -814,74 +769,18 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     eventApi = makeEventApi();
   });
 
-  it("(8.1) on download-retrying, toast switches to a custom render with Reconnecting subtext + spinner glyph", () => {
-    // Drive a downloading toast to ~62%, then dispatch the retry event.
-    // Expect the toast to switch to `toast.custom(...)` with:
-    //   - title "Downloading welcome.pdf"
-    //   - subtext "Reconnecting… (2/5)"
-    //   - a spinner glyph identifier (data-test="retrying-spinner") in
-    //     place of the percentage indicator
-    //   - the SAME toast id as the loading toast (so progress-bar position
-    //     sits at the last-rendered byte position; Sonner re-uses the
-    //     same id slot for the visual update)
-    toast.loading.mockReturnValueOnce("toast-A");
-    createDownloadJobToaster({ toast, eventApi });
-
-    eventApi.emit(
-      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
-    );
-    eventApi.emit(retryingEvent("job-A", { attempt: 2, limit: 5 }));
-
-    expect(toast.custom).toHaveBeenCalledTimes(1);
-    const [renderFn, opts] = toast.custom.mock.calls[0] as [
-      (id: string | number) => unknown,
-      { id?: string | number; duration?: number } | undefined,
-    ];
-    // Same id as the loading toast — Sonner updates the same toast slot.
-    expect(opts?.id).toBe("toast-A");
-    const tree = renderFn(opts!.id!);
-    const serialized = serializeTree(tree);
-    expect(serialized).toContain("Downloading welcome.pdf");
-    expect(serialized).toContain("Reconnecting");
-    expect(serialized).toContain("2/5");
-    // Spinner glyph identifier — pinned via data-test attribute so the
-    // assertion does not depend on the specific Tailwind icon family.
-    expect(serialized).toContain("retrying-spinner");
-    // Spec: percentage indicator is REPLACED by the spinner — make sure
-    // the subtext does not still carry "62%".
-    expect(serialized).not.toMatch(/62\s*%/);
-  });
-
-  it("(8.2) next downloading event after retrying snaps back to loading (toast.loading with new percentage)", () => {
-    toast.loading.mockReturnValueOnce("toast-A");
-    createDownloadJobToaster({ toast, eventApi });
-
-    eventApi.emit(
-      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
-    );
-    eventApi.emit(retryingEvent("job-A", { attempt: 2, limit: 5 }));
-    expect(toast.custom).toHaveBeenCalledTimes(1);
-
-    // Bytes flowing again — the next downloading event reverts the toast
-    // to the standard loading template with the new percentage.
-    toast.loading.mockClear();
-    eventApi.emit(
-      downloadingEvent("job-A", { progress: 63, path: "/welcome.pdf" }),
-    );
-    expect(toast.loading).toHaveBeenCalledTimes(1);
-    const [msg, opts] = toast.loading.mock.calls[0] as [
-      string,
-      { id?: string | number } | undefined,
-    ];
-    expect(opts?.id).toBe("toast-A");
-    expect(msg).toMatch(/63\s*%/);
-    expect(msg).toContain("welcome.pdf");
-    // No new toast.custom — the retry-state custom render was for the
-    // retrying event only; the loading template handles the resume.
-    expect(toast.custom).toHaveBeenCalledTimes(1);
-  });
-
-  it("(8.3) retrying-state custom render carries a tooltip with engineCause + waitMs", () => {
+  it("(8.1) on download-retrying, toast.loading is reissued on the SAME id with the Reconnecting message + diagnostic description (NO toast.custom)", () => {
+    // Iter-3 (post §11.16): retrying state uses `toast.loading` —
+    // same render mode as the downloading template. Title swaps from
+    // `Downloading welcome.pdf — 62%` to `Downloading welcome.pdf —
+    // Reconnecting (2/5)`. Diagnostic context (`engineCause`, `waitMs`)
+    // renders as Sonner's `description` field (always-visible, not
+    // hover-only — Decision 5 v2). Spinner glyph comes from Sonner's
+    // built-in loading template natively (no test assertion needed).
+    //
+    // Iter-2 used `toast.custom` here; that path is abandoned because
+    // Sonner's `Observer.create()` carries `type: 'loading'` over to
+    // the custom render, leaving the spinner-chrome overlay on top.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
 
@@ -897,26 +796,103 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       }),
     );
 
-    const [renderFn, opts] = toast.custom.mock.calls[0] as [
-      (id: string | number) => unknown,
-      { id?: string | number } | undefined,
+    // No toast.custom for the retrying state.
+    expect(toast.custom).not.toHaveBeenCalled();
+    // Two toast.loading calls: initial (62%) + retrying.
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const [msg, opts] = toast.loading.mock.calls[1] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
     ];
-    const tree = renderFn(opts!.id!) as {
-      props: { title?: string; [k: string]: unknown };
-    };
-    // The wrapping element exposes the diagnostic tooltip via the
-    // `title` HTML attribute (browsers render this on hover natively;
-    // no library required).
-    expect(typeof tree.props.title).toBe("string");
-    expect(tree.props.title).toContain("network-error");
-    expect(tree.props.title).toContain("4000");
+    // SAME id as the initial loading toast — Sonner updates the same slot.
+    expect(opts?.id).toBe("toast-A");
+    // Title swaps from percentage to Reconnecting (n/limit).
+    expect(msg).toContain("Downloading welcome.pdf");
+    expect(msg).toContain("Reconnecting");
+    expect(msg).toContain("2/5");
+    // Title no longer carries the percentage.
+    expect(msg).not.toMatch(/62\s*%/);
+    // Description carries diagnostic context.
+    expect(typeof opts?.description).toBe("string");
+    expect(opts?.description).toContain("network-error");
+    expect(opts?.description).toContain("4000");
+  });
+
+  it("(8.2) next downloading event after retrying snaps back to the percentage message AND clears the description (defeats Sonner-merge of stale diagnostic text)", () => {
+    // Sonner's `Observer.create()` merges new toast data over the
+    // existing toast: `{ ...oldToast, ...newData }`. The retrying call
+    // set `description: "Last error: …"`. Without an explicit clear,
+    // the resume `toast.loading(msg, { id })` would inherit the prior
+    // description (oldToast.description survives the spread when newData
+    // doesn't include the key). Production must pass
+    // `description: ""` (falsy → view-layer hides the row) on resume.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(retryingEvent("job-A", { attempt: 2, limit: 5 }));
+
+    // Bytes flowing again — the next downloading event reverts the toast
+    // to the percentage form on the same id.
+    toast.loading.mockClear();
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 63, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg, opts] = toast.loading.mock.calls[0] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
+    ];
+    expect(opts?.id).toBe("toast-A");
+    expect(msg).toMatch(/63\s*%/);
+    expect(msg).toContain("welcome.pdf");
+    // Description must be a falsy value to clear the prior retrying-
+    // state description from Sonner's merged toast data. Empty string
+    // is preferred — `toast.description ?` in the view layer treats
+    // it as falsy and hides the row.
+    expect(opts).toHaveProperty("description");
+    expect(opts?.description).toBe("");
+    expect(toast.custom).not.toHaveBeenCalled();
+  });
+
+  it("(8.3) retrying-state toast.loading description carries engineCause + waitMs (always-visible diagnostic, not hover tooltip)", () => {
+    // Decision 5 ratified in iter-3: the original "tooltip on hover"
+    // contract was abandoned — `toast.custom` couldn't reliably
+    // replace the loading-template chrome. Diagnostic info now lives
+    // in Sonner's `description` field, which renders below the title
+    // in the toast body and is always visible.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(
+      retryingEvent("job-A", {
+        attempt: 2,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      }),
+    );
+
+    const [, opts] = toast.loading.mock.calls[1] as [
+      string,
+      { description?: string },
+    ];
+    expect(typeof opts.description).toBe("string");
+    expect(opts.description).toContain("network-error");
+    expect(opts.description).toContain("4000");
   });
 
   it("(8.4) toast does NOT enter retrying state without a download-retrying event (auth-expired Layer 2 retry stays invisible)", () => {
     // Auth-expired retries do not emit `download-retrying`. The
     // renderer sees an interruption only as a gap in `downloading`
-    // events — the toast must NOT flip to the custom retrying render
-    // in that case.
+    // events — the toast must stay on the percentage message; no
+    // Reconnecting subtext should appear.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
 
@@ -930,10 +906,12 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       downloadingEvent("job-A", { progress: 70, path: "/welcome.pdf" }),
     );
 
-    // Custom is reserved for retrying / success-style renders — without
-    // a download-retrying event, only toast.loading should fire.
     expect(toast.custom).not.toHaveBeenCalled();
     expect(toast.loading).toHaveBeenCalledTimes(3);
+    for (const call of toast.loading.mock.calls) {
+      const [msg] = call as [string, unknown];
+      expect(msg).not.toContain("Reconnecting");
+    }
   });
 
   it("(8.5) download-cancelled during retrying state dismisses the toast (existing cancel path remains the path forward)", () => {
@@ -951,7 +929,6 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
     );
     eventApi.emit(retryingEvent("job-A", { attempt: 2, limit: 5 }));
-    expect(toast.custom).toHaveBeenCalledTimes(1);
 
     eventApi.emit({
       kind: "download-cancelled",
@@ -964,14 +941,13 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       },
     });
 
-    // Existing cancel path: dismiss the toast id, no error / success
-    // variants emitted.
     expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.custom).not.toHaveBeenCalled();
   });
 
-  it("(8.6) hydration → retrying: hydrated toast transitions through downloading → retrying on next download-retrying event", () => {
+  it("(8.6) hydration → retrying: hydrated toast transitions through downloading → retrying via toast.loading on the same id", () => {
     toast.loading.mockReturnValueOnce("hydrated-A");
     const toaster = createDownloadJobToaster({ toast, eventApi });
 
@@ -999,15 +975,18 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       }),
     );
 
-    expect(toast.custom).toHaveBeenCalledTimes(1);
-    const [renderFn, opts] = toast.custom.mock.calls[0] as [
-      (id: string | number) => unknown,
-      { id?: string | number } | undefined,
+    // No toast.custom for retrying state in iter-3.
+    expect(toast.custom).not.toHaveBeenCalled();
+    // Hydration call + retrying call on the same id.
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const [msg, opts] = toast.loading.mock.calls[1] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
     ];
     expect(opts?.id).toBe("hydrated-A");
-    const serialized = serializeTree(renderFn(opts!.id!));
-    expect(serialized).toContain("3/5");
-    expect(serialized).toContain("Reconnecting");
+    expect(msg).toContain("3/5");
+    expect(msg).toContain("Reconnecting");
+    expect(opts?.description).toContain("network-error");
   });
 
   it("(8.7) hydration → downloading: hydrated toast continues as loading on next downloading event (no retrying state)", () => {
@@ -1033,9 +1012,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       downloadingEvent("job-A", { progress: 64, path: "/welcome.pdf" }),
     );
 
-    // No retrying-state custom render.
     expect(toast.custom).not.toHaveBeenCalled();
-    // The hydrated toast id keeps receiving loading updates.
     expect(toast.loading).toHaveBeenCalledTimes(2);
     const [msg, opts] = toast.loading.mock.calls[1] as [
       string,
@@ -1043,6 +1020,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     ];
     expect(opts?.id).toBe("hydrated-A");
     expect(msg).toMatch(/64\s*%/);
+    expect(msg).not.toContain("Reconnecting");
   });
 
   it("(8.8) failure-toast handles tag: 'exhausted-retries' — renders existing failed appearance with verbatim message", () => {
@@ -1081,7 +1059,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     expect(errorCall[1].action?.label).toMatch(/retry/i);
   });
 
-  it("(8.cov-1) download-retrying as the FIRST event for an unseen jobId spawns a custom toast with a freshly-minted id and the default 'download' basename", () => {
+  it("(8.cov-1) download-retrying as the FIRST event for an unseen jobId spawns toast.loading on a freshly-minted id with the default 'download' basename", () => {
     // Pins the defensive code path at download-job-toast.ts where
     // `tracker.get(downloadJobId)` returns undefined and the handler
     // falls back to a fresh id + default basename. Reachable in
@@ -1092,37 +1070,32 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
 
     eventApi.emit(retryingEvent("job-X", { attempt: 1, limit: 5 }));
 
-    expect(toast.custom).toHaveBeenCalledTimes(1);
-    const [renderFn, opts] = toast.custom.mock.calls[0] as [
-      (id: string | number) => unknown,
-      { id?: string | number } | undefined,
+    expect(toast.custom).not.toHaveBeenCalled();
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg, opts] = toast.loading.mock.calls[0] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
     ];
     // Freshly-minted id (pattern is `download-toast-<n>`); not a stub
     // value because no prior loading toast minted one.
     expect(opts?.id).toMatch(/^download-toast-\d+$/);
-    const tree = renderFn(opts!.id!);
-    const serialized = serializeTree(tree);
-    // Default fallback basename when no `downloading` event preceded.
-    expect(serialized).toContain("Downloading download");
-    expect(serialized).toContain("Reconnecting");
-    expect(serialized).toContain("1/5");
+    expect(msg).toContain("Downloading download");
+    expect(msg).toContain("Reconnecting");
+    expect(msg).toContain("1/5");
+    expect(typeof opts?.description).toBe("string");
   });
 
-  it("(8.cov-2) retrying → failed: render-mode swap stays on the SAME id (custom→custom in-place replace)", () => {
-    // §11.10 iteration-1 smoke (post commit `f456678`): the dismiss-
-    // then-fresh-id approach passed mock tests because `toast.dismiss`
-    // is synchronous in tests but loses to Sonner's dismiss animation
-    // in real runtime — both retrying-render and error-render were
-    // visible simultaneously.
+  it("(8.cov-2) retrying → failed: toast.loading then toast.error on the SAME id (loading→error built-in type swap), with description cleared on the failure call", () => {
+    // Iter-3 (§11.16): both retrying and failure use Sonner built-in
+    // templates. The retrying state used `toast.loading` (with a
+    // description). The failure call MUST clear that description —
+    // Sonner's `Observer.create()` merges new data over the existing
+    // toast, so without an explicit `description: ""` the failure
+    // toast would inherit the retrying-state diagnostic text.
     //
-    // §11.12-§11.14 iteration-2 fix: when `existing.retrying === true`,
-    // switch render mode within `toast.custom` on the SAME id. Sonner
-    // handles same-id same-mode swaps in-place with no animation
-    // transition. ONE toast in the slot.
-    //
-    // The loading→failed (no retrying) path stays on `toast.error` —
-    // that's a Sonner built-in type swap that has worked reliably
-    // forever (see (8.cov-3) regression guard).
+    // No `toast.custom` is involved at any point. Sonner's
+    // loading→error built-in type swap is reliable on the same id
+    // (pinned by tests `(d)`, `(d2)`, `(8.cov-3)`).
     toast.loading.mockReturnValueOnce("toast-A");
     const retryFn = vi.fn();
     const t = createDownloadJobToaster({ toast, eventApi });
@@ -1132,7 +1105,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
     );
     eventApi.emit(retryingEvent("job-A", { attempt: 3, limit: 5 }));
-    expect(toast.custom).toHaveBeenCalledTimes(1); // retrying-state custom render
+    expect(toast.loading).toHaveBeenCalledTimes(2);
 
     eventApi.emit({
       kind: "download-failed",
@@ -1144,38 +1117,38 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       },
     });
 
-    // Failure render is ALSO toast.custom (not toast.error) so Sonner's
-    // same-id custom→custom in-place swap kicks in. ONE toast in the
-    // slot. toast.error is NOT called for the retrying-then-failed
-    // path; toast.dismiss is NOT called pre-spawn (the in-place swap
-    // replaces without dismissing).
-    expect(toast.custom).toHaveBeenCalledTimes(2); // retrying + failure
-    expect(toast.error).not.toHaveBeenCalled();
+    // No toast.custom anywhere. No pre-spawn dismiss (loading→error
+    // is a Sonner built-in type swap; same id replaces in place).
+    expect(toast.custom).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledTimes(1);
     expect(toast.dismiss).not.toHaveBeenCalled();
 
-    const [renderFn, opts] = toast.custom.mock.calls[1] as [
-      (id: string | number) => unknown,
-      { id?: string | number; duration?: number },
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      {
+        id?: string | number;
+        duration?: number;
+        richColors?: boolean;
+        description?: string;
+        action?: { label: string; onClick: () => void };
+      },
     ];
-    // SAME id as the retrying-state render; no `-failed` suffix.
-    expect(opts?.id).toBe("toast-A");
-    expect(opts?.duration).toBe(Number.POSITIVE_INFINITY);
-
-    const tree = renderFn(opts!.id!);
-    const serialized = serializeTree(tree);
-    expect(serialized).toContain("Download failed");
-    expect(serialized).toContain("exhausted-retries: network-error");
-    expect(serialized).toContain("Retry");
+    expect(errorCall[0]).toContain("Download failed");
+    expect(errorCall[0]).toContain("exhausted-retries: network-error");
+    expect(errorCall[1].id).toBe("toast-A");
+    expect(errorCall[1].duration).toBe(Number.POSITIVE_INFINITY);
+    expect(errorCall[1].richColors).toBe(true);
+    // Description must be cleared so Sonner's merge doesn't carry the
+    // retrying-state diagnostic ("Last error: network-error. Waiting
+    // 4000ms before retry.") onto the failure toast.
+    expect(errorCall[1]).toHaveProperty("description");
+    expect(errorCall[1].description).toBe("");
+    expect(errorCall[1].action?.label).toMatch(/retry/i);
 
     // Retry callback registered pre-dispatch survives the
-    // downloading → retrying → failed transition. Clicking the Retry
-    // button in the rendered tree invokes the original orchestrator
-    // callback AND dismisses the failure toast.
-    const retryButton = findButtonByText(tree, "Retry");
-    expect(retryButton).not.toBeNull();
-    retryButton!.props.onClick();
+    // downloading → retrying → failed transition.
+    errorCall[1].action!.onClick();
     expect(retryFn).toHaveBeenCalledTimes(1);
-    // Dismiss-on-retry-click targets the same id (the custom-render id).
     expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
   });
 
@@ -1183,14 +1156,8 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     // Regression guard for the non-broken transition path: when
     // there's no prior `download-retrying`, the previous render is
     // the loading template. `toast.error(msg, { id })` after
-    // `toast.loading` updates in-place because Sonner's loading and
-    // error variants share a slot — no fresh-id derivation needed.
-    //
-    // This test pins that the §11.5 fix only branches when
-    // `existing.retrying === true` and leaves the simpler
-    // loading→error path untouched (the (d) and (8.8) tests already
-    // cover this; (8.cov-3) is the explicit regression marker for
-    // the §11.5 conditional).
+    // `toast.loading` updates in-place because Sonner's loading→error
+    // built-in type swap is reliable on the same id.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
 
@@ -1212,11 +1179,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       string,
       { id?: string | number },
     ];
-    // Same id as the loading toast — no dismiss-then-respawn for the
-    // loading→error transition (only the custom→error case needs that).
     expect(errorCall[1].id).toBe("toast-A");
-    // No pre-spawn dismiss of the loading id (the in-place update
-    // pattern is intact for this transition).
     expect(toast.dismiss).not.toHaveBeenCalledWith("toast-A");
   });
 });

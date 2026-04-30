@@ -18,11 +18,16 @@
 //   - first event for an unseen id → spawn loading toast + record
 //     `(toastId, basename)`
 //   - subsequent `downloading` events → update existing toast id with
-//     the new progress percentage
+//     the new progress percentage (description cleared)
+//   - `download-retrying` → reissue `toast.loading` on the same id with
+//     a "Reconnecting (attempt/limit)" message and the diagnostic
+//     context (`engineCause`, `waitMs`) as Sonner's `description` field
+//     (see add-download-resilience §11.16 / Decision 5 v2)
 //   - terminal `file-downloaded` → flip via `toast.custom()` to the V2
 //     dual-action success layout (Show in folder + Open)
 //   - terminal `download-failed` → red `toast.error` with `richColors`
-//     and a Retry action
+//     and a Retry action (description cleared so prior retrying-state
+//     diagnostic doesn't carry over via Sonner's merge)
 //   - terminal `download-cancelled` → silent `toast.dismiss`
 //
 // App-launch hydration uses the same spawn path. `hydrateActiveDownloads`
@@ -137,7 +142,17 @@ export interface DownloadJobSummary {
 export interface ToastApi {
   loading(
     message: string,
-    opts?: { id?: string | number; duration?: number },
+    opts?: {
+      id?: string | number;
+      duration?: number;
+      // §11.16 (iter-3): retrying state surfaces `engineCause` + `waitMs`
+      // diagnostic context as Sonner's `description` field. Required on
+      // the resume-from-retrying path too — passed as `""` (falsy) to
+      // clear the prior retrying-state description from Sonner's
+      // `Observer.create()` merge (otherwise the diagnostic text lingers
+      // on the resumed downloading toast). See Decision 5 v2.
+      description?: string;
+    },
   ): string | number;
   success(
     message: string,
@@ -149,6 +164,12 @@ export interface ToastApi {
       id?: string | number;
       duration?: number;
       richColors?: boolean;
+      // §11.16 (iter-3): on the retrying→failed path the prior
+      // retrying-state `toast.loading` set a description; the failure
+      // call must pass `description: ""` to override it via Sonner's
+      // merge so the diagnostic text doesn't show under the failure
+      // message.
+      description?: string;
       action?: { label: string; onClick: () => void };
     },
   ): string | number;
@@ -228,6 +249,12 @@ export interface DownloadToaster {
 
 function sonnerAdapter(): ToastApi {
   return {
+    // `loading` and `error` forward `description` verbatim (Sonner's own
+    // `loading`/`error` accept it). The `description: ""` clear-pattern
+    // used on resume / failure-from-retrying transitions relies on
+    // Sonner's `Observer.create()` spread merging the explicit empty
+    // string over any prior description — see download-job-toast.ts
+    // §11.16 retrying-handler doc-comment for the merge mechanics.
     loading: (message, opts) =>
       sonnerToast.loading(message, opts) as string | number,
     success: (message, opts) =>
@@ -363,6 +390,27 @@ function formatProgressMessage(
   return `Downloading ${basename} — ${clamped}%`;
 }
 
+// §11.16 (iter-3): retrying state shares the `toast.loading` render mode
+// with the downloading state — only the message + description swap. Same
+// id, same chrome (Sonner's loading-template spinner glyph stays
+// visible). The earlier `toast.custom` approach (iter-2) was abandoned
+// because Sonner's `Observer.create()` carries the prior `type:
+// 'loading'` over to the custom render, leaving the spinner-chrome
+// overlay on top of the hand-rolled JSX.
+function formatRetryingMessage(
+  basename: string,
+  ctx: { attempt: number; limit: number },
+): string {
+  return `Downloading ${basename} — Reconnecting (${ctx.attempt}/${ctx.limit})`;
+}
+
+function formatRetryingDescription(ctx: {
+  engineCause: string;
+  waitMs: number;
+}): string {
+  return `Last error: ${ctx.engineCause}. Waiting ${ctx.waitMs}ms before retry.`;
+}
+
 function formatSeededRatio(
   bytesDownloaded: number,
   contentLength: number | null,
@@ -399,10 +447,11 @@ interface ToastEntry {
   /**
    * Marker set on `download-retrying` events; cleared on the next
    * `downloading` event for the same jobId (per add-download-resilience
-   * §7.3). Used so the next `downloading` event detects it must revert
-   * the toast chrome from the custom retrying render back to the
-   * loading template — without the marker we'd issue an unnecessary
-   * `toast.loading` update on every progress tick.
+   * §7.3). §11.16 (iter-3): the marker no longer signals a render-mode
+   * swap — both downloading and retrying use `toast.loading`. It is
+   * still useful as state-transition documentation and to support any
+   * future logic that needs to know the toast was last in a retry
+   * sleep. Production logic does not currently branch on it.
    *
    * The retry context itself is not retained: the renderer SHALL NOT
    * branch on `engineCause` per Decision 9, and the spec only requires
@@ -453,15 +502,23 @@ export function createDownloadJobToaster(
       const basename = basenameFromPath(event.payload.path);
       const existing = tracker.get(downloadJobId);
       if (existing) {
-        // Update in place. If the entry was in retrying state, the
-        // call below transitions the visible chrome back to the
-        // loading template (Sonner replaces the custom render with the
-        // loading variant on the same id slot — see add-download-
-        // resilience §7.3); we clear the `retrying` flag so subsequent
-        // progress ticks don't keep re-clearing it.
+        // Update in place. The downloading state and retrying state
+        // share the same `toast.loading` render mode (§11.16 iter-3) —
+        // they differ only in message + description.
+        //
+        // Description-merge gotcha: Sonner's `Observer.create()` merges
+        // new toast data over the existing toast (`{ ...oldToast,
+        // ...newData }`). If the prior call set `description: "Last
+        // error: ..."` (the retrying state) and we issue
+        // `toast.loading(msg, { id })` without a `description` field,
+        // the prior description survives the spread and lingers on
+        // screen during the resumed downloading. Pass `description: ""`
+        // to override — the view-layer `toast.description ?` truthy
+        // check then hides the row. (See node_modules/sonner Observer
+        // .create line ~145 and view layer ~797.)
         toast.loading(
           formatProgressMessage(existing.basename, event.payload.progress),
-          { id: existing.toastId },
+          { id: existing.toastId, description: "" },
         );
         if (existing.retrying === true) {
           tracker.set(downloadJobId, {
@@ -492,16 +549,24 @@ export function createDownloadJobToaster(
     }
 
     if (event.kind === "download-retrying") {
-      // add-download-resilience §7.2: switch to a custom render with
-      // "Reconnecting… (<attempt>/<limit>)" subtext + spinner glyph.
-      // Tooltip carries `Last error: <engineCause>. Waiting <waitMs>ms
-      // before retry.` (Decision 5).
+      // §11.16 (iter-3): retrying state uses `toast.loading` — same
+      // render mode as the downloading template. Title swaps to
+      // `Downloading <basename> — Reconnecting (<attempt>/<limit>)`;
+      // diagnostic context (`engineCause`, `waitMs`) renders as Sonner's
+      // `description` field (always-visible below the title). Spinner
+      // glyph comes from Sonner's loading template natively — same
+      // chrome as the downloading state, no transition.
+      //
+      // Iter-2 used `toast.custom` here. That approach was abandoned
+      // because Sonner's `Observer.create()` merges new toast data over
+      // the existing toast but preserves the OLD `type` field. A toast
+      // that started life as `toast.loading` retained `type: 'loading'`
+      // even after `toast.custom`, so the view layer kept rendering the
+      // loading-spinner icon overlay on top of our hand-rolled JSX
+      // ("corrupted and messy" per §11.10/§11.15 smoke). Decision 5
+      // ratified in iter-3: tooltip-on-hover → always-visible
+      // description.
       const existing = tracker.get(downloadJobId);
-      // Hydration-as-first-event path: no prior `downloading` event ran,
-      // so the entry might not exist. Fall through to spawning the
-      // retrying render on a freshly-minted id. (In practice the
-      // hydrate path pre-seeds the tracker before the listener
-      // attaches; this branch is defensive.)
       if (existing?.terminal === true) {
         // Late retry event for an already-terminal job: ignore.
         return;
@@ -509,15 +574,12 @@ export function createDownloadJobToaster(
       const basename = existing?.basename ?? "download";
       const toastId = existing?.toastId ?? generateToastId();
       const { attempt, limit, waitMs, engineCause } = event.payload;
-      toast.custom(
-        (id) =>
-          buildRetryingRender(id, basename, {
-            attempt,
-            limit,
-            waitMs,
-            engineCause,
-          }),
-        { id: toastId },
+      toast.loading(
+        formatRetryingMessage(basename, { attempt, limit }),
+        {
+          id: toastId,
+          description: formatRetryingDescription({ engineCause, waitMs }),
+        },
       );
       // Carry `existing?.retry` forward — for hydrated-from-disk jobs
       // (no orchestrator pre-dispatch through `registerRetry`) this is
@@ -607,11 +669,32 @@ export function createDownloadJobToaster(
     }
 
     if (event.kind === "download-failed") {
+      // §11.16 (iter-3): unified failure path uses `toast.error` for
+      // every prior render state (loading or retrying). Sonner's
+      // built-in type swaps (loading→error, loading→loading) are
+      // reliable on the same id (`toast.error()` explicitly sets
+      // `type: 'error'` in the merge — see node_modules/sonner
+      // index.mjs ~line 209). `toast.custom` was abandoned in iter-3
+      // because mixing it with built-in types triggered the
+      // type-merge-leak bug (the prior `type: 'loading'` carried
+      // over to the custom render, leaving the spinner-chrome
+      // overlay on top of our red card).
+      //
+      // Description-merge gotcha: when the prior render was the
+      // retrying state, it set a description ("Last error: ..."). The
+      // failure call MUST pass `description: ""` to clear it via
+      // Sonner's `Observer.create()` spread merge — otherwise the
+      // diagnostic text lingers under the failure message. The clear
+      // is unconditional (no-op when no prior description was set).
       const existing = tracker.get(downloadJobId);
       // Duplicate-terminal guard (see file-downloaded handler).
       if (existing?.terminal === true) {
         return;
       }
+      // basename is preserved in the tracker for diagnostic continuity
+      // (a duplicate-terminal short-circuit can read it later); the
+      // failure-message copy itself doesn't surface basename because
+      // `event.payload.message` already names the failure mode.
       const basename = existing?.basename ?? "download";
       // Retry callback was correlated on the FIRST `downloading` event
       // for this jobId (drained from `pendingRetries` into the
@@ -619,25 +702,6 @@ export function createDownloadJobToaster(
       // — instant auth-revoked / immediate validation reject), no
       // correlation happened and Retry falls back to dismiss-only.
       const retry = existing?.retry;
-      // §11.5/§11.6 (iter-1, commit `f456678`) tried `toast.dismiss(id)`
-      // + `toast.error(..., { id: \`${id}-failed\` })` for the
-      // retrying→failed case. §11.10 smoke confirmed it doesn't work
-      // in real Sonner runtime — `toast.dismiss(id)` for a custom-
-      // rendered toast loses the race against Sonner's dismiss
-      // animation, leaving both retrying-render and error-render
-      // visible. Mocks passed because `toast.dismiss` is sync in tests.
-      //
-      // §11.12-§11.14 iter-2 fix: when prior was retrying-state
-      // custom, switch render mode WITHIN `toast.custom` on the SAME
-      // id. Sonner's same-id same-mode (custom→custom) swap is
-      // in-place with no animation transition. ONE toast in the slot.
-      //
-      // The loading→failed (no retrying state preceded) path stays
-      // on `toast.error` — Sonner's built-in type swap from
-      // `toast.loading` to `toast.error` works correctly with the
-      // same id (no chrome-leak bug here; pinned by tests `(d)`,
-      // `(d2)`, `(8.cov-3)`).
-      const wasRetrying = existing?.retrying === true;
       const toastId = existing?.toastId ?? generateToastId();
       tracker.set(downloadJobId, {
         toastId,
@@ -645,38 +709,21 @@ export function createDownloadJobToaster(
         retry,
         terminal: true,
       });
-      if (wasRetrying) {
-        toast.custom(
-          (id) =>
-            buildFailureRender(
-              id,
-              basename,
-              event.payload.message,
-              retry,
-              () => {
-                toast.dismiss(toastId);
-              },
-            ),
-          { id: toastId, duration: Number.POSITIVE_INFINITY },
-        );
-      } else {
-        toast.error(`Download failed: ${event.payload.message}`, {
-          id: toastId,
-          duration: Number.POSITIVE_INFINITY,
-          richColors: true,
-          action: {
-            label: "Retry",
-            onClick: () => {
-              toast.dismiss(toastId);
-              if (retry !== undefined) {
-                retry();
-              }
-            },
+      toast.error(`Download failed: ${event.payload.message}`, {
+        id: toastId,
+        duration: Number.POSITIVE_INFINITY,
+        richColors: true,
+        description: "",
+        action: {
+          label: "Retry",
+          onClick: () => {
+            toast.dismiss(toastId);
+            if (retry !== undefined) {
+              retry();
+            }
           },
-        });
-      }
-      // Terminal marker preserved in tracker — see file-downloaded
-      // handler for duplicate-terminal-guard rationale.
+        },
+      });
       return;
     }
 
@@ -801,176 +848,12 @@ function buildSuccessRender(
   );
 }
 
-// --- Failure-state render (add-download-resilience §11.12) ----------
-
-/**
- * Custom render for the failure toast on the retrying→failed transition.
- *
- * Iteration-1 fix (commit `f456678`) tried `toast.dismiss(id)` then
- * `toast.error(..., { id: \`${id}-failed\` })` to clear the prior
- * retrying-state `toast.custom` render. §11.10 smoke confirmed
- * `toast.dismiss(id)` for a custom-rendered toast loses the race against
- * Sonner's dismiss animation in real runtime — both retrying-render and
- * error-render appeared simultaneously. Mocks passed because dismiss is
- * synchronous in tests.
- *
- * Iteration-2 fix (this helper): when `existing.retrying === true`,
- * issue `toast.custom(buildFailureRender(...), { id: existing.toastId })`
- * on the SAME id as the retrying render. Sonner's same-id same-mode
- * (custom→custom) update replaces the render in-place with no animation
- * transition. ONE toast in the slot, no race.
- *
- * Visual structure mirrors the existing destructive-tinted UX in this
- * codebase (`text-destructive`, `bg-destructive/10`):
- *
- *   ┌─────────────────────────────────────────────┐
- *   │ ✕ Download failed: <message>          [✕]   │
- *   │ Retry                                       │
- *   └─────────────────────────────────────────────┘
- *
- * Behavior notes:
- *   - `role="alert"` for screen-reader urgency (the surface is an error
- *     status, not a passive notification).
- *   - Auto-dismiss is `Number.POSITIVE_INFINITY` (sticky) — set by the
- *     handler that issues this render; matches the prior `toast.error`
- *     behavior. The close (✕) button is the user's explicit dismiss
- *     affordance because Sonner's default close-X applies to its built-
- *     in toast types, not custom renders.
- *   - Retry button is rendered only when `onRetry !== undefined`. For
- *     hydrated jobs without a registered retry callback, the button is
- *     omitted (would otherwise be a confusing dead control).
- *   - Retry click invokes `onRetry()` then `onDismiss()` — order per
- *     §11.12 spec wording. Both calls are sync.
- */
-function buildFailureRender(
-  _id: string | number,
-  basename: string,
-  message: string,
-  onRetry: (() => void) | undefined,
-  onDismiss: () => void,
-): React.ReactElement {
-  // Hand-written React.createElement tree (no JSX). Mirrors the success
-  // render's structure: outer card wrapper, headline row, action row.
-  // Red destructive tint via `bg-destructive/10` + `text-destructive`
-  // — the established convention in this codebase
-  // (see `confirm-delete-dialog.tsx`, `invalid-datasource.tsx`).
-  const headline = `Download failed: ${message}`;
-  void basename; // basename is captured by the tracker for diagnostics; not surfaced in copy because the message text already names the failure mode.
-  const children: React.ReactElement[] = [
-    React.createElement(
-      "div",
-      {
-        key: "row-headline",
-        className: "flex items-start justify-between gap-3",
-      },
-      React.createElement(
-        "div",
-        { className: "text-sm font-medium" },
-        `✕ ${headline}`,
-      ),
-      React.createElement(
-        "button",
-        {
-          type: "button",
-          onClick: onDismiss,
-          "aria-label": "Dismiss",
-          className:
-            "text-destructive hover:text-foreground -mr-1 -mt-1 inline-flex h-6 w-6 items-center justify-center rounded-md text-xs",
-        },
-        "✕",
-      ),
-    ),
-  ];
-  if (onRetry !== undefined) {
-    children.push(
-      React.createElement(
-        "div",
-        {
-          key: "row-actions",
-          className: "flex items-center justify-end",
-        },
-        React.createElement(
-          "button",
-          {
-            type: "button",
-            onClick: () => {
-              onRetry();
-              onDismiss();
-            },
-            className:
-              "bg-destructive text-destructive-foreground hover:bg-destructive/90 inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium",
-          },
-          "Retry",
-        ),
-      ),
-    );
-  }
-  return React.createElement(
-    "div",
-    {
-      className:
-        "bg-destructive/10 text-destructive flex flex-col gap-3 rounded-md border border-destructive/30 p-4 shadow-md",
-      role: "alert",
-    },
-    ...children,
-  );
-}
-
-// --- Retrying-state render (add-download-resilience §7.2 / §7.4) -----
-
-interface RetryingContext {
-  readonly attempt: number;
-  readonly limit: number;
-  readonly waitMs: number;
-  readonly engineCause: string;
-}
-
-function buildRetryingRender(
-  _id: string | number,
-  basename: string,
-  ctx: RetryingContext,
-): React.ReactElement {
-  // Per design.md Decision 5: title remains `Downloading <basename>`,
-  // subtext switches to `Reconnecting… (<attempt>/<limit>)` with a
-  // spinner glyph in place of the percentage indicator. The wrapping
-  // element exposes the diagnostic tooltip via the `title` HTML
-  // attribute (browsers render this on hover natively — no library
-  // required, semantically appropriate for a status decoration).
-  const tooltip = `Last error: ${ctx.engineCause}. Waiting ${ctx.waitMs}ms before retry.`;
-  return React.createElement(
-    "div",
-    {
-      className:
-        "bg-popover text-popover-foreground flex flex-col gap-1 rounded-md border p-4 shadow-md",
-      role: "status",
-      title: tooltip,
-    },
-    React.createElement(
-      "div",
-      { className: "text-sm font-medium" },
-      `Downloading ${basename}`,
-    ),
-    React.createElement(
-      "div",
-      {
-        className:
-          "text-muted-foreground flex items-center gap-2 text-xs",
-      },
-      // Spinner glyph — pinned via `data-test` so renderer tests assert
-      // on the structural marker rather than a specific Tailwind icon
-      // class. The visible glyph is a CSS-driven spinner element; the
-      // ARIA label keeps screen readers in sync with the visual cue.
-      React.createElement("span", {
-        "data-test": "retrying-spinner",
-        "aria-label": "Reconnecting",
-        className:
-          "border-muted-foreground/40 border-t-muted-foreground inline-block h-3 w-3 animate-spin rounded-full border-2",
-      }),
-      React.createElement(
-        "span",
-        null,
-        `Reconnecting… (${ctx.attempt}/${ctx.limit})`,
-      ),
-    ),
-  );
-}
+// --- Failure / retrying-state renders ---------------------------------
+//
+// §11.16 (iter-3): the dedicated `buildFailureRender` and
+// `buildRetryingRender` helpers were removed — both states now use
+// Sonner's built-in templates (`toast.error` for failure, `toast.loading`
+// with a Reconnecting message + diagnostic description for retrying).
+// See the `download-failed` and `download-retrying` handlers above for
+// the rationale (`Observer.create()` type-merge leak when mixing
+// `toast.custom` with built-in types).

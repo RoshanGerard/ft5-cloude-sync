@@ -169,12 +169,26 @@ gigabyte on disk; surfacing the provider misbehavior is the right call.
 
 ### Decision 5: Renderer toast stays steady; new `download-retrying` event drives sub-status
 
+> **Render contract (iter-3, §11.16):** `toast.loading(message, { id, description })`
+> for both downloading AND retrying states (same render mode, in-place
+> message + description swap). Failure uses `toast.error` (Sonner built-in
+> type swap from loading→error works correctly). NO `toast.custom` for
+> the retrying state — that path was abandoned in iter-3.
+
 **What:** The toast title remains `Downloading <filename>` throughout. During a
 retry sleep, the subtext switches `62% · 240 MB / 380 MB` → `Reconnecting…
 (2/5)` and the progress bar **pauses at the last known byte position** — does
 not rewind, does not animate. A small spinner glyph replaces the percentage
-text in the subtext during the wait. Tooltip on hover exposes the cause and
-wait duration for diagnostic users.
+text in the subtext during the wait. Diagnostic context (`engineCause`,
+`waitMs`) renders as Sonner's `description` field — always visible below
+the title rather than hover-only. The original "tooltip on hover" design
+(Decision 5 v1) was abandoned in iter-3 of the §9.4 fix-cycle:
+`toast.custom` with hand-rolled tooltip-via-`title`-attribute conflicted
+with Sonner's built-in render-type lifecycle (the prior `type: 'loading'`
+carried the spinner-chrome overlay onto the custom render, plus same-id
+custom replacement was unreliable). Always-visible description trades
+hover-discoverability for reliable in-place chrome swap; the diagnostic
+info is still surfaced, just not hidden by default.
 
 **New IPC event:** The fs-sync IPC bus gains one event (uncoalesced — fs-sync's bus does not throttle; the engine-bus coalescer that handles `downloading` is upstream of this layer):
 
