@@ -554,23 +554,32 @@ export function FileExplorer({
       handleDownload(entry);
     };
     toasterRef.current?.registerRetry(datasourceId, entry.path, retry);
-    // Post-archive bug fix: previously this was `void downloadOrchestrator.
-    // dispatchDownload(...)`, which discarded the orchestrator's response.
-    // When the service returned `{ ok: false, error }` the renderer was
-    // silently dropping the failure — the user reported "nothing happens"
-    // because no toast surfaced. Surface the error envelope here; the
-    // event-driven success toaster (`createDownloadJobToaster`) handles
-    // the success and progress lifecycle separately, so we only toast
-    // on the failure branch. Resolutions to `null` mean the modal queued
-    // the dispatch OR the user cancelled the save-as dialog — neither
-    // is an error, so no toast.
+    // add-download-resilience §12.1 / Decision 15 — single failure-toast
+    // emission source. The toaster (`createDownloadJobToaster`) is the
+    // SOLE emitter of `Download failed: …` toasts for in-flight failures
+    // — it consumes the `download-failed` IPC event with the Retry
+    // affordance attached. This dispatch caller's `.then(toast.error)`
+    // was removed in iter-4 because it produced a duplicate toast (one
+    // with Retry from the toaster, one without from this caller) when
+    // both the response AND the event arrived for the same logical
+    // failure (the §11.19 wifi-drop smoke reproduced this on Drive).
+    //
+    // The `.catch(toast.error)` is RETAINED — it covers the
+    // categorically-different failure mode where the IPC layer itself
+    // rejects (preload bridge unavailable, malformed envelope, etc.)
+    // and no `download-failed` event ever flows through the bus. In
+    // that case the toaster has nothing to render and this `.catch`
+    // toast is the only user signal.
+    //
+    // Pre-job validation failures (toPath rejected, concurrent rejected,
+    // resolveClient failed) return `{ ok: false, error }` from the
+    // service WITHOUT emitting `download-failed`. v1 accepts that
+    // those paths surface no user-visible toast — they are rare edge
+    // cases (path-traversal defense, double-click guard, stale ds id);
+    // console errors persist. See Decision 15 "Future tightening" for
+    // the future fix pattern.
     downloadOrchestrator
       .dispatchDownload(entry, { shiftKey: false }, datasourceId)
-      .then((response) => {
-        if (response !== null && response.ok === false) {
-          toast.error(`Download failed: ${response.error.message}`);
-        }
-      })
       .catch((err: unknown) => {
         const message =
           err instanceof Error ? err.message : "unexpected error";
