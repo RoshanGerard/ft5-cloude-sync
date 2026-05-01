@@ -121,18 +121,18 @@ function makeEventApi(): MockEventApi {
 }
 
 interface MockSyncApi extends SyncActionsApi {
-  cancelJob: Mock;
+  cancelDownload: Mock;
 }
 
 function makeSyncApi(): MockSyncApi {
   // Default impl resolves with a no-op envelope. Tests that assert the
-  // call wiring inspect `cancelJob.mock.calls`. Tests that don't care
+  // call wiring inspect `cancelDownload.mock.calls`. Tests that don't care
   // can pass this through to the toaster as a noop.
-  const cancelJob: Mock = vi.fn(async (_req: { downloadJobId: string }) => ({
+  const cancelDownload: Mock = vi.fn(async (_req: { downloadJobId: string }) => ({
     ok: true,
     result: { cancelled: true },
   }));
-  return { cancelJob };
+  return { cancelDownload };
 }
 
 function downloadingEvent(
@@ -956,11 +956,11 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
   it("(8.5) download-cancelled during retrying state dismisses the toast on the same id", () => {
     // Spec scenario "Cancel during retry sleep dismisses toast within
     // 100ms". §12.2 (iter-4) made the toast's Cancel UI button real
-    // (Decision 13) — the click fires `syncApi.cancelJob` which causes
+    // (Decision 13) — the click fires `syncApi.cancelDownload` which causes
     // the service to emit `download-cancelled`. This test pins the
     // event-arrival half of that round-trip: when `download-cancelled`
     // arrives after a retry render, the toast dismisses with the SAME
-    // id that was rendered. The click-fires-cancelJob half is covered
+    // id that was rendered. The click-fires-cancelDownload half is covered
     // by `(12.2.6)` / `(12.2.7)`.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
@@ -1227,7 +1227,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
 // §12.2 — Cancel action button on the active download toast (Decision 13).
 // The toaster injects `action: { label: "Cancel", onClick }` into both
 // the downloading-state and retrying-state `toast.loading` calls. Click
-// fires `syncApi.cancelJob({ downloadJobId })` (fire-and-forget); the
+// fires `syncApi.cancelDownload({ downloadJobId })` (fire-and-forget); the
 // subsequent `download-cancelled` IPC event is what actually dismisses
 // the toast through the existing event-handler path.
 describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
@@ -1241,7 +1241,7 @@ describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
     syncApi = makeSyncApi();
   });
 
-  it("(12.2.6) downloading-state toast carries a Cancel action wired to syncApi.cancelJob", () => {
+  it("(12.2.6) downloading-state toast carries a Cancel action wired to syncApi.cancelDownload", () => {
     createDownloadJobToaster({ toast, eventApi, syncApi });
 
     eventApi.emit(
@@ -1260,12 +1260,12 @@ describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
     expect(loadingCall[1].action!.label).toBe("Cancel");
     expect(typeof loadingCall[1].action!.onClick).toBe("function");
 
-    // Click the Cancel action → cancelJob fires with the right
+    // Click the Cancel action → cancelDownload fires with the right
     // downloadJobId. Fire-and-forget: the click does NOT wait on the
     // Promise.
     loadingCall[1].action!.onClick();
-    expect(syncApi.cancelJob).toHaveBeenCalledTimes(1);
-    expect(syncApi.cancelJob).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+    expect(syncApi.cancelDownload).toHaveBeenCalledTimes(1);
+    expect(syncApi.cancelDownload).toHaveBeenCalledWith({ downloadJobId: "job-A" });
   });
 
   it("(12.2.7) retrying-state toast carries a Cancel action on the SAME id, wired to the same downloadJobId", () => {
@@ -1300,7 +1300,7 @@ describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
     expect(retryingCall[1].action!.label).toBe("Cancel");
 
     retryingCall[1].action!.onClick();
-    expect(syncApi.cancelJob).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+    expect(syncApi.cancelDownload).toHaveBeenCalledWith({ downloadJobId: "job-A" });
   });
 
   it("(12.2.8) Cancel-action click does NOT pre-emptively dismiss the toast (the dismiss flows through the download-cancelled event)", () => {
@@ -1383,6 +1383,128 @@ describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
       expect(opts.action).toBeDefined();
       expect(opts.action!.label).toBe("Cancel");
     }
+  });
+});
+
+// §12.6 (iter-5, Decision 16) — Cancel-button IPC bridge regression guards.
+//
+// Pre-iter-5 the toaster's onClick called `syncApi.cancelJob({ downloadJobId })`
+// and the production `resolveSyncApi` fallback looked up
+// `window.api.sync.cancelJob`. That preload method exists but is the
+// UPLOAD-job cancel (`SYNC_CHANNELS.cancelJob = "sync:cancel-job"`,
+// shape `{ jobId }`). The toaster's `{ downloadJobId }` payload routed
+// via name collision and the actual download abort never ran. Iter-5
+// renames the collaborator to `cancelDownload` and wires a dedicated
+// preload method `window.api.sync.cancelDownload` →
+// `SYNC_CHANNELS.cancelDownload` → `sync:cancel-download` service handler.
+// These tests pin that the production fallback uses the right preload
+// method AND that the click-side dismiss invariant from Decision 16 is
+// preserved: the toast dismisses ONLY through the `download-cancelled`
+// IPC event round-trip, never inside the click handler.
+describe("createDownloadJobToaster — Cancel IPC bridge regression guards (§12.6)", () => {
+  let toast: MockToast;
+  let eventApi: MockEventApi;
+  let syncApi: MockSyncApi;
+
+  beforeEach(() => {
+    toast = makeToast();
+    eventApi = makeEventApi();
+    syncApi = makeSyncApi();
+  });
+
+  it("(12.6.9) production resolveSyncApi fallback looks up window.api.sync.cancelDownload (NOT cancelJob)", async () => {
+    // Stand up a fake `globalThis.window.api.sync` exposing BOTH
+    // cancelDownload AND a sentinel `cancelJob` spy so we can prove the
+    // toaster's production fallback routes through the right one.
+    // Pre-iter-5 the resolver looked up `cancelJob`; iter-5 looks up
+    // `cancelDownload`. Without injecting a `syncApi` to the toaster,
+    // the production fallback path is exercised.
+    const cancelDownloadSpy = vi.fn(async (_req: unknown) => ({
+      cancelled: true,
+    }));
+    const cancelJobSpy = vi.fn(async (_req: unknown) => ({
+      cancelled: true,
+    }));
+    const fakeWindow = {
+      api: {
+        sync: {
+          cancelDownload: cancelDownloadSpy,
+          cancelJob: cancelJobSpy,
+        },
+      },
+    };
+    const original = (globalThis as unknown as { window?: unknown }).window;
+    (globalThis as unknown as { window: unknown }).window = fakeWindow;
+    try {
+      // No `syncApi` injected → production fallback path engages.
+      const toaster = createDownloadJobToaster({ toast, eventApi });
+      eventApi.emit(
+        downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+      );
+      const loadingCall = toast.loading.mock.calls[0] as [
+        string,
+        { action?: { onClick: () => void } },
+      ];
+      loadingCall[1].action!.onClick();
+      // Yield a microtask so the fire-and-forget `void syncApi.cancelDownload(...)`
+      // resolves before assertions.
+      await Promise.resolve();
+      expect(cancelDownloadSpy).toHaveBeenCalledTimes(1);
+      expect(cancelDownloadSpy).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+      // Critical regression guard: the upload-job cancelJob spy MUST NOT
+      // have been called. Pre-iter-5 it was called by mistake.
+      expect(cancelJobSpy).not.toHaveBeenCalled();
+      toaster.dispose();
+    } finally {
+      (globalThis as unknown as { window: unknown }).window = original;
+    }
+  });
+
+  it("(12.6.10) Cancel-click then download-cancelled event dismisses the toast exactly once (no pre-emptive dismiss)", () => {
+    // Decision 16 click-side dismiss invariant: the toaster MUST NOT
+    // dismiss the toast inside the click handler — the dismiss flows
+    // through the subsequent `download-cancelled` IPC event arriving on
+    // the bus. A future regression that adds `toast.dismiss(toastId)`
+    // to the click handler would fail this test (dismiss called twice
+    // — once from click, once from the event handler) AND race the
+    // event-driven dismiss in production.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    const loadingCall = toast.loading.mock.calls[0] as [
+      string,
+      { action?: { onClick: () => void } },
+    ];
+
+    // Click the Cancel action.
+    loadingCall[1].action!.onClick();
+
+    // No dismiss yet — the click handler is fire-and-forget; the visible
+    // dismiss happens on the round-trip event.
+    expect(toast.dismiss).not.toHaveBeenCalled();
+    expect(syncApi.cancelDownload).toHaveBeenCalledWith({
+      downloadJobId: "job-A",
+    });
+
+    // Service emits `download-cancelled` after the AbortController
+    // aborts and the handler's terminal-cancel branch runs.
+    eventApi.emit({
+      kind: "download-cancelled",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        bytesDownloaded: 1_048_576,
+        bytesTotal: 4_194_304,
+        reason: "user",
+      },
+    });
+
+    // EXACTLY ONE dismiss for the toast id, fired by the event handler.
+    expect(toast.dismiss).toHaveBeenCalledTimes(1);
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
   });
 });
 

@@ -21,6 +21,7 @@ import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCompleteRequest,
   SyncAuthenticateStartRequest,
+  SyncCancelDownloadRequest,
   SyncCancelJobRequest,
   SyncEnqueueMirrorRequest,
   SyncEnqueueUploadRequest,
@@ -61,6 +62,7 @@ import {
 import { handleSyncAuthenticateCancel } from "./sync/authenticate-cancel.js";
 import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js";
 import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
+import { handleSyncCancelDownload } from "./sync/cancel-download.js";
 import { handleSyncCancelJob } from "./sync/cancel-job.js";
 import { handleSyncEnqueueMirror } from "./sync/enqueue-mirror.js";
 import { handleSyncEnqueueUpload } from "./sync/enqueue-upload.js";
@@ -195,6 +197,15 @@ export function registerIpcHandlers(
   ipcMain.handle(
     SYNC_CHANNELS.cancelJob,
     async (_event, req: SyncCancelJobRequest) => handleSyncCancelJob(req),
+  );
+  // add-download-resilience §12.6 (iter-5, Decision 16) — bridge for the
+  // existing sync:cancel-download wire command. Pre-iter-5 the renderer
+  // hit cancelJob by name collision; the toaster's Cancel button now
+  // routes through this handler.
+  ipcMain.handle(
+    SYNC_CHANNELS.cancelDownload,
+    async (_event, req: SyncCancelDownloadRequest) =>
+      handleSyncCancelDownload(req),
   );
   ipcMain.handle(
     SYNC_CHANNELS.authenticateStart,

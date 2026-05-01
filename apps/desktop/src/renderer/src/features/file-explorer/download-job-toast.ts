@@ -165,7 +165,7 @@ export interface ToastApi {
       // action button via Sonner's built-in `action` option. Sonner
       // renders `toast.action` on the loading template (line 812-824
       // of `node_modules/sonner/dist/index.mjs`). The toaster wires
-      // `onClick` to call `syncApi.cancelJob({ downloadJobId })` —
+      // `onClick` to call `syncApi.cancelDownload({ downloadJobId })` —
       // see the `download-retrying` and `downloading` handlers below.
       action?: { label: string; onClick: () => void };
     },
@@ -227,17 +227,29 @@ export interface FilesActionsApi {
 }
 
 /**
- * §12.2 (Decision 13) — active-download Cancel-button bridge. The
- * toaster's `toast.loading(...)` call's Cancel action wires its onClick
- * to `syncApi.cancelJob({ downloadJobId })`. Production resolves
- * `window.api.sync.cancelJob` lazily (mirroring the `filesApi` pattern);
- * tests inject a stub. Fire-and-forget — the toaster does NOT await the
- * Promise; the user-visible signal is the subsequent `download-cancelled`
- * IPC event arriving on the bus, which the toaster's existing
- * `download-cancelled` handler (silent `toast.dismiss`) consumes.
+ * §12.2 (Decision 13) + §12.6 (iter-5, Decision 16) — active-download
+ * Cancel-button bridge. The toaster's `toast.loading(...)` call's Cancel
+ * action wires its onClick to `syncApi.cancelDownload({ downloadJobId })`.
+ * Production resolves `window.api.sync.cancelDownload` lazily (mirroring
+ * the `filesApi` pattern); tests inject a stub. Fire-and-forget — the
+ * toaster does NOT await the Promise; the user-visible signal is the
+ * subsequent `download-cancelled` IPC event arriving on the bus, which
+ * the toaster's existing `download-cancelled` handler (silent
+ * `toast.dismiss`) consumes.
+ *
+ * **Why the dedicated method (NOT `cancelJob`)**: pre-iter-5 this
+ * collaborator was named `cancelJob` and the production resolver looked
+ * up `window.api.sync.cancelJob`. That preload method exists, but it is
+ * the UPLOAD-job cancel (`SYNC_CHANNELS.cancelJob = "sync:cancel-job"`,
+ * shape `{ jobId }`). The toaster's `{ downloadJobId }` payload routed
+ * via name collision and the actual download abort never ran. Iter-5
+ * (Decision 16) wires a dedicated `cancelDownload` end-to-end
+ * (channel/preload/main IPC/SyncClient) and renames the toaster's
+ * collaborator in lockstep so the type system + production resolver
+ * forbid the regression.
  */
 export interface SyncActionsApi {
-  cancelJob(req: { downloadJobId: string }): Promise<unknown>;
+  cancelDownload(req: { downloadJobId: string }): Promise<unknown>;
 }
 
 export interface DownloadToasterDeps {
@@ -352,26 +364,38 @@ function resolveSyncApi(
 ): SyncActionsApi {
   if (injected) return injected;
   // Production fallback: pull from the preload bridge. Lazy resolution —
-  // we look up `window.api.sync.cancelJob` at click time so the toaster
-  // can mount safely in test harnesses without the preload (e.g.
+  // we look up `window.api.sync.cancelDownload` at click time so the
+  // toaster can mount safely in test harnesses without the preload (e.g.
   // node-style tests for unrelated code paths). Throwing at the click
   // site keeps the failure mode diagnosable; non-throwing here would
   // silently swallow user clicks.
+  //
+  // §12.6 (iter-5, Decision 16): the lookup MUST be `cancelDownload`,
+  // not `cancelJob`. The latter is the UPLOAD-job cancel; using it on
+  // a `{ downloadJobId }` payload silently no-ops because the upload-job
+  // handler ignores the property mismatch. The dedicated `cancelDownload`
+  // preload method routes through `SYNC_CHANNELS.cancelDownload` →
+  // `sync:cancel-download` → `services/fs-sync/...` cancel handler →
+  // AbortController.abort() → `download-cancelled` event back on the
+  // IPC bus → toaster's `download-cancelled` handler dismisses the
+  // toast. End-to-end test coverage in
+  // `preload/__tests__/sync-surface.test.ts` and the §12.6.x toaster
+  // tests below.
   type CancelFn = (req: { downloadJobId: string }) => Promise<unknown>;
   return {
-    async cancelJob(req) {
+    async cancelDownload(req) {
       const fn = (
         globalThis as unknown as {
           window?: {
             api?: {
-              sync?: { cancelJob?: CancelFn };
+              sync?: { cancelDownload?: CancelFn };
             };
           };
         }
-      ).window?.api?.sync?.cancelJob;
+      ).window?.api?.sync?.cancelDownload;
       if (typeof fn !== "function") {
         throw new Error(
-          "createDownloadJobToaster: window.api.sync.cancelJob is unavailable",
+          "createDownloadJobToaster: window.api.sync.cancelDownload is unavailable",
         );
       }
       return fn(req);
@@ -579,17 +603,23 @@ export function createDownloadJobToaster(
   const filesApi = resolveFilesApi(deps?.filesApi);
   const syncApi = resolveSyncApi(deps?.syncApi);
 
-  // §12.2 (Decision 13) — Cancel action factory. The toaster injects this
-  // into every `toast.loading` call (both the downloading-state and the
-  // retrying-state paths, plus the hydration spawn path). The onClick is
-  // fire-and-forget — the user-visible signal is the subsequent
-  // `download-cancelled` IPC event arriving on the bus, which the
-  // toaster's existing `download-cancelled` handler dismisses with
-  // `toast.dismiss`. The IPC's response Promise is intentionally
-  // discarded (`void`); errors thrown during click (e.g. preload bridge
-  // missing in a partial test harness) surface as unhandled rejections
-  // in the console — production callers always have the bridge wired,
-  // so this only matters for harness misconfigurations.
+  // §12.2 (Decision 13) + §12.6 (iter-5, Decision 16) — Cancel action
+  // factory. The toaster injects this into every `toast.loading` call
+  // (both the downloading-state and the retrying-state paths, plus the
+  // hydration spawn path). The onClick is fire-and-forget — the
+  // user-visible signal is the subsequent `download-cancelled` IPC event
+  // arriving on the bus, which the toaster's existing
+  // `download-cancelled` handler dismisses with `toast.dismiss`. The
+  // IPC's response Promise is intentionally discarded (`void`); errors
+  // thrown during click (e.g. preload bridge missing in a partial test
+  // harness) surface as unhandled rejections in the console — production
+  // callers always have the bridge wired, so this only matters for
+  // harness misconfigurations.
+  //
+  // The collaborator method is `cancelDownload` (NOT `cancelJob`) —
+  // see SyncActionsApi for the rename rationale. The toaster MUST NOT
+  // pre-emptively dismiss the toast in the click handler (would race
+  // the event-driven dismiss); pinned by test (12.2.8) + (12.6.10).
   function buildCancelAction(downloadJobId: string): {
     label: string;
     onClick: () => void;
@@ -597,7 +627,7 @@ export function createDownloadJobToaster(
     return {
       label: "Cancel",
       onClick: () => {
-        void syncApi.cancelJob({ downloadJobId });
+        void syncApi.cancelDownload({ downloadJobId });
       },
     };
   }

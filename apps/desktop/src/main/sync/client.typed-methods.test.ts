@@ -158,6 +158,13 @@ const wrappers: ReadonlyArray<{
     invoke: (c) => c.cancelJob({ jobId: "j-1" }),
   },
   {
+    // add-download-resilience §12.6.3 (iter-5) — cancelDownload typed
+    // method maps to the existing wire command sync:cancel-download.
+    method: "cancelDownload",
+    expectedCommand: SYNC_CHANNELS.cancelDownload,
+    invoke: (c) => c.cancelDownload({ downloadJobId: "d-1" }),
+  },
+  {
     method: "authenticateStart",
     expectedCommand: SYNC_CHANNELS.authenticateStart,
     invoke: (c) =>
