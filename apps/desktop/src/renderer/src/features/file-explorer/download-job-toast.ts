@@ -500,6 +500,14 @@ function formatRetryingDescription(ctx: {
   engineCause: string;
   waitMs: number;
 }): string {
+  // §12.4 (Decision 3 rewrite): on the rewrite-from-0 path the handler
+  // emits `download-retrying { waitMs: 0, engineCause: "range-not-honored" }`
+  // — no sleep precedes the rewrite, so "Waiting 0ms before retry"
+  // reads weirdly. Substitute "Restarting download." for the wait
+  // phrase when waitMs is zero.
+  if (ctx.waitMs === 0) {
+    return `Last error: ${ctx.engineCause}. Restarting download.`;
+  }
   return `Last error: ${ctx.engineCause}. Waiting ${ctx.waitMs}ms before retry.`;
 }
 

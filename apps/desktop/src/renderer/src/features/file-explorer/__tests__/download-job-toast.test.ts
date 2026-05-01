@@ -1472,6 +1472,56 @@ describe("createDownloadJobToaster — bytes-only progress fallback (§12.3)", (
     expect(msg).toBe("Downloading welcome.mp4 — 50.0 MB");
   });
 
+  it("(12.4.7) retrying-state description omits 'Waiting Xms' clause and uses 'Restarting download.' when waitMs === 0", () => {
+    // §12.4 (Decision 3 rewrite): the rewrite-from-0 path emits
+    // download-retrying { waitMs: 0, engineCause: "range-not-honored" }
+    // because the failure is deterministic (no point sleeping). Renderer
+    // surfaces "Last error: range-not-honored. Restarting download."
+    // instead of the awkward "Waiting 0ms before retry" phrasing.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.mp4" }),
+    );
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 2,
+        limit: 5,
+        waitMs: 0,
+        engineCause: "range-not-honored",
+      },
+    });
+    const retryCall = toast.loading.mock.calls[1] as [
+      string,
+      { description?: string },
+    ];
+    expect(retryCall[1].description).toBe(
+      "Last error: range-not-honored. Restarting download.",
+    );
+    // And a non-zero waitMs keeps the original format.
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 3,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      },
+    });
+    const retryCall2 = toast.loading.mock.calls[2] as [
+      string,
+      { description?: string },
+    ];
+    expect(retryCall2[1].description).toBe(
+      "Last error: network-error. Waiting 4000ms before retry.",
+    );
+  });
+
   it("(12.3.14) progress updates tick up the bytes count when total is unknown", () => {
     createDownloadJobToaster({ toast, eventApi });
     // Same job, three successive events — the toast should update in

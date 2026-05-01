@@ -627,6 +627,17 @@ export function makeFilesDownloadHandler(
     let consecutiveFailureCount = 0;
     const walltimeStartedAt = deps.now();
 
+    // §12.4 (Decision 3 rewrite) — sticky flag set on the FIRST
+    // range-not-honored encountered within this `files:download` call.
+    // Once set, ALL subsequent attempts within this call use
+    // `effectiveRangeStart = 0` (no Range header, full-body refetch on
+    // every attempt). The flag is intentionally not exposed via the
+    // wire — `download-retrying` events carry `engineCause:
+    // "range-not-honored"` for the user-visible diagnostic, then the
+    // toast smoothly transitions back to bytes-or-percentage progress
+    // as the rewrite-from-0 attempt drains. See design.md Decision 3.
+    let rangeUnsupported = false;
+
     const target: Target = { kind: "path", path: params.path };
 
     try {
@@ -665,8 +676,14 @@ export function makeFilesDownloadHandler(
             abortController.signal,
             attemptCtrl.signal,
           ]);
+          // §12.4 (Decision 3 rewrite) — gate `rangeStart` against the
+          // sticky `rangeUnsupported` flag. Once a range-not-honored
+          // event triggers rewrite-from-0, every subsequent attempt
+          // within this download skips the Range header. The strategy's
+          // existing `if (rangeStart > 0)` guard does the rest.
+          const effectiveRangeStart = rangeUnsupported ? 0 : bytesWritten;
           const options: DownloadOptions = {
-            rangeStart: bytesWritten,
+            rangeStart: effectiveRangeStart,
             signal: composedSignal,
             onProgress: (loaded, total) => {
               // Inline, low-overhead path: update registry every tick.
@@ -674,7 +691,7 @@ export function makeFilesDownloadHandler(
               // registry but is throttled; both converge so the latest
               // wins regardless of arrival order.
               deps.registry.update(downloadJobId, {
-                bytesDownloaded: bytesWritten + loaded,
+                bytesDownloaded: effectiveRangeStart + loaded,
                 contentLength: total !== null ? total : null,
               });
             },
@@ -783,15 +800,65 @@ export function makeFilesDownloadHandler(
             throw routedErr;
           }
 
-          // Validate the response against `rangeStart` (Decision 3
-          // safeguards). Skip on cycle 1 (rangeStart === 0) — the
-          // engine returns 200 OK without contentRange.
-          if (bytesWritten > 0) {
+          // Validate the response against the Range we sent (Decision 3
+          // safeguards). Skip when `effectiveRangeStart === 0` — no
+          // Range header was sent, the engine returns 200 OK without
+          // contentRange, and validation against contentRange is moot.
+          //
+          // §12.4 (Decision 3 rewrite): when `effectiveRangeStart > 0`
+          // (resume request) and the response carries no `contentRange`,
+          // the provider ignored Range. Adopt the rewrite-from-0 path:
+          // consume one env-retry budget slot, drop the partial,
+          // restart the cycle from byte 0 with `rangeUnsupported = true`
+          // sticky for the rest of this download. Strategy (b) per
+          // design.md Decision 3 — once a server has answered 200 to a
+          // Range request, retrying the same Range against the same
+          // URL is wasted bandwidth.
+          if (effectiveRangeStart > 0) {
             if (result.contentRange === undefined) {
-              // Range-not-honored: provider ignored the Range header.
-              throw new RangeNotHonoredError();
+              consecutiveFailureCount++;
+              const engineCause = "range-not-honored";
+              if (consecutiveFailureCount > CONSECUTIVE_FAIL_LIMIT) {
+                throw new ExhaustedRetriesError(engineCause);
+              }
+              const elapsed = deps.now() - walltimeStartedAt;
+              if (elapsed > WALLTIME_CEILING_MS) {
+                throw new WalltimeExceededError(engineCause);
+              }
+              // Emit `download-retrying` with `waitMs: 0` — no sleep
+              // before the rewrite, since the failure is deterministic
+              // provider behavior (not a transient blip). The renderer's
+              // `formatRetryingDescription` omits the "Waiting Xms"
+              // clause when `waitMs === 0` (see download-job-toast.ts).
+              deps.fsSyncBus.emit("download-retrying", {
+                downloadJobId,
+                datasourceId: params.datasourceId,
+                attempt: consecutiveFailureCount,
+                limit: CONSECUTIVE_FAIL_LIMIT,
+                waitMs: 0,
+                engineCause,
+              });
+              // Destroy the open response stream — it carries the full
+              // body the handler is about to discard. Leaving it
+              // draining wastes provider bandwidth and could keep the
+              // socket open into the next attempt.
+              const streamWithDestroy = result.stream as unknown as {
+                destroy?: (err?: Error) => void;
+              };
+              if (typeof streamWithDestroy.destroy === "function") {
+                streamWithDestroy.destroy();
+              }
+              // Drop the partial — the next attempt opens with
+              // `flags: "w"` and re-pipes from byte 0. unlink failure
+              // is non-fatal (the next `flags: "w"` open truncates).
+              await deps.fs.unlink(params.toPath).catch(() => {
+                // intentionally silent — see Decision 3 step 5
+              });
+              rangeUnsupported = true;
+              bytesWritten = 0;
+              continue;
             }
-            if (result.contentRange.start !== bytesWritten) {
+            if (result.contentRange.start !== effectiveRangeStart) {
               throw new RangeMismatchError();
             }
           }
@@ -799,10 +866,19 @@ export function makeFilesDownloadHandler(
 
           // Pipe the stream to disk. `flags: "r+"` requires the file
           // to already exist (it does — cycle 1 created it with "w").
-          const flags: "w" | "r+" = bytesWritten === 0 ? "w" : "r+";
+          //
+          // §12.4 (Decision 3 rewrite): gate on `effectiveRangeStart`,
+          // not `bytesWritten`. After rewrite-from-0, `bytesWritten`
+          // may carry the partial-pipe count from a subsequent attempt
+          // that errored, but `effectiveRangeStart === 0` means the
+          // server is sending a fresh full-body — we MUST truncate
+          // (`flags: "w"`) to overwrite the partial. Using `bytesWritten`
+          // here would open `flags: "r+"` and write the new bytes into
+          // the partial's tail, corrupting the file.
+          const flags: "w" | "r+" = effectiveRangeStart === 0 ? "w" : "r+";
           const sink = deps.fs.createWriteStream(params.toPath, {
             flags,
-            start: bytesWritten,
+            start: effectiveRangeStart,
           });
           try {
             await deps.fs.pipeline(
@@ -1240,7 +1316,8 @@ export class WalltimeExceededError extends Error {
 
 // ---------------------------------------------------------------------------
 // Disposition policy — terminal causes that delete the on-disk partial
-// (per add-download-resilience design.md Decision 6).
+// (per add-download-resilience design.md Decision 6 + §12.4 Decision 3
+// rewrite).
 //
 // | Terminal cause          | Disposition |
 // |-------------------------|-------------|
@@ -1249,22 +1326,30 @@ export class WalltimeExceededError extends Error {
 // | auth-revoked            | Keep        |
 // | User cancellation       | Keep        |
 // | Byte-count-mismatch     | Keep        |  ← preserve bandwidth investment
-// | Range-not-honored       | DELETE      |
 // | Range-mismatch          | DELETE      |
 // | Integrity-failed        | DELETE      |
+//
+// §12.4 (Decision 3 rewrite): `RangeNotHonoredError` was REMOVED from
+// the set — it is no longer a terminal cause under normal flow. The
+// new rewrite-from-0 path (handler inner loop, post-`engine.downloadFile`
+// validation block) does its own non-terminal in-flight `unlink` BEFORE
+// continuing the cycle, so the terminal-disposition path never sees it.
+// The class is retained as a defensive sentinel; if a defect ever
+// causes it to propagate to terminal, the disposition default ("keep")
+// applies — consistent with the env-budget-exhausted disposition.
 //
 // The handler's outer terminal catch (§4.6) tests `err.constructor` against
 // this set before emitting `download-failed`; matches trigger
 // `deps.fs.unlink(toPath)` (failure swallowed). Membership invariants are
-// pinned by the §3.3 unit test — three classes, ByteCountMismatchError
-// explicitly excluded.
+// pinned by the §3.3 / §12.4 unit tests — two classes (range-mismatch +
+// integrity-failed); ByteCountMismatchError explicitly excluded;
+// RangeNotHonoredError explicitly excluded post-iter-4.
 // ---------------------------------------------------------------------------
 
 type ErrorConstructor = new (...args: never[]) => Error;
 
 export const DELETE_ON_TERMINAL: ReadonlySet<ErrorConstructor> =
   new Set<ErrorConstructor>([
-    RangeNotHonoredError,
     RangeMismatchError,
     IntegrityFailedError,
   ]);
