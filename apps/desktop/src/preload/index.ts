@@ -57,6 +57,8 @@ import type {
   SyncAuthenticateCompleteResponse,
   SyncAuthenticateStartRequest,
   SyncAuthenticateStartResponse,
+  SyncCancelDownloadRequest,
+  SyncCancelDownloadResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
   SyncEnqueueMirrorRequest,
@@ -240,6 +242,16 @@ const api = {
       req: SyncCancelJobRequest,
     ): Promise<SyncCancelJobResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.cancelJob, req),
+    // add-download-resilience §12.6 (iter-5, Decision 16) — the renderer
+    // toaster's Cancel button uses this method, NOT cancelJob. The two
+    // are distinct: cancelJob targets upload jobs ({ jobId }), this one
+    // targets in-flight downloads ({ downloadJobId }). Pre-iter-5 the
+    // toaster collision-routed via cancelJob, which is why this bridge
+    // was added.
+    cancelDownload: (
+      req: SyncCancelDownloadRequest,
+    ): Promise<SyncCancelDownloadResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.cancelDownload, req),
     authenticateStart: (
       req: SyncAuthenticateStartRequest,
     ): Promise<SyncAuthenticateStartResponse> =>

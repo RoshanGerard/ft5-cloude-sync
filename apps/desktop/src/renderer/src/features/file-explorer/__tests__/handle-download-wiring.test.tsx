@@ -193,11 +193,25 @@ describe("FileExplorer handleDownload wiring (§23/§24 follow-up)", () => {
     expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
-  // Post-archive bug fix — Bug 3: surfaces the failure envelope as a
-  // user-visible Sonner toast. Pre-fix the click handler did
-  // `void dispatchDownload(...)` and the failure response was silently
-  // dropped, so the user reported "nothing happens".
-  it("on { ok: false, error } envelope, surfaces a toast.error with the message", async () => {
+  // add-download-resilience §12.1 (Decision 15) — single failure-toast
+  // emission source. The toaster (download-job-toast.ts) is the SOLE
+  // emitter of `Download failed: ...` toasts for in-flight failures;
+  // it consumes the `download-failed` IPC event. The orchestrator
+  // dispatch caller in file-explorer.tsx SHALL NOT also toast on the
+  // response envelope's ok:false branch — that path produced a
+  // duplicate toast (one with Retry from the toaster, one without
+  // from this dispatch caller) when both the response AND the
+  // event arrived for the same logical failure (the §11.19 wifi-drop
+  // smoke reproduced this on a real Drive download).
+  //
+  // Pre-iter-4 the dispatch caller did `dispatchDownload(...).then((r)
+  // => { if (!r.ok) toast.error(...) })`. Iter-4 removes the .then
+  // toast; the .catch is retained for IPC-reject (where no event flows).
+  // Pre-job validation failures (toPath / concurrent / resolveClient)
+  // return ok:false WITHOUT emitting the event; v1 accepts those go
+  // unsignalled at the toast layer (rare edge cases — see Decision 15
+  // "Future tightening" for the future fix).
+  it("on { ok: false, error } envelope, does NOT emit a toast.error from the dispatch caller (toaster owns failure UX)", async () => {
     window.localStorage.setItem(
       DOWNLOADS_DEFAULT_FOLDER_KEY,
       "/Users/alice/Downloads/ft5",
@@ -209,7 +223,10 @@ describe("FileExplorer handleDownload wiring (§23/§24 follow-up)", () => {
       path: "/welcome.pdf",
     });
     installApiMock([entry]);
-    // Override the default success mock with a failure envelope.
+    // Override the default success mock with a failure envelope. This
+    // simulates a post-job-creation failure where the toaster's
+    // download-failed event handler would render the user-visible toast
+    // (the toaster has its own test surface in download-job-toast.test.ts).
     downloadMock.mockReset();
     downloadMock.mockResolvedValue({
       ok: false,
@@ -232,9 +249,62 @@ describe("FileExplorer handleDownload wiring (§23/§24 follow-up)", () => {
     );
     fireEvent.click(downloadItem);
 
+    // Wait for the dispatch to complete (downloadMock resolved).
+    await waitFor(() => {
+      expect(downloadMock).toHaveBeenCalledTimes(1);
+    });
+
+    // Drain any microtasks the .then handler might have queued — if the
+    // production code STILL had the .then(toast.error) block, this
+    // would be when toastErrorMock fires. Iter-4 has removed the block
+    // so the assertion below holds.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  // §12.1 — IPC-reject still surfaces via .catch. This is the
+  // categorically-different failure mode (the IPC layer itself rejects;
+  // no `download-failed` event ever flows) where the event-driven
+  // toaster has nothing to render and the .catch toast is the only
+  // user signal.
+  it("on IPC-reject (downloadMock rejects), the .catch path emits a toast.error with the rejection message", async () => {
+    window.localStorage.setItem(
+      DOWNLOADS_DEFAULT_FOLDER_KEY,
+      "/Users/alice/Downloads/ft5",
+    );
+
+    const entry = seedEntry({
+      id: "f1",
+      name: "welcome.pdf",
+      path: "/welcome.pdf",
+    });
+    installApiMock([entry]);
+    // Override with a REJECTING mock to exercise the .catch branch.
+    downloadMock.mockReset();
+    downloadMock.mockRejectedValue(new Error("preload bridge unavailable"));
+
+    render(<FileExplorer datasourceId="ds-1" />);
+
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>(
+        '[data-testid="explorer-row"]',
+      );
+      if (found === null) throw new Error("row not found");
+      return found;
+    });
+
+    fireEvent.contextMenu(row);
+    const downloadItem = await screen.findByTestId(
+      "file-context-menu-download",
+    );
+    fireEvent.click(downloadItem);
+
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledTimes(1);
     });
-    expect(toastErrorMock).toHaveBeenCalledWith("Download failed: boom");
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "Download failed: preload bridge unavailable",
+    );
   });
 });

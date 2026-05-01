@@ -54,6 +54,42 @@ Events (per `EVENT_NAMES`): `job-enqueued`, `job-started`,
 `job-recovered`, `sync-completed`, `source-unavailable`,
 `network-available`, `credential-store-permission-violation`.
 
+## Download retry architecture
+
+Mid-stream download recovery is layered across three independent
+mechanisms — each owns one failure class, none crosses budgets:
+
+1. **Engine `withRefresh` (Layer 1)** — `auth-expired` mid-stream during
+   a single GET. The engine refreshes the token and re-issues a
+   `Range: bytes=N-` GET, splicing the new source into the same
+   `Readable`. One-shot, internal to the engine. Consumer sees one
+   continuous stream.
+2. **Handler auth-expired retry (Layer 2)** — the post-refresh GET
+   itself comes back `auth-expired`. The handler retries the cycle
+   ONCE per `files:download` invocation; if the second cycle also
+   fails on auth, the refresh token is dead and the handler emits
+   `download-failed { tag: "auth-revoked" }`.
+3. **Handler environmental retry (Layer 3, this change)** — network
+   drop, rate-limit, or provider 5xx mid-stream. The handler enforces
+   a 5-attempt consecutive-failure budget plus a 30-min wall-time
+   ceiling, with exponential backoff (`min(1000 * 2^(n-1), 30000) ms`)
+   and `Retry-After` honored when the engine emits one. The renderer
+   sees a `download-retrying { attempt, limit, waitMs, engineCause }`
+   event before each sleep; the toast switches its sub-status to
+   `Reconnecting… (n/5)` while the byte counter holds. On budget
+   exhaustion, `download-failed { tag: "exhausted-retries" }`. Layer 3
+   is additive: `auth-expired` keeps its independent Layer 2 slot, no
+   double-counting.
+
+Range-not-honored, range-mismatch, and integrity-failed are hard-fail
+terminals — the partial file is unlinked before the failure event so
+the renderer sees a consistent post-disposition state. Byte-count-
+mismatch keeps the partial (the bytes are valid, just truncated).
+
+See `openspec/changes/archive/add-download-resilience/design.md` for
+the full decision rationale (retry budget, error allowlist, partial
+disposition table, renderer toast contract).
+
 ## Dev mode
 
 Run the service against a distinct pipe + data dir so it doesn't

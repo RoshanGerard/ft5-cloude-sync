@@ -556,3 +556,110 @@ and at least one real datasource registered, run
 **Owner:** unassigned. To do during the next environment-loop pass,
 likely paired with the still-open §13.1 / §13.2 / §13.3 flows and
 `implement-datasource-onboarding §33.x`.
+
+---
+
+## add-download-resilience — §9.4 manual wifi-drop smoke + §10.3 follow-up window
+
+**Scenario** (per `openspec/changes/add-download-resilience/tasks.md` §9.4):
+Cold-start the desktop app via `pnpm dev` from the worktree root, log
+into a datasource (Drive / OneDrive / S3 — any with a 100MB+ file),
+start a download. When the toast shows ~30–60% progress, disable wifi
+for ~10 seconds, then re-enable. Watch the toast through the outage
+and resume.
+
+**Expected visual contract** (per design.md Decision 5):
+
+1. Before outage — `Downloading welcome.pdf — 62%` (Sonner loading
+   template, ONE spinner glyph, percentage in the message).
+2. During outage — title `Downloading welcome.pdf`; subtext
+   `Reconnecting… (1/5)` (or `(2/5)`, `(3/5)` depending on outage
+   length and exponential backoff schedule); ONE spinner glyph
+   replacing the percentage; progress bar pauses at the last byte
+   position (does not rewind).
+3. After resume — snaps back to `Downloading welcome.pdf — 63%` (or
+   wherever the byte counter reaches); the loading-template chrome
+   re-renders in place.
+4. On completion — final downloaded file's hash matches the provider-
+   advertised hash.
+
+**Specific failure modes to watch for** (advisor checkpoint #2):
+
+The retrying-state implementation in `download-job-toast.ts` reuses the
+loading toast id when calling `toast.custom(buildRetryingRender, { id:
+existing.toastId })`. Same-id reuse is REQUIRED by Decision 5's
+"progress bar position remains unchanged" constraint — Sonner keeps
+the slot when the id matches. However, the success-path post-archive
+fix at lines 469-472 (commit `2762401`) demonstrated that on a
+loading→custom transition, Sonner's loading-variant chrome can persist
+alongside the custom render, OR the custom render can inherit a
+dismiss-animation race. Either failure manifests as one of:
+
+- **Two spinners visible simultaneously** during the Reconnecting phase
+  (loading-template spinner-chrome leaking through the custom render).
+- **Stale `62%` text** still showing alongside the Reconnecting subtext
+  (loading-template message-text leaking).
+- **Toast disappears prematurely** during the loading→custom or
+  custom→loading swap (dismiss-animation race resurrecting).
+
+If ANY of those reproduce, the fix is fresh-id pattern: dismiss the
+loading id and spawn the custom render on a fresh id (e.g.
+`<toastId>-retrying`) for the retrying state, then dismiss that id
+and spawn the loading template on `<toastId>-resumed` on the next
+`downloading` event. This is a code change, NOT a follow-up
+PENDING_TC entry.
+
+**Status:** PENDING — visually unconfirmed. Closes §9.4 (manual smoke)
+and §10.3 (PENDING_TC entry IF §9.4 surfaces unexpected behavior — this
+entry is the §10.3 placeholder; the moment §9.4 is run successfully,
+both boxes can be flipped or, if a failure mode reproduces, the fix-
+cycle dispatches and §10.3 lands a PENDING_TC entry pointing at the
+fix commit).
+
+**Why deferred:** Requires a running dev build with live network
+manipulation. The component pieces are fully unit-tested:
+
+- **Service handler retry-loop:** `services/fs-sync/src/commands/__tests__/files-download.test.ts`
+  §6.4–§6.16 (13 deterministic integration tests using
+  `vi.useFakeTimers()`) cover network-drop recovery, budget exhaustion,
+  byte-progress reset, walltime ceiling, `retryAfterMs` honor, cancel-
+  during-sleep, auth-revoked bypass, range-not-honored / range-mismatch
+  / integrity-failed delete-before-emit, byte-count-mismatch keep,
+  unlink-failure non-fatal, and auth-expired co-existence with
+  environmental retry. 5 consecutive sync-service runs (§9.6) confirmed
+  zero flake.
+- **Renderer toast retrying state:** `apps/desktop/src/renderer/src/features/file-explorer/__tests__/download-job-toast.test.ts`
+  §8.1–§8.8 plus §8.cov-1 / §8.cov-2 cover: subtext switch on
+  download-retrying, snap-back to progress on next downloading,
+  tooltip with engineCause + waitMs, auth-expired invisible to
+  renderer, cancel during retrying state, hydration → retrying
+  transition, hydration → downloading no-op, exhausted-retries tag
+  rendered with verbatim message, retrying-as-first-event defensive
+  path, retrying → failed transition with retry callback survival.
+- **Wire shape coherence:** verified by the final cross-cutting
+  reviewer (commit `9bccafd` predecessor) — `download-retrying`
+  payload declared once in `packages/ipc-contracts`, emitted by the
+  service handler, mirrored in the renderer's local DownloadEvent
+  union; no field declared-but-unconsumed or consumed-but-undeclared.
+
+The Sonner runtime swap behavior (which the chrome-leak failure modes
+above turn on) is the only thing the unit tests cannot observe. The
+`(c-postsmoke)` test at `download-job-toast.test.ts:224-292` documents
+the success-path discovery; the retrying-state chrome behavior may or
+may not reproduce the same bug — only manual visual verification can
+tell.
+
+**Re-verification command:**
+
+```bash
+cd <worktree-root>
+pnpm dev
+```
+
+Then: log in to a datasource, queue a 100MB+ download, drop wifi ~10s
+mid-flight, observe the toast through the three states above.
+
+**Owner:** unassigned. Pair with any other manual-QA pass against the
+dev build; the §9.4 smoke is independent of all other PENDING_TC
+entries (does not require real GCP creds, does not gate on
+`implement-datasource-onboarding`, etc.).

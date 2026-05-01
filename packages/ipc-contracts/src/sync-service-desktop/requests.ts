@@ -111,6 +111,30 @@ export type SyncCancelJobResponse =
   | { readonly cancelled: true }
   | { readonly error: NotCancelableErrorShape };
 
+// ---- cancelDownload (INFALLIBLE, idempotent) ----------------------------
+//
+// add-download-resilience §12.6 (Decision 16) — the desktop renderer-facing
+// bridge for the existing `sync:cancel-download` service command. The
+// service handler is idempotent: an unknown `downloadJobId` resolves to
+// `{ cancelled: false }` rather than erroring. Hence flat-result, NOT the
+// fallible `{ cancelled } | { error }` union of `cancelJob`.
+//
+// Pre-iter-5, the renderer's toaster called `cancelJob({ downloadJobId })`
+// by mistake — the upload-job `cancelJob` happens to live on the same
+// `window.api.sync` surface and the property-shape mismatch was silent
+// at runtime. The dedicated `cancelDownload` request type closes the
+// type-level loophole: `SyncCancelDownloadRequest`'s `downloadJobId`
+// field has no overlap with `SyncCancelJobRequest`'s `jobId`, so a
+// future renderer caller cannot satisfy one with the other's shape.
+
+export interface SyncCancelDownloadRequest {
+  readonly downloadJobId: string;
+}
+
+export interface SyncCancelDownloadResponse {
+  readonly cancelled: boolean;
+}
+
 // ---- authenticateStart / authenticateComplete / authenticateCancel -------
 //
 // Per `implement-datasource-onboarding` design.md Decisions 7 + 9, the

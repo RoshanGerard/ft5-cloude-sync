@@ -290,6 +290,21 @@ export class SyncClient {
     return this.request("sync:cancel-job", params, opts);
   }
 
+  /**
+   * add-download-resilience §12.6 (iter-5, Decision 16) — typed wrapper
+   * for the existing `sync:cancel-download` wire command. Idempotent:
+   * an unknown `downloadJobId` resolves with `{ cancelled: false }`
+   * rather than rejecting. The renderer-facing
+   * `window.api.sync.cancelDownload` proxy at the desktop main IPC layer
+   * delegates here.
+   */
+  cancelDownload(
+    params: CommandParams<"sync:cancel-download">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:cancel-download">> {
+    return this.request("sync:cancel-download", params, opts);
+  }
+
   authenticateStart(
     params: CommandParams<"sync:authenticate-start">,
     opts?: { timeoutMs?: number },

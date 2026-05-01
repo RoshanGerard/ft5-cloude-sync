@@ -33,6 +33,8 @@ import type {
   SyncAuthenticateCompleteResponse,
   SyncAuthenticateStartRequest,
   SyncAuthenticateStartResponse,
+  SyncCancelDownloadRequest,
+  SyncCancelDownloadResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
   SyncEnqueueMirrorRequest,
@@ -146,6 +148,9 @@ declare global {
           req: SyncEnqueueMirrorRequest,
         ): Promise<SyncEnqueueMirrorResponse>;
         cancelJob(req: SyncCancelJobRequest): Promise<SyncCancelJobResponse>;
+        cancelDownload(
+          req: SyncCancelDownloadRequest,
+        ): Promise<SyncCancelDownloadResponse>;
         authenticateStart(
           req: SyncAuthenticateStartRequest,
         ): Promise<SyncAuthenticateStartResponse>;

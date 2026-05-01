@@ -38,6 +38,16 @@ export const FilesErrorTag = {
   // download toaster treats cancellation as a soft-state (no error toast,
   // partial-file disclosure UI) rather than a failure.
   Cancelled: "cancelled",
+  // `"exhausted-retries"` (per add-download-resilience design.md Decision 7).
+  // Surfaces terminal failure of an in-flight `files:download` after the
+  // handler's environmental-retry budget has been spent (5 consecutive
+  // mid-stream failures with no byte progress, OR the 30-min wall-time
+  // ceiling). Both exhaustion modes share this tag; the discriminator
+  // (count vs wall-time) lives in the `message` field as
+  // `"exhausted-retries: <engineCause>"` or `"walltime-exceeded: <engineCause>"`.
+  // Renderer toasts surface a Retry button; the `cause` engine-tag is
+  // diagnostic-only and lives in `message`.
+  ExhaustedRetries: "exhausted-retries",
 } as const;
 export type FilesErrorTag =
   (typeof FilesErrorTag)[keyof typeof FilesErrorTag];

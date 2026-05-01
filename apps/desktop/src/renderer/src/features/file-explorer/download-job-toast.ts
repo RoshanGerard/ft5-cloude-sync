@@ -18,11 +18,16 @@
 //   - first event for an unseen id → spawn loading toast + record
 //     `(toastId, basename)`
 //   - subsequent `downloading` events → update existing toast id with
-//     the new progress percentage
+//     the new progress percentage (description cleared)
+//   - `download-retrying` → reissue `toast.loading` on the same id with
+//     a "Reconnecting (attempt/limit)" message and the diagnostic
+//     context (`engineCause`, `waitMs`) as Sonner's `description` field
+//     (see add-download-resilience §11.16 / Decision 5 v2)
 //   - terminal `file-downloaded` → flip via `toast.custom()` to the V2
 //     dual-action success layout (Show in folder + Open)
 //   - terminal `download-failed` → red `toast.error` with `richColors`
-//     and a Retry action
+//     and a Retry action (description cleared so prior retrying-state
+//     diagnostic doesn't carry over via Sonner's merge)
 //   - terminal `download-cancelled` → silent `toast.dismiss`
 //
 // App-launch hydration uses the same spawn path. `hydrateActiveDownloads`
@@ -49,6 +54,33 @@ export type DownloadEvent =
         readonly datasourceId: string;
         readonly progress: number;
         readonly path: string;
+        // §12.3 (Decision 14) — bytes-only progress fallback. The
+        // renderer formats `<X>%` when bytesTotal !== null && > 0;
+        // otherwise it falls back to `<bytesLoaded MB>` (or GB at
+        // 1 GB+ scale). bytesLoaded is the engine's byte-counting
+        // Transform's running count; bytesTotal mirrors the
+        // engine response's contentLength literally (null when the
+        // provider's Content-Length header is absent / empty).
+        readonly bytesLoaded: number;
+        readonly bytesTotal: number | null;
+      };
+    }
+  | {
+      readonly kind: "download-retrying";
+      readonly payload: {
+        readonly downloadJobId: string;
+        readonly datasourceId: string;
+        readonly attempt: number;
+        readonly limit: number;
+        readonly waitMs: number;
+        // `engineCause` is the engine-side `DatasourceErrorTag` verbatim
+        // (a deliberate engine-taxonomy leak, scoped to diagnostic
+        // decoration only — see add-download-resilience design.md
+        // Decision 9). Kept as `string` here because the renderer SHALL
+        // NOT branch on its value; widening to `string` keeps the wire
+        // contract stable while preventing accidental switch / match
+        // patterns from the renderer side.
+        readonly engineCause: string;
       };
     }
   | {
@@ -69,6 +101,10 @@ export type DownloadEvent =
           | "auth-revoked"
           | "disconnected"
           | "rate-limited"
+          // add-download-resilience §1: terminal tag for both
+          // count-exhaustion and walltime-exhaustion. The discriminator
+          // ("which budget exhausted") lives in the message field.
+          | "exhausted-retries"
           | "other"
           | "invalid-datasource";
         readonly message: string;
@@ -89,6 +125,7 @@ export type DownloadEventKind = DownloadEvent["kind"];
 
 const DOWNLOAD_EVENT_KINDS: ReadonlySet<DownloadEventKind> = new Set([
   "downloading",
+  "download-retrying",
   "file-downloaded",
   "download-failed",
   "download-cancelled",
@@ -114,7 +151,24 @@ export interface DownloadJobSummary {
 export interface ToastApi {
   loading(
     message: string,
-    opts?: { id?: string | number; duration?: number },
+    opts?: {
+      id?: string | number;
+      duration?: number;
+      // §11.16 (iter-3): retrying state surfaces `engineCause` + `waitMs`
+      // diagnostic context as Sonner's `description` field. Required on
+      // the resume-from-retrying path too — passed as `""` (falsy) to
+      // clear the prior retrying-state description from Sonner's
+      // `Observer.create()` merge (otherwise the diagnostic text lingers
+      // on the resumed downloading toast). See Decision 5 v2.
+      description?: string;
+      // §12.2 (Decision 13): active download toast renders a Cancel
+      // action button via Sonner's built-in `action` option. Sonner
+      // renders `toast.action` on the loading template (line 812-824
+      // of `node_modules/sonner/dist/index.mjs`). The toaster wires
+      // `onClick` to call `syncApi.cancelDownload({ downloadJobId })` —
+      // see the `download-retrying` and `downloading` handlers below.
+      action?: { label: string; onClick: () => void };
+    },
   ): string | number;
   success(
     message: string,
@@ -126,6 +180,12 @@ export interface ToastApi {
       id?: string | number;
       duration?: number;
       richColors?: boolean;
+      // §11.16 (iter-3): on the retrying→failed path the prior
+      // retrying-state `toast.loading` set a description; the failure
+      // call must pass `description: ""` to override it via Sonner's
+      // merge so the diagnostic text doesn't show under the failure
+      // message.
+      description?: string;
       action?: { label: string; onClick: () => void };
     },
   ): string | number;
@@ -166,10 +226,37 @@ export interface FilesActionsApi {
   showSavedInFolder(savedPath: string): Promise<void>;
 }
 
+/**
+ * §12.2 (Decision 13) + §12.6 (iter-5, Decision 16) — active-download
+ * Cancel-button bridge. The toaster's `toast.loading(...)` call's Cancel
+ * action wires its onClick to `syncApi.cancelDownload({ downloadJobId })`.
+ * Production resolves `window.api.sync.cancelDownload` lazily (mirroring
+ * the `filesApi` pattern); tests inject a stub. Fire-and-forget — the
+ * toaster does NOT await the Promise; the user-visible signal is the
+ * subsequent `download-cancelled` IPC event arriving on the bus, which
+ * the toaster's existing `download-cancelled` handler (silent
+ * `toast.dismiss`) consumes.
+ *
+ * **Why the dedicated method (NOT `cancelJob`)**: pre-iter-5 this
+ * collaborator was named `cancelJob` and the production resolver looked
+ * up `window.api.sync.cancelJob`. That preload method exists, but it is
+ * the UPLOAD-job cancel (`SYNC_CHANNELS.cancelJob = "sync:cancel-job"`,
+ * shape `{ jobId }`). The toaster's `{ downloadJobId }` payload routed
+ * via name collision and the actual download abort never ran. Iter-5
+ * (Decision 16) wires a dedicated `cancelDownload` end-to-end
+ * (channel/preload/main IPC/SyncClient) and renames the toaster's
+ * collaborator in lockstep so the type system + production resolver
+ * forbid the regression.
+ */
+export interface SyncActionsApi {
+  cancelDownload(req: { downloadJobId: string }): Promise<unknown>;
+}
+
 export interface DownloadToasterDeps {
   readonly toast?: ToastApi;
   readonly eventApi?: DownloadEventApi;
   readonly filesApi?: FilesActionsApi;
+  readonly syncApi?: SyncActionsApi;
 }
 
 export interface DownloadToaster {
@@ -205,6 +292,12 @@ export interface DownloadToaster {
 
 function sonnerAdapter(): ToastApi {
   return {
+    // `loading` and `error` forward `description` verbatim (Sonner's own
+    // `loading`/`error` accept it). The `description: ""` clear-pattern
+    // used on resume / failure-from-retrying transitions relies on
+    // Sonner's `Observer.create()` spread merging the explicit empty
+    // string over any prior description — see download-job-toast.ts
+    // §11.16 retrying-handler doc-comment for the merge mechanics.
     loading: (message, opts) =>
       sonnerToast.loading(message, opts) as string | number,
     success: (message, opts) =>
@@ -262,6 +355,50 @@ function resolveEventApi(
         }
       });
       return unsubscribe;
+    },
+  };
+}
+
+function resolveSyncApi(
+  injected: SyncActionsApi | undefined,
+): SyncActionsApi {
+  if (injected) return injected;
+  // Production fallback: pull from the preload bridge. Lazy resolution —
+  // we look up `window.api.sync.cancelDownload` at click time so the
+  // toaster can mount safely in test harnesses without the preload (e.g.
+  // node-style tests for unrelated code paths). Throwing at the click
+  // site keeps the failure mode diagnosable; non-throwing here would
+  // silently swallow user clicks.
+  //
+  // §12.6 (iter-5, Decision 16): the lookup MUST be `cancelDownload`,
+  // not `cancelJob`. The latter is the UPLOAD-job cancel; using it on
+  // a `{ downloadJobId }` payload silently no-ops because the upload-job
+  // handler ignores the property mismatch. The dedicated `cancelDownload`
+  // preload method routes through `SYNC_CHANNELS.cancelDownload` →
+  // `sync:cancel-download` → `services/fs-sync/...` cancel handler →
+  // AbortController.abort() → `download-cancelled` event back on the
+  // IPC bus → toaster's `download-cancelled` handler dismisses the
+  // toast. End-to-end test coverage in
+  // `preload/__tests__/sync-surface.test.ts` and the §12.6.x toaster
+  // tests below.
+  type CancelFn = (req: { downloadJobId: string }) => Promise<unknown>;
+  return {
+    async cancelDownload(req) {
+      const fn = (
+        globalThis as unknown as {
+          window?: {
+            api?: {
+              sync?: { cancelDownload?: CancelFn };
+            };
+          };
+        }
+      ).window?.api?.sync?.cancelDownload;
+      if (typeof fn !== "function") {
+        throw new Error(
+          "createDownloadJobToaster: window.api.sync.cancelDownload is unavailable",
+        );
+      }
+      return fn(req);
     },
   };
 }
@@ -332,12 +469,89 @@ function basenameFromPath(path: string): string {
   return lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
 }
 
+/**
+ * §12.3 (Decision 14) + §12.7 (Decision 17c) — progress message format.
+ *
+ * - When `bytesTotal !== null && bytesTotal > 0`: combined percent + size
+ *   format `Downloading <basename> — <pct>% (<loaded units> / <total
+ *   units>)`. `pct` is the integer percentage computed from
+ *   `bytesLoaded / bytesTotal`; the caller may pass the pre-computed
+ *   value via `progressPct` (matching the wire-shape's `progress` field
+ *   — the handler already does the floor + clamp). **Total-driven unit
+ *   scaling**: when `bytesTotal >= 1 GB`, BOTH `loaded` and `total` are
+ *   rendered as GB with 2 decimal places (`(X.XX GB / Y.YY GB)`); else
+ *   BOTH as MB with 1 decimal place (`(X.X MB / Y.Y MB)`). Per-value
+ *   scaling (e.g. `600 MB / 4 GB`) is intentionally NOT used — mixing
+ *   units in one parenthetical reads as a typo.
+ * - When `bytesTotal === null` (rare path — fires only when BOTH the
+ *   HTTP `Content-Length` AND the metadata-derived size are absent,
+ *   e.g. a Google Docs export where the export-stream size is genuinely
+ *   unknowable): bytes-only fallback `Downloading <basename> — <X> MB`
+ *   where `X = (bytesLoaded / 1_048_576).toFixed(1)`. When `bytesLoaded
+ *   >= 1 GB`, scales to `<X> GB` with two decimal places.
+ *
+ * Iter-5 §12.7 introduced the service-side metadata prefetch
+ * (`client.getMetadata(target)` before the cycle loop), which broadens
+ * `bytesTotal`'s wire semantics from "raw Content-Length" to "best-known
+ * total size of the resource". Most Drive native files now reach the
+ * percent+size branch; the bytes-only fallback shrinks to true edge
+ * cases (Doc-export, folder downloads, mid-stream metadata loss).
+ */
 function formatProgressMessage(
   basename: string,
   progressPct: number,
+  bytesLoaded: number,
+  bytesTotal: number | null,
 ): string {
-  const clamped = Math.max(0, Math.min(100, Math.round(progressPct)));
-  return `Downloading ${basename} — ${clamped}%`;
+  const ONE_GB = 1_073_741_824;
+  const ONE_MB = 1_048_576;
+  if (bytesTotal !== null && bytesTotal > 0) {
+    const clamped = Math.max(0, Math.min(100, Math.round(progressPct)));
+    // §12.7 Decision 17c — total-driven unit scaling.
+    if (bytesTotal >= ONE_GB) {
+      const loaded = (bytesLoaded / ONE_GB).toFixed(2);
+      const total = (bytesTotal / ONE_GB).toFixed(2);
+      return `Downloading ${basename} — ${clamped}% (${loaded} GB / ${total} GB)`;
+    }
+    const loaded = (bytesLoaded / ONE_MB).toFixed(1);
+    const total = (bytesTotal / ONE_MB).toFixed(1);
+    return `Downloading ${basename} — ${clamped}% (${loaded} MB / ${total} MB)`;
+  }
+  // Bytes-only fallback (Decision 14, retained for the rare both-sources-
+  // missing case described in the docstring above).
+  if (bytesLoaded >= ONE_GB) {
+    return `Downloading ${basename} — ${(bytesLoaded / ONE_GB).toFixed(2)} GB`;
+  }
+  return `Downloading ${basename} — ${(bytesLoaded / ONE_MB).toFixed(1)} MB`;
+}
+
+// §11.16 (iter-3): retrying state shares the `toast.loading` render mode
+// with the downloading state — only the message + description swap. Same
+// id, same chrome (Sonner's loading-template spinner glyph stays
+// visible). The earlier `toast.custom` approach (iter-2) was abandoned
+// because Sonner's `Observer.create()` carries the prior `type:
+// 'loading'` over to the custom render, leaving the spinner-chrome
+// overlay on top of the hand-rolled JSX.
+function formatRetryingMessage(
+  basename: string,
+  ctx: { attempt: number; limit: number },
+): string {
+  return `Downloading ${basename} — Reconnecting (${ctx.attempt}/${ctx.limit})`;
+}
+
+function formatRetryingDescription(ctx: {
+  engineCause: string;
+  waitMs: number;
+}): string {
+  // §12.4 (Decision 3 rewrite): on the rewrite-from-0 path the handler
+  // emits `download-retrying { waitMs: 0, engineCause: "range-not-honored" }`
+  // — no sleep precedes the rewrite, so "Waiting 0ms before retry"
+  // reads weirdly. Substitute "Restarting download." for the wait
+  // phrase when waitMs is zero.
+  if (ctx.waitMs === 0) {
+    return `Last error: ${ctx.engineCause}. Restarting download.`;
+  }
+  return `Last error: ${ctx.engineCause}. Waiting ${ctx.waitMs}ms before retry.`;
 }
 
 function formatSeededRatio(
@@ -373,6 +587,20 @@ interface ToastEntry {
    * paths can plausibly race; this flag is the renderer-side guard.
    */
   readonly terminal?: boolean;
+  /**
+   * Marker set on `download-retrying` events; cleared on the next
+   * `downloading` event for the same jobId (per add-download-resilience
+   * §7.3). §11.16 (iter-3): the marker no longer signals a render-mode
+   * swap — both downloading and retrying use `toast.loading`. It is
+   * still useful as state-transition documentation and to support any
+   * future logic that needs to know the toast was last in a retry
+   * sleep. Production logic does not currently branch on it.
+   *
+   * The retry context itself is not retained: the renderer SHALL NOT
+   * branch on `engineCause` per Decision 9, and the spec only requires
+   * the context for the duration of the retrying-state render itself.
+   */
+  readonly retrying?: boolean;
 }
 
 /**
@@ -392,6 +620,36 @@ export function createDownloadJobToaster(
   const toast: ToastApi = deps?.toast ?? sonnerAdapter();
   const eventApi = resolveEventApi(deps?.eventApi);
   const filesApi = resolveFilesApi(deps?.filesApi);
+  const syncApi = resolveSyncApi(deps?.syncApi);
+
+  // §12.2 (Decision 13) + §12.6 (iter-5, Decision 16) — Cancel action
+  // factory. The toaster injects this into every `toast.loading` call
+  // (both the downloading-state and the retrying-state paths, plus the
+  // hydration spawn path). The onClick is fire-and-forget — the
+  // user-visible signal is the subsequent `download-cancelled` IPC event
+  // arriving on the bus, which the toaster's existing
+  // `download-cancelled` handler dismisses with `toast.dismiss`. The
+  // IPC's response Promise is intentionally discarded (`void`); errors
+  // thrown during click (e.g. preload bridge missing in a partial test
+  // harness) surface as unhandled rejections in the console — production
+  // callers always have the bridge wired, so this only matters for
+  // harness misconfigurations.
+  //
+  // The collaborator method is `cancelDownload` (NOT `cancelJob`) —
+  // see SyncActionsApi for the rename rationale. The toaster MUST NOT
+  // pre-emptively dismiss the toast in the click handler (would race
+  // the event-driven dismiss); pinned by test (12.2.8) + (12.6.10).
+  function buildCancelAction(downloadJobId: string): {
+    label: string;
+    onClick: () => void;
+  } {
+    return {
+      label: "Cancel",
+      onClick: () => {
+        void syncApi.cancelDownload({ downloadJobId });
+      },
+    };
+  }
 
   // Per-job tracker: maps the consumer-facing `downloadJobId` to the
   // Sonner toast id we minted on first sight + the basename we display
@@ -417,11 +675,41 @@ export function createDownloadJobToaster(
       const basename = basenameFromPath(event.payload.path);
       const existing = tracker.get(downloadJobId);
       if (existing) {
-        // Update in place.
+        // Update in place. The downloading state and retrying state
+        // share the same `toast.loading` render mode (§11.16 iter-3) —
+        // they differ only in message + description.
+        //
+        // Description-merge gotcha: Sonner's `Observer.create()` merges
+        // new toast data over the existing toast (`{ ...oldToast,
+        // ...newData }`). If the prior call set `description: "Last
+        // error: ..."` (the retrying state) and we issue
+        // `toast.loading(msg, { id })` without a `description` field,
+        // the prior description survives the spread and lingers on
+        // screen during the resumed downloading. Pass `description: ""`
+        // to override — the view-layer `toast.description ?` truthy
+        // check then hides the row. (See node_modules/sonner Observer
+        // .create line ~145 and view layer ~797.)
         toast.loading(
-          formatProgressMessage(existing.basename, event.payload.progress),
-          { id: existing.toastId },
+          formatProgressMessage(
+            existing.basename,
+            event.payload.progress,
+            event.payload.bytesLoaded,
+            event.payload.bytesTotal,
+          ),
+          {
+            id: existing.toastId,
+            description: "",
+            action: buildCancelAction(downloadJobId),
+          },
         );
+        if (existing.retrying === true) {
+          tracker.set(downloadJobId, {
+            toastId: existing.toastId,
+            basename: existing.basename,
+            retry: existing.retry,
+            terminal: existing.terminal,
+          });
+        }
       } else {
         // Spawn new toast for this jobId. If the orchestrator pre-
         // registered a retry callback for `(datasourceId, sourcePath)`,
@@ -429,8 +717,16 @@ export function createDownloadJobToaster(
         // (the pairing is one-shot per dispatch).
         const initialId = generateToastId();
         const toastId = toast.loading(
-          formatProgressMessage(basename, event.payload.progress),
-          { id: initialId },
+          formatProgressMessage(
+            basename,
+            event.payload.progress,
+            event.payload.bytesLoaded,
+            event.payload.bytesTotal,
+          ),
+          {
+            id: initialId,
+            action: buildCancelAction(downloadJobId),
+          },
         );
         const key = retryKey(event.payload.datasourceId, event.payload.path);
         const retry = pendingRetries.get(key);
@@ -439,6 +735,53 @@ export function createDownloadJobToaster(
         }
         tracker.set(downloadJobId, { toastId, basename, retry });
       }
+      return;
+    }
+
+    if (event.kind === "download-retrying") {
+      // §11.16 (iter-3): retrying state uses `toast.loading` — same
+      // render mode as the downloading template. Title swaps to
+      // `Downloading <basename> — Reconnecting (<attempt>/<limit>)`;
+      // diagnostic context (`engineCause`, `waitMs`) renders as Sonner's
+      // `description` field (always-visible below the title). Spinner
+      // glyph comes from Sonner's loading template natively — same
+      // chrome as the downloading state, no transition.
+      //
+      // Iter-2 used `toast.custom` here. That approach was abandoned
+      // because Sonner's `Observer.create()` merges new toast data over
+      // the existing toast but preserves the OLD `type` field. A toast
+      // that started life as `toast.loading` retained `type: 'loading'`
+      // even after `toast.custom`, so the view layer kept rendering the
+      // loading-spinner icon overlay on top of our hand-rolled JSX
+      // ("corrupted and messy" per §11.10/§11.15 smoke). Decision 5
+      // ratified in iter-3: tooltip-on-hover → always-visible
+      // description.
+      const existing = tracker.get(downloadJobId);
+      if (existing?.terminal === true) {
+        // Late retry event for an already-terminal job: ignore.
+        return;
+      }
+      const basename = existing?.basename ?? "download";
+      const toastId = existing?.toastId ?? generateToastId();
+      const { attempt, limit, waitMs, engineCause } = event.payload;
+      toast.loading(
+        formatRetryingMessage(basename, { attempt, limit }),
+        {
+          id: toastId,
+          description: formatRetryingDescription({ engineCause, waitMs }),
+          action: buildCancelAction(downloadJobId),
+        },
+      );
+      // Carry `existing?.retry` forward — for hydrated-from-disk jobs
+      // (no orchestrator pre-dispatch through `registerRetry`) this is
+      // undefined, so a subsequent failure-toast falls back to dismiss-
+      // only on Retry (see ToastEntry.retry docstring).
+      tracker.set(downloadJobId, {
+        toastId,
+        basename,
+        retry: existing?.retry,
+        retrying: true,
+      });
       return;
     }
 
@@ -517,24 +860,51 @@ export function createDownloadJobToaster(
     }
 
     if (event.kind === "download-failed") {
+      // §11.16 (iter-3): unified failure path uses `toast.error` for
+      // every prior render state (loading or retrying). Sonner's
+      // built-in type swaps (loading→error, loading→loading) are
+      // reliable on the same id (`toast.error()` explicitly sets
+      // `type: 'error'` in the merge — see node_modules/sonner
+      // index.mjs ~line 209). `toast.custom` was abandoned in iter-3
+      // because mixing it with built-in types triggered the
+      // type-merge-leak bug (the prior `type: 'loading'` carried
+      // over to the custom render, leaving the spinner-chrome
+      // overlay on top of our red card).
+      //
+      // Description-merge gotcha: when the prior render was the
+      // retrying state, it set a description ("Last error: ..."). The
+      // failure call MUST pass `description: ""` to clear it via
+      // Sonner's `Observer.create()` spread merge — otherwise the
+      // diagnostic text lingers under the failure message. The clear
+      // is unconditional (no-op when no prior description was set).
       const existing = tracker.get(downloadJobId);
       // Duplicate-terminal guard (see file-downloaded handler).
       if (existing?.terminal === true) {
         return;
       }
+      // basename is preserved in the tracker for diagnostic continuity
+      // (a duplicate-terminal short-circuit can read it later); the
+      // failure-message copy itself doesn't surface basename because
+      // `event.payload.message` already names the failure mode.
       const basename = existing?.basename ?? "download";
-      const toastId = existing?.toastId ?? generateToastId();
       // Retry callback was correlated on the FIRST `downloading` event
       // for this jobId (drained from `pendingRetries` into the
       // ToastEntry). If failure preceded any `downloading` event (rare
       // — instant auth-revoked / immediate validation reject), no
       // correlation happened and Retry falls back to dismiss-only.
       const retry = existing?.retry;
-      tracker.set(downloadJobId, { toastId, basename, retry, terminal: true });
+      const toastId = existing?.toastId ?? generateToastId();
+      tracker.set(downloadJobId, {
+        toastId,
+        basename,
+        retry,
+        terminal: true,
+      });
       toast.error(`Download failed: ${event.payload.message}`, {
         id: toastId,
         duration: Number.POSITIVE_INFINITY,
         richColors: true,
+        description: "",
         action: {
           label: "Retry",
           onClick: () => {
@@ -545,8 +915,6 @@ export function createDownloadJobToaster(
           },
         },
       });
-      // Terminal marker preserved in tracker — see file-downloaded
-      // handler for duplicate-terminal-guard rationale.
       return;
     }
 
@@ -578,8 +946,16 @@ export function createDownloadJobToaster(
       );
       const initialId = generateToastId();
       const toastId = toast.loading(
-        formatProgressMessage(basename, initialPct),
-        { id: initialId },
+        formatProgressMessage(
+          basename,
+          initialPct,
+          job.bytesDownloaded,
+          job.contentLength,
+        ),
+        {
+          id: initialId,
+          action: buildCancelAction(job.downloadJobId),
+        },
       );
       tracker.set(job.downloadJobId, { toastId, basename });
     }
@@ -670,3 +1046,13 @@ function buildSuccessRender(
     ),
   );
 }
+
+// --- Failure / retrying-state renders ---------------------------------
+//
+// §11.16 (iter-3): the dedicated `buildFailureRender` and
+// `buildRetryingRender` helpers were removed — both states now use
+// Sonner's built-in templates (`toast.error` for failure, `toast.loading`
+// with a Reconnecting message + diagnostic description for retrying).
+// See the `download-failed` and `download-retrying` handlers above for
+// the rationale (`Observer.create()` type-merge leak when mixing
+// `toast.custom` with built-in types).

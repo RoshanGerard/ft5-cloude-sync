@@ -184,18 +184,39 @@ export interface CredentialPersistedPayload {
 // §13.26; the desktop subscriber sees only the fs-sync shapes.
 
 /** Streaming-tagged progress event. `progress` is the 0..100 percentage
- * derived from the engine bus's `downloading { loaded, total }` (or, when
- * `contentLength` is `null`, the raw `loaded` count divided into a
- * caller-defined heuristic — but in practice every supported provider
- * advertises length, so the renderer treats `progress` as authoritative).
- * `path` is the SOURCE path on the datasource, not the local `toPath` —
- * the renderer correlates against its own entry rows by `(datasourceId,
- * path)` to update the in-flight toaster. */
+ * derived from the engine bus's `downloading { loaded, total }` — clamped
+ * to `[0..100]` when `bytesTotal !== null && bytesTotal > 0`, and forced
+ * to `0` when `bytesTotal === null` (no Content-Length advertised by the
+ * provider — Drive's `?alt=media` for some media files, chunked transfer
+ * encoding, etc). `path` is the SOURCE path on the datasource, not the
+ * local `toPath` — the renderer correlates against its own entry rows
+ * by `(datasourceId, path)` to update the in-flight toaster.
+ *
+ * §12.3 (Decision 14): `bytesLoaded` and `bytesTotal` extend the payload
+ * so renderers can fall back to a bytes-only progress format when total
+ * is unknown (e.g. `Downloading welcome.mp4 — 50.0 MB` instead of an
+ * always-zero percentage). `bytesLoaded` is required (the engine's
+ * byte-counting Transform always knows the running count).
+ *
+ * §12.7 (Decision 17e): `bytesTotal` carries the **best-known total size
+ * of the resource**: the engine response's `Content-Length` (parsed as
+ * an integer) when present, OR the metadata-derived `size` field
+ * captured by the `files:download` handler's pre-cycle
+ * `client.getMetadata(target)` prefetch (see fs-sync-service spec
+ * "files:download handler prefetches resource size before the cycle
+ * loop"), OR `null` when both sources are absent (a Doc-export, where
+ * the export-stream size is genuinely unknowable in advance). The
+ * handler-derived value takes priority over the prefetched value when
+ * both are present — a resume cycle that surfaces a freshly-advertised
+ * Content-Length wins over a stale prefetched size.
+ */
 export interface DownloadingPayload {
   readonly downloadJobId: string;
   readonly datasourceId: string;
   readonly progress: number;
   readonly path: string;
+  readonly bytesLoaded: number;
+  readonly bytesTotal: number | null;
 }
 
 /** Terminal success. `savedPath` is the absolute local path the handler
@@ -213,13 +234,50 @@ export interface FileDownloadedPayload {
  * `FilesErrorTag` (range-not-supported, range-mismatch, byte-count-mismatch,
  * and integrity-failed all collapse to `tag: "other"` with descriptive
  * messages per spec.md line 73 / 115). The raw engine error is NOT
- * forwarded — only `tag` + `message` cross the wire. */
+ * forwarded — only `tag` + `message` cross the wire.
+ *
+ * Per add-download-resilience design.md Decision 7, the tag union also
+ * includes `"exhausted-retries"` for terminal failure after the handler's
+ * environmental-retry budget is spent — both consecutive-failure
+ * exhaustion AND wall-time ceiling share this tag, with the message field
+ * carrying the discriminator (`"exhausted-retries: <engineCause>"` or
+ * `"walltime-exceeded: <engineCause>"`).
+ */
 export interface DownloadFailedPayload {
   readonly downloadJobId: string;
   readonly datasourceId: string;
   readonly tag: "auth-revoked" | "disconnected" | "rate-limited" | "other"
-    | "invalid-datasource";
+    | "invalid-datasource" | "exhausted-retries";
   readonly message: string;
+}
+
+/** Streaming-style retry signal emitted at the START of each
+ * environmental-retry sleep (per add-download-resilience design.md
+ * Decision 5). NOT emitted for the auth-expired Layer 2 branch — that
+ * retry is fast (no sleep) and the user does not need a separate
+ * "refreshing token" indicator.
+ *
+ * The fs-sync IPC bus is uncoalesced (the engine-bus coalescer that
+ * throttles `downloading` does not apply here). Every retry attempt
+ * emits exactly one `download-retrying` event.
+ *
+ * `engineCause` carries the engine-side `DatasourceErrorTag` verbatim —
+ * a deliberate engine-taxonomy leak scoped to diagnostic decoration
+ * only. The renderer SHALL NOT branch behavior on its value; the
+ * wire-level identity for "we're retrying" is the event itself, not
+ * the cause string. Telemetry consumers may aggregate on `engineCause`
+ * for cause analysis. */
+export interface DownloadRetryingPayload {
+  readonly downloadJobId: string;
+  readonly datasourceId: string;
+  /** Current consecutiveFailureCount (1-indexed). */
+  readonly attempt: number;
+  /** CONSECUTIVE_FAIL_LIMIT — always 5 in v1. */
+  readonly limit: number;
+  /** Chosen sleep duration in ms (max(retryAfterMs, expBackoff)). */
+  readonly waitMs: number;
+  /** Engine-side error tag verbatim (diagnostic-only). */
+  readonly engineCause: string;
 }
 
 /** Terminal cancel. `bytesDownloaded` is the last value the engine reported
@@ -261,6 +319,9 @@ export interface EventPayloadMap {
   // add-engine-rename-download §13 — fs-sync's downloadJobId-keyed
   // download lifecycle events (DERIVED from the engine bus, NOT relayed).
   "downloading": DownloadingPayload;
+  // add-download-resilience — emitted at the start of each environmental
+  // retry sleep (NOT for the auth-expired Layer 2 branch).
+  "download-retrying": DownloadRetryingPayload;
   "file-downloaded": FileDownloadedPayload;
   "download-failed": DownloadFailedPayload;
   "download-cancelled": DownloadCancelledPayload;
@@ -295,6 +356,7 @@ export const EVENT_NAMES: ReadonlyArray<EventName> = [
   "oauth-open-url",
   "credential-persisted",
   "downloading",
+  "download-retrying",
   "file-downloaded",
   "download-failed",
   "download-cancelled",

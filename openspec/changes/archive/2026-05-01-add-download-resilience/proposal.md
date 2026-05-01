@@ -41,6 +41,37 @@ Mechanically, this change builds entirely on the in-memory registry +
 Range-resume engine that `add-engine-rename-download` already adds —
 no new persistence layer.
 
+## What Changes
+
+- Add wire tag `exhausted-retries` to `FilesErrorTag` and a new
+  `download-retrying` IPC event with payload `{ downloadJobId,
+  datasourceId, attempt, limit, waitMs, engineCause }`. (`engineCause`
+  is typed `string` so the renderer cannot branch on its value — see
+  Decision 9.)
+- Extend the `files:download` handler retry loop in
+  `services/fs-sync/src/commands/files-download.ts` with an
+  environmental-retry branch (Layer 3): five-attempt-per-cycle
+  consecutive-failure budget plus a 30-min wall-time ceiling, with
+  exponential backoff `min(1000 * 2^(n-1), 30000) ms` and `Retry-After`
+  honor when the engine emits one. Layer 1 (engine `withRefresh`) and
+  Layer 2 (handler auth-expired single-shot retry) are unchanged.
+- Add `fsBoundary.unlink` to the filesystem boundary and a
+  `DELETE_ON_TERMINAL` set keying disposition by error-class identity.
+  Range-not-honored, range-mismatch, and integrity-failed delete the
+  partial before the `download-failed` emit; byte-count-mismatch keeps
+  the partial.
+- Renderer toast (`apps/desktop/src/renderer/src/features/file-explorer/download-job-toast.ts`)
+  gains a `retrying` state that swaps the loading-template chrome to a
+  custom render with `Reconnecting… (n/5)` subtext + spinner glyph +
+  diagnostic tooltip. Same toast id is reused so the progress bar
+  position is preserved through the swap (Decision 5). On the next
+  `downloading` event, the toast reverts to the loading template.
+- Failure handler accepts the new `tag: "exhausted-retries"` through
+  the existing tag-agnostic toast.error branch.
+- No engine changes (Decision 8). No new persistence layer. No
+  schema migration. The in-memory `DownloadRegistry` carries no retry
+  fields — retry state lives in handler closure scope.
+
 ## Out of scope
 
 - Service crash / kill recovery. The service is the durable owner;
@@ -114,3 +145,33 @@ no new persistence layer.
   work, desktop is the indicator." Service-crash recovery is
   intentionally excluded — it would push state out of the durable
   owner and into a disk-shim layer that violates the boundary.
+
+## Deferred scope (follow-up changes)
+
+Two follow-ups carry forward work intentionally not in scope here.
+Reviewers should look at these alongside this change to see the
+full envelope:
+
+- **`wire-packaged-build-download-resilience`** — exercises the §6.4-
+  §6.16 retry scenarios against a packaged build with a fault-injection
+  layer (mitmproxy or similar). v1 verifies range-not-honored /
+  range-mismatch / integrity-failed at the integration-test layer only
+  because a deterministic provider fault that returns 200 OK to a
+  Range request is hard to reproduce against real-world endpoints.
+  This follow-up closes the gap between unit-level coverage and
+  end-to-end packaged behavior.
+- **`add-failed-download-cleanup-affordance`** — surfaces a UI
+  affordance to delete or move kept-partial files. v1 follows browser
+  convention (Chrome `.crdownload`): on terminal failure where the
+  partial is corrupt-but-recoverable (env-budget-exhausted, walltime,
+  byte-count-mismatch, auth-revoked, user-cancellation) the file is
+  preserved on disk so the user can choose what to do with it. Today
+  the only affordances are "the next download to the same target
+  triggers the conflict dialog" or manual file-system cleanup. The
+  follow-up adds an explicit "Delete partial" / "Move to trash" path.
+
+§9.4 (manual wifi-drop smoke) remains pending and is the user-driven
+gate before archive: cold-start desktop, log into a datasource, start
+a 100MB+ download, mid-flight disable wifi for ~10s, re-enable.
+Verify the toast shows `Reconnecting… (1/5)` during the outage and
+resumes when wifi returns.

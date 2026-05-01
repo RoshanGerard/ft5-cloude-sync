@@ -28,6 +28,8 @@ import type {
   SyncEnqueueUploadResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
+  SyncCancelDownloadRequest,
+  SyncCancelDownloadResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
   SyncAuthenticateCancelRequest,
@@ -49,6 +51,9 @@ type ExposedSync = {
   enqueueUpload: (req: SyncEnqueueUploadRequest) => Promise<SyncEnqueueUploadResponse>;
   enqueueMirror: (req: SyncEnqueueMirrorRequest) => Promise<SyncEnqueueMirrorResponse>;
   cancelJob: (req: SyncCancelJobRequest) => Promise<SyncCancelJobResponse>;
+  cancelDownload: (
+    req: SyncCancelDownloadRequest,
+  ) => Promise<SyncCancelDownloadResponse>;
   authenticateStart: (req: SyncAuthenticateStartRequest) => Promise<SyncAuthenticateStartResponse>;
   authenticateComplete: (req: SyncAuthenticateCompleteRequest) => Promise<SyncAuthenticateCompleteResponse>;
   authenticateCancel: (req: SyncAuthenticateCancelRequest) => Promise<SyncAuthenticateCancelResponse>;
@@ -77,7 +82,7 @@ describe("preload sync surface", () => {
     vi.clearAllMocks();
   });
 
-  it("exposes a sync object with exactly 12 members (11 commands + onEvent), no legacy `authenticate`", async () => {
+  it("exposes a sync object with exactly 13 members (12 commands + onEvent), no legacy `authenticate`", async () => {
     const exposed = await loadExposed();
 
     expect(typeof exposed.sync).toBe("object");
@@ -86,6 +91,7 @@ describe("preload sync surface", () => {
         "authenticateCancel",
         "authenticateComplete",
         "authenticateStart",
+        "cancelDownload",
         "cancelJob",
         "enqueueMirror",
         "enqueueUpload",
@@ -180,6 +186,31 @@ describe("preload sync surface", () => {
 
       expect(invokeMock).toHaveBeenCalledTimes(1);
       expect(invokeMock.mock.calls[0]).toEqual([SYNC_CHANNELS.cancelJob, req]);
+      expect(result).toBe(response);
+    });
+
+    // add-download-resilience §12.6.6 (iter-5, Decision 16) — cancelDownload
+    // routes through its OWN channel (sync:cancel-download), distinct from
+    // cancelJob (sync:cancel-job). Pre-iter-5, the renderer toaster's
+    // Cancel button collision-routed via cancelJob; this test pins the
+    // separate channel mapping so the regression cannot recur.
+    it("cancelDownload(req) invokes SYNC_CHANNELS.cancelDownload with req and returns the resolved value", async () => {
+      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
+      const response: SyncCancelDownloadResponse = { cancelled: true };
+      invokeMock.mockResolvedValue(response);
+
+      const exposed = await loadExposed();
+      const req: SyncCancelDownloadRequest = { downloadJobId: "d-1" };
+      const result = await exposed.sync.cancelDownload(req);
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]).toEqual([
+        SYNC_CHANNELS.cancelDownload,
+        req,
+      ]);
+      // Crucially the call did NOT route to SYNC_CHANNELS.cancelJob —
+      // pin the separation so a future refactor cannot collapse the two.
+      expect(invokeMock.mock.calls[0]?.[0]).not.toBe(SYNC_CHANNELS.cancelJob);
       expect(result).toBe(response);
     });
 

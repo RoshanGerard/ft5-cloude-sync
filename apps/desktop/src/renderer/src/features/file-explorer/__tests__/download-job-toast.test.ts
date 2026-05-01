@@ -45,6 +45,7 @@ import {
   type DownloadEvent,
   type DownloadEventApi,
   type DownloadJobSummary,
+  type SyncActionsApi,
   type ToastApi,
 } from "../download-job-toast.js";
 
@@ -61,15 +62,24 @@ interface MockToast extends ToastApi {
 function makeToast(): MockToast {
   let next = 1;
   const loading: Mock = vi.fn(
-    (_msg: string, opts?: { id?: string | number }) =>
-      opts?.id ?? `toast-${next++}`,
+    (
+      _msg: string,
+      opts?: {
+        id?: string | number;
+        description?: string;
+        // §12.2: Sonner's `toast.loading` accepts an `action` option for
+        // the built-in template's Cancel button. The mock captures it
+        // so tests can assert on label + onClick.
+        action?: { label: string; onClick: () => void };
+      },
+    ) => opts?.id ?? `toast-${next++}`,
   );
   const success: Mock = vi.fn(
     (_msg: string, opts?: { id?: string | number }) =>
       opts?.id ?? `toast-${next++}`,
   );
   const error: Mock = vi.fn(
-    (_msg: string, opts?: { id?: string | number }) =>
+    (_msg: string, opts?: { id?: string | number; description?: string }) =>
       opts?.id ?? `toast-${next++}`,
   );
   const dismiss: Mock = vi.fn();
@@ -110,21 +120,51 @@ function makeEventApi(): MockEventApi {
   };
 }
 
+interface MockSyncApi extends SyncActionsApi {
+  cancelDownload: Mock;
+}
+
+function makeSyncApi(): MockSyncApi {
+  // Default impl resolves with a no-op envelope. Tests that assert the
+  // call wiring inspect `cancelDownload.mock.calls`. Tests that don't care
+  // can pass this through to the toaster as a noop.
+  const cancelDownload: Mock = vi.fn(async (_req: { downloadJobId: string }) => ({
+    ok: true,
+    result: { cancelled: true },
+  }));
+  return { cancelDownload };
+}
+
 function downloadingEvent(
   downloadJobId: string,
   patch: Partial<{
     progress: number;
     path: string;
     datasourceId: string;
+    bytesLoaded: number;
+    bytesTotal: number | null;
   }>,
 ): DownloadEvent {
+  // §12.3: synthesize bytesLoaded + bytesTotal from progress when callers
+  // don't supply them explicitly. Tests that only care about `progress`
+  // (the historical majority) still work; tests that exercise the
+  // bytes-only fallback path supply explicit values.
+  const bytesTotal = patch.bytesTotal === undefined ? 1_000_000 : patch.bytesTotal;
+  const progress = patch.progress ?? 0;
+  const bytesLoaded =
+    patch.bytesLoaded ??
+    (bytesTotal !== null && bytesTotal > 0
+      ? Math.floor((progress / 100) * bytesTotal)
+      : 0);
   return {
     kind: "downloading",
     payload: {
       downloadJobId,
       datasourceId: patch.datasourceId ?? "ds-1",
-      progress: patch.progress ?? 0,
+      progress,
       path: patch.path ?? "/welcome.pdf",
+      bytesLoaded,
+      bytesTotal,
     },
   };
 }
@@ -715,8 +755,9 @@ describe("createDownloadJobToaster — hydration (§24.3)", () => {
       { id?: string | number } | undefined,
     ];
     expect(firstB[0]).toContain("another.pdf");
-    // null contentLength → 0% (indeterminate)
-    expect(firstB[0]).toMatch(/0\s*%/);
+    // §12.3 (Decision 14): null contentLength → bytes-only fallback.
+    // Seeded with `bytesDownloaded: 0` → "0.0 MB" instead of "0%".
+    expect(firstB[0]).toMatch(/0\.0\s*MB/);
 
     // A subsequent live event for jobId A must update the EXISTING
     // toast id, not spawn a new one.
@@ -730,5 +771,973 @@ describe("createDownloadJobToaster — hydration (§24.3)", () => {
     ];
     expect(updateCall[1]?.id).toBe("toast-A");
     expect(updateCall[0]).toMatch(/50\s*%/);
+  });
+});
+
+// --- add-download-resilience §8 — retrying-state tests --------------
+
+function retryingEvent(
+  downloadJobId: string,
+  patch: Partial<{
+    attempt: number;
+    limit: number;
+    waitMs: number;
+    engineCause: string;
+    datasourceId: string;
+  }> = {},
+): DownloadEvent {
+  return {
+    kind: "download-retrying",
+    payload: {
+      downloadJobId,
+      datasourceId: patch.datasourceId ?? "ds-1",
+      attempt: patch.attempt ?? 2,
+      limit: patch.limit ?? 5,
+      waitMs: patch.waitMs ?? 4000,
+      engineCause: patch.engineCause ?? "network-error",
+    },
+  };
+}
+
+describe("createDownloadJobToaster — retrying state (§8)", () => {
+  let toast: MockToast;
+  let eventApi: MockEventApi;
+
+  beforeEach(() => {
+    toast = makeToast();
+    eventApi = makeEventApi();
+  });
+
+  it("(8.1) on download-retrying, toast.loading is reissued on the SAME id with the Reconnecting message + diagnostic description (NO toast.custom)", () => {
+    // Iter-3 (post §11.16): retrying state uses `toast.loading` —
+    // same render mode as the downloading template. Title swaps from
+    // `Downloading welcome.pdf — 62%` to `Downloading welcome.pdf —
+    // Reconnecting (2/5)`. Diagnostic context (`engineCause`, `waitMs`)
+    // renders as Sonner's `description` field (always-visible, not
+    // hover-only — Decision 5 v2). Spinner glyph comes from Sonner's
+    // built-in loading template natively (no test assertion needed).
+    //
+    // Iter-2 used `toast.custom` here; that path is abandoned because
+    // Sonner's `Observer.create()` carries `type: 'loading'` over to
+    // the custom render, leaving the spinner-chrome overlay on top.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(
+      retryingEvent("job-A", {
+        attempt: 2,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      }),
+    );
+
+    // No toast.custom for the retrying state.
+    expect(toast.custom).not.toHaveBeenCalled();
+    // Two toast.loading calls: initial (62%) + retrying.
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const [msg, opts] = toast.loading.mock.calls[1] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
+    ];
+    // SAME id as the initial loading toast — Sonner updates the same slot.
+    expect(opts?.id).toBe("toast-A");
+    // Title swaps from percentage to Reconnecting (n/limit).
+    expect(msg).toContain("Downloading welcome.pdf");
+    expect(msg).toContain("Reconnecting");
+    expect(msg).toContain("2/5");
+    // Title no longer carries the percentage.
+    expect(msg).not.toMatch(/62\s*%/);
+    // Description carries diagnostic context.
+    expect(typeof opts?.description).toBe("string");
+    expect(opts?.description).toContain("network-error");
+    expect(opts?.description).toContain("4000");
+  });
+
+  it("(8.2) next downloading event after retrying snaps back to the percentage message AND clears the description (defeats Sonner-merge of stale diagnostic text)", () => {
+    // Sonner's `Observer.create()` merges new toast data over the
+    // existing toast: `{ ...oldToast, ...newData }`. The retrying call
+    // set `description: "Last error: …"`. Without an explicit clear,
+    // the resume `toast.loading(msg, { id })` would inherit the prior
+    // description (oldToast.description survives the spread when newData
+    // doesn't include the key). Production must pass
+    // `description: ""` (falsy → view-layer hides the row) on resume.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(retryingEvent("job-A", { attempt: 2, limit: 5 }));
+
+    // Bytes flowing again — the next downloading event reverts the toast
+    // to the percentage form on the same id.
+    toast.loading.mockClear();
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 63, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg, opts] = toast.loading.mock.calls[0] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
+    ];
+    expect(opts?.id).toBe("toast-A");
+    expect(msg).toMatch(/63\s*%/);
+    expect(msg).toContain("welcome.pdf");
+    // Description must be a falsy value to clear the prior retrying-
+    // state description from Sonner's merged toast data. Empty string
+    // is preferred — `toast.description ?` in the view layer treats
+    // it as falsy and hides the row.
+    expect(opts).toHaveProperty("description");
+    expect(opts?.description).toBe("");
+    expect(toast.custom).not.toHaveBeenCalled();
+  });
+
+  it("(8.3) retrying-state toast.loading description carries engineCause + waitMs (always-visible diagnostic, not hover tooltip)", () => {
+    // Decision 5 ratified in iter-3: the original "tooltip on hover"
+    // contract was abandoned — `toast.custom` couldn't reliably
+    // replace the loading-template chrome. Diagnostic info now lives
+    // in Sonner's `description` field, which renders below the title
+    // in the toast body and is always visible.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(
+      retryingEvent("job-A", {
+        attempt: 2,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      }),
+    );
+
+    const [, opts] = toast.loading.mock.calls[1] as [
+      string,
+      { description?: string },
+    ];
+    expect(typeof opts.description).toBe("string");
+    expect(opts.description).toContain("network-error");
+    expect(opts.description).toContain("4000");
+  });
+
+  it("(8.4) toast does NOT enter retrying state without a download-retrying event (auth-expired Layer 2 retry stays invisible)", () => {
+    // Auth-expired retries do not emit `download-retrying`. The
+    // renderer sees an interruption only as a gap in `downloading`
+    // events — the toast must stay on the percentage message; no
+    // Reconnecting subtext should appear.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 60, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 70, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.custom).not.toHaveBeenCalled();
+    expect(toast.loading).toHaveBeenCalledTimes(3);
+    for (const call of toast.loading.mock.calls) {
+      const [msg] = call as [string, unknown];
+      expect(msg).not.toContain("Reconnecting");
+    }
+  });
+
+  it("(8.5) download-cancelled during retrying state dismisses the toast on the same id", () => {
+    // Spec scenario "Cancel during retry sleep dismisses toast within
+    // 100ms". §12.2 (iter-4) made the toast's Cancel UI button real
+    // (Decision 13) — the click fires `syncApi.cancelDownload` which causes
+    // the service to emit `download-cancelled`. This test pins the
+    // event-arrival half of that round-trip: when `download-cancelled`
+    // arrives after a retry render, the toast dismisses with the SAME
+    // id that was rendered. The click-fires-cancelDownload half is covered
+    // by `(12.2.6)` / `(12.2.7)`.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(retryingEvent("job-A", { attempt: 2, limit: 5 }));
+
+    eventApi.emit({
+      kind: "download-cancelled",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        bytesDownloaded: 256,
+        bytesTotal: 1024,
+        reason: "user",
+      },
+    });
+
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.custom).not.toHaveBeenCalled();
+  });
+
+  it("(8.6) hydration → retrying: hydrated toast transitions through downloading → retrying via toast.loading on the same id", () => {
+    toast.loading.mockReturnValueOnce("hydrated-A");
+    const toaster = createDownloadJobToaster({ toast, eventApi });
+
+    toaster.hydrateActiveDownloads([
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        sourcePath: "/welcome.pdf",
+        targetPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytesDownloaded: 251_658_240,
+        contentLength: 398_458_880,
+        startedAt: 0,
+      },
+    ]);
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+
+    // Service-side retry sleep is in progress — the next event for this
+    // jobId is a retrying event, not a downloading one.
+    eventApi.emit(
+      retryingEvent("job-A", {
+        attempt: 3,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      }),
+    );
+
+    // No toast.custom for retrying state in iter-3.
+    expect(toast.custom).not.toHaveBeenCalled();
+    // Hydration call + retrying call on the same id.
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const [msg, opts] = toast.loading.mock.calls[1] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
+    ];
+    expect(opts?.id).toBe("hydrated-A");
+    expect(msg).toContain("3/5");
+    expect(msg).toContain("Reconnecting");
+    expect(opts?.description).toContain("network-error");
+  });
+
+  it("(8.7) hydration → downloading: hydrated toast continues as loading on next downloading event (no retrying state)", () => {
+    toast.loading.mockReturnValueOnce("hydrated-A");
+    const toaster = createDownloadJobToaster({ toast, eventApi });
+
+    toaster.hydrateActiveDownloads([
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        sourcePath: "/welcome.pdf",
+        targetPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytesDownloaded: 100,
+        contentLength: 200,
+        startedAt: 0,
+      },
+    ]);
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+
+    // Bytes were already flowing when the renderer connected — the
+    // first event is a downloading update.
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 64, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.custom).not.toHaveBeenCalled();
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const [msg, opts] = toast.loading.mock.calls[1] as [
+      string,
+      { id?: string | number } | undefined,
+    ];
+    expect(opts?.id).toBe("hydrated-A");
+    expect(msg).toMatch(/64\s*%/);
+    expect(msg).not.toContain("Reconnecting");
+  });
+
+  it("(8.8) failure-toast handles tag: 'exhausted-retries' — renders existing failed appearance with verbatim message", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "exhausted-retries",
+        message: "exhausted-retries: network-error",
+      },
+    });
+
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      {
+        id?: string | number;
+        duration?: number;
+        richColors?: boolean;
+        action?: { label: string; onClick: () => void };
+      },
+    ];
+    // Verbatim message text appears in the rendered failure toast.
+    expect(errorCall[0]).toContain("exhausted-retries: network-error");
+    // Existing failed appearance is preserved (red, sticky, Retry).
+    expect(errorCall[1].id).toBe("toast-A");
+    expect(errorCall[1].duration).toBe(Number.POSITIVE_INFINITY);
+    expect(errorCall[1].richColors).toBe(true);
+    expect(errorCall[1].action?.label).toMatch(/retry/i);
+  });
+
+  it("(8.cov-1) download-retrying as the FIRST event for an unseen jobId spawns toast.loading on a freshly-minted id with the default 'download' basename", () => {
+    // Pins the defensive code path at download-job-toast.ts where
+    // `tracker.get(downloadJobId)` returns undefined and the handler
+    // falls back to a fresh id + default basename. Reachable in
+    // production if a hydrated download immediately receives a retry
+    // event without an intervening `downloading` event, or in any
+    // ordering where the bridge delivers retrying before downloading.
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(retryingEvent("job-X", { attempt: 1, limit: 5 }));
+
+    expect(toast.custom).not.toHaveBeenCalled();
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg, opts] = toast.loading.mock.calls[0] as [
+      string,
+      { id?: string | number; description?: string } | undefined,
+    ];
+    // Freshly-minted id (pattern is `download-toast-<n>`); not a stub
+    // value because no prior loading toast minted one.
+    expect(opts?.id).toMatch(/^download-toast-\d+$/);
+    expect(msg).toContain("Downloading download");
+    expect(msg).toContain("Reconnecting");
+    expect(msg).toContain("1/5");
+    expect(typeof opts?.description).toBe("string");
+  });
+
+  it("(8.cov-2) retrying → failed: toast.loading then toast.error on the SAME id (loading→error built-in type swap), with description cleared on the failure call", () => {
+    // Iter-3 (§11.16): both retrying and failure use Sonner built-in
+    // templates. The retrying state used `toast.loading` (with a
+    // description). The failure call MUST clear that description —
+    // Sonner's `Observer.create()` merges new data over the existing
+    // toast, so without an explicit `description: ""` the failure
+    // toast would inherit the retrying-state diagnostic text.
+    //
+    // No `toast.custom` is involved at any point. Sonner's
+    // loading→error built-in type swap is reliable on the same id
+    // (pinned by tests `(d)`, `(d2)`, `(8.cov-3)`).
+    toast.loading.mockReturnValueOnce("toast-A");
+    const retryFn = vi.fn();
+    const t = createDownloadJobToaster({ toast, eventApi });
+    t.registerRetry("ds-1", "/welcome.pdf", retryFn);
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit(retryingEvent("job-A", { attempt: 3, limit: 5 }));
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "exhausted-retries",
+        message: "exhausted-retries: network-error",
+      },
+    });
+
+    // No toast.custom anywhere. No pre-spawn dismiss (loading→error
+    // is a Sonner built-in type swap; same id replaces in place).
+    expect(toast.custom).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(toast.dismiss).not.toHaveBeenCalled();
+
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      {
+        id?: string | number;
+        duration?: number;
+        richColors?: boolean;
+        description?: string;
+        action?: { label: string; onClick: () => void };
+      },
+    ];
+    expect(errorCall[0]).toContain("Download failed");
+    expect(errorCall[0]).toContain("exhausted-retries: network-error");
+    expect(errorCall[1].id).toBe("toast-A");
+    expect(errorCall[1].duration).toBe(Number.POSITIVE_INFINITY);
+    expect(errorCall[1].richColors).toBe(true);
+    // Description must be cleared so Sonner's merge doesn't carry the
+    // retrying-state diagnostic ("Last error: network-error. Waiting
+    // 4000ms before retry.") onto the failure toast.
+    expect(errorCall[1]).toHaveProperty("description");
+    expect(errorCall[1].description).toBe("");
+    expect(errorCall[1].action?.label).toMatch(/retry/i);
+
+    // Retry callback registered pre-dispatch survives the
+    // downloading → retrying → failed transition.
+    errorCall[1].action!.onClick();
+    expect(retryFn).toHaveBeenCalledTimes(1);
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+  });
+
+  it("(8.cov-3) downloading → failed (no retrying state) stays on the same id (no fresh-id derivation)", () => {
+    // Regression guard for the non-broken transition path: when
+    // there's no prior `download-retrying`, the previous render is
+    // the loading template. `toast.error(msg, { id })` after
+    // `toast.loading` updates in-place because Sonner's loading→error
+    // built-in type swap is reliable on the same id.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "other",
+        message: "boom",
+      },
+    });
+
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      { id?: string | number },
+    ];
+    expect(errorCall[1].id).toBe("toast-A");
+    expect(toast.dismiss).not.toHaveBeenCalledWith("toast-A");
+  });
+});
+
+// §12.2 — Cancel action button on the active download toast (Decision 13).
+// The toaster injects `action: { label: "Cancel", onClick }` into both
+// the downloading-state and retrying-state `toast.loading` calls. Click
+// fires `syncApi.cancelDownload({ downloadJobId })` (fire-and-forget); the
+// subsequent `download-cancelled` IPC event is what actually dismisses
+// the toast through the existing event-handler path.
+describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
+  let toast: MockToast;
+  let eventApi: MockEventApi;
+  let syncApi: MockSyncApi;
+
+  beforeEach(() => {
+    toast = makeToast();
+    eventApi = makeEventApi();
+    syncApi = makeSyncApi();
+  });
+
+  it("(12.2.6) downloading-state toast carries a Cancel action wired to syncApi.cancelDownload", () => {
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 42, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const loadingCall = toast.loading.mock.calls[0] as [
+      string,
+      {
+        id?: string | number;
+        action?: { label: string; onClick: () => void };
+      },
+    ];
+    expect(loadingCall[1].action).toBeDefined();
+    expect(loadingCall[1].action!.label).toBe("Cancel");
+    expect(typeof loadingCall[1].action!.onClick).toBe("function");
+
+    // Click the Cancel action → cancelDownload fires with the right
+    // downloadJobId. Fire-and-forget: the click does NOT wait on the
+    // Promise.
+    loadingCall[1].action!.onClick();
+    expect(syncApi.cancelDownload).toHaveBeenCalledTimes(1);
+    expect(syncApi.cancelDownload).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+  });
+
+  it("(12.2.7) retrying-state toast carries a Cancel action on the SAME id, wired to the same downloadJobId", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 2,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      },
+    });
+
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const retryingCall = toast.loading.mock.calls[1] as [
+      string,
+      {
+        id?: string | number;
+        action?: { label: string; onClick: () => void };
+      },
+    ];
+    expect(retryingCall[1].id).toBe("toast-A");
+    expect(retryingCall[1].action).toBeDefined();
+    expect(retryingCall[1].action!.label).toBe("Cancel");
+
+    retryingCall[1].action!.onClick();
+    expect(syncApi.cancelDownload).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+  });
+
+  it("(12.2.8) Cancel-action click does NOT pre-emptively dismiss the toast (the dismiss flows through the download-cancelled event)", () => {
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+
+    const loadingCall = toast.loading.mock.calls[0] as [
+      string,
+      { action?: { onClick: () => void } },
+    ];
+    loadingCall[1].action!.onClick();
+
+    // toast.dismiss SHALL NOT be invoked by the click handler. The
+    // service's existing `download-cancelled` event handler (silent
+    // dismiss) does that work in response to the eventual cancel
+    // confirmation.
+    expect(toast.dismiss).not.toHaveBeenCalled();
+  });
+
+  it("(12.2.9) failure-state toast does NOT render a Cancel action — only the existing Retry action", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 10, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "other",
+        message: "boom",
+      },
+    });
+
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      { action?: { label: string } },
+    ];
+    expect(errorCall[1].action).toBeDefined();
+    expect(errorCall[1].action!.label).toMatch(/retry/i);
+    // The failure path uses Sonner's built-in error template — its only
+    // action slot is the Retry button. No "Cancel" label appears here.
+    expect(errorCall[1].action!.label).not.toMatch(/cancel/i);
+  });
+
+  it("(12.2.10) Cancel action survives across retrying→downloading transition (resume flow)", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    // downloading → retrying → downloading (resume after sleep)
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 20, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 1,
+        limit: 5,
+        waitMs: 1000,
+        engineCause: "network-error",
+      },
+    });
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 21, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.loading).toHaveBeenCalledTimes(3);
+    for (const call of toast.loading.mock.calls) {
+      const [, opts] = call as [
+        string,
+        { action?: { label: string; onClick: () => void } },
+      ];
+      expect(opts.action).toBeDefined();
+      expect(opts.action!.label).toBe("Cancel");
+    }
+  });
+});
+
+// §12.6 (iter-5, Decision 16) — Cancel-button IPC bridge regression guards.
+//
+// Pre-iter-5 the toaster's onClick called `syncApi.cancelJob({ downloadJobId })`
+// and the production `resolveSyncApi` fallback looked up
+// `window.api.sync.cancelJob`. That preload method exists but is the
+// UPLOAD-job cancel (`SYNC_CHANNELS.cancelJob = "sync:cancel-job"`,
+// shape `{ jobId }`). The toaster's `{ downloadJobId }` payload routed
+// via name collision and the actual download abort never ran. Iter-5
+// renames the collaborator to `cancelDownload` and wires a dedicated
+// preload method `window.api.sync.cancelDownload` →
+// `SYNC_CHANNELS.cancelDownload` → `sync:cancel-download` service handler.
+// These tests pin that the production fallback uses the right preload
+// method AND that the click-side dismiss invariant from Decision 16 is
+// preserved: the toast dismisses ONLY through the `download-cancelled`
+// IPC event round-trip, never inside the click handler.
+describe("createDownloadJobToaster — Cancel IPC bridge regression guards (§12.6)", () => {
+  let toast: MockToast;
+  let eventApi: MockEventApi;
+  let syncApi: MockSyncApi;
+
+  beforeEach(() => {
+    toast = makeToast();
+    eventApi = makeEventApi();
+    syncApi = makeSyncApi();
+  });
+
+  it("(12.6.9) production resolveSyncApi fallback looks up window.api.sync.cancelDownload (NOT cancelJob)", async () => {
+    // Stand up a fake `globalThis.window.api.sync` exposing BOTH
+    // cancelDownload AND a sentinel `cancelJob` spy so we can prove the
+    // toaster's production fallback routes through the right one.
+    // Pre-iter-5 the resolver looked up `cancelJob`; iter-5 looks up
+    // `cancelDownload`. Without injecting a `syncApi` to the toaster,
+    // the production fallback path is exercised.
+    const cancelDownloadSpy = vi.fn(async (_req: unknown) => ({
+      cancelled: true,
+    }));
+    const cancelJobSpy = vi.fn(async (_req: unknown) => ({
+      cancelled: true,
+    }));
+    const fakeWindow = {
+      api: {
+        sync: {
+          cancelDownload: cancelDownloadSpy,
+          cancelJob: cancelJobSpy,
+        },
+      },
+    };
+    const original = (globalThis as unknown as { window?: unknown }).window;
+    (globalThis as unknown as { window: unknown }).window = fakeWindow;
+    try {
+      // No `syncApi` injected → production fallback path engages.
+      const toaster = createDownloadJobToaster({ toast, eventApi });
+      eventApi.emit(
+        downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+      );
+      const loadingCall = toast.loading.mock.calls[0] as [
+        string,
+        { action?: { onClick: () => void } },
+      ];
+      loadingCall[1].action!.onClick();
+      // Yield a microtask so the fire-and-forget `void syncApi.cancelDownload(...)`
+      // resolves before assertions.
+      await Promise.resolve();
+      expect(cancelDownloadSpy).toHaveBeenCalledTimes(1);
+      expect(cancelDownloadSpy).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+      // Critical regression guard: the upload-job cancelJob spy MUST NOT
+      // have been called. Pre-iter-5 it was called by mistake.
+      expect(cancelJobSpy).not.toHaveBeenCalled();
+      toaster.dispose();
+    } finally {
+      (globalThis as unknown as { window: unknown }).window = original;
+    }
+  });
+
+  it("(12.6.10) Cancel-click then download-cancelled event dismisses the toast exactly once (no pre-emptive dismiss)", () => {
+    // Decision 16 click-side dismiss invariant: the toaster MUST NOT
+    // dismiss the toast inside the click handler — the dismiss flows
+    // through the subsequent `download-cancelled` IPC event arriving on
+    // the bus. A future regression that adds `toast.dismiss(toastId)`
+    // to the click handler would fail this test (dismiss called twice
+    // — once from click, once from the event handler) AND race the
+    // event-driven dismiss in production.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+    const loadingCall = toast.loading.mock.calls[0] as [
+      string,
+      { action?: { onClick: () => void } },
+    ];
+
+    // Click the Cancel action.
+    loadingCall[1].action!.onClick();
+
+    // No dismiss yet — the click handler is fire-and-forget; the visible
+    // dismiss happens on the round-trip event.
+    expect(toast.dismiss).not.toHaveBeenCalled();
+    expect(syncApi.cancelDownload).toHaveBeenCalledWith({
+      downloadJobId: "job-A",
+    });
+
+    // Service emits `download-cancelled` after the AbortController
+    // aborts and the handler's terminal-cancel branch runs.
+    eventApi.emit({
+      kind: "download-cancelled",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        bytesDownloaded: 1_048_576,
+        bytesTotal: 4_194_304,
+        reason: "user",
+      },
+    });
+
+    // EXACTLY ONE dismiss for the toast id, fired by the event handler.
+    expect(toast.dismiss).toHaveBeenCalledTimes(1);
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+  });
+});
+
+// §12.3 — Decision 14 bytes-only progress fallback. When the engine
+// payload's `bytesTotal` is null (provider didn't advertise
+// Content-Length — Drive's `?alt=media` for some media files, chunked
+// transfer encoding), the toast falls back to `<X> MB` (or `<X.XX> GB`
+// at the 1 GB threshold). Otherwise it keeps the percentage format.
+describe("createDownloadJobToaster — bytes-only progress fallback (§12.3)", () => {
+  let toast: MockToast;
+  let eventApi: MockEventApi;
+
+  beforeEach(() => {
+    toast = makeToast();
+    eventApi = makeEventApi();
+  });
+
+  it("(12.3.10) toast shows bytes-only when bytesTotal is null", () => {
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 5_242_880,
+        bytesTotal: null,
+      }),
+    );
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 5.0 MB");
+  });
+
+  it("(12.3.11 / 12.7.17) toast shows combined percent + size when bytesTotal is non-null (sub-GB total → MB scale)", () => {
+    // §12.7 Decision 17c — when total is known, combined percent + size
+    // format `Downloading X — N% (loaded MB / total MB)`. Total-driven
+    // unit scaling: bytesTotal < 1 GB → both rendered as MB.
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 42,
+        path: "/welcome.mp4",
+        bytesLoaded: 167_772_160, // 160.0 MB
+        bytesTotal: 398_458_880, // 380.0 MB (< 1 GB → MB scale)
+      }),
+    );
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 42% (160.0 MB / 380.0 MB)");
+  });
+
+  it("(12.7.16) GB-scale total renders both values in GB (total-driven scaling)", () => {
+    // §12.7 Decision 17c — bytesTotal >= 1 GB → BOTH loaded and total
+    // rendered in GB even though bytesLoaded < 1 GB. Per-value scaling
+    // (mixing units like `0.72 GB / 4.00 GB` vs `720 MB / 4 GB`) is
+    // forbidden — total-driven keeps both in the same unit.
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 18,
+        path: "/footage.mp4",
+        bytesLoaded: 773_094_113, // ~720 MB; sub-GB
+        bytesTotal: 4_294_967_296, // 4.00 GB → GB scale
+      }),
+    );
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading footage.mp4 — 18% (0.72 GB / 4.00 GB)");
+  });
+
+  it("(12.7.18) bytes-only fallback unchanged when bytesTotal is null (rare path)", () => {
+    // §12.7 Decision 17c — both Content-Length AND metadata-size missing
+    // (e.g. Doc-export). Existing iter-4 bytes-only format retained
+    // verbatim for this rare edge case.
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 5_242_880, // 5.0 MB
+        bytesTotal: null,
+      }),
+    );
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 5.0 MB");
+  });
+
+  it("(12.7.19) hydration with non-null contentLength uses combined percent + size format", () => {
+    // §12.7 Decision 17c — hydration path consults the same
+    // formatProgressMessage; non-null contentLength now produces the
+    // combined format (post-iter-5 service-side prefetch makes this the
+    // common case).
+    const toaster = createDownloadJobToaster({ toast, eventApi });
+    toaster.hydrateActiveDownloads([
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        sourcePath: "/welcome.mp4",
+        targetPath: "/Users/alice/Downloads/ft5/welcome.mp4",
+        bytesDownloaded: 167_772_160, // 160.0 MB
+        contentLength: 398_458_880, // 380.0 MB
+        startedAt: 0,
+      },
+    ]);
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 42% (160.0 MB / 380.0 MB)");
+  });
+
+  it("(12.3.12) toast scales to GB when bytesLoaded crosses 1 GB threshold (bytesTotal === null)", () => {
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/movie.mp4",
+        bytesLoaded: 1_073_741_824, // 1 GB exactly
+        bytesTotal: null,
+      }),
+    );
+    const [msgAt1G] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msgAt1G).toBe("Downloading movie.mp4 — 1.00 GB");
+
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/movie.mp4",
+        bytesLoaded: 1_610_612_736, // 1.5 GB
+        bytesTotal: null,
+      }),
+    );
+    const [msgAt1_5G] = toast.loading.mock.calls[1] as [string, unknown];
+    expect(msgAt1_5G).toBe("Downloading movie.mp4 — 1.50 GB");
+  });
+
+  it("(12.3.13) hydration with null contentLength uses bytes-only", () => {
+    const toaster = createDownloadJobToaster({ toast, eventApi });
+    toaster.hydrateActiveDownloads([
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        sourcePath: "/welcome.mp4",
+        targetPath: "/Users/alice/Downloads/ft5/welcome.mp4",
+        bytesDownloaded: 52_428_800, // 50 MB
+        contentLength: null,
+        startedAt: 0,
+      },
+    ]);
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 50.0 MB");
+  });
+
+  it("(12.4.7) retrying-state description omits 'Waiting Xms' clause and uses 'Restarting download.' when waitMs === 0", () => {
+    // §12.4 (Decision 3 rewrite): the rewrite-from-0 path emits
+    // download-retrying { waitMs: 0, engineCause: "range-not-honored" }
+    // because the failure is deterministic (no point sleeping). Renderer
+    // surfaces "Last error: range-not-honored. Restarting download."
+    // instead of the awkward "Waiting 0ms before retry" phrasing.
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.mp4" }),
+    );
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 2,
+        limit: 5,
+        waitMs: 0,
+        engineCause: "range-not-honored",
+      },
+    });
+    const retryCall = toast.loading.mock.calls[1] as [
+      string,
+      { description?: string },
+    ];
+    expect(retryCall[1].description).toBe(
+      "Last error: range-not-honored. Restarting download.",
+    );
+    // And a non-zero waitMs keeps the original format.
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 3,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      },
+    });
+    const retryCall2 = toast.loading.mock.calls[2] as [
+      string,
+      { description?: string },
+    ];
+    expect(retryCall2[1].description).toBe(
+      "Last error: network-error. Waiting 4000ms before retry.",
+    );
+  });
+
+  it("(12.3.14) progress updates tick up the bytes count when total is unknown", () => {
+    createDownloadJobToaster({ toast, eventApi });
+    // Same job, three successive events — the toast should update in
+    // place with the rising bytes count.
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 5_242_880,
+        bytesTotal: null,
+      }),
+    );
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 31_457_280,
+        bytesTotal: null,
+      }),
+    );
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 104_857_600,
+        bytesTotal: null,
+      }),
+    );
+    expect(toast.loading).toHaveBeenCalledTimes(3);
+    const [msg1] = toast.loading.mock.calls[0] as [string, unknown];
+    const [msg2] = toast.loading.mock.calls[1] as [string, unknown];
+    const [msg3] = toast.loading.mock.calls[2] as [string, unknown];
+    expect(msg1).toBe("Downloading welcome.mp4 — 5.0 MB");
+    expect(msg2).toBe("Downloading welcome.mp4 — 30.0 MB");
+    expect(msg3).toBe("Downloading welcome.mp4 — 100.0 MB");
   });
 });
