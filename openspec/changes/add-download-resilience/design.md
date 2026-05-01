@@ -125,39 +125,138 @@ where `expBackoff(n) = min(1000 * 2^(n-1), 30000)`. Rate-limited responses
 honor the provider's `Retry-After` header when longer than the exponential
 floor. Wall-time ceiling caps the upper.
 
-### Decision 3: Range-not-honored is hard-fail, NOT retry-budget-burn
+### Decision 3: Range-not-honored triggers one-shot rewrite-from-0, gated by env-retry budget
 
-> **Note (post-§9.4 smoke, 2026-04-30)** — the §11.10 re-smoke surfaced
-> a real-world cost of Decision 3: providers whose Range support is
-> flaky across TCP-reconnected sessions hard-fail every wifi blip on
-> long downloads (a 30-second network blip mid-400MB-download = 0%
-> recovered, restart from scratch). The proposal's Open Question 3
-> originally recommended the opposite ("rewrite from 0; emit one
-> `downloading { progress: 0 }` event so the UI rewinds"); Decision 3
-> reversed that for v1 simplicity. Revisiting Decision 3 — adopting
-> the original "rewrite from 0" recommendation, gated by the env-retry
-> budget — is **deferred to `wire-packaged-build-download-resilience`**
-> (the packaged-build E2E follow-up that exercises real-provider Range
-> behavior under mitmproxy fault injection). Until that change lands,
-> the wifi-blip → range-not-honored → terminal path remains the v1
-> behavior; users mitigate by retrying manually (which restarts from
-> byte 0).
+> **Note (post-§11.19 smoke, 2026-05-01)** — the §11.19 re-smoke
+> falsified the original deferral assumption (see "Decision 3 history"
+> at the bottom of this section). Drive's `?alt=media` endpoint did
+> NOT honor `Range: bytes=N-` on a native 400MB MP4 after wifi-drop /
+> reconnect — a real common-case file, NOT a Doc-export edge case.
+> Hard-failing every wifi blip is unshippable: it makes the resilience
+> change net-zero for the very scenario it was supposed to fix. This
+> rewrite of Decision 3 adopts strategy **(b) one-shot rewrite-from-0
+> + skip Range for rest of download**, locking in the user's choice
+> when offered (a) "transient — keep retrying with Range each attempt"
+> vs (b) "definitive — restart from 0 once, never send Range again
+> for this download." Strategy (a) was rejected because once a server
+> answers `200` to a Range request, retrying the same Range against
+> the same URL is wasted bandwidth and provider quota; the server has
+> declared its position.
 
+**What:** When a resume attempt (`bytesWritten > 0` AND `Range: bytes=N-`
+was sent) returns 200 OK without `contentRange`, the handler treats this
+as a recoverable failure on the first occurrence within a single
+`files:download` call. Mechanics:
 
-**What:** When a resume attempt (`bytesWritten > 0`) returns 200 OK without
-`contentRange`, the handler raises `RangeNotHonoredError` immediately. No
-retry within the cycle's environmental budget. Repeated requests with the
-same `Range: bytes=N-` against a resource that returned 200 are unlikely to
-flip behavior; burning 5 attempts is wasted bandwidth and provider quota.
+1. Increment `consecutiveFailureCount` (consumes one env-retry budget slot).
+2. Apply the env-retry budget guards (`> CONSECUTIVE_FAIL_LIMIT` → throw
+   `ExhaustedRetriesError("range-not-honored")`; `now() - walltimeStartedAt
+   > WALLTIME_CEILING_MS` → throw `WalltimeExceededError("range-not-honored")`).
+3. Destroy the open response stream (it carries the full body the handler
+   is about to discard — leaving it draining wastes provider bandwidth).
+4. Emit `download-retrying { downloadJobId, datasourceId, attempt:
+   consecutiveFailureCount, limit: CONSECUTIVE_FAIL_LIMIT, waitMs: 0,
+   engineCause: "range-not-honored" }`. Wait is zero — no sleep before
+   the rewrite — because the failure is deterministic-provider-behavior,
+   not a transient network blip; backing off doesn't change the outcome.
+5. `await deps.fs.unlink(params.toPath).catch(() => {})` — drop the partial
+   on disk (its bytes are valid, but the rewrite-from-0 path will re-pipe
+   them, and leaving the file with `flags: "w"` re-truncating is cleaner
+   than positioning).
+6. Set the closure-scoped `rangeUnsupported = true` flag.
+7. Reset `bytesWritten = 0`.
+8. `continue` the inner loop. The next iteration's `effectiveRangeStart`
+   is forced to `0` (see point 9), so no Range header goes out, and the
+   strategy gets a fresh GET that the server treats as the original
+   request — guaranteed to behave the same way it did when the user
+   first started the download (which we know works since bytes flowed
+   before).
+9. **Range-header gate.** A new derived `effectiveRangeStart` value is
+   computed for every `engine.downloadFile` call:
+   ```ts
+   const effectiveRangeStart = rangeUnsupported ? 0 : bytesWritten;
+   ```
+   Once `rangeUnsupported = true`, the flag stays sticky for the lifetime
+   of THIS `files:download` call. The strategy's `Range` header conditional
+   (`if (rangeStart > 0)`) automatically skips the header when
+   `effectiveRangeStart === 0`, so the engine package needs zero changes.
 
-The user's existing toast Retry affordance is the recovery path: clicking
-Retry restarts the download from byte 0 (a fresh `files:download` call with
-no `rangeStart`). The decision to discard the partial bytes belongs to the
-user, never the handler.
+**Disposition on rewrite trigger:** the partial is `unlink`'d at step 5.
+This is a non-terminal `unlink` (no `download-failed` emit yet), so it
+deviates from Decision 6's `DELETE_ON_TERMINAL` set membership. The set
+remains scoped to TERMINAL deletes; the rewrite-from-0 unlink is a
+separate, in-flight cleanup that fires regardless of whether the download
+ultimately succeeds or terminally fails later. Documented here, not added
+to `DELETE_ON_TERMINAL`.
 
-**Class rename:** `RangeNotSupportedError` → `RangeNotHonoredError` in the
-handler internals — more accurate (the resource may support Range generally,
-just didn't on this request).
+**Disposition on terminal failure during rewrite-from-0:** if the
+rewrite-from-0 attempt itself ultimately fails (env-retry budget exhausted,
+walltime ceiling, byte-count-mismatch, integrity-failed, etc.), terminal
+disposition follows Decision 6 — keep partial for env-exhausted /
+walltime / byte-count-mismatch / cancel; delete partial for range-mismatch /
+integrity-failed. Range-not-honored is no longer in `DELETE_ON_TERMINAL`
+because it can no longer be a terminal cause: the only paths to terminal
+post-rewrite are the same env-retry-exhaustion paths used for any other
+recoverable failure class.
+
+**Idempotency on repeat range-not-honored within the same call.** If for
+some reason the response comes back without `contentRange` again AFTER
+`rangeUnsupported = true` has been set (which shouldn't happen — the gate
+forces `rangeStart = 0`, and `bytesWritten > 0` is the only path into the
+range-not-honored branch — but defensively): the gate at point 9 means
+`bytesWritten === 0` on every post-rewrite attempt, so the
+range-not-honored branch (gated on `bytesWritten > 0`) is unreachable.
+Regression-pinned by a unit test in §12.
+
+**`engineCause` value.** `"range-not-honored"` is a handler-side sentinel
+identifier, NOT an engine `DatasourceErrorTag`. The wire field is typed
+`string` (Decision 9) so this is contract-compatible. The renderer SHALL
+NOT branch on its value (Decision 9); it surfaces as the diagnostic
+description text, e.g. "Last error: range-not-honored. Restarting download."
+For the special case `waitMs === 0`, the renderer's
+`formatRetryingDescription` SHALL omit the "Waiting Xms" clause (since
+"Waiting 0ms before retry" reads weirdly).
+
+**Renderer UI on rewrite-from-0.** The toast remains in `Reconnecting…`
+chrome with the diagnostic description through the rewrite. On the next
+`downloading { progress: 0 }` event for the same `downloadJobId`, the
+title's progress reverts to `0%` automatically — the user sees the
+download "rewind" to zero with the description text explaining why.
+
+**Why one-shot, not multi-shot.** Once a provider responds 200 to a Range
+request on a specific URL, retrying with the same Range header against
+the same URL is unlikely to flip behavior. Hence `rangeUnsupported`
+sticky-flag-once. If a future provider proves this assumption wrong (Range
+support varies across CDN edges within the same response), revisit at the
+boundary of `wire-packaged-build-download-resilience`.
+
+**Class name kept:** `RangeNotHonoredError` is no longer a terminal
+sentinel for normal range-not-honored — that path now goes through
+the env-retry branch's continue-loop. The class still exists and is
+imported, but is unreachable in normal flow with this Decision's gate.
+We keep it as a defensive sentinel for the (currently-unreachable) repeat
+range-not-honored case described above. Removing it would be premature
+cleanup; tests in §12 pin its unreachability.
+
+**Class rename retained from v1:** `RangeNotSupportedError` →
+`RangeNotHonoredError` from earlier iter — accurate naming preserved.
+
+#### Decision 3 history
+
+The v1 stance ("hard-fail on first range-not-honored, no retry within env
+budget") was chosen for simplicity, with the note that the proposal's Open
+Question 3 had recommended the opposite. The §11.19 smoke (real Drive
+endpoint, real wifi drop, real 400MB MP4) demonstrated that v1's stance
+makes the resilience change net-zero: every wifi blip on a long Drive
+download terminates with an unrecoverable "range not supported" failure.
+The user's options at that point are (a) re-click Retry → restart from 0
+manually (which works, but is hostile UX during a flaky-network session)
+or (b) abandon the download. Either way the resilience guarantee is broken.
+This rewrite of Decision 3 adopts the (b) strategy from the iter-4 design
+question: "definitive — restart from 0 once, skip Range for rest of
+download." The advisor (2026-04-30 transcript) concurred that Decision 3
+was empirically falsified on first smoke and shipping without addressing
+it would fail to deliver the change's stated goal.
 
 ### Decision 4: Range-mismatch is hard-fail
 
@@ -432,6 +531,192 @@ across catch sites). Pinned by §11.7-§11.9 integration tests + the
 pre-existing §6.5 budget-exhaustion test (which exercises the same
 counter+budget path the pre-stream branch now uses).
 
+### Decision 13: Active download toast surfaces a Cancel action button
+
+**What:** Both the `downloading` and `download-retrying` toast states
+render a Cancel action button via Sonner's built-in `action: { label,
+onClick }` option on `toast.loading`. Clicking the button calls
+`window.api.sync.cancelJob({ downloadJobId })` (the existing IPC handler
+plumbed through `add-fs-engine-cancellation`); the handler aborts the
+in-flight `AbortController`; `sleepCancellable` resolves immediately if
+the click landed during a retry sleep; the inner loop exits with
+`CancelledError`; the handler emits `download-cancelled` with the last
+known byte counts; the toaster's `download-cancelled` handler dismisses
+the toast (existing path).
+
+**Why:** `add-engine-rename-download` §7.5 noted "the toast carries no
+Cancel UI button today" — an aspirational gap that has stood in two
+specs (this change's `file-explorer/spec.md` "Cancel during retry sleep
+terminates the download immediately" requirement, and the §11.19 user
+smoke's expectation). Iter-4 closes the gap. Without it, the only way
+to abort a long-running download is to wait for terminal failure or
+quit the desktop app.
+
+**Mechanics:**
+
+- `DownloadToasterDeps` gains `syncApi?: SyncActionsApi` collaborator.
+  `SyncActionsApi.cancelJob({ downloadJobId }): Promise<void>`. Production
+  fallback resolves `window.api.sync.cancelJob` lazily, mirroring the
+  existing `filesApi` resolution pattern.
+- Both `toast.loading(...)` calls in the toaster (downloading-state path
+  AND retrying-state path) pass `action: { label: "Cancel", onClick: () =>
+  void syncApi.cancelJob({ downloadJobId }) }`. Same id, same chrome —
+  Sonner's loading template renders the action button on the right side
+  of the toast (line 812-824 of `node_modules/sonner/dist/index.mjs`
+  pinned).
+- The Cancel button is REMOVED on terminal-render swaps:
+  - `download-cancelled` → `toast.dismiss` (existing) — no new render.
+  - `file-downloaded` → `toast.custom` for V2 success (existing) — its
+    own dual-action layout (Show in folder + Open).
+  - `download-failed` → `toast.error` (existing) — Sonner's built-in
+    error template; the existing Retry action is the failure-state
+    affordance.
+- Click handler is `void syncApi.cancelJob(...)` — fire-and-forget. The
+  IPC's response is observable via the subsequent `download-cancelled`
+  event; the click's promise return is unused. Errors thrown by the IPC
+  call surface as console errors only — the user-visible signal is the
+  toast staying live until the cancel succeeds (rare path; the IPC is
+  idempotent and never rejects in normal flow).
+
+**No spec.md change to "Cancel during retry sleep" requirement** — the
+existing requirement (file-explorer spec.md "Cancel during retry sleep
+terminates the download immediately") already presumes the toast HAS a
+Cancel affordance. Iter-4 makes that requirement actually implementable.
+The requirement copy is unchanged; tests now exercise it for real.
+
+### Decision 14: Bytes-only progress fallback when contentLength is unknown
+
+**What:** The `downloading` IPC event payload extends with two new
+optional fields: `bytesLoaded: number` (always present when the engine's
+byte-counting Transform is wired — i.e., always for the three current
+strategies) and `bytesTotal: number | null` (the value of `contentLength`
+on the engine response, surfacing the raw header presence/absence). The
+renderer's `formatProgressMessage` switches behavior based on `bytesTotal`:
+
+- `bytesTotal !== null && bytesTotal > 0` → existing percentage format:
+  `Downloading <basename> — <pct>%` where pct = `floor(loaded/total *
+  100)`.
+- `bytesTotal === null || bytesTotal === 0` → new bytes-only format:
+  `Downloading <basename> — <X> MB` where X = `(bytesLoaded /
+  1_048_576).toFixed(1)`.
+
+Once `bytesLoaded` exceeds 1 GB, the format scales to `<X> GB` for
+readability.
+
+**Why:** The §11.19 smoke surfaced that Drive's `?alt=media` endpoint
+on a 400MB MP4 returned no `Content-Length` header — `transformDownloading
+Event` mapped this to `progress: 0` and the toast got stuck at `0%`
+forever. The user has no signal that bytes are flowing; they assume the
+download is dead. Bytes-only progress preserves the activity signal even
+when total is unknown; the eventual byte count converges on the file's
+actual size, just without the percentage.
+
+**Wire change scope:**
+
+- `DownloadingPayload` in `@ft5/ipc-contracts/sync-service/events.ts`:
+  ADD `bytesLoaded: number` (required; engines always know loaded byte
+  count from the byte-counting Transform). ADD `bytesTotal: number | null`
+  (required; mirrors the engine's `contentLength` literally — null means
+  the response had no usable Content-Length header).
+- `transformDownloadingEvent` in `files-download.ts` passes both fields
+  through verbatim from `DownloadingEnginePayload.{loaded, total}`.
+- The renderer toast's `DownloadEvent.downloading` mirror type adds the
+  same fields.
+- Existing `progress: number` field is retained for backward compat AND
+  to keep the percentage path simple — the renderer can use `progress`
+  directly when `bytesTotal !== null`.
+
+**Backward compat:** the IPC contracts test surface (test-d files) updates
+to assert the new fields. No existing wire-shape consumer breaks (the
+renderer toaster is the only consumer and is updated in lockstep).
+
+**Renderer formatting helper:**
+
+```ts
+function formatProgressMessage(
+  basename: string,
+  progressPct: number,        // 0 when bytesTotal is null
+  bytesLoaded: number,
+  bytesTotal: number | null,
+): string {
+  if (bytesTotal !== null && bytesTotal > 0) {
+    const clamped = Math.max(0, Math.min(100, Math.round(progressPct)));
+    return `Downloading ${basename} — ${clamped}%`;
+  }
+  if (bytesLoaded >= 1_073_741_824) {
+    return `Downloading ${basename} — ${(bytesLoaded / 1_073_741_824).toFixed(2)} GB`;
+  }
+  return `Downloading ${basename} — ${(bytesLoaded / 1_048_576).toFixed(1)} MB`;
+}
+```
+
+Format choice notes:
+- 1 decimal place for MB (rolls over often, doesn't need precision).
+- 2 decimal places for GB (rolls over rarely, more precision is useful).
+- No commas / locale formatting in v1 (toString-default English-style is
+  consistent with the rest of the app's number rendering).
+
+**Hydration path.** `DownloadJobSummary.contentLength` and `bytesDownloaded`
+already exist on the registry shape; `formatSeededRatio` is replaced /
+extended to compute the same conditional formatting on initial seed.
+
+### Decision 15: Single failure-toast emission — toaster owns event-driven failure UX
+
+**What:** The orchestrator dispatch caller in `file-explorer.tsx` removes
+the redundant `.then((response) => { if (!response.ok) toast.error(...); })`
+block. The `.catch((err) => toast.error(...))` block stays — it covers
+the genuinely-different case where the IPC itself rejects before any
+event flows through the bus.
+
+**Why:** The §11.19 smoke surfaced TWO failure toasts visible
+simultaneously when a download terminally fails — one with Retry button
+(from the toaster's `download-failed` handler) and one without (from the
+file-explorer dispatch caller's `.then(toast.error)`). Both fire on the
+same logical failure: the toaster gets the event-driven path, the dispatch
+caller gets the synchronous-response path. Pre-iter-4, the toaster only
+handled SUCCESS; the dispatch caller's `.then(toast.error)` was the only
+failure UX. Iter-3 of this change extended the toaster to handle FAILURES
+too, creating the duplicate.
+
+**Trade-off:** removing the `.then` block means pre-job validation
+failures (toPath rejected, concurrent-rejection, resolveClient failure —
+the three paths in `files-download.ts:494-525` that return `{ ok: false,
+error }` BEFORE registering a job, BEFORE emitting `download-failed`)
+no longer surface a user-visible toast. v1 accepted this — pre-job
+validation paths are rare (toPath validation is path-traversal
+defense-in-depth; concurrent-rejection is double-click guard; resolveClient
+fails on unknown datasourceId).
+
+**Why acceptable for iter-4:**
+
+- toPath validation: should never fire in practice — the validator's
+  path-traversal regex is anchored on user-controlled paths the orchestrator
+  composes via `joinFolderAndName` from a settings-resolved folder + a
+  vendor-supplied basename, both of which the orchestrator sanitizes.
+  Hitting this is a bug-level defect, surfaced via console error.
+- Concurrent-rejection: the orchestrator's spawn path is gated by the file
+  explorer's per-row click handler, which is typically guarded against
+  double-clicks in the UI layer. Hitting this is a genuine race; user
+  sees their second click do nothing visible. Acceptable temporarily.
+- resolveClient: fires on a stale `datasourceId` (the datasource was
+  removed between the user's click and the dispatch). Edge case.
+
+**Future tightening:** if any of the three paths above become user-visible
+(e.g. a future feature exposes raw datasource ids to the user), spawn a
+follow-up change `add-pre-dispatch-validation-toast` that extends the
+`FilesDownloadResponse` envelope with a `downloadJobId?: string` discriminator
+on the failure case (set when the failure was post-job-creation; undefined
+when pre-job). Renderer would re-introduce the `.then` toast guarded on
+`downloadJobId === undefined`. v1 doesn't need this — the toaster covers
+the common case and users see console errors for the edge cases.
+
+**Single-source invariant.** With the `.then(toast.error)` block removed,
+the toaster is the SOLE source of `Download failed: …` toast emissions in
+the renderer codebase. The `.catch(toast.error)` for IPC-reject
+exceptions is the one exception, scoped to a categorically different
+failure mode (the IPC layer itself fails — disconnected service, malformed
+request, etc.) where no `download-failed` event ever reaches the toaster.
+
 ## Risks / Trade-offs
 
 - **[Risk] Strategy bug marks non-retryable error as retryable=true** →
@@ -440,10 +725,20 @@ counter+budget path the pre-stream branch now uses).
   retryable=true`) are pre-existing per-strategy contracts.
 - **[Risk] Provider returns 200 OK to Range repeatedly on a long download
   whose Range was honored once** (CDN edge variability) → Mitigation:
-  hard-fail on the first occurrence (Decision 3). The user's manual Retry
-  starts a fresh download. Trade-off: we lose the optimistic case where
-  attempt 2 hits a different edge that honors Range. The user explicitly
-  preferred this stance: "the choice of restart is up to the user only."
+  one-shot rewrite-from-0 on first occurrence (Decision 3). The handler
+  consumes one env-retry budget slot, drops the partial, and restarts
+  from byte 0 with `rangeUnsupported = true` sticky for the rest of this
+  download. Trade-off: bandwidth waste — every wifi blip on a Drive
+  resource that doesn't honor Range costs a full re-download (vs. v1's
+  Decision 3 which surfaced terminal failure and let the user choose).
+  Mitigated by the env-retry budget cap (5 consecutive failures still
+  caps out — a flaky network won't loop infinitely) and by the wall-time
+  ceiling (30 min). Real-world impact: a 400MB MP4 from Drive that hit
+  range-not-honored after partial download now restarts from 0
+  automatically; the user gets a brief `Reconnecting…` blip and then
+  watches progress count up from 0% / 0 MB again. Acceptable for v1;
+  variance across CDN edges (where attempt 2 might honor Range) is left
+  to `wire-packaged-build-download-resilience` to investigate.
 - **[Risk] Kept byte-count-mismatch partial corrupts the user's next
   download attempt if they retry and the on-disk prefix is actually wrong**
   → Mitigation: the user's Retry restarts from byte 0 with `flags: "w"`
@@ -466,6 +761,28 @@ counter+budget path the pre-stream branch now uses).
   is wire-ready for telemetry whenever the desktop app's telemetry surface
   arrives. The `add-failed-download-cleanup-affordance` follow-up adds a
   click-through counter that establishes the telemetry pattern.
+- **[Risk] `DownloadingPayload` wire extension (Decision 14) breaks any
+  consumer doing exhaustive shape validation** → Mitigation: the only
+  current consumer is the renderer toaster (`download-job-toast.ts`),
+  which is updated in lockstep. Test-d files (`packages/ipc-contracts/
+  src/sync-service/__tests__/events.test-d.ts`) pin the new shape;
+  hard-coded shape assertions elsewhere in the workspace are flushed by
+  the typecheck pass.
+- **[Trade-off] Decision 15 silences pre-job validation failures
+  (toPath-rejected / concurrent-rejected / resolveClient-failed) at the
+  toast layer** → Acceptable; the three pre-job paths are edge cases
+  (path-traversal defense-in-depth, double-click guard, stale
+  datasourceId). Console errors persist; if any path becomes
+  user-visible, follow-up `add-pre-dispatch-validation-toast` would
+  re-introduce a guarded toast via a `downloadJobId?: string` discriminator
+  on the response error envelope (see Decision 15 "Future tightening").
+- **[Risk] Decision 13's Cancel action button rendering depends on
+  Sonner's loading-template laying out the action button cleanly within
+  its width budget** → Mitigation: pinned by §12 unit tests on the
+  toaster-side action wiring + a manual-smoke step against a live
+  Sonner render. Sonner's index.mjs source confirms `toast.action` is
+  rendered for built-in templates (line 812-824); the runtime risk is
+  cosmetic (button below the message vs. inline) rather than functional.
 
 ## Migration Plan
 

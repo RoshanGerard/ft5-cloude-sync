@@ -83,7 +83,6 @@ A subscriber filtering by `datasourceId` via `sync:subscribe-events { datasource
 
 The handler SHALL `unlink` the partial file at `params.toPath` BEFORE emitting `download-failed` when the terminal cause is one of:
 
-- `RangeNotHonoredError` — provider returned 200 OK on a `Range: bytes=N-` request (`bytesWritten > 0` and `result.contentRange === undefined`).
 - `RangeMismatchError` — provider returned 206 Partial Content with `result.contentRange.start !== bytesWritten`.
 - `IntegrityFailedError` — post-download provider hash comparison failed.
 
@@ -91,10 +90,7 @@ The handler SHALL preserve the partial file on disk for every other terminal cau
 
 The disposition decision derives from the principle: the bytes are corrupt or unrecoverable, the partial cannot be auto-resumed, and leaving it on disk would mislead the user.
 
-#### Scenario: Range-not-honored on resume deletes the partial
-
-- **WHEN** a `files:download` cycle drains 240MB then errors; on the next attempt with `Range: bytes=251658240-`, the engine returns a 200 OK without `contentRange`
-- **THEN** the handler `unlink`s the file at `params.toPath` and emits `download-failed { downloadJobId, datasourceId, tag: "other", message: "range not supported on this resource" }`; the file no longer exists at `params.toPath`
+NOTE: `RangeNotHonoredError` is no longer in the terminal-disposition set per the iter-4 rewrite of Decision 3. Range-not-honored on a resume request now triggers a one-shot in-flight rewrite-from-0 (consuming one env-retry budget slot, unlinking the partial as part of the in-flight reset, restarting the cycle from byte 0 with `rangeUnsupported = true` for the rest of this download). The unlink at the rewrite trigger point is a non-terminal, in-flight cleanup — separate from the terminal-disposition path described in this requirement. See the dedicated requirement below ("`files:download` handler retries range-not-honored once via in-flight rewrite-from-0") for the rewrite-from-0 mechanics.
 
 #### Scenario: Range-mismatch deletes the partial
 
@@ -126,6 +122,53 @@ The disposition decision derives from the principle: the bytes are corrupt or un
 - **WHEN** disposition rules call for the partial to be deleted but `unlink` rejects with `EACCES`
 - **THEN** the handler logs a warning containing the rejection reason but emits the same `download-failed` event with the cause-appropriate `tag` and `message`; the file remains on disk
 
+### Requirement: `files:download` handler retries range-not-honored once via in-flight rewrite-from-0
+
+When a resume attempt within a `files:download` cycle (`bytesWritten > 0` AND a `Range: bytes=N-` header was sent) returns 200 OK without a `Content-Range` header (i.e., `result.contentRange === undefined`), the handler SHALL treat this as a recoverable failure on the first occurrence within this single `files:download` call. The handler SHALL:
+
+1. Increment `consecutiveFailureCount` (consume one env-retry budget slot).
+2. Apply env-retry budget guards: if `consecutiveFailureCount > CONSECUTIVE_FAIL_LIMIT`, raise `ExhaustedRetriesError("range-not-honored")`; if `now() - walltimeStartedAt > WALLTIME_CEILING_MS`, raise `WalltimeExceededError("range-not-honored")`.
+3. Destroy the open response stream (it carries the full body the handler is about to discard).
+4. Emit `download-retrying { downloadJobId, datasourceId, attempt: consecutiveFailureCount, limit: CONSECUTIVE_FAIL_LIMIT, waitMs: 0, engineCause: "range-not-honored" }`. `waitMs` SHALL be `0` — no sleep precedes the rewrite, since the failure is deterministic provider behavior (not a transient blip).
+5. `await deps.fs.unlink(params.toPath).catch(() => {})` — drop the partial on disk. Failure (e.g., `EACCES`) SHALL be silent — the next `flags: "w"` open will truncate.
+6. Set the closure-scoped `rangeUnsupported = true` flag, sticky for the remainder of THIS `files:download` call.
+7. Reset `bytesWritten = 0`.
+8. Continue the inner loop.
+
+The handler SHALL gate the engine call's `rangeStart` parameter via:
+
+```
+const effectiveRangeStart = rangeUnsupported ? 0 : bytesWritten;
+```
+
+`effectiveRangeStart` SHALL be passed as the `DownloadOptions.rangeStart` field on EVERY `engine.downloadFile` call within the cycle. Once `rangeUnsupported = true`, no Range header is sent for subsequent attempts within this download — the strategy's existing `if (rangeStart > 0)` guard skips the Range header when `effectiveRangeStart === 0`. This invariant SHALL be preserved across env-retry sleeps and any subsequent partial-progress / failure within the same download.
+
+If a subsequent failure-and-recovery cycle within the same download drains some bytes (`bytesWritten` grows again), and another mid-stream environmental failure fires, the env-retry sleep+continue path SHALL still use `effectiveRangeStart === 0` (the gate is sticky). The result: the same range-unsupported provider sees a fresh GET each time, mostly successful within one attempt for the typical case.
+
+The `engineCause` value `"range-not-honored"` is a handler-side sentinel string, NOT an engine `DatasourceErrorTag`. The wire field is typed `string` (`download-retrying.engineCause`) so this is contract-compatible. Renderer code SHALL NOT branch on this value.
+
+This requirement SHALL NOT affect the terminal-disposition path: range-not-honored is no longer a terminal cause under normal flow (the rewrite-from-0 path handles every first occurrence). If subsequent failures during the rewrite-from-0 phase exhaust the env-retry budget or the wall-time ceiling, terminal disposition follows the existing rules (env-budget-exhausted / walltime-exceeded keep the partial).
+
+#### Scenario: Range-not-honored on resume triggers rewrite-from-0
+
+- **WHEN** a `files:download` cycle drains 240MB then errors with `tag: "network-error", retryable: true`; the env-retry branch sleeps 1000ms; on the next attempt with `Range: bytes=251658240-`, the engine returns 200 OK without `contentRange`
+- **THEN** the handler emits `download-retrying { downloadJobId, datasourceId, attempt: 2, limit: 5, waitMs: 0, engineCause: "range-not-honored" }`; `deps.fs.unlink(params.toPath)` is called; on the next `engine.downloadFile` invocation, `options.rangeStart === 0` (NOT `251658240`); subsequent attempts in this download all carry `rangeStart = 0`; the download eventually completes from byte 0 and emits `file-downloaded`
+
+#### Scenario: Rewrite-from-0 consumes env-retry budget slots
+
+- **WHEN** a download experiences five range-not-honored events in a row (across multiple wifi blips, each followed by a Range request that the server rejects with 200 OK), with no byte progress between them
+- **THEN** the handler emits five `download-retrying` events with `attempt: 1..5` and `engineCause: "range-not-honored"`; the sixth occurrence emits `download-failed { tag: "exhausted-retries", message: "exhausted-retries: range-not-honored" }`; the partial file is preserved per the existing env-budget-exhaustion disposition
+
+#### Scenario: Rewrite-from-0 with subsequent successful download
+
+- **WHEN** a download triggers rewrite-from-0 once (range-not-honored on first resume), then completes cleanly from byte 0 within the env-retry budget
+- **THEN** exactly one `download-retrying { engineCause: "range-not-honored", waitMs: 0 }` event fires; `deps.fs.unlink` is called once; the final `file-downloaded` event fires with the correct byte count; no `download-failed` event fires
+
+#### Scenario: rangeUnsupported flag is sticky for the download's lifetime
+
+- **WHEN** a download triggers rewrite-from-0, then experiences a network-error mid-stream during the byte-0 restart (after some bytes drained), and the env-retry sleep+continue path retries
+- **THEN** the retry's `engine.downloadFile` call carries `rangeStart: 0` (NOT `bytesWritten`), even though `bytesWritten > 0` at this point — the `rangeUnsupported` flag overrides the bytes-written-based resume
+
 ### Requirement: `FilesErrorTag` includes `exhausted-retries`
 
 The wire-level `FilesErrorTag` enumeration in `@ft5/ipc-contracts` SHALL include the value `"exhausted-retries"`. This tag SHALL be emitted exclusively by the `files:download` handler's environmental-retry exhaustion paths (consecutive-failure budget exhausted OR wall-time ceiling exceeded). Both exhaustion modes share the same tag; the discriminator (count vs wall-time) lives in the message field as `"exhausted-retries: <engineCause>"` or `"walltime-exceeded: <engineCause>"`.
@@ -150,7 +193,7 @@ The `files:download` handler SHALL emit consumer-domain events on the service's 
 
 The fs-sync wire shapes:
 
-- `downloading { downloadJobId, datasourceId, progress, path }` — high-frequency progress; throttling is performed upstream at the engine-bus coalescer (1s OR 10-percentage-point window) before the handler emits to fs-sync's IPC bus.
+- `downloading { downloadJobId, datasourceId, progress, path, bytesLoaded, bytesTotal }` — high-frequency progress; throttling is performed upstream at the engine-bus coalescer (1s OR 10-percentage-point window) before the handler emits to fs-sync's IPC bus. The `progress` field SHALL be the integer percentage when `bytesTotal !== null && bytesTotal > 0` (computed as `floor(bytesLoaded / bytesTotal * 100)`, clamped to `[0..100]`); the `progress` field SHALL be `0` when `bytesTotal === null` or `bytesTotal === 0`. The `bytesLoaded` field SHALL be the integer number of bytes drained from the engine response stream. The `bytesTotal` field SHALL mirror the engine response's `contentLength` literally (the value of the `Content-Length` HTTP header parsed as an integer, or `null` when the header is absent / empty / unparseable). Renderers SHALL prefer `(bytesLoaded, bytesTotal)` as the source of truth for display, falling back to a bytes-only progress format when `bytesTotal` is null (see file-explorer spec.md "Download toast falls back to bytes-only progress when total is unknown").
 - `download-retrying { downloadJobId, datasourceId, attempt, limit, waitMs, engineCause }` — emitted at the start of each environmental-retry sleep (NOT for the auth-expired Layer 2 branch). One event per retry attempt; not coalesced.
 - `file-downloaded { downloadJobId, datasourceId, savedPath, bytes }` — terminal success.
 - `download-failed { downloadJobId, datasourceId, tag, message }` — terminal failure.
@@ -162,5 +205,10 @@ A client subscribed via `sync:subscribe-events` for a specific `datasourceId` SH
 
 #### Scenario: Downloading progress streams to subscriber
 
-- **WHEN** a client subscribes via `sync:subscribe-events { datasourceId: "ds-1" }` and a `files:download` is in flight for `ds-1`
-- **THEN** the client receives `downloading { downloadJobId, progress: <0..100>, path }` events at the throttled rate; on terminal completion the client receives exactly one `file-downloaded { downloadJobId, savedPath, bytes }`
+- **WHEN** a client subscribes via `sync:subscribe-events { datasourceId: "ds-1" }` and a `files:download` is in flight for `ds-1` against a provider that returns `Content-Length: 398458880`
+- **THEN** the client receives `downloading { downloadJobId, datasourceId: "ds-1", progress: <0..100>, path, bytesLoaded: <0..398458880>, bytesTotal: 398458880 }` events at the throttled rate; on terminal completion the client receives exactly one `file-downloaded { downloadJobId, savedPath, bytes }`
+
+#### Scenario: Downloading progress with provider-omitted Content-Length surfaces null bytesTotal
+
+- **WHEN** a client subscribes via `sync:subscribe-events { datasourceId: "ds-1" }` and a `files:download` is in flight for `ds-1` against a provider that returns no `Content-Length` header (e.g., chunked transfer encoding for large media)
+- **THEN** the client receives `downloading { downloadJobId, datasourceId: "ds-1", progress: 0, path, bytesLoaded: <growing integer>, bytesTotal: null }` events at the throttled rate; the `progress` field stays `0` throughout (since total is unknown) but `bytesLoaded` increments toward the file's true size; on terminal completion the client receives exactly one `file-downloaded { downloadJobId, savedPath, bytes }`
