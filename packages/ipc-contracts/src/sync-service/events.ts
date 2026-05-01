@@ -184,18 +184,29 @@ export interface CredentialPersistedPayload {
 // §13.26; the desktop subscriber sees only the fs-sync shapes.
 
 /** Streaming-tagged progress event. `progress` is the 0..100 percentage
- * derived from the engine bus's `downloading { loaded, total }` (or, when
- * `contentLength` is `null`, the raw `loaded` count divided into a
- * caller-defined heuristic — but in practice every supported provider
- * advertises length, so the renderer treats `progress` as authoritative).
- * `path` is the SOURCE path on the datasource, not the local `toPath` —
- * the renderer correlates against its own entry rows by `(datasourceId,
- * path)` to update the in-flight toaster. */
+ * derived from the engine bus's `downloading { loaded, total }` — clamped
+ * to `[0..100]` when `bytesTotal !== null && bytesTotal > 0`, and forced
+ * to `0` when `bytesTotal === null` (no Content-Length advertised by the
+ * provider — Drive's `?alt=media` for some media files, chunked transfer
+ * encoding, etc). `path` is the SOURCE path on the datasource, not the
+ * local `toPath` — the renderer correlates against its own entry rows
+ * by `(datasourceId, path)` to update the in-flight toaster.
+ *
+ * §12.3 (Decision 14): `bytesLoaded` and `bytesTotal` extend the payload
+ * so renderers can fall back to a bytes-only progress format when total
+ * is unknown (e.g. `Downloading welcome.mp4 — 50.0 MB` instead of an
+ * always-zero percentage). `bytesLoaded` is required (the engine's
+ * byte-counting Transform always knows the running count); `bytesTotal`
+ * mirrors the engine response's `contentLength` literally — `null` when
+ * the provider's `Content-Length` header was absent / empty / unparseable.
+ */
 export interface DownloadingPayload {
   readonly downloadJobId: string;
   readonly datasourceId: string;
   readonly progress: number;
   readonly path: string;
+  readonly bytesLoaded: number;
+  readonly bytesTotal: number | null;
 }
 
 /** Terminal success. `savedPath` is the absolute local path the handler

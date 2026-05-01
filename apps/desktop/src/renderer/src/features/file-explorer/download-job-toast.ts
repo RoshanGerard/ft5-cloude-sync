@@ -54,6 +54,15 @@ export type DownloadEvent =
         readonly datasourceId: string;
         readonly progress: number;
         readonly path: string;
+        // §12.3 (Decision 14) — bytes-only progress fallback. The
+        // renderer formats `<X>%` when bytesTotal !== null && > 0;
+        // otherwise it falls back to `<bytesLoaded MB>` (or GB at
+        // 1 GB+ scale). bytesLoaded is the engine's byte-counting
+        // Transform's running count; bytesTotal mirrors the
+        // engine response's contentLength literally (null when the
+        // provider's Content-Length header is absent / empty).
+        readonly bytesLoaded: number;
+        readonly bytesTotal: number | null;
       };
     }
   | {
@@ -436,12 +445,41 @@ function basenameFromPath(path: string): string {
   return lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
 }
 
+/**
+ * §12.3 (Decision 14) — progress message format with bytes-only fallback.
+ *
+ * - When `bytesTotal !== null && bytesTotal > 0`: percentage format
+ *   `Downloading <basename> — <pct>%`. `pct` is the integer percentage
+ *   computed from `bytesLoaded / bytesTotal`; the caller may pass the
+ *   pre-computed value via `progressPct` (matching the wire-shape's
+ *   `progress` field — the handler already does the floor + clamp).
+ * - When `bytesTotal === null` (provider didn't advertise Content-Length
+ *   — e.g. Drive `?alt=media` for some media files, chunked transfer
+ *   encoding): bytes-only format `Downloading <basename> — <X> MB`
+ *   where `X = (bytesLoaded / 1_048_576).toFixed(1)`. When `bytesLoaded
+ *   >= 1_073_741_824` (1 GB), scales to `<X> GB` with two decimal places.
+ *
+ * The bytes-only path preserves user-visible activity signal even when
+ * total is unknown — the §11.19 wifi-drop smoke surfaced a 400MB MP4
+ * download where Drive returned no Content-Length, leaving the toast
+ * stuck at `0%` forever.
+ */
 function formatProgressMessage(
   basename: string,
   progressPct: number,
+  bytesLoaded: number,
+  bytesTotal: number | null,
 ): string {
-  const clamped = Math.max(0, Math.min(100, Math.round(progressPct)));
-  return `Downloading ${basename} — ${clamped}%`;
+  if (bytesTotal !== null && bytesTotal > 0) {
+    const clamped = Math.max(0, Math.min(100, Math.round(progressPct)));
+    return `Downloading ${basename} — ${clamped}%`;
+  }
+  const ONE_GB = 1_073_741_824;
+  const ONE_MB = 1_048_576;
+  if (bytesLoaded >= ONE_GB) {
+    return `Downloading ${basename} — ${(bytesLoaded / ONE_GB).toFixed(2)} GB`;
+  }
+  return `Downloading ${basename} — ${(bytesLoaded / ONE_MB).toFixed(1)} MB`;
 }
 
 // §11.16 (iter-3): retrying state shares the `toast.loading` render mode
@@ -595,7 +633,12 @@ export function createDownloadJobToaster(
         // check then hides the row. (See node_modules/sonner Observer
         // .create line ~145 and view layer ~797.)
         toast.loading(
-          formatProgressMessage(existing.basename, event.payload.progress),
+          formatProgressMessage(
+            existing.basename,
+            event.payload.progress,
+            event.payload.bytesLoaded,
+            event.payload.bytesTotal,
+          ),
           {
             id: existing.toastId,
             description: "",
@@ -617,7 +660,12 @@ export function createDownloadJobToaster(
         // (the pairing is one-shot per dispatch).
         const initialId = generateToastId();
         const toastId = toast.loading(
-          formatProgressMessage(basename, event.payload.progress),
+          formatProgressMessage(
+            basename,
+            event.payload.progress,
+            event.payload.bytesLoaded,
+            event.payload.bytesTotal,
+          ),
           {
             id: initialId,
             action: buildCancelAction(downloadJobId),
@@ -841,7 +889,12 @@ export function createDownloadJobToaster(
       );
       const initialId = generateToastId();
       const toastId = toast.loading(
-        formatProgressMessage(basename, initialPct),
+        formatProgressMessage(
+          basename,
+          initialPct,
+          job.bytesDownloaded,
+          job.contentLength,
+        ),
         {
           id: initialId,
           action: buildCancelAction(job.downloadJobId),

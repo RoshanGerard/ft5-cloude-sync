@@ -1137,7 +1137,7 @@ describe("files:download — concurrent-rejection guard (§13.23, §13.24)", () 
 // ---------------------------------------------------------------------------
 
 describe("files:download — derived-not-relayed event transformation (§13.25, §13.26)", () => {
-  it("transformDownloadingEvent: engine `{ path, loaded, total }` → fs-sync `{ downloadJobId, datasourceId, progress, path }` with progress = floor((loaded/total)*100)", () => {
+  it("transformDownloadingEvent: engine `{ path, loaded, total }` → fs-sync `{ downloadJobId, datasourceId, progress, path, bytesLoaded, bytesTotal }` with progress = floor((loaded/total)*100)", () => {
     const out = transformDownloadingEvent(
       { path: "/welcome.pdf", loaded: 524288, total: 1048576 },
       { downloadJobId: "job-A", datasourceId: "ds-1" },
@@ -1147,15 +1147,31 @@ describe("files:download — derived-not-relayed event transformation (§13.25, 
       datasourceId: "ds-1",
       progress: 50,
       path: "/welcome.pdf",
+      bytesLoaded: 524288,
+      bytesTotal: 1048576,
     });
   });
 
-  it("transformDownloadingEvent: total === null → progress = 0 (indeterminate)", () => {
+  it("transformDownloadingEvent: total === null → progress = 0 AND bytesTotal = null (indeterminate)", () => {
     const out = transformDownloadingEvent(
       { path: "/welcome.pdf", loaded: 1234, total: null },
       { downloadJobId: "job-A", datasourceId: "ds-1" },
     );
     expect(out.progress).toBe(0);
+    expect(out.bytesLoaded).toBe(1234);
+    expect(out.bytesTotal).toBeNull();
+  });
+
+  it("transformDownloadingEvent: bytesLoaded reflects engine.loaded verbatim (no rounding / scaling)", () => {
+    // §12.3 (Decision 14): the renderer's bytes-only fallback formats the
+    // raw byte count, so the value must pass through without modification.
+    const out = transformDownloadingEvent(
+      { path: "/welcome.mp4", loaded: 167_772_160, total: 419_430_400 },
+      { downloadJobId: "job-A", datasourceId: "ds-1" },
+    );
+    expect(out.bytesLoaded).toBe(167_772_160);
+    expect(out.bytesTotal).toBe(419_430_400);
+    expect(out.progress).toBe(40);
   });
 
   it("transformFileDownloadedEvent: fs-sync payload carries downloadJobId + savedPath + bytes; raw engine `path` is dropped (not the local savedPath)", () => {
@@ -1230,8 +1246,12 @@ describe("files:download — fs-sync IPC event wire shapes (spec.md line 203-208
       datasourceId: "ds-1",
       progress: 50,
       path: "/welcome.pdf",
+      bytesLoaded: 524288,
+      bytesTotal: 1048576,
     };
     expect(sample.downloadJobId).toBe("job-A");
+    expect(sample.bytesLoaded).toBe(524288);
+    expect(sample.bytesTotal).toBe(1048576);
   });
 
   it("`file-downloaded` payload shape matches FileDownloadedPayload contract (savedPath, NOT raw engine path)", () => {

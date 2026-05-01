@@ -490,18 +490,24 @@ describe("§15.1 — `downloading` event reaches sync:subscribe-events client", 
       datasourceId: "ds-1",
       progress: 25,
       path: "/welcome.pdf",
+      bytesLoaded: 256,
+      bytesTotal: 1024,
     });
     expect(downloading[1]?.payload).toEqual({
       downloadJobId: "job-A",
       datasourceId: "ds-1",
       progress: 50,
       path: "/welcome.pdf",
+      bytesLoaded: 512,
+      bytesTotal: 1024,
     });
     expect(downloading[2]?.payload).toEqual({
       downloadJobId: "job-A",
       datasourceId: "ds-1",
       progress: 75,
       path: "/welcome.pdf",
+      bytesLoaded: 768,
+      bytesTotal: 1024,
     });
   });
 });

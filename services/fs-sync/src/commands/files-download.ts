@@ -254,6 +254,8 @@ export function transformDownloadingEvent(
   datasourceId: string;
   progress: number;
   path: string;
+  bytesLoaded: number;
+  bytesTotal: number | null;
 } {
   const total = enginePayload.total;
   const progress =
@@ -263,11 +265,19 @@ export function transformDownloadingEvent(
           Math.max(0, Math.floor((enginePayload.loaded / total) * 100)),
         )
       : 0;
+  // §12.3 (Decision 14): bytesLoaded + bytesTotal pass through verbatim
+  // from the engine payload so renderers can fall back to a bytes-only
+  // progress format when the provider didn't advertise Content-Length
+  // (Drive `?alt=media` on some media files; chunked transfer encoding).
+  // The engine bus's coalescer already throttles `downloading` events;
+  // these fields ride on the same coalesced cadence.
   return {
     downloadJobId: ctx.downloadJobId,
     datasourceId: ctx.datasourceId,
     progress,
     path: enginePayload.path,
+    bytesLoaded: enginePayload.loaded,
+    bytesTotal: enginePayload.total,
   };
 }
 

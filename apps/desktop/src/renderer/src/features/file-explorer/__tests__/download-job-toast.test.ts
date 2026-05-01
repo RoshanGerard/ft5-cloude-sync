@@ -141,15 +141,30 @@ function downloadingEvent(
     progress: number;
     path: string;
     datasourceId: string;
+    bytesLoaded: number;
+    bytesTotal: number | null;
   }>,
 ): DownloadEvent {
+  // §12.3: synthesize bytesLoaded + bytesTotal from progress when callers
+  // don't supply them explicitly. Tests that only care about `progress`
+  // (the historical majority) still work; tests that exercise the
+  // bytes-only fallback path supply explicit values.
+  const bytesTotal = patch.bytesTotal === undefined ? 1_000_000 : patch.bytesTotal;
+  const progress = patch.progress ?? 0;
+  const bytesLoaded =
+    patch.bytesLoaded ??
+    (bytesTotal !== null && bytesTotal > 0
+      ? Math.floor((progress / 100) * bytesTotal)
+      : 0);
   return {
     kind: "downloading",
     payload: {
       downloadJobId,
       datasourceId: patch.datasourceId ?? "ds-1",
-      progress: patch.progress ?? 0,
+      progress,
       path: patch.path ?? "/welcome.pdf",
+      bytesLoaded,
+      bytesTotal,
     },
   };
 }
@@ -740,8 +755,9 @@ describe("createDownloadJobToaster — hydration (§24.3)", () => {
       { id?: string | number } | undefined,
     ];
     expect(firstB[0]).toContain("another.pdf");
-    // null contentLength → 0% (indeterminate)
-    expect(firstB[0]).toMatch(/0\s*%/);
+    // §12.3 (Decision 14): null contentLength → bytes-only fallback.
+    // Seeded with `bytesDownloaded: 0` → "0.0 MB" instead of "0%".
+    expect(firstB[0]).toMatch(/0\.0\s*MB/);
 
     // A subsequent live event for jobId A must update the EXISTING
     // toast id, not spawn a new one.
@@ -1367,5 +1383,129 @@ describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
       expect(opts.action).toBeDefined();
       expect(opts.action!.label).toBe("Cancel");
     }
+  });
+});
+
+// §12.3 — Decision 14 bytes-only progress fallback. When the engine
+// payload's `bytesTotal` is null (provider didn't advertise
+// Content-Length — Drive's `?alt=media` for some media files, chunked
+// transfer encoding), the toast falls back to `<X> MB` (or `<X.XX> GB`
+// at the 1 GB threshold). Otherwise it keeps the percentage format.
+describe("createDownloadJobToaster — bytes-only progress fallback (§12.3)", () => {
+  let toast: MockToast;
+  let eventApi: MockEventApi;
+
+  beforeEach(() => {
+    toast = makeToast();
+    eventApi = makeEventApi();
+  });
+
+  it("(12.3.10) toast shows bytes-only when bytesTotal is null", () => {
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 5_242_880,
+        bytesTotal: null,
+      }),
+    );
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 5.0 MB");
+  });
+
+  it("(12.3.11) toast shows percentage when bytesTotal is non-null", () => {
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 42,
+        path: "/welcome.mp4",
+        bytesLoaded: 167_772_160,
+        bytesTotal: 398_458_880,
+      }),
+    );
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 42%");
+  });
+
+  it("(12.3.12) toast scales to GB when bytesLoaded crosses 1 GB threshold (bytesTotal === null)", () => {
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/movie.mp4",
+        bytesLoaded: 1_073_741_824, // 1 GB exactly
+        bytesTotal: null,
+      }),
+    );
+    const [msgAt1G] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msgAt1G).toBe("Downloading movie.mp4 — 1.00 GB");
+
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/movie.mp4",
+        bytesLoaded: 1_610_612_736, // 1.5 GB
+        bytesTotal: null,
+      }),
+    );
+    const [msgAt1_5G] = toast.loading.mock.calls[1] as [string, unknown];
+    expect(msgAt1_5G).toBe("Downloading movie.mp4 — 1.50 GB");
+  });
+
+  it("(12.3.13) hydration with null contentLength uses bytes-only", () => {
+    const toaster = createDownloadJobToaster({ toast, eventApi });
+    toaster.hydrateActiveDownloads([
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        sourcePath: "/welcome.mp4",
+        targetPath: "/Users/alice/Downloads/ft5/welcome.mp4",
+        bytesDownloaded: 52_428_800, // 50 MB
+        contentLength: null,
+        startedAt: 0,
+      },
+    ]);
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 50.0 MB");
+  });
+
+  it("(12.3.14) progress updates tick up the bytes count when total is unknown", () => {
+    createDownloadJobToaster({ toast, eventApi });
+    // Same job, three successive events — the toast should update in
+    // place with the rising bytes count.
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 5_242_880,
+        bytesTotal: null,
+      }),
+    );
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 31_457_280,
+        bytesTotal: null,
+      }),
+    );
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 104_857_600,
+        bytesTotal: null,
+      }),
+    );
+    expect(toast.loading).toHaveBeenCalledTimes(3);
+    const [msg1] = toast.loading.mock.calls[0] as [string, unknown];
+    const [msg2] = toast.loading.mock.calls[1] as [string, unknown];
+    const [msg3] = toast.loading.mock.calls[2] as [string, unknown];
+    expect(msg1).toBe("Downloading welcome.mp4 — 5.0 MB");
+    expect(msg2).toBe("Downloading welcome.mp4 — 30.0 MB");
+    expect(msg3).toBe("Downloading welcome.mp4 — 100.0 MB");
   });
 });
