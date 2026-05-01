@@ -63,26 +63,26 @@ This requirement preserves the architectural invariant that the registry is a st
 
 The active download toast (both `downloading` and `download-retrying` states) SHALL render a user-clickable Cancel action button via Sonner's built-in `action` option on `toast.loading`. The button SHALL be labelled `Cancel` (verbatim copy). The button SHALL NOT be rendered on terminal-state toasts: `file-downloaded` (success — uses its own dual-action layout), `download-failed` (uses Sonner's red error template with a Retry action), `download-cancelled` (toast is dismissed silently).
 
-Clicking the Cancel button SHALL invoke `window.api.sync.cancelJob({ downloadJobId })` (the IPC handler defined by `add-fs-engine-cancellation`). The toaster SHALL NOT pre-emptively dismiss the toast on click — the dismiss flows from the subsequent `download-cancelled` event arriving on the IPC bus, preserving the existing event-driven dismissal path.
+Clicking the Cancel button SHALL invoke `window.api.sync.cancelDownload({ downloadJobId })` (the renderer-facing preload bridge for the `sync:cancel-download` service command — the command itself was added by `add-engine-rename-download` §13.15-§13.16; the desktop main↔preload bridge for it is added by this change per design.md Decision 16). The toaster SHALL NOT pre-emptively dismiss the toast on click — the dismiss flows from the subsequent `download-cancelled` event arriving on the IPC bus, preserving the existing event-driven dismissal path.
 
-The `downloadJobId` passed to `cancelJob` SHALL be the same id the toaster's `tracker` correlates with this toast slot. For hydrated-from-disk toasts (no orchestrator pre-dispatch through `registerRetry`), the `downloadJobId` is taken from the `DownloadJobSummary.downloadJobId` field passed to `hydrateActiveDownloads`.
+The `downloadJobId` passed to `cancelDownload` SHALL be the same id the toaster's `tracker` correlates with this toast slot. For hydrated-from-disk toasts (no orchestrator pre-dispatch through `registerRetry`), the `downloadJobId` is taken from the `DownloadJobSummary.downloadJobId` field passed to `hydrateActiveDownloads`.
 
 The Cancel button MAY be styled per Sonner's default action-button styling (no override). Visual placement (right-aligned within the toast row) follows Sonner's loading-template layout.
 
 #### Scenario: Cancel button visible during downloading state
 
 - **WHEN** a `downloading { downloadJobId: "job-A", progress: 42, ... }` event spawns or updates the toast for `job-A`
-- **THEN** the toast renders with a Cancel action button (Sonner's `toast.loading` action slot); clicking the button calls `window.api.sync.cancelJob({ downloadJobId: "job-A" })` exactly once
+- **THEN** the toast renders with a Cancel action button (Sonner's `toast.loading` action slot); clicking the button calls `window.api.sync.cancelDownload({ downloadJobId: "job-A" })` exactly once; the toast remains visible until the subsequent `download-cancelled` event arrives
 
 #### Scenario: Cancel button visible during retrying state
 
 - **WHEN** a `download-retrying { downloadJobId: "job-A", attempt: 2, limit: 5, waitMs: 4000, engineCause: "network-error" }` event swaps the toast to retrying state
-- **THEN** the toast continues to render the Cancel action button (Sonner's `toast.loading` action slot is preserved across same-id message-text swaps); clicking it during the retry sleep calls `window.api.sync.cancelJob({ downloadJobId: "job-A" })` and the next `download-cancelled` event dismisses the toast
+- **THEN** the toast continues to render the Cancel action button (Sonner's `toast.loading` action slot is preserved across same-id message-text swaps); clicking it during the retry sleep calls `window.api.sync.cancelDownload({ downloadJobId: "job-A" })` and the next `download-cancelled` event dismisses the toast
 
 #### Scenario: Cancel button absent on terminal failure render
 
 - **WHEN** a `download-failed { downloadJobId: "job-A", tag: "exhausted-retries", message: "..." }` event swaps the toast to failure state via `toast.error`
-- **THEN** the rendered toast carries a Retry action (per existing failure UX), NOT a Cancel action; the toaster SHALL NOT call `cancelJob` from within the failure-toast handler
+- **THEN** the rendered toast carries a Retry action (per existing failure UX), NOT a Cancel action; the toaster SHALL NOT call `cancelDownload` from within the failure-toast handler
 
 ### Requirement: Download toast falls back to bytes-only progress when total is unknown
 

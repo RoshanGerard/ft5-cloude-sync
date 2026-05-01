@@ -717,6 +717,113 @@ exceptions is the one exception, scoped to a categorically different
 failure mode (the IPC layer itself fails — disconnected service, malformed
 request, etc.) where no `download-failed` event ever reaches the toaster.
 
+### Decision 16: cancel-download IPC bridge — close the renderer↔service wiring miss
+
+**What:** Wire a new `sync:cancel-download` end-to-end across the desktop
+main↔preload IPC boundary. The fs-sync service has registered a
+`makeSyncCancelDownloadHandler` for the `sync:cancel-download` command since
+`add-engine-rename-download` (`services/fs-sync/src/commands/handlers.ts`),
+and the wire contract documents the command at
+`packages/ipc-contracts/src/sync-service/commands.ts:587` — but the desktop
+main↔preload layer that the renderer talks to has no bridge for that
+command. Iter-4 Decision 13 wired the toaster's Cancel button to
+`window.api.sync.cancelJob({ downloadJobId })`, which name-collides with
+the existing UPLOAD-job cancel (`window.api.sync.cancelJob({ jobId })`).
+The toaster's call routed to `SYNC_CHANNELS.cancelJob = "sync:cancel-job"`
+(upload-job cancel) carrying `{ downloadJobId: "..." }` — a shape with no
+`jobId` field. The service-side `sync:cancel-job` handler ignored the
+unknown shape and the actual download abort never happened.
+
+**Why:** §12.5.5 smoke (2026-05-02) confirmed the bug user-side: clicking
+the Cancel button on an active download toast does nothing. The toast
+stays live, the download keeps running.
+
+**Mechanics:**
+
+- New channel constant in
+  `packages/ipc-contracts/src/sync-service-desktop/channels.ts`:
+  `cancelDownload: "sync:cancel-download"` slotted next to `cancelJob`.
+  The string literal matches the wire-side command name verbatim so the
+  desktop bridge proxies straight through.
+- New renderer-facing request / response types in
+  `packages/ipc-contracts/src/sync-service-desktop/requests.ts`:
+
+  ```ts
+  export interface SyncCancelDownloadRequest {
+    readonly downloadJobId: string;
+  }
+  export interface SyncCancelDownloadResponse {
+    readonly cancelled: boolean;
+  }
+  ```
+
+  Flat-result (NOT the fallible `{ cancelled } | { error }` union of
+  `cancelJob`): the service handler is idempotent — unknown `downloadJobId`
+  resolves with `{ cancelled: false }`, never errors. Mirrors the
+  `enqueueUpload` flat-result style.
+- New `SyncClient.cancelDownload(params)` typed method in
+  `apps/desktop/src/main/sync/client.ts` calling
+  `this.request("sync:cancel-download", params, opts)`. Mirrors
+  `cancelJob` / `enqueueUpload` typed-method shape.
+- New main-process IPC handler at
+  `apps/desktop/src/main/ipc/sync/cancel-download.ts` proxying the
+  renderer request to `client.cancelDownload(...)`. Registered in
+  `apps/desktop/src/main/ipc/index.ts` alongside the existing
+  `SYNC_CHANNELS.cancelJob` registration. No `try/catch` on the
+  `not-cancelable` shape needed (cancel-download never returns that;
+  the only outcomes are `cancelled: true` and `cancelled: false`).
+- New preload exposure at
+  `apps/desktop/src/preload/index.ts`:
+  `window.api.sync.cancelDownload(req)` invoking
+  `SYNC_CHANNELS.cancelDownload`. Type added to
+  `apps/desktop/src/preload/window-api.d.ts`.
+- Renderer toaster rename: `SyncActionsApi.cancelJob` →
+  `SyncActionsApi.cancelDownload` in
+  `apps/desktop/src/renderer/src/features/file-explorer/download-job-toast.ts`.
+  The production resolver `resolveSyncApi` looks up
+  `window.api.sync.cancelDownload` (lazy, like `resolveFilesApi`).
+  `buildCancelAction(downloadJobId)`'s onClick now invokes
+  `syncApi.cancelDownload({ downloadJobId })`.
+- **No aliasing.** `SyncActionsApi.cancelJob` is removed, NOT kept
+  alongside `cancelDownload`. The name collision is the bug; aliasing
+  would invite the next renderer caller to make the same mistake. Tests
+  and the production resolver lock the new name.
+
+**Spec correction:** the file-explorer spec delta added by iter-4
+referenced `window.api.sync.cancelJob({ downloadJobId })` in the
+"Active download toast renders a Cancel action button" requirement (4
+verbatim references) plus a misattribution to `add-fs-engine-cancellation`
+(the `sync:cancel-download` command was actually added by
+`add-engine-rename-download` §13.15-§13.16 — the desktop bridge was never
+wired). Iter-5 corrects all references to `cancelDownload` and replaces
+the misattribution with an accurate parenthetical pointing at the
+desktop bridge added by THIS iter-5.
+
+**Click-side dismiss invariant retained.** The Cancel button onClick
+still fires `void syncApi.cancelDownload({ downloadJobId })` and the
+visible toast dismiss remains event-driven — the subsequent
+`download-cancelled` IPC event arriving on the bus is what triggers
+`toast.dismiss(...)` in the toaster's existing handler. Tests pin this
+to prevent a future "optimistically dismiss in the click handler" change
+from racing the event-driven dismiss (the click promise is intentionally
+discarded; the user-visible signal is the round-trip).
+
+**Why this surfaced only at iter-5:** `cancelJob` is a real exposed method
+on `window.api.sync` (its purpose is upload-job cancel). The toaster's
+call typechecks against the existing `SyncCancelJobRequest`-shaped surface
+because `{ downloadJobId: "..." }` happens to be assignable to no field of
+`SyncCancelJobRequest` — but JS at runtime ignores the property mismatch.
+TypeScript caught nothing because the toaster's `SyncActionsApi.cancelJob`
+was newly defined with `{ downloadJobId }` shape, decoupled from the
+window-api type. The mocked test harness assertions verified the wired
+function received the right argument; they did not verify the wired
+function was actually `window.api.sync.cancelDownload`. Iter-5 closes
+the gap by collapsing the toaster's collaborator name to match the
+canonical preload method name (`cancelDownload`) and by adding the
+preload-layer test that asserts `window.api.sync.cancelDownload(req)`
+invokes `SYNC_CHANNELS.cancelDownload` — mirroring the existing
+`cancelJob(req) → SYNC_CHANNELS.cancelJob` test.
+
 ## Risks / Trade-offs
 
 - **[Risk] Strategy bug marks non-retryable error as retryable=true** →
