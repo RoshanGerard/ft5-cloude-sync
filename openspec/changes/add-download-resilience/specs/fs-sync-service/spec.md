@@ -185,6 +185,59 @@ The renderer's `download-failed` toast logic SHALL recognize `tag: "exhausted-re
 - **WHEN** the renderer receives `download-failed { downloadJobId, datasourceId, tag: "exhausted-retries", message: "exhausted-retries: network-error" }`
 - **THEN** the failure toast renders with the existing failed-state appearance, the Retry button is enabled, and the toast text includes the message string verbatim
 
+### Requirement: `files:download` handler prefetches resource size before the cycle loop
+
+The `files:download` handler SHALL issue exactly one `client.getMetadata(target)` call BEFORE entering the cycle/attempt loop. The returned `FileMetadata.size` field (when defined and non-null) SHALL be captured into handler-scoped state (`prefetchedSize: number | null`) and used as the fallback value for `bytesTotal` on subsequent `downloading` IPC events whenever the engine response does NOT advertise a `Content-Length` header. The prefetch SHALL be wrapped with the handler's own `AbortController + setTimeout` (10-second budget) composed with the user-cancel signal, because the engine's `getMetadata(target: Target): Promise<FileMetadata<T>>` signature does not accept an `AbortSignal` parameter.
+
+Failure semantics — ALL of the following set `prefetchedSize: null` and continue the download with bytes-only progress fallback (the renderer's existing rare-path behavior):
+
+- The prefetch resolves with `metadata.size === undefined` (e.g. the resource is a Google Docs export — Drive does not store a fixed binary size for native Docs; or the resource is a folder).
+- The prefetch rejects with any `DatasourceError` (network-error, auth-revoked, not-found, rate-limited, etc.). The download's own retry layers handle the same errors during the GET phase, so a transient prefetch failure SHALL NOT terminate the download.
+- The prefetch times out (10 s budget elapsed without resolution). The handler aborts the prefetch via its wrapper controller.
+
+User cancellation during the prefetch window (i.e. `sync:cancel-download` arrives before the cycle loop starts) SHALL short-circuit to the same terminal-cancel handler the rest of the flow uses: emit `download-cancelled { reason: "user", bytesDownloaded: 0, bytesTotal: prefetchedSize ?? null }` and return the cancel envelope. No `download-failed` event SHALL be emitted on user-cancel during prefetch.
+
+The prefetched `size` value SHALL NOT be reused for the post-pipe integrity hash check (the existing post-pipe `client.getMetadata(target)` call at the success path remains a SEPARATE round-trip). Rationale: prefetch captures size at start-of-download for progress UI; post-pipe captures the resource's hash at end-of-download for byte-equivalence verification — semantically distinct purposes. Reusing the prefetched object's hash would silently miss the case where another client overwrote the resource on the provider during the download window.
+
+The handler-scoped `prefetchedSize` SHALL persist across all retry cycles and rewrite-from-0 paths within the same `files:download` invocation. Subsequent attempts that re-issue `engine.downloadFile(...)` SHALL benefit from the same fallback without re-issuing the prefetch.
+
+The registry's `DownloadJobEntry.contentLength` field SHALL be seeded with `prefetchedSize` immediately after a successful prefetch (before any `downloading` event arrives). Subsequent `downloading` events whose engine `total` is `null` SHALL NOT overwrite the registry's existing `contentLength` with `null`; the rule SHALL be "preserve existing contentLength when the new value is null." Engine-reported `total` (when non-null) takes priority — a resume cycle that picks up a newly-advertised `Content-Length` SHALL update `contentLength` accordingly.
+
+#### Scenario: Drive media file without Content-Length surfaces percentage via metadata prefetch
+
+- **WHEN** the handler runs for a Google Drive native MP4 (`?alt=media` does NOT advertise a `Content-Length` header), `client.getMetadata(target)` resolves with `metadata.size === 398458880` (380 MB), and the engine emits successive `downloading { loaded: 167_772_160, total: null }` events
+- **THEN** the handler-scoped `prefetchedSize === 398458880`; each derived fs-sync `downloading` IPC event carries `bytesTotal: 398458880` (NOT null) and `progress: 42`; the registry's `DownloadJobEntry.contentLength` settles at `398458880` and is NOT overwritten by the null-total engine events
+
+#### Scenario: Prefetch rejects → download still completes with bytes-only progress
+
+- **WHEN** the handler runs and `client.getMetadata(target)` rejects with `DatasourceError({ tag: "network-error" })` while the subsequent `engine.downloadFile(target, ...)` completes successfully (no `Content-Length` advertised by the GET either)
+- **THEN** the handler emits a warning log line, sets `prefetchedSize: null`, proceeds with the download; `downloading` events carry `bytesTotal: null` throughout; the renderer's bytes-only fallback engages; the terminal `file-downloaded` event fires normally
+
+#### Scenario: Prefetch times out → download still completes
+
+- **WHEN** the handler runs and `client.getMetadata(target)` does not resolve within the 10-second budget (e.g. a hung socket) while the subsequent `engine.downloadFile(target, ...)` completes successfully
+- **THEN** the handler aborts the prefetch via its wrapper `AbortController`, emits a warning log line, sets `prefetchedSize: null`, proceeds with the download; the terminal `file-downloaded` event fires normally
+
+#### Scenario: User cancels during prefetch window
+
+- **WHEN** the handler is awaiting the prefetch and `sync:cancel-download { downloadJobId }` is dispatched
+- **THEN** the user-cancel signal aborts the prefetch wrapper; the handler emits exactly one `download-cancelled { downloadJobId, datasourceId, bytesDownloaded: 0, bytesTotal: null, reason: "user" }`; no cycle loop iteration runs; no `engine.downloadFile` call is ever issued; no `download-failed` event fires
+
+#### Scenario: Engine-reported Content-Length takes priority over prefetched size
+
+- **WHEN** the prefetch resolves with `size: 379_000_000` AND the engine's `downloading` events carry `total: 398_458_880` (e.g. Drive published an updated Content-Length on the GET that disagrees with stale metadata)
+- **THEN** the handler emits `downloading { bytesTotal: 398_458_880 }` (engine value); the registry's `contentLength` settles at `398_458_880`; `prefetchedSize` is ignored at the wire layer when the engine has fresher data
+
+#### Scenario: Doc-export with no metadata size falls back to bytes-only
+
+- **WHEN** the handler runs for a Google Docs export and `client.getMetadata(target)` resolves with `metadata.size === undefined` (Drive does not publish a binary size for native Docs files), and the engine's GET likewise does not advertise `Content-Length`
+- **THEN** `prefetchedSize: null`; subsequent `downloading` events carry `bytesTotal: null`; the renderer's bytes-only fallback engages
+
+#### Scenario: Prefetched size is NOT reused for the post-pipe integrity hash
+
+- **WHEN** the handler succeeds in prefetching `metadata.size` AND the download completes successfully
+- **THEN** the post-pipe integrity check still issues a SEPARATE `client.getMetadata(target)` call to capture the resource's current hash (`md5Checksum` for Drive, `sha1Hash` / `sha256Hash` for OneDrive, etc.); the prefetched metadata object is NOT reused as `finalEntryForHash`; the integrity check sees the freshest provider hash, defending against mid-stream overwrites by other clients
+
 ## MODIFIED Requirements
 
 ### Requirement: Service handler emits `downloading` / terminal events on the IPC stream
@@ -193,7 +246,7 @@ The `files:download` handler SHALL emit consumer-domain events on the service's 
 
 The fs-sync wire shapes:
 
-- `downloading { downloadJobId, datasourceId, progress, path, bytesLoaded, bytesTotal }` — high-frequency progress; throttling is performed upstream at the engine-bus coalescer (1s OR 10-percentage-point window) before the handler emits to fs-sync's IPC bus. The `progress` field SHALL be the integer percentage when `bytesTotal !== null && bytesTotal > 0` (computed as `floor(bytesLoaded / bytesTotal * 100)`, clamped to `[0..100]`); the `progress` field SHALL be `0` when `bytesTotal === null` or `bytesTotal === 0`. The `bytesLoaded` field SHALL be the integer number of bytes drained from the engine response stream. The `bytesTotal` field SHALL mirror the engine response's `contentLength` literally (the value of the `Content-Length` HTTP header parsed as an integer, or `null` when the header is absent / empty / unparseable). Renderers SHALL prefer `(bytesLoaded, bytesTotal)` as the source of truth for display, falling back to a bytes-only progress format when `bytesTotal` is null (see file-explorer spec.md "Download toast falls back to bytes-only progress when total is unknown").
+- `downloading { downloadJobId, datasourceId, progress, path, bytesLoaded, bytesTotal }` — high-frequency progress; throttling is performed upstream at the engine-bus coalescer (1s OR 10-percentage-point window) before the handler emits to fs-sync's IPC bus. The `progress` field SHALL be the integer percentage when `bytesTotal !== null && bytesTotal > 0` (computed as `floor(bytesLoaded / bytesTotal * 100)`, clamped to `[0..100]`); the `progress` field SHALL be `0` when `bytesTotal === null` or `bytesTotal === 0`. The `bytesLoaded` field SHALL be the integer number of bytes drained from the engine response stream. The `bytesTotal` field SHALL be the **best-known total size of the resource**: the engine response's `contentLength` (the value of the `Content-Length` HTTP header parsed as an integer) when present, OR the metadata-derived `size` field captured by the handler's pre-cycle `client.getMetadata(target)` prefetch (see "Requirement: `files:download` handler prefetches resource size before the cycle loop" below), OR `null` when both sources are absent. Renderers SHALL prefer `(bytesLoaded, bytesTotal)` as the source of truth for display, falling back to a bytes-only progress format when `bytesTotal` is null (see file-explorer spec.md "Download toast renders combined percent+size when total is known, falls back to bytes-only when total is unknown").
 - `download-retrying { downloadJobId, datasourceId, attempt, limit, waitMs, engineCause }` — emitted at the start of each environmental-retry sleep (NOT for the auth-expired Layer 2 branch). One event per retry attempt; not coalesced.
 - `file-downloaded { downloadJobId, datasourceId, savedPath, bytes }` — terminal success.
 - `download-failed { downloadJobId, datasourceId, tag, message }` — terminal failure.

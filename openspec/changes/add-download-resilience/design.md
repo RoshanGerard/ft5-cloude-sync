@@ -824,7 +824,216 @@ preload-layer test that asserts `window.api.sync.cancelDownload(req)`
 invokes `SYNC_CHANNELS.cancelDownload` — mirroring the existing
 `cancelJob(req) → SYNC_CHANNELS.cancelJob` test.
 
-## Risks / Trade-offs
+### Decision 17: Pre-cycle metadata prefetch + renderer combined percent+size format
+
+**What:** Two coordinated changes addressing Bug 1 (no percentage on Drive
+media files where `?alt=media` omits `Content-Length`):
+
+(a) **Service-side metadata prefetch.** In
+`services/fs-sync/src/commands/files-download.ts`, the handler issues a
+single `client.getMetadata(target)` call ONCE before the cycle loop
+starts, captures `prefetchedSize: number | null` in handler-scoped
+state, and threads it through `transformDownloadingEvent` so that when
+the engine's `downloading` payload has `total: null`, the wire-emit
+populates `bytesTotal: prefetchedSize` instead of `null`. The renderer
+then percentages-out the user's MP4 case naturally.
+
+(b) **Renderer combined format.** `formatProgressMessage` switches the
+`bytesTotal !== null` branch from `Downloading X — N%` to
+`Downloading X — N% (<loaded> / <total>)` with units chosen by total's
+magnitude (Decision 17c).
+
+**Why:** §12.5.5 user re-smoke (2026-05-02) confirmed iter-4 Decision
+14's bytes-only fallback engaged correctly — but the user's primary ask
+is percentage. On the 400MB+ Drive MP4 (`?alt=media` returning no
+`Content-Length`), bytesTotal is null, so the renderer can't compute
+percent. Drive's `files.get` metadata endpoint reliably returns the
+file's `size` field for native files (the Drive client at
+`packages/fs-datasource-engine/src/strategies/googledrive-client.ts:861`
+populates `size` for non-folder entries via `parseSize(file.size)`).
+The metadata is the canonical source of truth for the file's logical
+size; using it as the bytesTotal fallback closes the gap without
+touching the engine boundary.
+
+#### Decision 17a: Prefetch failure mode — non-fatal, abort-aware, time-bounded
+
+The metadata prefetch is wrapped with the handler's own
+`AbortController + setTimeout(10_000)` because `client.getMetadata(target)`
+does NOT accept an AbortSignal in its current signature
+(`packages/fs-datasource-engine/src/base-client.ts:140`). The user's
+`abortController.signal` is composed via `AbortSignal.any` so a
+user-cancel during the prefetch window aborts the prefetch immediately.
+
+Failure semantics: ANY prefetch outcome other than `{ size: number }`
+sets `prefetchedSize = null`. Specifically:
+
+- Prefetch resolves with `size: undefined` (Doc-export, folder) →
+  `prefetchedSize = null`
+- Prefetch rejects (network-error, auth-revoked, not-found) →
+  log a warning, set `prefetchedSize = null`, continue with the
+  download. The download's own retry layers handle the same kinds of
+  errors during the GET phase, so a transient network blip during
+  prefetch is not a reason to terminate.
+- Prefetch times out (10s budget exceeded) →
+  abort the prefetch, log a warning, set `prefetchedSize = null`,
+  continue.
+- User cancels during prefetch (`abortController.signal.aborted`) →
+  emit `download-cancelled` and return the cancel envelope BEFORE
+  starting the cycle loop. (User-cancel during prefetch must short-circuit
+  to the same terminal-cancel handler the rest of the flow uses.)
+
+The prefetch is pure best-effort. A rejecting prefetch followed by a
+successful download MUST emit `file-downloaded` normally — pinned by a
+test that drives a rejecting `getMetadata` and asserts the download
+completes with bytes-only progress.
+
+10s budget rationale: Drive's `files.get` typically returns in <500ms;
+a 10s ceiling catches a hung socket without delaying the user-perceived
+start of the download by more than the ceiling.
+
+#### Decision 17b: NO reuse of prefetched metadata for the post-pipe integrity hash
+
+The post-pipe `client.getMetadata(target)` call (currently inside the
+success try block at lines 1011-1019, used by `readProviderHash` for
+the `IntegrityFailedError` check) is RETAINED as a separate call.
+
+Rationale: prefetch and post-pipe metadata serve semantically distinct
+purposes:
+
+- **Prefetch** captures the resource's size at start-of-download to
+  feed the progress UI.
+- **Post-pipe** captures the resource's hash at end-of-download to
+  verify on-disk byte-equivalence with what the provider currently
+  serves.
+
+Reusing the prefetched metadata for the integrity check would mean:
+"if another client overwrote this resource on the provider while our
+download was streaming, we wouldn't notice the hash mismatch." That's
+a silent integrity regression. Two distinct round-trips is the right
+architecture; the `getMetadata` cost is ~hundreds of milliseconds
+total versus a multi-minute large-file download — negligible.
+
+A future optimization-minded change MAY introduce an `If-None-Match` /
+`ETag` round-trip optimization, but that's a separate change with its
+own correctness analysis. Iter-5 keeps both calls.
+
+#### Decision 17c: Renderer combined format + total-driven unit scaling
+
+When `bytesTotal !== null && bytesTotal > 0`:
+
+```
+Downloading <basename> — <pct>% (<loaded units> / <total units>)
+```
+
+Examples:
+
+- `Downloading welcome.mp4 — 42% (167.8 MB / 380.0 MB)`
+- `Downloading footage.mp4 — 18% (0.72 GB / 4.00 GB)`
+- `Downloading data.zip — 99% (49.5 MB / 50.0 MB)`
+
+**Unit scaling — total-driven:** the unit (MB vs GB) is chosen by
+`bytesTotal`'s magnitude, NOT by `bytesLoaded`'s magnitude.
+
+- `bytesTotal >= 1_073_741_824` (1 GB) → both `loaded` and `total`
+  rendered as GB with 2 decimal places (`(0.72 GB / 4.00 GB)`).
+- `bytesTotal < 1 GB` → both rendered as MB with 1 decimal place
+  (`(167.8 MB / 380.0 MB)`).
+
+Rejected alternative: per-value scaling (`(600 MB / 4.00 GB)` mid-stream
+on a 4 GB file). Mixing units in one parenthetical reads as a typo;
+total-driven keeps both values in the same unit throughout the download.
+Trade-off: very-early-progress on a 4 GB file renders `(0.07 GB /
+4.00 GB)` — slightly awkward but quickly self-corrects as bytes flow.
+
+When `bytesTotal === null || bytesTotal === 0` (rare path now — only
+fires when BOTH HTTP Content-Length AND metadata-size are missing,
+e.g. a Doc-export):
+
+```
+Downloading <basename> — <X.X> MB
+```
+
+(Existing iter-4 fallback retained verbatim; renamed conceptually to
+"both sources missing" since metadata-prefetch shrinks the no-total
+surface area materially.)
+
+**Hydration consistency:** `hydrateActiveDownloads` consults the same
+`formatProgressMessage` helper, so a re-attached toast on app reopen
+displays the same combined format when the registry's `contentLength`
+is non-null.
+
+#### Decision 17d: Registry contentLength preservation rule
+
+Two places update `DownloadJobEntry.contentLength` per progress tick:
+
+- Inline `onProgress` callback (`files-download.ts:688-697`)
+- Engine-bus subscription's `downloading` handler (`files-download.ts:586-596`)
+
+Both currently write `contentLength: total !== null ? total : null`.
+For the user's MP4, every `downloading` event has `total: null`. After
+prefetch seeds `contentLength = prefetchedSize`, the FIRST `downloading`
+event would overwrite it back to `null` — defeating the prefetch.
+
+**New rule:** preserve the existing `contentLength` whenever the new
+value is null. Implementation: read the registry's current entry first
+and prefer its `contentLength` when the engine's `total` is null.
+
+```ts
+const existing = deps.registry.get(downloadJobId);
+deps.registry.update(downloadJobId, {
+  bytesDownloaded: ...,
+  contentLength:
+    total !== null
+      ? total                              // engine surfaced a total
+      : (existing?.contentLength ?? null), // preserve prefetched/prior
+});
+```
+
+Symmetric in both update sites. Engine-emitted `total` always wins when
+present (the engine's measurement is the freshest source, e.g. on a
+reattached cycle that picks up a newly-advertised Content-Length); when
+the engine returns null, prior state persists.
+
+**Pinned by test:** seed `contentLength = 380MB` via prefetch → emit
+`downloading { total: null }` → assert
+`registry.get(jobId).contentLength === 380MB` (not null).
+
+#### Decision 17e: Wire contract semantics shift (no shape change)
+
+`DownloadingPayload.bytesTotal` semantically broadens:
+
+- **Pre-iter-5:** "the value of `contentLength` on the engine response,
+  surfacing the raw header presence/absence."
+- **Iter-5:** "the best-known total size of the resource (HTTP
+  Content-Length when present, else metadata-derived size, else null)."
+
+Wire shape stays `number | null` — no breaking change. The
+`@ft5/ipc-contracts/sync-service/events.ts` `DownloadingPayload` JSDoc
+gets a one-line update reflecting the broadened semantics; renderer-side
+mirror in `download-job-toast.ts` follows in lockstep.
+
+#### Decision 17f: Spec delta refinement
+
+The existing scenario "Provider-no-Content-Length surfaces bytes-only"
+(file-explorer/spec.md line 96-99) is now FALSE for the user's MP4
+case — the toast WILL show percentage via metadata prefetch. The
+scenario is renamed and refined:
+
+- **OLD:** "Provider-no-Content-Length surfaces bytes-only" — engine
+  emits `bytesTotal: null` → renderer shows `<X> MB`.
+- **NEW:** "Provider-no-Content-Length AND no metadata-size surfaces
+  bytes-only" — applies to Doc-export and folder downloads where both
+  `Content-Length` AND `getMetadata().size` are missing. The example
+  shifts from a 400MB MP4 to a Google Doc export (where size is
+  genuinely unknowable).
+
+A new scenario is added: "Provider-no-Content-Length BUT metadata-size
+known surfaces percentage via prefetch" — the user's 400MB MP4 case.
+Engine `total: null`, prefetched `size: 380MB`, renderer shows
+`Downloading <basename> — 42% (167.8 MB / 380.0 MB)`.
+
+The "Bytes count crosses 1 GB threshold" scenario gains a parallel
+combined-format scenario for the percent+size path.
 
 - **[Risk] Strategy bug marks non-retryable error as retryable=true** →
   Mitigation: handler's allowlist guard + log line; the strategy unit tests

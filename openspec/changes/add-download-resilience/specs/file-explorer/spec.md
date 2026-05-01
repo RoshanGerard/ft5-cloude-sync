@@ -84,33 +84,43 @@ The Cancel button MAY be styled per Sonner's default action-button styling (no o
 - **WHEN** a `download-failed { downloadJobId: "job-A", tag: "exhausted-retries", message: "..." }` event swaps the toast to failure state via `toast.error`
 - **THEN** the rendered toast carries a Retry action (per existing failure UX), NOT a Cancel action; the toaster SHALL NOT call `cancelDownload` from within the failure-toast handler
 
-### Requirement: Download toast falls back to bytes-only progress when total is unknown
+### Requirement: Download toast renders combined percent+size when total is known, falls back to bytes-only when total is unknown
 
 The toast's progress message format SHALL switch behavior based on the `bytesTotal` field of the `downloading` event payload (per the modified `DownloadingPayload` wire shape, see fs-sync-service spec):
 
-- When `bytesTotal !== null && bytesTotal > 0`: the existing percentage format `Downloading <basename> — <pct>%` where `pct = floor(bytesLoaded / bytesTotal * 100)`.
-- When `bytesTotal === null || bytesTotal === 0`: the bytes-only format `Downloading <basename> — <X> MB` where `X = (bytesLoaded / 1_048_576).toFixed(1)`. When `bytesLoaded >= 1_073_741_824` (1 GB), the format scales to `<X> GB` with `X = (bytesLoaded / 1_073_741_824).toFixed(2)`.
+- When `bytesTotal !== null && bytesTotal > 0`: the combined format `Downloading <basename> — <pct>% (<loaded units> / <total units>)` where `pct = floor(bytesLoaded / bytesTotal * 100)`. **Unit scaling is total-driven**: when `bytesTotal >= 1_073_741_824` (1 GB), BOTH `loaded` and `total` are rendered as GB with 2 decimal places (`(<X.XX> GB / <Y.YY> GB)`); otherwise BOTH are rendered as MB with 1 decimal place (`(<X.X> MB / <Y.Y> MB)`). Mixing units in one parenthetical (e.g. `600 MB / 4 GB`) is forbidden — it reads as a typo.
+- When `bytesTotal === null || bytesTotal === 0`: the bytes-only fallback format `Downloading <basename> — <X> MB` where `X = (bytesLoaded / 1_048_576).toFixed(1)`. When `bytesLoaded >= 1_073_741_824` (1 GB), the format scales to `<X> GB` with `X = (bytesLoaded / 1_073_741_824).toFixed(2)`. This path is rare in practice — it fires only when BOTH the HTTP `Content-Length` AND the metadata-derived size (see fs-sync-service spec "files:download handler prefetches resource size") are absent (e.g. a Google Docs export, where the export stream's size is genuinely unknowable in advance).
 
 The fallback SHALL apply uniformly across the spawn-toast, in-place update, and hydration-from-snapshot code paths. The retrying-state message format (`Downloading <basename> — Reconnecting (n/limit)`) is NOT affected by this requirement — retrying messages do not surface byte counts.
 
-#### Scenario: Provider-no-Content-Length surfaces bytes-only
+#### Scenario: Provider-with-Content-Length surfaces combined percent+size
 
-- **WHEN** the engine emits successive `downloading` events for `job-A` with `bytesLoaded: 5_242_880` (5 MB), `bytesLoaded: 31_457_280` (30 MB), `bytesLoaded: 104_857_600` (100 MB) and `bytesTotal: null` on each
-- **THEN** the toast message text on each event update is `Downloading <basename> — 5.0 MB`, `Downloading <basename> — 30.0 MB`, `Downloading <basename> — 100.0 MB` respectively (NOT `0%`)
+- **WHEN** the engine emits `downloading { progress: 42, bytesLoaded: 167_772_160, bytesTotal: 398_458_880 }` (sub-GB total)
+- **THEN** the toast message text is `Downloading <basename> — 42% (160.0 MB / 380.0 MB)` (percent + parenthetical loaded/total in MB)
 
-#### Scenario: Provider-with-Content-Length keeps percentage format
+#### Scenario: Provider-no-Content-Length BUT metadata-size known surfaces percentage via service-side prefetch
 
-- **WHEN** the engine emits `downloading { progress: 42, bytesLoaded: 167_772_160, bytesTotal: 398_458_880 }`
-- **THEN** the toast message text is `Downloading <basename> — 42%` (percentage format wins when total is non-null)
+- **WHEN** the engine emits successive `downloading` events for `job-A` with `bytesLoaded: 167_772_160` (160 MB) and `bytesTotal: 398_458_880` (380 MB) — the `bytesTotal` populated NOT by the HTTP `Content-Length` (which the provider omitted) but by the fs-sync-service handler's pre-cycle `client.getMetadata(target)` prefetch (see fs-sync-service spec)
+- **THEN** the toast renders `Downloading <basename> — 42% (160.0 MB / 380.0 MB)` exactly as if the `Content-Length` header had been present — the renderer does NOT distinguish between header-derived and metadata-derived totals; the wire field is the single source of truth
 
-#### Scenario: Bytes count crosses 1 GB threshold
+#### Scenario: GB-scale total renders both values in GB
 
-- **WHEN** the engine emits successive `downloading` events with `bytesLoaded: 1_073_741_824` (1 GB exactly) and `bytesLoaded: 1_610_612_736` (1.5 GB) and `bytesTotal: null`
+- **WHEN** the engine emits `downloading { bytesLoaded: 773_094_113, bytesTotal: 4_294_967_296 }` (~720 MB loaded of a 4 GB total)
+- **THEN** the toast renders `Downloading <basename> — 18% (0.72 GB / 4.00 GB)` — total-driven scaling chooses GB for BOTH values because `bytesTotal >= 1 GB`, even though `bytesLoaded < 1 GB`
+
+#### Scenario: Provider-no-Content-Length AND no metadata-size falls back to bytes-only
+
+- **WHEN** the engine emits `downloading { bytesLoaded: 5_242_880, bytesTotal: null }` for a Google Docs export (where the export-stream size is genuinely unknowable — the metadata's `size` field is undefined for native Google Docs files because they have no fixed binary size)
+- **THEN** the toast message text is `Downloading <basename> — 5.0 MB` (bytes-only fallback; NOT `0%`)
+
+#### Scenario: Bytes count crosses 1 GB threshold under bytes-only fallback
+
+- **WHEN** the engine emits successive `downloading` events with `bytesLoaded: 1_073_741_824` (1 GB exactly) and `bytesLoaded: 1_610_612_736` (1.5 GB) and `bytesTotal: null` (no Content-Length, no metadata-size)
 - **THEN** the toast message text on each is `Downloading <basename> — 1.00 GB` and `Downloading <basename> — 1.50 GB` respectively (GB format with 2 decimal places)
 
 #### Scenario: Hydration with null contentLength uses bytes-only
 
-- **WHEN** `hydrateActiveDownloads` seeds an entry with `bytesDownloaded: 52_428_800` (50 MB) and `contentLength: null`
+- **WHEN** `hydrateActiveDownloads` seeds an entry with `bytesDownloaded: 52_428_800` (50 MB) and `contentLength: null` (the prefetched size never landed — handler died before writing the registry, OR prefetch failed)
 - **THEN** the toast spawned by hydration shows `Downloading <basename> — 50.0 MB` immediately (NOT `0%`)
 
 ### Requirement: Download failure toast is event-driven, single-sourced
