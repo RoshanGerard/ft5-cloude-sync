@@ -29,6 +29,8 @@ export type {
   SyncEnqueueMirrorResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
+  SyncCancelDownloadRequest,
+  SyncCancelDownloadResponse,
   SyncAuthenticateStartRequest,
   SyncAuthenticateStartResponse,
   SyncAuthenticateCompleteRequest,

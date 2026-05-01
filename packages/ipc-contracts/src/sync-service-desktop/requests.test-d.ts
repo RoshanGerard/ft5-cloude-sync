@@ -29,6 +29,8 @@ import type {
   SyncEnqueueMirrorResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
+  SyncCancelDownloadRequest,
+  SyncCancelDownloadResponse,
   SyncGetStatusRequest,
   SyncGetStatusResponse,
   SyncGetRetryPolicyRequest,
@@ -132,6 +134,36 @@ describe("sync-service-desktop cancelJob request/response", () => {
       | { readonly cancelled: true }
       | { readonly error: NotCancelableErrorShape }
     >();
+  });
+});
+
+describe("sync-service-desktop cancelDownload request/response (iter-5 §12.6)", () => {
+  it("cancelDownload request is { downloadJobId }", () => {
+    expectTypeOf<SyncCancelDownloadRequest>().toEqualTypeOf<{
+      readonly downloadJobId: string;
+    }>();
+  });
+
+  it("cancelDownload response is flat { cancelled: boolean } (idempotent — never errors)", () => {
+    expectTypeOf<SyncCancelDownloadResponse>().toEqualTypeOf<{
+      readonly cancelled: boolean;
+    }>();
+  });
+
+  it("cancelDownload request is NOT structurally compatible with cancelJob (no { jobId } field)", () => {
+    // Regression guard against the iter-4 bug: the renderer toaster
+    // mistakenly called window.api.sync.cancelJob({ downloadJobId }),
+    // and the property-shape mismatch went undetected because
+    // SyncCancelJobRequest's only required field (`jobId`) was simply
+    // absent from the toaster's call. The test below asserts the two
+    // request types do not satisfy each other — neither shape is
+    // assignable to the other.
+    type DownloadAssignableToJob =
+      SyncCancelDownloadRequest extends SyncCancelJobRequest ? true : false;
+    type JobAssignableToDownload =
+      SyncCancelJobRequest extends SyncCancelDownloadRequest ? true : false;
+    expectTypeOf<DownloadAssignableToJob>().toEqualTypeOf<false>();
+    expectTypeOf<JobAssignableToDownload>().toEqualTypeOf<false>();
   });
 });
 

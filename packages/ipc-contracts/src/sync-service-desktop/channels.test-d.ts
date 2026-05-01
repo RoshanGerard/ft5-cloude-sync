@@ -14,12 +14,13 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { SYNC_CHANNELS } from "./channels.js";
 
 describe("sync-service-desktop SYNC_CHANNELS constants", () => {
-  it("exposes exactly the expected keys (post-onboarding)", () => {
+  it("exposes exactly the expected keys (post-onboarding + iter-5 cancelDownload)", () => {
     expect(Object.keys(SYNC_CHANNELS).sort()).toEqual(
       [
         "authenticateStart",
         "authenticateComplete",
         "authenticateCancel",
+        "cancelDownload",
         "cancelJob",
         "deleteCredentials",
         "enqueueMirror",
@@ -53,6 +54,7 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
     expect(SYNC_CHANNELS.enqueueUpload).toBe("sync:enqueue-upload");
     expect(SYNC_CHANNELS.enqueueMirror).toBe("sync:enqueue-mirror");
     expect(SYNC_CHANNELS.cancelJob).toBe("sync:cancel-job");
+    expect(SYNC_CHANNELS.cancelDownload).toBe("sync:cancel-download");
     expect(SYNC_CHANNELS.authenticateStart).toBe("sync:authenticate-start");
     expect(SYNC_CHANNELS.authenticateComplete).toBe(
       "sync:authenticate-complete",
@@ -80,6 +82,9 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
     >();
     expectTypeOf<typeof SYNC_CHANNELS.cancelJob>().toEqualTypeOf<
       "sync:cancel-job"
+    >();
+    expectTypeOf<typeof SYNC_CHANNELS.cancelDownload>().toEqualTypeOf<
+      "sync:cancel-download"
     >();
     expectTypeOf<typeof SYNC_CHANNELS.authenticateStart>().toEqualTypeOf<
       "sync:authenticate-start"

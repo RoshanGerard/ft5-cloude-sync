@@ -16,6 +16,13 @@ export const SYNC_CHANNELS = {
   enqueueUpload: "sync:enqueue-upload",
   enqueueMirror: "sync:enqueue-mirror",
   cancelJob: "sync:cancel-job",
+  // add-download-resilience §12.6 (Decision 16) — the desktop main↔preload
+  // bridge for the existing `sync:cancel-download` service command (added
+  // by `add-engine-rename-download` §13.15-§13.16). The wire-side handler
+  // ships at `services/fs-sync/src/commands/handlers.ts:366`; the desktop
+  // bridge was missing pre-iter-5, so the toaster's Cancel button hit the
+  // upload-job cancel by name collision instead of routing here.
+  cancelDownload: "sync:cancel-download",
   // The retired single-shot `sync:authenticate` channel was removed by
   // `implement-datasource-onboarding` per design.md Decision 9. The
   // three-command split below replaces it.
