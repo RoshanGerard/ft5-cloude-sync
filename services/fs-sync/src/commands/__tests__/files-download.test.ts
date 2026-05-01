@@ -64,7 +64,23 @@ function makeFakeClient(
     authenticate: vi.fn(),
     listDirectory: vi.fn(),
     search: vi.fn(),
-    getMetadata: vi.fn(),
+    // §12.7 (Decision 17a) — the handler's pre-cycle metadata prefetch
+    // calls `client.getMetadata(target)` on every download. Default the
+    // mock to a resolved Promise carrying a Doc-export-style entry with
+    // `size: undefined` so the prefetch path engages but `prefetchedSize`
+    // ends up null (matches existing pre-§12.7 behavior — bytes-only
+    // fallback when no size source is available). Tests that exercise
+    // the prefetch-success path override this mock with a numeric `size`.
+    getMetadata: vi.fn().mockResolvedValue({
+      path: "/welcome.pdf",
+      handle: "h-fake",
+      name: "welcome.pdf",
+      kind: "file",
+      modifiedAt: 1_000_000,
+      mimeFamily: "document",
+      providerMetadata: {} as never,
+      // size deliberately omitted — Doc-export equivalent.
+    }),
     createFile: vi.fn(),
     uploadFile: vi.fn(),
     cancelUpload: vi.fn(),
@@ -1193,7 +1209,7 @@ describe("files:download — derived-not-relayed event transformation (§13.25, 
   it("transformDownloadingEvent: engine `{ path, loaded, total }` → fs-sync `{ downloadJobId, datasourceId, progress, path, bytesLoaded, bytesTotal }` with progress = floor((loaded/total)*100)", () => {
     const out = transformDownloadingEvent(
       { path: "/welcome.pdf", loaded: 524288, total: 1048576 },
-      { downloadJobId: "job-A", datasourceId: "ds-1" },
+      { downloadJobId: "job-A", datasourceId: "ds-1", prefetchedSize: null },
     );
     expect(out).toEqual({
       downloadJobId: "job-A",
@@ -1205,10 +1221,10 @@ describe("files:download — derived-not-relayed event transformation (§13.25, 
     });
   });
 
-  it("transformDownloadingEvent: total === null → progress = 0 AND bytesTotal = null (indeterminate)", () => {
+  it("transformDownloadingEvent: total === null AND prefetchedSize === null → progress = 0 AND bytesTotal = null (indeterminate)", () => {
     const out = transformDownloadingEvent(
       { path: "/welcome.pdf", loaded: 1234, total: null },
-      { downloadJobId: "job-A", datasourceId: "ds-1" },
+      { downloadJobId: "job-A", datasourceId: "ds-1", prefetchedSize: null },
     );
     expect(out.progress).toBe(0);
     expect(out.bytesLoaded).toBe(1234);
@@ -1220,11 +1236,44 @@ describe("files:download — derived-not-relayed event transformation (§13.25, 
     // raw byte count, so the value must pass through without modification.
     const out = transformDownloadingEvent(
       { path: "/welcome.mp4", loaded: 167_772_160, total: 419_430_400 },
-      { downloadJobId: "job-A", datasourceId: "ds-1" },
+      { downloadJobId: "job-A", datasourceId: "ds-1", prefetchedSize: null },
     );
     expect(out.bytesLoaded).toBe(167_772_160);
     expect(out.bytesTotal).toBe(419_430_400);
     expect(out.progress).toBe(40);
+  });
+
+  // §12.7 (Decision 17a + 17e) — prefetched size as bytesTotal fallback.
+  it("transformDownloadingEvent: total === null AND prefetchedSize !== null → bytesTotal falls back to prefetchedSize and progress is computed", () => {
+    const out = transformDownloadingEvent(
+      { path: "/welcome.mp4", loaded: 167_772_160, total: null },
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        prefetchedSize: 398_458_880,
+      },
+    );
+    expect(out.bytesTotal).toBe(398_458_880);
+    expect(out.bytesLoaded).toBe(167_772_160);
+    // floor((167772160 / 398458880) * 100) = floor(42.105...) = 42
+    expect(out.progress).toBe(42);
+  });
+
+  it("transformDownloadingEvent: engine total takes priority over prefetchedSize when both are present (Decision 17e)", () => {
+    // Stale prefetch (379MB) vs engine-fresh Content-Length (380MB).
+    // Wire emit MUST use the engine value — the resume cycle has the
+    // freshest data.
+    const out = transformDownloadingEvent(
+      { path: "/welcome.mp4", loaded: 100_000_000, total: 380_000_000 },
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        prefetchedSize: 379_000_000,
+      },
+    );
+    expect(out.bytesTotal).toBe(380_000_000);
+    // floor((100000000 / 380000000) * 100) = 26
+    expect(out.progress).toBe(26);
   });
 
   it("transformFileDownloadedEvent: fs-sync payload carries downloadJobId + savedPath + bytes; raw engine `path` is dropped (not the local savedPath)", () => {
@@ -3152,5 +3201,381 @@ describe("files:download — Decision 3 rewrite-from-0 budget + sticky flag (§1
       "range-not-honored",
     );
     expect((retrying[1]!.payload as { waitMs: number }).waitMs).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §12.7 — pre-cycle metadata prefetch (Decision 17)
+//
+// The handler issues `client.getMetadata(target)` once before the cycle loop
+// starts and uses `metadata.size` as the bytesTotal fallback when the engine
+// response omits Content-Length. Failure semantics: non-fatal — log + null +
+// continue. User-cancel during prefetch → terminal-cancel handler (no engine
+// call). Engine-reported total takes priority over prefetched size when both
+// are present (Decision 17e). Registry contentLength preservation rule
+// (Decision 17d): null-total `downloading` events MUST NOT overwrite a
+// non-null contentLength seeded by prefetch. Post-pipe `getMetadata` for
+// the integrity hash is a SEPARATE round-trip; the prefetched object is NOT
+// reused (Decision 17b).
+// ---------------------------------------------------------------------------
+
+describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)", () => {
+  it("(12.7.6) prefetch surfaces percentage on Content-Length-missing resource", async () => {
+    // Drive's ?alt=media omits Content-Length; engine emits `total: null`.
+    // Prefetch resolves with size: 398_458_880 (380 MB). Wire emit must
+    // populate bytesTotal: 398_458_880 and progress: 42 (167MB / 380MB).
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    const engineBus = makeEngineBus();
+    const payload = Buffer.alloc(1024, 0xab);
+    // Hold downloadFile via a deferred so we can drive the engine event
+    // WHILE the handler is still inside the cycle's `await
+    // client.downloadFile(...)` await — that's the only window in which
+    // the bus subscription is active for our datasource/path.
+    let resolveDownload!: (r: DownloadResult) => void;
+    const downloadFile = vi.fn(
+      () =>
+        new Promise<DownloadResult>((res) => {
+          resolveDownload = res;
+        }),
+    );
+    const getMetadata = vi.fn().mockResolvedValue({
+      handle: "h-1",
+      kind: "file" as const,
+      name: "welcome.mp4",
+      path: "/welcome.mp4",
+      size: 398_458_880,
+      mimeFamily: "video" as const,
+      modifiedAt: 1_000_000,
+      providerMetadata: { md5Checksum: "abc" },
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        engineBus,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "abc" }),
+      }),
+    );
+
+    const handlerPromise = handler(
+      { datasourceId: "ds-1", path: "/welcome.mp4", toPath: TO_PATH },
+      ctx,
+    );
+
+    // Poll for downloadFile being called — that means the handler is
+    // past prefetch and waiting on the engine GET.
+    while (downloadFile.mock.calls.length === 0) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    // Now emit one engine `downloading` event with no Content-Length;
+    // the bus subscription's transformDownloadingEvent should fall back
+    // to prefetchedSize.
+    engineBus.emit({
+      event: "downloading",
+      datasourceId: "ds-1",
+      payload: {
+        path: "/welcome.mp4",
+        loaded: 167_772_160,
+        total: null,
+      },
+    });
+
+    // Resolve the engine GET so the rest of the flow finishes.
+    resolveDownload({
+      stream: streamFromBytes(payload),
+      contentLength: null,
+    });
+
+    const result = await handlerPromise;
+    expect(result.ok).toBe(true);
+
+    // Find the downloading event emitted via the bus subscription.
+    const downloadingEvents = events.filter((e) => e.name === "downloading");
+    expect(downloadingEvents.length).toBeGreaterThanOrEqual(1);
+    const evt = downloadingEvents.find(
+      (e) =>
+        (e.payload as { bytesLoaded?: number }).bytesLoaded === 167_772_160,
+    );
+    expect(evt).toBeDefined();
+    expect(evt!.payload).toMatchObject({
+      bytesLoaded: 167_772_160,
+      bytesTotal: 398_458_880, // ← from prefetch, NOT null
+      progress: 42, // floor((167772160 / 398458880) * 100)
+    });
+  });
+
+  it("(12.7.7) prefetch rejection falls through to bytes-only and download completes", async () => {
+    // Prefetch rejects with network-error. The download itself completes
+    // normally. Wire emits should carry bytesTotal: null throughout.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    const engineBus = makeEngineBus();
+    const payload = Buffer.alloc(2048, 0xcd);
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(payload),
+      contentLength: null,
+    }));
+    const getMetadata = vi.fn(async () => {
+      // First call (prefetch) rejects; second call (post-pipe) would
+      // also reject under this fake. The handler swallows the post-pipe
+      // failure too (existing behavior — proceeds without integrity).
+      throw new DatasourceError({
+        tag: "network-error",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: true,
+        message: "transient blip during prefetch",
+      });
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const handler = makeFilesDownloadHandler(
+        makeDeps({
+          resolveClient: async () => client,
+          registry,
+          fsSyncBus: bus,
+          engineBus,
+          fs: fakeFs,
+          hash: makeHash(),
+        }),
+      );
+
+      const handlerPromise = handler(
+        { datasourceId: "ds-1", path: "/welcome.mp4", toPath: TO_PATH },
+        ctx,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      engineBus.emit({
+        event: "downloading",
+        datasourceId: "ds-1",
+        payload: { path: "/welcome.mp4", loaded: 1024, total: null },
+      });
+
+      const result = await handlerPromise;
+      expect(result.ok).toBe(true);
+      // Wire emits must NOT have a non-null bytesTotal (prefetch failed,
+      // fallback to bytes-only).
+      const downloadingEvents = events.filter((e) => e.name === "downloading");
+      for (const e of downloadingEvents) {
+        expect((e.payload as { bytesTotal: number | null }).bytesTotal).toBeNull();
+      }
+      // Registry's contentLength stays null throughout.
+      expect(
+        registry.findByKey("ds-1", "/welcome.mp4"),
+      ).toBeUndefined(); // already cleaned up post-success
+      // Warning was logged for the prefetch failure.
+      expect(warnSpy).toHaveBeenCalled();
+      const warnMsg = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes("metadata prefetch"));
+      expect(warnMsg).toBeDefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("(12.7.9) user-cancel during prefetch terminates with download-cancelled, no engine call", async () => {
+    // The prefetch never resolves; user cancels mid-flight. The handler
+    // MUST emit one download-cancelled event and never call
+    // engine.downloadFile.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    const engineBus = makeEngineBus();
+    const downloadFile = vi.fn();
+    let prefetchReject!: (err: unknown) => void;
+    const getMetadata = vi.fn(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          prefetchReject = reject;
+          // never resolve naturally — caller cancels
+        }),
+    );
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        engineBus,
+        fs: fakeFs,
+        hash: makeHash(),
+      }),
+    );
+
+    const handlerPromise = handler(
+      { datasourceId: "ds-1", path: "/welcome.mp4", toPath: TO_PATH },
+      ctx,
+    );
+
+    // Poll for the prefetch being issued — handler is awaiting inside
+    // `await new Promise<...>(...)` with the user-cancel listener attached.
+    while (getMetadata.mock.calls.length === 0) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    // Find the registry entry (set inside the handler before prefetch)
+    // and abort it via its AbortController — same shape sync:cancel-download
+    // takes.
+    const downloadJobId = registry.findByKey("ds-1", "/welcome.mp4");
+    expect(downloadJobId).toBeDefined();
+    const entry = registry.get(downloadJobId!);
+    entry?.abortController.abort();
+    // The Promise inside the prefetch race listens for `abort` and
+    // throws CancelledError. The handler's outer catch routes through
+    // the terminal-cancel branch.
+    // (In this test the orphan getMetadata never resolves — abort is
+    // what wins the race.)
+
+    const result = await handlerPromise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("cancelled");
+    }
+    // Exactly one download-cancelled event.
+    const cancelled = events.filter((e) => e.name === "download-cancelled");
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]!.payload).toMatchObject({
+      datasourceId: "ds-1",
+      bytesDownloaded: 0,
+      bytesTotal: null,
+      reason: "user",
+    });
+    // engine.downloadFile was NEVER called — short-circuited at prefetch.
+    expect(downloadFile).not.toHaveBeenCalled();
+    // Tidy: orphan promise won't reject (it never settles in this fake).
+    void prefetchReject;
+  });
+
+  it("(12.7.12) registry contentLength is NOT overwritten by null-total engine downloading events (Decision 17d)", async () => {
+    // Prefetch seeds contentLength = 380_000_000. Engine emits one or
+    // more downloading events with total: null. After each event, the
+    // registry's contentLength MUST still be 380_000_000.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus } = captureFsSyncEvents();
+    const engineBus = makeEngineBus();
+    const payload = Buffer.alloc(1024, 0xab);
+    let resolveDownload!: (r: DownloadResult) => void;
+    const downloadFile = vi.fn(
+      () =>
+        new Promise<DownloadResult>((res) => {
+          resolveDownload = res;
+        }),
+    );
+    const getMetadata = vi.fn().mockResolvedValue({
+      handle: "h-1",
+      kind: "file" as const,
+      name: "welcome.mp4",
+      path: "/welcome.mp4",
+      size: 380_000_000,
+      mimeFamily: "video" as const,
+      modifiedAt: 1_000_000,
+      providerMetadata: { md5Checksum: "abc" },
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        engineBus,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "abc" }),
+      }),
+    );
+
+    const handlerPromise = handler(
+      { datasourceId: "ds-1", path: "/welcome.mp4", toPath: TO_PATH },
+      ctx,
+    );
+    // Poll for downloadFile being called — that proves the handler is
+    // past prefetch (registry has been seeded) and waiting on the GET.
+    while (downloadFile.mock.calls.length === 0) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    const downloadJobId = registry.findByKey("ds-1", "/welcome.mp4");
+    expect(downloadJobId).toBeDefined();
+    // After prefetch, contentLength should be the prefetched size.
+    expect(registry.get(downloadJobId!)?.contentLength).toBe(380_000_000);
+
+    // Emit two null-total downloading events. The bus subscription's
+    // handler MUST preserve contentLength.
+    engineBus.emit({
+      event: "downloading",
+      datasourceId: "ds-1",
+      payload: { path: "/welcome.mp4", loaded: 1_000_000, total: null },
+    });
+    expect(registry.get(downloadJobId!)?.contentLength).toBe(380_000_000);
+
+    engineBus.emit({
+      event: "downloading",
+      datasourceId: "ds-1",
+      payload: { path: "/welcome.mp4", loaded: 5_000_000, total: null },
+    });
+    expect(registry.get(downloadJobId!)?.contentLength).toBe(380_000_000);
+
+    // Resolve the download to clean up.
+    resolveDownload({
+      stream: streamFromBytes(payload),
+      contentLength: null,
+    });
+    await handlerPromise;
+  });
+
+  it("(12.7.13) prefetched metadata is NOT reused for the post-pipe integrity hash (Decision 17b)", async () => {
+    // The handler MUST issue a SEPARATE getMetadata call after the pipe
+    // drains so the integrity check sees the freshest provider hash —
+    // defends against mid-stream overwrites by other clients.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus } = captureFsSyncEvents();
+    const engineBus = makeEngineBus();
+    const payload = Buffer.alloc(1024, 0xab);
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(payload),
+      contentLength: 1024,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue({
+      handle: "h-1",
+      kind: "file" as const,
+      name: "welcome.pdf",
+      path: "/welcome.pdf",
+      size: 1024,
+      mimeFamily: "document" as const,
+      modifiedAt: 1_000_000,
+      providerMetadata: { md5Checksum: "deadbeef" },
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        engineBus,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    // EXACTLY TWO getMetadata calls — once for prefetch, once for the
+    // post-pipe integrity hash check. Reusing the prefetched object
+    // would result in only one call.
+    expect(getMetadata).toHaveBeenCalledTimes(2);
   });
 });

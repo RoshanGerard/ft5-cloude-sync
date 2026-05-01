@@ -1537,18 +1537,78 @@ describe("createDownloadJobToaster — bytes-only progress fallback (§12.3)", (
     expect(msg).toBe("Downloading welcome.mp4 — 5.0 MB");
   });
 
-  it("(12.3.11) toast shows percentage when bytesTotal is non-null", () => {
+  it("(12.3.11 / 12.7.17) toast shows combined percent + size when bytesTotal is non-null (sub-GB total → MB scale)", () => {
+    // §12.7 Decision 17c — when total is known, combined percent + size
+    // format `Downloading X — N% (loaded MB / total MB)`. Total-driven
+    // unit scaling: bytesTotal < 1 GB → both rendered as MB.
     createDownloadJobToaster({ toast, eventApi });
     eventApi.emit(
       downloadingEvent("job-A", {
         progress: 42,
         path: "/welcome.mp4",
-        bytesLoaded: 167_772_160,
-        bytesTotal: 398_458_880,
+        bytesLoaded: 167_772_160, // 160.0 MB
+        bytesTotal: 398_458_880, // 380.0 MB (< 1 GB → MB scale)
       }),
     );
     const [msg] = toast.loading.mock.calls[0] as [string, unknown];
-    expect(msg).toBe("Downloading welcome.mp4 — 42%");
+    expect(msg).toBe("Downloading welcome.mp4 — 42% (160.0 MB / 380.0 MB)");
+  });
+
+  it("(12.7.16) GB-scale total renders both values in GB (total-driven scaling)", () => {
+    // §12.7 Decision 17c — bytesTotal >= 1 GB → BOTH loaded and total
+    // rendered in GB even though bytesLoaded < 1 GB. Per-value scaling
+    // (mixing units like `0.72 GB / 4.00 GB` vs `720 MB / 4 GB`) is
+    // forbidden — total-driven keeps both in the same unit.
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 18,
+        path: "/footage.mp4",
+        bytesLoaded: 773_094_113, // ~720 MB; sub-GB
+        bytesTotal: 4_294_967_296, // 4.00 GB → GB scale
+      }),
+    );
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading footage.mp4 — 18% (0.72 GB / 4.00 GB)");
+  });
+
+  it("(12.7.18) bytes-only fallback unchanged when bytesTotal is null (rare path)", () => {
+    // §12.7 Decision 17c — both Content-Length AND metadata-size missing
+    // (e.g. Doc-export). Existing iter-4 bytes-only format retained
+    // verbatim for this rare edge case.
+    createDownloadJobToaster({ toast, eventApi });
+    eventApi.emit(
+      downloadingEvent("job-A", {
+        progress: 0,
+        path: "/welcome.mp4",
+        bytesLoaded: 5_242_880, // 5.0 MB
+        bytesTotal: null,
+      }),
+    );
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 5.0 MB");
+  });
+
+  it("(12.7.19) hydration with non-null contentLength uses combined percent + size format", () => {
+    // §12.7 Decision 17c — hydration path consults the same
+    // formatProgressMessage; non-null contentLength now produces the
+    // combined format (post-iter-5 service-side prefetch makes this the
+    // common case).
+    const toaster = createDownloadJobToaster({ toast, eventApi });
+    toaster.hydrateActiveDownloads([
+      {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        sourcePath: "/welcome.mp4",
+        targetPath: "/Users/alice/Downloads/ft5/welcome.mp4",
+        bytesDownloaded: 167_772_160, // 160.0 MB
+        contentLength: 398_458_880, // 380.0 MB
+        startedAt: 0,
+      },
+    ]);
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const [msg] = toast.loading.mock.calls[0] as [string, unknown];
+    expect(msg).toBe("Downloading welcome.mp4 — 42% (160.0 MB / 380.0 MB)");
   });
 
   it("(12.3.12) toast scales to GB when bytesLoaded crosses 1 GB threshold (bytesTotal === null)", () => {

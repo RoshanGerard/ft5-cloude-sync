@@ -470,23 +470,32 @@ function basenameFromPath(path: string): string {
 }
 
 /**
- * §12.3 (Decision 14) — progress message format with bytes-only fallback.
+ * §12.3 (Decision 14) + §12.7 (Decision 17c) — progress message format.
  *
- * - When `bytesTotal !== null && bytesTotal > 0`: percentage format
- *   `Downloading <basename> — <pct>%`. `pct` is the integer percentage
- *   computed from `bytesLoaded / bytesTotal`; the caller may pass the
- *   pre-computed value via `progressPct` (matching the wire-shape's
- *   `progress` field — the handler already does the floor + clamp).
- * - When `bytesTotal === null` (provider didn't advertise Content-Length
- *   — e.g. Drive `?alt=media` for some media files, chunked transfer
- *   encoding): bytes-only format `Downloading <basename> — <X> MB`
+ * - When `bytesTotal !== null && bytesTotal > 0`: combined percent + size
+ *   format `Downloading <basename> — <pct>% (<loaded units> / <total
+ *   units>)`. `pct` is the integer percentage computed from
+ *   `bytesLoaded / bytesTotal`; the caller may pass the pre-computed
+ *   value via `progressPct` (matching the wire-shape's `progress` field
+ *   — the handler already does the floor + clamp). **Total-driven unit
+ *   scaling**: when `bytesTotal >= 1 GB`, BOTH `loaded` and `total` are
+ *   rendered as GB with 2 decimal places (`(X.XX GB / Y.YY GB)`); else
+ *   BOTH as MB with 1 decimal place (`(X.X MB / Y.Y MB)`). Per-value
+ *   scaling (e.g. `600 MB / 4 GB`) is intentionally NOT used — mixing
+ *   units in one parenthetical reads as a typo.
+ * - When `bytesTotal === null` (rare path — fires only when BOTH the
+ *   HTTP `Content-Length` AND the metadata-derived size are absent,
+ *   e.g. a Google Docs export where the export-stream size is genuinely
+ *   unknowable): bytes-only fallback `Downloading <basename> — <X> MB`
  *   where `X = (bytesLoaded / 1_048_576).toFixed(1)`. When `bytesLoaded
- *   >= 1_073_741_824` (1 GB), scales to `<X> GB` with two decimal places.
+ *   >= 1 GB`, scales to `<X> GB` with two decimal places.
  *
- * The bytes-only path preserves user-visible activity signal even when
- * total is unknown — the §11.19 wifi-drop smoke surfaced a 400MB MP4
- * download where Drive returned no Content-Length, leaving the toast
- * stuck at `0%` forever.
+ * Iter-5 §12.7 introduced the service-side metadata prefetch
+ * (`client.getMetadata(target)` before the cycle loop), which broadens
+ * `bytesTotal`'s wire semantics from "raw Content-Length" to "best-known
+ * total size of the resource". Most Drive native files now reach the
+ * percent+size branch; the bytes-only fallback shrinks to true edge
+ * cases (Doc-export, folder downloads, mid-stream metadata loss).
  */
 function formatProgressMessage(
   basename: string,
@@ -494,12 +503,22 @@ function formatProgressMessage(
   bytesLoaded: number,
   bytesTotal: number | null,
 ): string {
-  if (bytesTotal !== null && bytesTotal > 0) {
-    const clamped = Math.max(0, Math.min(100, Math.round(progressPct)));
-    return `Downloading ${basename} — ${clamped}%`;
-  }
   const ONE_GB = 1_073_741_824;
   const ONE_MB = 1_048_576;
+  if (bytesTotal !== null && bytesTotal > 0) {
+    const clamped = Math.max(0, Math.min(100, Math.round(progressPct)));
+    // §12.7 Decision 17c — total-driven unit scaling.
+    if (bytesTotal >= ONE_GB) {
+      const loaded = (bytesLoaded / ONE_GB).toFixed(2);
+      const total = (bytesTotal / ONE_GB).toFixed(2);
+      return `Downloading ${basename} — ${clamped}% (${loaded} GB / ${total} GB)`;
+    }
+    const loaded = (bytesLoaded / ONE_MB).toFixed(1);
+    const total = (bytesTotal / ONE_MB).toFixed(1);
+    return `Downloading ${basename} — ${clamped}% (${loaded} MB / ${total} MB)`;
+  }
+  // Bytes-only fallback (Decision 14, retained for the rare both-sources-
+  // missing case described in the docstring above).
   if (bytesLoaded >= ONE_GB) {
     return `Downloading ${basename} — ${(bytesLoaded / ONE_GB).toFixed(2)} GB`;
   }

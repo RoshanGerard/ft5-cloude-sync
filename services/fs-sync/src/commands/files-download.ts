@@ -69,6 +69,7 @@ import type {
   DatasourceClient,
   DownloadOptions,
   DownloadResult,
+  FileMetadata,
   Target,
 } from "@ft5/fs-datasource-engine";
 import type {
@@ -248,7 +249,17 @@ export interface DownloadCancelledEnginePayload {
 
 export function transformDownloadingEvent(
   enginePayload: DownloadingEnginePayload,
-  ctx: { downloadJobId: string; datasourceId: string },
+  ctx: {
+    downloadJobId: string;
+    datasourceId: string;
+    // §12.7 (Decision 17a) — handler-scoped size captured by the
+    // pre-cycle `client.getMetadata(target)` prefetch. Used as the
+    // bytesTotal fallback when the engine response omits
+    // Content-Length. Per Decision 17e, engine-reported `total` (when
+    // non-null) takes priority — a resume cycle that picks up a
+    // freshly-advertised Content-Length wins over a stale prefetch.
+    prefetchedSize: number | null;
+  },
 ): {
   downloadJobId: string;
   datasourceId: string;
@@ -257,7 +268,12 @@ export function transformDownloadingEvent(
   bytesLoaded: number;
   bytesTotal: number | null;
 } {
-  const total = enginePayload.total;
+  // §12.7 (Decision 17a + 17e) — best-known total: engine response
+  // (when present) wins; fall back to the prefetched metadata size;
+  // else null (renderer's bytes-only fallback engages). Explicit null
+  // coalesce so a `prefetchedSize: undefined` (e.g. from a sloppy call
+  // site) doesn't leak `undefined` into the wire payload.
+  const total = enginePayload.total ?? ctx.prefetchedSize ?? null;
   const progress =
     total !== null && total > 0
       ? Math.min(
@@ -265,19 +281,18 @@ export function transformDownloadingEvent(
           Math.max(0, Math.floor((enginePayload.loaded / total) * 100)),
         )
       : 0;
-  // §12.3 (Decision 14): bytesLoaded + bytesTotal pass through verbatim
-  // from the engine payload so renderers can fall back to a bytes-only
-  // progress format when the provider didn't advertise Content-Length
-  // (Drive `?alt=media` on some media files; chunked transfer encoding).
-  // The engine bus's coalescer already throttles `downloading` events;
-  // these fields ride on the same coalesced cadence.
+  // §12.3 (Decision 14) + §12.7 (Decision 17e): bytesLoaded passes
+  // through verbatim from the engine payload. bytesTotal is the
+  // best-known total — Content-Length when present, else metadata-
+  // derived size (Decision 17a), else null (renderers fall back to
+  // bytes-only). Wire shape unchanged; semantics broadened.
   return {
     downloadJobId: ctx.downloadJobId,
     datasourceId: ctx.datasourceId,
     progress,
     path: enginePayload.path,
     bytesLoaded: enginePayload.loaded,
-    bytesTotal: enginePayload.total,
+    bytesTotal: total,
   };
 }
 
@@ -569,6 +584,12 @@ export function makeFilesDownloadHandler(
     // was removed. Declared as a ref so the closure observes its mutation
     // when the handler clears it on terminal.
     const inflightId: { current: string | null } = { current: downloadJobId };
+    // §12.7 (Decision 17) — handler-scoped prefetched size. Captured by
+    // the pre-cycle metadata prefetch (below); used as the bytesTotal
+    // fallback in `transformDownloadingEvent` when the engine response
+    // omits Content-Length, AND as the contentLength preservation
+    // anchor in the registry-update sites (Decision 17d).
+    let prefetchedSize: number | null = null;
     const unsubscribe = deps.engineBus.subscribe((event) => {
       if (event.datasourceId !== params.datasourceId) return;
       const payload = event.payload as { path?: string };
@@ -581,17 +602,30 @@ export function makeFilesDownloadHandler(
       switch (event.event) {
         case "downloading": {
           const ep = event.payload as DownloadingEnginePayload;
+          // §12.7 (Decision 17d) — registry contentLength preservation
+          // rule: when the engine reports `total: null`, MUST NOT
+          // overwrite the registry's existing contentLength with null.
+          // The prefetch may have seeded it; subsequent null-total
+          // updates would defeat the prefetch. Engine-reported total
+          // (when non-null) takes priority — a resume cycle that
+          // surfaces a freshly-advertised Content-Length WILL update
+          // the value.
+          const existingForBus = deps.registry.get(id);
           // Update registry from the bus stream too — it is throttled by
           // the engine bus's 1s/10pct coalescer, so writes are bounded.
           deps.registry.update(id, {
             bytesDownloaded: ep.loaded,
-            contentLength: ep.total,
+            contentLength:
+              ep.total !== null
+                ? ep.total
+                : (existingForBus?.contentLength ?? null),
           });
           deps.fsSyncBus.emit(
             "downloading",
             transformDownloadingEvent(ep, {
               downloadJobId: id,
               datasourceId: params.datasourceId,
+              prefetchedSize,
             }),
           );
           break;
@@ -641,6 +675,85 @@ export function makeFilesDownloadHandler(
     const target: Target = { kind: "path", path: params.path };
 
     try {
+      // §12.7 (Decision 17a) — pre-cycle metadata prefetch. Captures the
+      // resource's `size` field once before the cycle loop begins, so
+      // the renderer's `downloading` toast can compute a percentage even
+      // when the provider's `?alt=media` GET omits Content-Length (Drive
+      // native files behave this way for some media). The prefetch is
+      // best-effort and non-fatal: ANY outcome other than `size: number`
+      // leaves `prefetchedSize: null` and the existing bytes-only
+      // fallback engages.
+      //
+      // The engine's `getMetadata(target)` signature does NOT accept an
+      // AbortSignal (`packages/fs-datasource-engine/src/base-client.ts`),
+      // so we wrap the call in our own three-way Promise.race:
+      // (1) the prefetch promise itself; (2) a 10s timeout — Drive
+      // `files.get` typically returns in <500ms, the ceiling catches a
+      // hung socket; (3) a user-cancel listener bound to
+      // `abortController.signal` — a `sync:cancel-download` arriving
+      // during the prefetch window MUST short-circuit to the same
+      // terminal-cancel handler the rest of the flow uses.
+      //
+      // On user-cancel during prefetch we throw `CancelledError` so the
+      // outer terminal catch (below) emits exactly one
+      // `download-cancelled { reason: "user", bytesDownloaded: 0,
+      // bytesTotal: null }` and returns the cancel envelope. On any
+      // other prefetch failure (timeout, network-error, auth-revoked,
+      // not-found, size === undefined for Doc-export / folder), we log
+      // a warning and continue — the download itself will surface the
+      // same provider failures (or none) as it streams.
+      //
+      // §12.7 (Decision 17d) — when the prefetch succeeds with a numeric
+      // size, seed the registry's `contentLength` immediately. The
+      // preservation rule on subsequent null-total `downloading` events
+      // keeps that value stable.
+      const PREFETCH_TIMEOUT_MS = 10_000;
+      try {
+        const prefetched = await new Promise<FileMetadata<DatasourceType>>(
+          (resolve, reject) => {
+            // 1. The prefetch itself.
+            client.getMetadata(target).then(resolve, reject);
+            // 2. Timeout — abort if no resolution in 10s.
+            setTimeout(() => {
+              reject(
+                new Error(`prefetch timeout (${PREFETCH_TIMEOUT_MS}ms)`),
+              );
+            }, PREFETCH_TIMEOUT_MS);
+            // 3. User cancel — translates to CancelledError so the
+            //    outer catch routes through the existing terminal-cancel
+            //    branch (emits download-cancelled, returns cancel
+            //    envelope, no engine.downloadFile call).
+            if (abortController.signal.aborted) {
+              reject(new CancelledError());
+              return;
+            }
+            abortController.signal.addEventListener(
+              "abort",
+              () => reject(new CancelledError()),
+              { once: true },
+            );
+          },
+        );
+        if (typeof prefetched.size === "number") {
+          prefetchedSize = prefetched.size;
+          deps.registry.update(downloadJobId, {
+            contentLength: prefetchedSize,
+          });
+        }
+      } catch (err) {
+        // §12.7 (Decision 17a) — user-cancel during prefetch routes to
+        // the outer terminal-cancel handler.
+        if (err instanceof CancelledError || abortController.signal.aborted) {
+          throw new CancelledError();
+        }
+        // Non-cancel failure (timeout, transient provider error,
+        // size: undefined): log + continue with prefetchedSize: null.
+        console.warn(
+          `[files-download] metadata prefetch for ${params.path} failed:`,
+          err,
+        );
+      }
+
       // Outer loop: each iteration runs one HTTP cycle. The handler
       // breaks when the pipe drains AND `bytesWritten === contentLength`.
       while (true) {
@@ -690,9 +803,21 @@ export function makeFilesDownloadHandler(
               // The engine-bus subscription path also updates the
               // registry but is throttled; both converge so the latest
               // wins regardless of arrival order.
+              //
+              // §12.7 (Decision 17d) — contentLength preservation rule:
+              // when the engine callback reports `total: null`, MUST
+              // NOT overwrite the registry's existing contentLength
+              // with null. Read the existing entry first, then prefer
+              // engine's `total` (when non-null), else preserve the
+              // existing value, else null. Symmetric with the
+              // engine-bus subscription's `case "downloading"` write.
+              const existing = deps.registry.get(downloadJobId);
               deps.registry.update(downloadJobId, {
                 bytesDownloaded: effectiveRangeStart + loaded,
-                contentLength: total !== null ? total : null,
+                contentLength:
+                  total !== null
+                    ? total
+                    : (existing?.contentLength ?? null),
               });
             },
           };
