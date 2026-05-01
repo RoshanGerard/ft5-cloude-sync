@@ -196,9 +196,19 @@ export interface CredentialPersistedPayload {
  * so renderers can fall back to a bytes-only progress format when total
  * is unknown (e.g. `Downloading welcome.mp4 — 50.0 MB` instead of an
  * always-zero percentage). `bytesLoaded` is required (the engine's
- * byte-counting Transform always knows the running count); `bytesTotal`
- * mirrors the engine response's `contentLength` literally — `null` when
- * the provider's `Content-Length` header was absent / empty / unparseable.
+ * byte-counting Transform always knows the running count).
+ *
+ * §12.7 (Decision 17e): `bytesTotal` carries the **best-known total size
+ * of the resource**: the engine response's `Content-Length` (parsed as
+ * an integer) when present, OR the metadata-derived `size` field
+ * captured by the `files:download` handler's pre-cycle
+ * `client.getMetadata(target)` prefetch (see fs-sync-service spec
+ * "files:download handler prefetches resource size before the cycle
+ * loop"), OR `null` when both sources are absent (a Doc-export, where
+ * the export-stream size is genuinely unknowable in advance). The
+ * handler-derived value takes priority over the prefetched value when
+ * both are present — a resume cycle that surfaces a freshly-advertised
+ * Content-Length wins over a stale prefetched size.
  */
 export interface DownloadingPayload {
   readonly downloadJobId: string;

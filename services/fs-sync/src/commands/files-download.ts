@@ -708,13 +708,21 @@ export function makeFilesDownloadHandler(
       // preservation rule on subsequent null-total `downloading` events
       // keeps that value stable.
       const PREFETCH_TIMEOUT_MS = 10_000;
+      // §12.7 — three-way race: prefetch promise, 10s timeout, user-cancel.
+      // We track the timer id so it can be cleared on resolution — without
+      // the clear, every download pins a stale 10s timer in Node's event
+      // loop until it fires (the rejection then no-ops on an already-
+      // settled Promise but the timer cost is real).
+      let prefetchTimer: ReturnType<typeof setTimeout> | null = null;
       try {
         const prefetched = await new Promise<FileMetadata<DatasourceType>>(
           (resolve, reject) => {
             // 1. The prefetch itself.
             client.getMetadata(target).then(resolve, reject);
-            // 2. Timeout — abort if no resolution in 10s.
-            setTimeout(() => {
+            // 2. Timeout — abort if no resolution in 10s. Captured into
+            //    `prefetchTimer` so the `finally` below clears it on
+            //    successful resolution / non-timeout rejection.
+            prefetchTimer = setTimeout(() => {
               reject(
                 new Error(`prefetch timeout (${PREFETCH_TIMEOUT_MS}ms)`),
               );
@@ -722,7 +730,11 @@ export function makeFilesDownloadHandler(
             // 3. User cancel — translates to CancelledError so the
             //    outer catch routes through the existing terminal-cancel
             //    branch (emits download-cancelled, returns cancel
-            //    envelope, no engine.downloadFile call).
+            //    envelope, no engine.downloadFile call). The `{ once: true }`
+            //    self-cleans on first fire; on resolve/timeout it stays
+            //    registered until the AbortSignal is GC'd (handler-local
+            //    lifetime — same controller used for the download GET,
+            //    so it would be reused across cycle attempts anyway).
             if (abortController.signal.aborted) {
               reject(new CancelledError());
               return;
@@ -744,6 +756,7 @@ export function makeFilesDownloadHandler(
         // §12.7 (Decision 17a) — user-cancel during prefetch routes to
         // the outer terminal-cancel handler.
         if (err instanceof CancelledError || abortController.signal.aborted) {
+          if (prefetchTimer !== null) clearTimeout(prefetchTimer);
           throw new CancelledError();
         }
         // Non-cancel failure (timeout, transient provider error,
@@ -752,6 +765,8 @@ export function makeFilesDownloadHandler(
           `[files-download] metadata prefetch for ${params.path} failed:`,
           err,
         );
+      } finally {
+        if (prefetchTimer !== null) clearTimeout(prefetchTimer);
       }
 
       // Outer loop: each iteration runs one HTTP cycle. The handler
