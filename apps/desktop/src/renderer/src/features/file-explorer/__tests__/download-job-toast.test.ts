@@ -45,6 +45,7 @@ import {
   type DownloadEvent,
   type DownloadEventApi,
   type DownloadJobSummary,
+  type SyncActionsApi,
   type ToastApi,
 } from "../download-job-toast.js";
 
@@ -63,7 +64,14 @@ function makeToast(): MockToast {
   const loading: Mock = vi.fn(
     (
       _msg: string,
-      opts?: { id?: string | number; description?: string },
+      opts?: {
+        id?: string | number;
+        description?: string;
+        // §12.2: Sonner's `toast.loading` accepts an `action` option for
+        // the built-in template's Cancel button. The mock captures it
+        // so tests can assert on label + onClick.
+        action?: { label: string; onClick: () => void };
+      },
     ) => opts?.id ?? `toast-${next++}`,
   );
   const success: Mock = vi.fn(
@@ -110,6 +118,21 @@ function makeEventApi(): MockEventApi {
       listener(event);
     },
   };
+}
+
+interface MockSyncApi extends SyncActionsApi {
+  cancelJob: Mock;
+}
+
+function makeSyncApi(): MockSyncApi {
+  // Default impl resolves with a no-op envelope. Tests that assert the
+  // call wiring inspect `cancelJob.mock.calls`. Tests that don't care
+  // can pass this through to the toaster as a noop.
+  const cancelJob: Mock = vi.fn(async (_req: { downloadJobId: string }) => ({
+    ok: true,
+    result: { cancelled: true },
+  }));
+  return { cancelJob };
 }
 
 function downloadingEvent(
@@ -914,14 +937,15 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     }
   });
 
-  it("(8.5) download-cancelled during retrying state dismisses the toast (existing cancel path remains the path forward)", () => {
-    // Adapted from spec scenario "Cancel during retry sleep dismisses
-    // toast within 100ms". The toast has no Cancel button today; the
-    // spec preserves the cancel path "exactly as it does in downloading
-    // state" — i.e. the renderer's existing dismiss-on-cancelled-event
-    // wiring. This test confirms the wiring still applies in retrying
-    // state: when `download-cancelled` arrives after a retry render,
-    // the toast dismisses with the SAME id that was rendered.
+  it("(8.5) download-cancelled during retrying state dismisses the toast on the same id", () => {
+    // Spec scenario "Cancel during retry sleep dismisses toast within
+    // 100ms". §12.2 (iter-4) made the toast's Cancel UI button real
+    // (Decision 13) — the click fires `syncApi.cancelJob` which causes
+    // the service to emit `download-cancelled`. This test pins the
+    // event-arrival half of that round-trip: when `download-cancelled`
+    // arrives after a retry render, the toast dismisses with the SAME
+    // id that was rendered. The click-fires-cancelJob half is covered
+    // by `(12.2.6)` / `(12.2.7)`.
     toast.loading.mockReturnValueOnce("toast-A");
     createDownloadJobToaster({ toast, eventApi });
 
@@ -1181,5 +1205,167 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
     ];
     expect(errorCall[1].id).toBe("toast-A");
     expect(toast.dismiss).not.toHaveBeenCalledWith("toast-A");
+  });
+});
+
+// §12.2 — Cancel action button on the active download toast (Decision 13).
+// The toaster injects `action: { label: "Cancel", onClick }` into both
+// the downloading-state and retrying-state `toast.loading` calls. Click
+// fires `syncApi.cancelJob({ downloadJobId })` (fire-and-forget); the
+// subsequent `download-cancelled` IPC event is what actually dismisses
+// the toast through the existing event-handler path.
+describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
+  let toast: MockToast;
+  let eventApi: MockEventApi;
+  let syncApi: MockSyncApi;
+
+  beforeEach(() => {
+    toast = makeToast();
+    eventApi = makeEventApi();
+    syncApi = makeSyncApi();
+  });
+
+  it("(12.2.6) downloading-state toast carries a Cancel action wired to syncApi.cancelJob", () => {
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 42, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const loadingCall = toast.loading.mock.calls[0] as [
+      string,
+      {
+        id?: string | number;
+        action?: { label: string; onClick: () => void };
+      },
+    ];
+    expect(loadingCall[1].action).toBeDefined();
+    expect(loadingCall[1].action!.label).toBe("Cancel");
+    expect(typeof loadingCall[1].action!.onClick).toBe("function");
+
+    // Click the Cancel action → cancelJob fires with the right
+    // downloadJobId. Fire-and-forget: the click does NOT wait on the
+    // Promise.
+    loadingCall[1].action!.onClick();
+    expect(syncApi.cancelJob).toHaveBeenCalledTimes(1);
+    expect(syncApi.cancelJob).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+  });
+
+  it("(12.2.7) retrying-state toast carries a Cancel action on the SAME id, wired to the same downloadJobId", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 62, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 2,
+        limit: 5,
+        waitMs: 4000,
+        engineCause: "network-error",
+      },
+    });
+
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const retryingCall = toast.loading.mock.calls[1] as [
+      string,
+      {
+        id?: string | number;
+        action?: { label: string; onClick: () => void };
+      },
+    ];
+    expect(retryingCall[1].id).toBe("toast-A");
+    expect(retryingCall[1].action).toBeDefined();
+    expect(retryingCall[1].action!.label).toBe("Cancel");
+
+    retryingCall[1].action!.onClick();
+    expect(syncApi.cancelJob).toHaveBeenCalledWith({ downloadJobId: "job-A" });
+  });
+
+  it("(12.2.8) Cancel-action click does NOT pre-emptively dismiss the toast (the dismiss flows through the download-cancelled event)", () => {
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 50, path: "/welcome.pdf" }),
+    );
+
+    const loadingCall = toast.loading.mock.calls[0] as [
+      string,
+      { action?: { onClick: () => void } },
+    ];
+    loadingCall[1].action!.onClick();
+
+    // toast.dismiss SHALL NOT be invoked by the click handler. The
+    // service's existing `download-cancelled` event handler (silent
+    // dismiss) does that work in response to the eventual cancel
+    // confirmation.
+    expect(toast.dismiss).not.toHaveBeenCalled();
+  });
+
+  it("(12.2.9) failure-state toast does NOT render a Cancel action — only the existing Retry action", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 10, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-failed",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        tag: "other",
+        message: "boom",
+      },
+    });
+
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    const errorCall = toast.error.mock.calls[0] as [
+      string,
+      { action?: { label: string } },
+    ];
+    expect(errorCall[1].action).toBeDefined();
+    expect(errorCall[1].action!.label).toMatch(/retry/i);
+    // The failure path uses Sonner's built-in error template — its only
+    // action slot is the Retry button. No "Cancel" label appears here.
+    expect(errorCall[1].action!.label).not.toMatch(/cancel/i);
+  });
+
+  it("(12.2.10) Cancel action survives across retrying→downloading transition (resume flow)", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    createDownloadJobToaster({ toast, eventApi, syncApi });
+
+    // downloading → retrying → downloading (resume after sleep)
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 20, path: "/welcome.pdf" }),
+    );
+    eventApi.emit({
+      kind: "download-retrying",
+      payload: {
+        downloadJobId: "job-A",
+        datasourceId: "ds-1",
+        attempt: 1,
+        limit: 5,
+        waitMs: 1000,
+        engineCause: "network-error",
+      },
+    });
+    eventApi.emit(
+      downloadingEvent("job-A", { progress: 21, path: "/welcome.pdf" }),
+    );
+
+    expect(toast.loading).toHaveBeenCalledTimes(3);
+    for (const call of toast.loading.mock.calls) {
+      const [, opts] = call as [
+        string,
+        { action?: { label: string; onClick: () => void } },
+      ];
+      expect(opts.action).toBeDefined();
+      expect(opts.action!.label).toBe("Cancel");
+    }
   });
 });

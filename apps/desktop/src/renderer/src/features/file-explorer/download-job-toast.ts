@@ -152,6 +152,13 @@ export interface ToastApi {
       // `Observer.create()` merge (otherwise the diagnostic text lingers
       // on the resumed downloading toast). See Decision 5 v2.
       description?: string;
+      // §12.2 (Decision 13): active download toast renders a Cancel
+      // action button via Sonner's built-in `action` option. Sonner
+      // renders `toast.action` on the loading template (line 812-824
+      // of `node_modules/sonner/dist/index.mjs`). The toaster wires
+      // `onClick` to call `syncApi.cancelJob({ downloadJobId })` —
+      // see the `download-retrying` and `downloading` handlers below.
+      action?: { label: string; onClick: () => void };
     },
   ): string | number;
   success(
@@ -210,10 +217,25 @@ export interface FilesActionsApi {
   showSavedInFolder(savedPath: string): Promise<void>;
 }
 
+/**
+ * §12.2 (Decision 13) — active-download Cancel-button bridge. The
+ * toaster's `toast.loading(...)` call's Cancel action wires its onClick
+ * to `syncApi.cancelJob({ downloadJobId })`. Production resolves
+ * `window.api.sync.cancelJob` lazily (mirroring the `filesApi` pattern);
+ * tests inject a stub. Fire-and-forget — the toaster does NOT await the
+ * Promise; the user-visible signal is the subsequent `download-cancelled`
+ * IPC event arriving on the bus, which the toaster's existing
+ * `download-cancelled` handler (silent `toast.dismiss`) consumes.
+ */
+export interface SyncActionsApi {
+  cancelJob(req: { downloadJobId: string }): Promise<unknown>;
+}
+
 export interface DownloadToasterDeps {
   readonly toast?: ToastApi;
   readonly eventApi?: DownloadEventApi;
   readonly filesApi?: FilesActionsApi;
+  readonly syncApi?: SyncActionsApi;
 }
 
 export interface DownloadToaster {
@@ -312,6 +334,38 @@ function resolveEventApi(
         }
       });
       return unsubscribe;
+    },
+  };
+}
+
+function resolveSyncApi(
+  injected: SyncActionsApi | undefined,
+): SyncActionsApi {
+  if (injected) return injected;
+  // Production fallback: pull from the preload bridge. Lazy resolution —
+  // we look up `window.api.sync.cancelJob` at click time so the toaster
+  // can mount safely in test harnesses without the preload (e.g.
+  // node-style tests for unrelated code paths). Throwing at the click
+  // site keeps the failure mode diagnosable; non-throwing here would
+  // silently swallow user clicks.
+  type CancelFn = (req: { downloadJobId: string }) => Promise<unknown>;
+  return {
+    async cancelJob(req) {
+      const fn = (
+        globalThis as unknown as {
+          window?: {
+            api?: {
+              sync?: { cancelJob?: CancelFn };
+            };
+          };
+        }
+      ).window?.api?.sync?.cancelJob;
+      if (typeof fn !== "function") {
+        throw new Error(
+          "createDownloadJobToaster: window.api.sync.cancelJob is unavailable",
+        );
+      }
+      return fn(req);
     },
   };
 }
@@ -477,6 +531,30 @@ export function createDownloadJobToaster(
   const toast: ToastApi = deps?.toast ?? sonnerAdapter();
   const eventApi = resolveEventApi(deps?.eventApi);
   const filesApi = resolveFilesApi(deps?.filesApi);
+  const syncApi = resolveSyncApi(deps?.syncApi);
+
+  // §12.2 (Decision 13) — Cancel action factory. The toaster injects this
+  // into every `toast.loading` call (both the downloading-state and the
+  // retrying-state paths, plus the hydration spawn path). The onClick is
+  // fire-and-forget — the user-visible signal is the subsequent
+  // `download-cancelled` IPC event arriving on the bus, which the
+  // toaster's existing `download-cancelled` handler dismisses with
+  // `toast.dismiss`. The IPC's response Promise is intentionally
+  // discarded (`void`); errors thrown during click (e.g. preload bridge
+  // missing in a partial test harness) surface as unhandled rejections
+  // in the console — production callers always have the bridge wired,
+  // so this only matters for harness misconfigurations.
+  function buildCancelAction(downloadJobId: string): {
+    label: string;
+    onClick: () => void;
+  } {
+    return {
+      label: "Cancel",
+      onClick: () => {
+        void syncApi.cancelJob({ downloadJobId });
+      },
+    };
+  }
 
   // Per-job tracker: maps the consumer-facing `downloadJobId` to the
   // Sonner toast id we minted on first sight + the basename we display
@@ -518,7 +596,11 @@ export function createDownloadJobToaster(
         // .create line ~145 and view layer ~797.)
         toast.loading(
           formatProgressMessage(existing.basename, event.payload.progress),
-          { id: existing.toastId, description: "" },
+          {
+            id: existing.toastId,
+            description: "",
+            action: buildCancelAction(downloadJobId),
+          },
         );
         if (existing.retrying === true) {
           tracker.set(downloadJobId, {
@@ -536,7 +618,10 @@ export function createDownloadJobToaster(
         const initialId = generateToastId();
         const toastId = toast.loading(
           formatProgressMessage(basename, event.payload.progress),
-          { id: initialId },
+          {
+            id: initialId,
+            action: buildCancelAction(downloadJobId),
+          },
         );
         const key = retryKey(event.payload.datasourceId, event.payload.path);
         const retry = pendingRetries.get(key);
@@ -579,6 +664,7 @@ export function createDownloadJobToaster(
         {
           id: toastId,
           description: formatRetryingDescription({ engineCause, waitMs }),
+          action: buildCancelAction(downloadJobId),
         },
       );
       // Carry `existing?.retry` forward — for hydrated-from-disk jobs
@@ -756,7 +842,10 @@ export function createDownloadJobToaster(
       const initialId = generateToastId();
       const toastId = toast.loading(
         formatProgressMessage(basename, initialPct),
-        { id: initialId },
+        {
+          id: initialId,
+          action: buildCancelAction(job.downloadJobId),
+        },
       );
       tracker.set(job.downloadJobId, { toastId, basename });
     }
