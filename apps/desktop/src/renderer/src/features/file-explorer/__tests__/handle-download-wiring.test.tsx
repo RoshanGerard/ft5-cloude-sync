@@ -180,10 +180,14 @@ describe("FileExplorer handleDownload wiring (§23/§24 follow-up)", () => {
     await waitFor(() => {
       expect(downloadMock).toHaveBeenCalledTimes(1);
     });
+    // add-download-overwrite-confirm §5: every initial dispatch carries
+    // `conflictPolicy: "fail"` so the service-side gate surfaces a
+    // `tag: "conflict"` envelope when the destination already exists.
     expect(downloadMock).toHaveBeenCalledWith({
       datasourceId: "ds-1",
       path: "/welcome.pdf",
       toPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+      conflictPolicy: "fail",
     });
     // No save-as dialog (no Shift, no Always-ask).
     expect(showSaveDialogMock).not.toHaveBeenCalled();

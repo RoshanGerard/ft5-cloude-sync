@@ -48,6 +48,7 @@ import {
 } from "./conflict-resolution-dialog";
 import {
   RenameConflictDialog,
+  useDownloadConflictDialog,
   useRenameConflictDialog,
 } from "./rename-conflict-dialog";
 import { DetailsPane } from "./details-pane";
@@ -265,6 +266,21 @@ export function FileExplorer({
     prompt: renameConflictPrompt,
     dialogProps: renameConflictDialogProps,
   } = useRenameConflictDialog();
+  // add-download-overwrite-confirm §6.5/§6.6 — instantiate the
+  // download-conflict dialog hook once per mount. Parallel to the
+  // rename hook (same component, different copy + hint metadata).
+  // The prompt is registered on the store via `setDownloadConflictPrompt`
+  // (mirror of the rename mount-effect below) AND threaded into the
+  // download orchestrator's `downloadConflictPrompt` option so the
+  // orchestrator's dispatch loop can invoke it on a `tag: "conflict"`
+  // envelope. Per design.md Decision 5 the controlled component is
+  // `RenameConflictDialog` (kept as-is for minimum churn); the hook's
+  // `dialogProps` carries download-specific title/description and
+  // optional hint metadata.
+  const {
+    prompt: downloadConflictPrompt,
+    dialogProps: downloadConflictDialogProps,
+  } = useDownloadConflictDialog();
   const router = useRouter();
   // Grab the per-datasource store directly — the module-level cache
   // ensures this is the same instance for every mount with the same id.
@@ -308,6 +324,19 @@ export function FileExplorer({
       store.setRenameConflictPrompt(null);
     };
   }, [store, renameConflictPrompt]);
+
+  // add-download-overwrite-confirm §6.6 — register the download-conflict
+  // prompt with the store. Mirrors the rename mount-effect verbatim. The
+  // store keeps the prompt in a closure-private slot (not reactive
+  // state); `useDownloadOrchestrator` reads the same prompt via its
+  // `downloadConflictPrompt` option below so the orchestrator's
+  // dispatch loop can invoke it on a `tag: "conflict"` envelope.
+  useEffect(() => {
+    store.setDownloadConflictPrompt(downloadConflictPrompt);
+    return () => {
+      store.setDownloadConflictPrompt(null);
+    };
+  }, [store, downloadConflictPrompt]);
 
   // Kick off the data-loading effect. Re-fires whenever `currentPath`
   // on the store changes; stale-response guard lives in the hook.
@@ -382,7 +411,17 @@ export function FileExplorer({
   // We register a retry callback on the toaster keyed on
   // (datasourceId, sourcePath) BEFORE every dispatch so the
   // failure-toast's Retry button can re-run the same dispatch.
-  const downloadOrchestrator = useDownloadOrchestrator();
+  //
+  // add-download-overwrite-confirm §6.6 — pass the download-conflict
+  // prompt into the orchestrator's options so its dispatch loop can
+  // invoke it on a `tag: "conflict"` envelope. Per advisor / Phase E
+  // re-anchor: the actual conflict re-prompt loop lives in the
+  // orchestrator (not in the deprecated `store.download`); the store's
+  // `setDownloadConflictPrompt` registration above is preserved for
+  // mount-pattern symmetry with the rename flow.
+  const downloadOrchestrator = useDownloadOrchestrator({
+    downloadConflictPrompt,
+  });
 
   // Upload dialog state — opened by the toolbar Upload button (Task 6.4).
   // Dialog is controlled (not Radix-trigger-managed) so the file-explorer
@@ -837,6 +876,13 @@ export function FileExplorer({
           portal. Opens only when `store.rename` hits a `tag: "conflict"`
           envelope and invokes the registered prompt. */}
       <RenameConflictDialog {...renameConflictDialogProps} />
+      {/* Download-conflict dialog (add-download-overwrite-confirm §6) —
+          same controlled component as the rename dialog (per design.md
+          Decision 5: prop-extracted title/description + optional hint
+          metadata; component name kept for minimum churn). Opens only
+          when the download orchestrator's loop hits a `tag: "conflict"`
+          envelope and invokes the registered prompt. */}
+      <RenameConflictDialog {...downloadConflictDialogProps} />
       {/* Upload dialog, opened by the toolbar's Upload button. Default
           destination = file-explorer's currentPath (spec line 30). The
           dialog internally resets its Files list + navigation state on
