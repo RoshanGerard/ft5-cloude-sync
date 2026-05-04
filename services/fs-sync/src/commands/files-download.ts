@@ -90,6 +90,7 @@ import {
   validateToPath,
   type PathValidatorDeps,
 } from "../util/path-validator.js";
+import { resolveKeepBothSuffix } from "../util/keep-both-suffix.js";
 
 // ---------------------------------------------------------------------------
 // Engine bus — minimal interface fs-sync subscribes to. The real engine
@@ -157,6 +158,22 @@ export interface FsBoundary {
    * exist or is not removable; the caller swallows that rejection
    * (delete-failure is non-fatal — the user can clean up manually). */
   unlink(path: string): Promise<void>;
+  /**
+   * Atomic create-and-open via `O_CREAT|O_EXCL` (Node `fs.open(path,
+   * "wx")`). Used by the `"keep-both"` suffix-loop helper (per
+   * add-download-overwrite-confirm design.md Decision 2) to probe
+   * `name (1).ext`, `name (2).ext`, ... race-free against the local
+   * FS. Resolves with a minimal handle whose `close()` releases the
+   * descriptor; the helper closes the handle before returning so the
+   * caller's subsequent `createWriteStream(path, { flags: "w" })`
+   * opens cleanly. Rejects with `{ code: "EEXIST" }` when the path
+   * already exists; other errors (EACCES, EIO, ENOSPC, ...) propagate
+   * to the handler's outer catch.
+   */
+  open(
+    path: string,
+    flags: "wx",
+  ): Promise<{ close: () => Promise<void> }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +529,18 @@ export function createDefaultFilesDownloadDeps(deps: {
       nodeFs.createWriteStream(path, options),
     pipeline: (source, sink, signal) => nodePipeline(source, sink, { signal }),
     unlink: (path) => nodeFsPromises.unlink(path),
+    open: async (path, flags) => {
+      // `fs.promises.open(path, "wx")` is the Node equivalent of
+      // `O_CREAT|O_EXCL`. Returns a `FileHandle` whose `close()` is
+      // an async no-arg method — matches the minimal interface the
+      // suffix-loop helper expects.
+      const handle = await nodeFsPromises.open(path, flags);
+      return {
+        close: async () => {
+          await handle.close();
+        },
+      };
+    },
   };
   return {
     ...deps,
@@ -602,6 +631,18 @@ export function makeFilesDownloadHandler(
       existingEntry.targetPath === params.toPath &&
       existingEntry.bytesDownloaded > 0;
 
+    // Phase C — `effectiveTargetPath` is the actual landing path for
+    // this download. Defaults to `params.toPath`; mutated below for
+    // `"keep-both"` + existing-file conflicts (the suffix-loop helper
+    // resolves a free `name (N).ext` candidate, atomically reserved
+    // via `O_CREAT|O_EXCL`). All downstream sites that need the actual
+    // landing path (registry insert, stream open, cycle-loop stat /
+    // unlink, integrity check, response, `file-downloaded` event) MUST
+    // read `effectiveTargetPath`. Sites that need the user's requested
+    // path (carve-out match, gate stat probe, conflict envelope's
+    // `existingPath`) keep `params.toPath`. See tasks.md §4.1–§4.2.
+    let effectiveTargetPath = params.toPath;
+
     if (!isResumeOfSelf) {
       let stats: { size: number; mtime: Date } | null;
       try {
@@ -626,29 +667,37 @@ export function makeFilesDownloadHandler(
           };
         }
         if (policy === "keep-both") {
-          // Phase B stub — Phase C lands the suffix-loop implementation.
-          // Returning a coded error keeps the failure mode loud rather
-          // than silently truncating a user file (which is exactly the
-          // bug this change is closing). The renderer doesn't dispatch
-          // `"keep-both"` until Phase E; this branch only fires for
-          // hand-constructed requests during the iter-1 → iter-2
-          // transition.
-          return {
-            ok: false,
-            error: {
-              tag: "other",
-              message: "keep-both policy not yet implemented (Phase C)",
-              retryable: false,
-            },
-          };
+          // Phase C — suffix-loop helper. Iterates `name (1).ext`,
+          // `name (2).ext`, ... via `O_CREAT|O_EXCL` atomic open. On
+          // success, the candidate now exists as a 0-byte file (the
+          // helper closed the handle before returning). The cycle loop
+          // below re-opens this same path with `flags: "w", start: 0`
+          // and writes the actual download payload — the 0-byte
+          // sentinel is overwritten. See design.md Decision 2 +
+          // services/fs-sync/src/util/keep-both-suffix.ts.
+          //
+          // Non-EEXIST errors (EACCES, EIO, ENOSPC, ...) propagate to
+          // the handler's outer catch via this synchronous-looking try
+          // — wrap so they map through normalizeFilesError just like
+          // the gate's stat probe above.
+          try {
+            effectiveTargetPath = await resolveKeepBothSuffix(
+              params.toPath,
+              { open: deps.fs.open },
+            );
+          } catch (err) {
+            return { ok: false, error: normalizeFilesError(err) };
+          }
         }
         // policy === "overwrite" → fall through; the cycle loop's first
         // iteration opens `flags: "w", start: 0` and truncates the
-        // existing file (files-download.ts line ~1018 — unchanged).
+        // existing file (files-download.ts at the createWriteStream
+        // site below — unchanged for `effectiveTargetPath === toPath`).
       }
       // stats === null → no file at toPath; fall through regardless of
       // policy. `"keep-both"` + no existing file is a no-op per
-      // spec.md scenario "no existing file is a no-op".
+      // spec.md scenario "no existing file is a no-op" — helper is
+      // NOT called, `effectiveTargetPath` stays `params.toPath`.
     }
 
     // 2. Concurrent-rejection guard. Spec line 248 — reject the SECOND
@@ -685,7 +734,7 @@ export function makeFilesDownloadHandler(
       downloadJobId,
       datasourceId: params.datasourceId,
       sourcePath: params.path,
-      targetPath: params.toPath,
+      targetPath: effectiveTargetPath,
       bytesDownloaded: 0,
       contentLength: null,
       startedAt,
@@ -899,7 +948,7 @@ export function makeFilesDownloadHandler(
           // cycle so a partial-write disk state stays the source of
           // truth for resume.
           if (cycle > 1) {
-            bytesWritten = await deps.fs.statSize(params.toPath);
+            bytesWritten = await deps.fs.statSize(effectiveTargetPath);
           }
           // §4.3 — capture bytesWrittenBefore so the post-pipe check
           // can compare against it for the byte-progress reset rule.
@@ -1010,7 +1059,7 @@ export function makeFilesDownloadHandler(
             // download-retrying — defeating the fix.
             if (isEnvironmentallyRetryable(routedErr)) {
               const bytesWrittenAfter = await deps.fs.statSize(
-                params.toPath,
+                effectiveTargetPath,
               ).catch(() => bytesWrittenBefore);
               if (bytesWrittenAfter > bytesWrittenBefore) {
                 consecutiveFailureCount = 0;
@@ -1045,7 +1094,7 @@ export function makeFilesDownloadHandler(
                 throw new CancelledError();
               }
               bytesWritten = await deps.fs
-                .statSize(params.toPath)
+                .statSize(effectiveTargetPath)
                 .catch(() => bytesWritten);
               continue;
             }
@@ -1110,7 +1159,7 @@ export function makeFilesDownloadHandler(
               // Drop the partial — the next attempt opens with
               // `flags: "w"` and re-pipes from byte 0. unlink failure
               // is non-fatal (the next `flags: "w"` open truncates).
-              await deps.fs.unlink(params.toPath).catch(() => {
+              await deps.fs.unlink(effectiveTargetPath).catch(() => {
                 // intentionally silent — see Decision 3 step 5
               });
               rangeUnsupported = true;
@@ -1135,7 +1184,7 @@ export function makeFilesDownloadHandler(
           // here would open `flags: "r+"` and write the new bytes into
           // the partial's tail, corrupting the file.
           const flags: "w" | "r+" = effectiveRangeStart === 0 ? "w" : "r+";
-          const sink = deps.fs.createWriteStream(params.toPath, {
+          const sink = deps.fs.createWriteStream(effectiveTargetPath, {
             flags,
             start: effectiveRangeStart,
           });
@@ -1159,7 +1208,7 @@ export function makeFilesDownloadHandler(
             ) {
               attemptInCycle++;
               // Update bytesWritten from disk before the retry.
-              bytesWritten = await deps.fs.statSize(params.toPath);
+              bytesWritten = await deps.fs.statSize(effectiveTargetPath);
               // Stay inside the inner loop — issue a fresh
               // engine.downloadFile with rangeStart = bytesWritten.
               continue;
@@ -1172,7 +1221,7 @@ export function makeFilesDownloadHandler(
               // Re-stat the disk so byte-progress check sees current
               // state (a mid-stream partial write counts as progress).
               const bytesWrittenAfter = await deps.fs.statSize(
-                params.toPath,
+                effectiveTargetPath,
               );
               // Decision 10: reset env count ONLY on byte progress
               // strictly greater than the iteration's start.
@@ -1220,7 +1269,7 @@ export function makeFilesDownloadHandler(
               }
               // (h) Re-stat bytesWritten from disk (a slow partial
               // write that arrived during the sleep would shift this).
-              bytesWritten = await deps.fs.statSize(params.toPath);
+              bytesWritten = await deps.fs.statSize(effectiveTargetPath);
               // (i) continue the inner loop.
               continue;
             }
@@ -1231,7 +1280,7 @@ export function makeFilesDownloadHandler(
 
           // Pipe drained cleanly. Re-stat so the byte-count assertion
           // sees on-disk reality (not the in-memory counter).
-          bytesWritten = await deps.fs.statSize(params.toPath);
+          bytesWritten = await deps.fs.statSize(effectiveTargetPath);
           if (
             finalContentLength !== null &&
             bytesWritten !== finalContentLength
@@ -1278,7 +1327,7 @@ export function makeFilesDownloadHandler(
       }
       if (providerHash !== null) {
         const localDigest = await deps.hash.hashFile(
-          params.toPath,
+          effectiveTargetPath,
           providerHash.algo,
         );
         if (localDigest.toLowerCase() !== providerHash.digest) {
@@ -1326,9 +1375,9 @@ export function makeFilesDownloadHandler(
             (err as { constructor: ErrorConstructor }).constructor,
           )
         ) {
-          await deps.fs.unlink(params.toPath).catch((unlinkErr) => {
+          await deps.fs.unlink(effectiveTargetPath).catch((unlinkErr) => {
             console.warn(
-              `[files-download] unlink(${params.toPath}) failed after terminal ${(err as Error).name}:`,
+              `[files-download] unlink(${effectiveTargetPath}) failed after terminal ${(err as Error).name}:`,
               unlinkErr,
             );
           });
@@ -1460,7 +1509,7 @@ export function makeFilesDownloadHandler(
     deps.fsSyncBus.emit("file-downloaded", {
       downloadJobId,
       datasourceId: params.datasourceId,
-      savedPath: params.toPath,
+      savedPath: effectiveTargetPath,
       bytes: bytesWritten,
     });
     deps.registry.delete(downloadJobId);
@@ -1468,7 +1517,7 @@ export function makeFilesDownloadHandler(
     unsubscribe();
     return {
       ok: true,
-      result: { savedPath: params.toPath, bytes: bytesWritten },
+      result: { savedPath: effectiveTargetPath, bytes: bytesWritten },
     };
   };
 }

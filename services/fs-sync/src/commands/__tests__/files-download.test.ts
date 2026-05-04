@@ -194,6 +194,31 @@ function makeFakeFs(opts: { writableParents?: string[] } = {}): FakeFs {
     unlink: async (path: string) => {
       files.delete(path);
     },
+    // Default `open(path, "wx")` — atomic create-and-open, matching the
+    // `O_CREAT|O_EXCL` semantics the `"keep-both"` suffix-loop helper
+    // expects (per add-download-overwrite-confirm §3.2). Resolves with
+    // a no-op handle when the candidate is free; rejects with
+    // `{ code: "EEXIST" }` when a file already exists at the path.
+    // Tests that need to observe the calls override via `fakeFs.open
+    // = vi.fn(...)`.
+    open: async (path: string, _flags: "wx") => {
+      if (files.has(path)) {
+        const err = new Error(
+          `EEXIST: file already exists, open '${path}'`,
+        ) as Error & { code: string };
+        err.code = "EEXIST";
+        throw err;
+      }
+      // Real `O_CREAT|O_EXCL` creates the file as 0-byte on success;
+      // mirror that so a subsequent gate stat probe sees the new
+      // sentinel (the helper closes the handle before returning, and
+      // the cycle loop re-opens with `flags: "w", start: 0` to write
+      // the actual download payload).
+      files.set(path, Buffer.alloc(0));
+      return {
+        close: async () => undefined,
+      };
+    },
   };
   return fakeFs;
 }
@@ -3927,16 +3952,250 @@ describe("files:download — destination-conflict gate (add-download-overwrite-c
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
-  // Phase B's deliberate `"keep-both"` stub — surfaces a coded error
-  // rather than silently truncating. Phase C replaces this with the
-  // suffix-loop implementation.
-  it('Phase B stub: "keep-both" policy + existing file returns a not-yet-implemented error envelope (no engine call, no registry insert)', async () => {
+  // §3.1 — Phase C lands the suffix-loop. `"keep-both"` + existing file
+  // → handler computes `effectiveTargetPath` via `O_CREAT|O_EXCL`,
+  // inserts the registry entry with `targetPath === effectiveTargetPath`,
+  // and the cycle loop writes there. Simple case: `name (1).ext` is free.
+  it('§3.1 "keep-both" + existing file at toPath: handler picks suffixed path, registry + cycle loop both reference it', async () => {
+    const TO_PATH_SUFFIXED = nodePath.join(PARENT, "welcome (1).pdf");
     const fakeFs = makeFakeFsWithExistingFile({
       toPath: TO_PATH,
       size: 1024,
       mtimeMs: EXISTING_MTIME_MS,
     });
     const registry = createDownloadRegistry();
+    // Capture the entry the handler writes so we can assert
+    // `targetPath === effectiveTargetPath`.
+    const setSpy = vi.fn((entry: import("../../downloads/registry.js").DownloadJobEntry) => {
+      registry.set(entry);
+    });
+    const wrappedRegistry: typeof registry = { ...registry, set: setSpy };
+    const newPayload = Buffer.alloc(2048, 0x77);
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(newPayload),
+      contentLength: 2048,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry: wrappedRegistry,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH_SUFFIXED]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "keep-both",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Response's savedPath is the suffixed path, NOT the user's
+      // requested toPath.
+      expect(result.result.savedPath).toBe(TO_PATH_SUFFIXED);
+      expect(result.result.bytes).toBe(2048);
+    }
+    // Registry insert used the suffixed path as targetPath.
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy.mock.calls[0]?.[0].targetPath).toBe(TO_PATH_SUFFIXED);
+    // The cycle loop wrote the new payload to the SUFFIXED path.
+    const writtenSuffixed = fakeFs.files.get(TO_PATH_SUFFIXED);
+    expect(writtenSuffixed?.length).toBe(2048);
+    expect(writtenSuffixed?.[0]).toBe(0x77);
+    // The original `toPath` is left UNTOUCHED (still the 4-byte
+    // 0xff stub from `makeFakeFsWithExistingFile`).
+    const original = fakeFs.files.get(TO_PATH);
+    expect(original?.length).toBe(1024);
+    expect(original?.[0]).toBe(0xff);
+  });
+
+  // §3.4 — `(1)` and `(2)` both taken → helper returns `(3).pdf`.
+  it('§3.4 "keep-both" + (1) and (2) both taken: helper iterates and lands at (3).pdf', async () => {
+    const TO_PATH_1 = nodePath.join(PARENT, "welcome (1).pdf");
+    const TO_PATH_2 = nodePath.join(PARENT, "welcome (2).pdf");
+    const TO_PATH_3 = nodePath.join(PARENT, "welcome (3).pdf");
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 1024,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    // Pre-populate (1) and (2) so they conflict — helper iterates
+    // through them via EEXIST and lands on (3).
+    fakeFs.files.set(TO_PATH_1, Buffer.alloc(512, 0xaa));
+    fakeFs.files.set(TO_PATH_2, Buffer.alloc(512, 0xbb));
+    const registry = createDownloadRegistry();
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(Buffer.alloc(1024, 0xcc)),
+      contentLength: 1024,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH_3]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "keep-both",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.savedPath).toBe(TO_PATH_3);
+    }
+    // (3) now holds the new payload; (1) and (2) are unchanged.
+    expect(fakeFs.files.get(TO_PATH_3)?.[0]).toBe(0xcc);
+    expect(fakeFs.files.get(TO_PATH_1)?.[0]).toBe(0xaa);
+    expect(fakeFs.files.get(TO_PATH_2)?.[0]).toBe(0xbb);
+  });
+
+  // §3.4 — `Makefile` (no extension) → `Makefile (1)`.
+  it('§3.4 "keep-both" with no-extension filename: helper produces "Makefile (1)"', async () => {
+    const MAKEFILE_PATH = nodePath.join(PARENT, "Makefile");
+    const MAKEFILE_PATH_1 = nodePath.join(PARENT, "Makefile (1)");
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: MAKEFILE_PATH,
+      size: 256,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    const registry = createDownloadRegistry();
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(Buffer.alloc(128, 0x42)),
+      contentLength: 128,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fs: fakeFs,
+        hash: makeHash({ [MAKEFILE_PATH_1]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/Makefile",
+        toPath: MAKEFILE_PATH,
+        conflictPolicy: "keep-both",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.savedPath).toBe(MAKEFILE_PATH_1);
+    }
+    expect(fakeFs.files.get(MAKEFILE_PATH_1)?.length).toBe(128);
+  });
+
+  // §3.4 — `"keep-both"` + no existing file: helper NOT called,
+  // `effectiveTargetPath === params.toPath`, falls through cleanly.
+  it('§3.4 "keep-both" + no existing file at toPath: helper not invoked, effectiveTargetPath === toPath', async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    // No file at TO_PATH. Spy the open primitive so we can assert
+    // the helper was NOT called.
+    const openSpy = vi.fn(fakeFs.open);
+    fakeFs.open = openSpy;
+    const registry = createDownloadRegistry();
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(Buffer.alloc(1024, 0xab)),
+      contentLength: 1024,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "keep-both",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // No suffix — landed at the user's requested toPath.
+      expect(result.result.savedPath).toBe(TO_PATH);
+    }
+    // Helper's `open` primitive was NOT called.
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  // §3.5 — Resume-of-self carve-out's narrowness against `"keep-both"`.
+  // Registry holds an entry for (ds-1, /welcome.pdf) whose
+  // `targetPath === ".../welcome (1).pdf"` (a previous suffix-resolved
+  // download), AND `bytesDownloaded > 0`. A fresh `"keep-both"` dispatch
+  // arrives with `toPath: ".../welcome.pdf"`. Expected behavior:
+  // - Carve-out does NOT match (registry.targetPath !== params.toPath).
+  // - Gate proceeds: stat probe runs against params.toPath.
+  // - `"keep-both"` branch runs, calling the helper.
+  // - Concurrency guard then rejects (registry already holds an entry
+  //   for the (ds-1, /welcome.pdf) key).
+  // The discriminator from §2.3 (which DOES skip the gate) is whether
+  // `fs.stat` and the helper's `open` were called — both must fire here,
+  // both must NOT fire in §2.3.
+  it("§3.5 resume-of-self carve-out narrowness: registry's suffixed targetPath does NOT match a fresh un-suffixed dispatch", async () => {
+    const TO_PATH_SUFFIXED = nodePath.join(PARENT, "welcome (1).pdf");
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 1024,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    // Pre-existing partial at the suffixed path (the in-flight job's
+    // own bytes).
+    fakeFs.files.set(TO_PATH_SUFFIXED, Buffer.alloc(512, 0xee));
+    const registry = createDownloadRegistry();
+    // Pre-seed: an in-flight job whose targetPath is the SUFFIXED path
+    // (NOT params.toPath) — this entry was created by an earlier
+    // `"keep-both"` dispatch that resolved to (1) and is still streaming.
+    registry.set({
+      downloadJobId: "in-flight-suffixed",
+      datasourceId: "ds-1",
+      sourcePath: "/welcome.pdf",
+      targetPath: TO_PATH_SUFFIXED,
+      bytesDownloaded: 512,
+      contentLength: 4096,
+      startedAt: 100,
+      abortController: new AbortController(),
+    });
+    // Spy on stat + open to discriminate carve-out-fired
+    // (fs.stat untouched) from carve-out-skipped (fs.stat AND open
+    // both touched).
+    const statSpy = vi.fn(fakeFs.stat);
+    fakeFs.stat = statSpy;
+    const openSpy = vi.fn(fakeFs.open);
+    fakeFs.open = openSpy;
     const downloadFile = vi.fn();
     const handler = makeFilesDownloadHandler(
       makeDeps({
@@ -3956,15 +4215,88 @@ describe("files:download — destination-conflict gate (add-download-overwrite-c
       ctx,
     );
 
+    // Concurrency guard rejects (registry.findByKey hits the in-flight
+    // entry). User-observable behavior matches §2.3, but the path
+    // through is different — see the spy assertions below.
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.tag).toBe("other");
       expect(result.error.message).toBe(
-        "keep-both policy not yet implemented (Phase C)",
+        "download already in progress for this entry",
       );
-      expect(result.error.retryable).toBe(false);
     }
+    // §3.5's discriminator: carve-out did NOT fire, so the gate ran.
+    expect(statSpy).toHaveBeenCalledWith(TO_PATH);
+    // `"keep-both"` branch ran, invoking the helper's `open` probe.
+    // Without this, the test would pass for both correct AND broken
+    // implementations (a buggy carve-out matching too liberally would
+    // also produce "download already in progress").
+    expect(openSpy).toHaveBeenCalled();
+    // The 0-byte sentinel created by the helper's successful open IS
+    // a known cosmetic side-effect: the concurrency guard fires AFTER
+    // the helper returns, leaving the orphan suffix file at (2)
+    // (because (1) was already taken). Documented as out-of-scope —
+    // user-observable behavior (rejection with the duplicate-dispatch
+    // message) is correct, the orphan is recoverable.
+    //
+    // No engine call.
     expect(downloadFile).not.toHaveBeenCalled();
-    expect(registry.size()).toBe(0);
+  });
+
+  // §4.3 — End-to-end through fake engine: response's `savedPath` is the
+  // suffixed path AND the `file-downloaded` event payload's `savedPath`
+  // matches. Pins the §4.1–§4.2 audit's downstream sites in one
+  // observable test.
+  it('§4.3 "keep-both" end-to-end: response savedPath + file-downloaded event payload both reference the suffixed path', async () => {
+    const TO_PATH_SUFFIXED = nodePath.join(PARENT, "welcome (1).pdf");
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 1024,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    const newPayload = Buffer.alloc(2048, 0xab);
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(newPayload),
+      contentLength: 2048,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH_SUFFIXED]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "keep-both",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Response's savedPath is the suffixed landing path.
+      expect(result.result.savedPath).toBe(TO_PATH_SUFFIXED);
+      expect(result.result.bytes).toBe(2048);
+    }
+    // The terminal `file-downloaded` event's savedPath ALSO matches
+    // (this is the §4.2 audit's downstream observable).
+    const terminal = events.filter((e) => e.name === "file-downloaded");
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]?.payload).toMatchObject({
+      datasourceId: "ds-1",
+      savedPath: TO_PATH_SUFFIXED,
+      bytes: 2048,
+    });
   });
 });
