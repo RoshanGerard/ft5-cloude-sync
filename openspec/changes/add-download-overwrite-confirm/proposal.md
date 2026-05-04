@@ -12,12 +12,11 @@ The renderer's first-run download flow (`add-engine-rename-download` §22) promp
 
 ## What this change does
 
-- Detect existing file at `toPath` BEFORE issuing `engine.downloadFile`. Two natural insertion points:
-  - **Renderer-side pre-check**: a new IPC `files:stat-local` command (or extension of an existing one) lets the orchestrator probe `toPath` synchronously before dispatching `files:download`, then surface the existing `RenameConflictDialog` if the file exists.
-  - **Service-side gate**: `files:download` handler probes `toPath` after `validateToPath` and returns a new error tag (`tag: "destination-exists"`) the renderer recognises and routes through `RenameConflictDialog`. After user picks "overwrite", the renderer re-issues `files:download` with a new `force` / `policy` field.
-- Add a "rename" path that auto-suffixes the filename per the existing source-side rename convention (`name (1).ext`, `name (2).ext`, ...) so users can keep both copies trivially.
-- Add a "cancel" path that aborts the download before any bytes flow.
-- Surface the choice via the existing `RenameConflictDialog` — same chrome, same a11y, same keyboard shortcuts.
+- Extend the `files:download` IPC request shape with a `conflictPolicy: "fail" | "overwrite" | "keep-both"` field, defaulting to `"fail"`. Mirror the rename precedent verbatim (`add-engine-rename-download` Decision 7) — no new error tag, no new state machine.
+- Service-side gate in `services/fs-sync/src/commands/files-download.ts`: after `validateToPath` (~line 524) and before the concurrency guard (~line 540), probe `fs.stat(toPath)`. On `"fail"` + existing file → return `{ tag: "conflict", existingPath, existingSize, existingModifiedAt }`. On `"overwrite"` → proceed (existing `flags: "w"` at line 1018 truncates, unchanged). On `"keep-both"` → compute next free `name (N).ext` via atomic `O_CREAT|O_EXCL` probe, mutate the effective `targetPath`, proceed.
+- Resume-of-self carve-out: skip the gate when `DownloadRegistry` already holds an entry matching `(datasourceId, sourcePath, toPath)` with `bytesDownloaded > 0` — that pre-existing partial belongs to the registry's own aborted download, not a foreign collision. Forward-compatible with `migrate-download-registry-to-sqlite` (today's in-memory registry evaporates on restart, but the carve-out is the right shape once SQLite rehydration lands).
+- Renderer: route the `tag: "conflict"` envelope through the reused dialog component (see Capabilities). Dialog renders `existingPath`, `existingSize` (formatted), and `existingModifiedAt` (relative time). User choice (`"overwrite"` / `"keep-both"`) re-dispatches `files:download` with the chosen policy; `"cancel"` aborts client-side without any service round-trip.
+- Extend `FilesCommandError` (`packages/ipc-contracts/src/files.ts`) with optional `existingSize?: number` and `existingModifiedAt?: string` (ISO 8601). Additive — no breakage for rename callers that don't populate them.
 
 ## Out of scope
 
@@ -27,13 +26,26 @@ The renderer's first-run download flow (`add-engine-rename-download` §22) promp
 - **Per-datasource policy defaults.** "Always overwrite for Drive, always rename for S3" preferences would live in settings; deferred.
 - **Conflict for in-flight concurrent downloads.** The handler's existing `findByKey` guard already rejects a second `files:download` for the same `(datasourceId, sourcePath)`; that's a separate failure mode (concurrent same-source) from this one (conflicting destination).
 
-## Open questions (resolve during `/opsx:propose`)
+## Capabilities
 
-1. **Where does the conflict gate live — renderer pre-check vs service-side response?** Pre-check is simpler (single IPC round-trip up front) but races the file system between the check and the actual download. Service-side gate is race-free (the handler holds the only window) but introduces a new error tag and renderer state machine. Pick based on race tolerance.
-2. **Default action when the dialog opens.** "Cancel" is safest (no destructive default). "Rename" is friendliest (keeps both files). "Overwrite" is what the user usually wanted (matches today's silent behaviour). Pick one as keyboard-default; document the choice.
-3. **Auto-rename suffix convention.** Match the existing rename-on-source pattern (`name (1).ext`) for consistency, or use a timestamp (`name 2026-05-02.ext`) to make collision detection trivial. The first matches `add-engine-rename-download`; the second avoids the iterative-probe cost.
-4. **Skip the dialog when the existing file is byte-identical to the about-to-download file.** Hash-compare is cheap if the provider advertises one. Useful for "I downloaded this two minutes ago and clicked again by accident." Or always prompt — simpler, never wrong.
-5. **Hydration / app-restart semantics.** If a download was in-flight and the app restarted before the conflict gate fired (rare — the gate fires before any bytes flow today), no special handling. Confirm during proposal.
+### Modified Capabilities
+
+- `file-explorer` — renderer state machine handles the `tag: "conflict"` envelope on download dispatch; the existing `rename-conflict-dialog.tsx` component is parameterized via `title` / `description` props so the rename and download flows share one dialog with distinct copy and an optional hint-metadata block.
+- `fs-sync-service` — `files:download` handler accepts a `conflictPolicy` field, gates on existing destination, and emits the conflict envelope with size + modifiedAt hints; resume-of-self detection lets paused-then-resumed downloads through the gate untouched.
+
+### New Capabilities
+
+None. All work folds into existing capabilities.
+
+## Resolved during proposal
+
+The five open questions from the stub are resolved in `design.md` `## Decisions` 1–5:
+
+1. **Architectural lock-in: service-side gate via shared rename `conflictPolicy` enum.** Rejected the renderer pre-check option (TOCTOU race + two paths to truncation). See Decision 1.
+2. **Default focus: no destructive autofocus.** Match the existing rename dialog's keyboard behavior (Tab to choose, Escape to cancel). See Decision 5.
+3. **Suffix convention: `name (N).ext` via atomic `O_CREAT|O_EXCL`.** Matches rename precedent; race-free server-side. See Decision 2.
+4. **Hash-based byte-identical skip: rejected.** Local-file hashing is expensive on large media; always prompt is simpler and never wrong. See Decision 3.
+5. **Hydration / app-restart: resume-of-self carve-out.** Today's in-memory registry evaporates on restart so the carve-out is reachable mid-session only; the shape is forward-compatible with the SQLite rehydration migration. See Decision 4.
 
 ## Acceptance criteria (once promoted)
 
