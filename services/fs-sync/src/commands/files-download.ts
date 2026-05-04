@@ -120,6 +120,22 @@ export interface FsBoundary {
   /** Synchronous read of file size — used inside the auth-expired retry
    * branch to determine `rangeStart` from "what's already on disk". */
   statSize(path: string): Promise<number>;
+  /**
+   * Existence + metadata probe for the destination-conflict gate (per
+   * add-download-overwrite-confirm design.md Decision 1). Resolves with
+   * `{ size, mtime }` when the path exists; resolves with `null` on
+   * ENOENT (no file). Any other error (EACCES, EIO, etc.) rejects and
+   * the handler propagates as a `tag: "other"` envelope.
+   *
+   * Distinct from `statSize` — that helper is load-bearing for the
+   * auth-expired retry branch and treats missing paths as "0 bytes
+   * on disk so resume from start". The conflict gate needs to
+   * distinguish "no file" from "empty file"; null-vs-zero on the size
+   * field makes that distinction explicit.
+   */
+  stat(
+    path: string,
+  ): Promise<{ size: number; mtime: Date } | null>;
   /** Open a write stream for the pipe. The handler picks `flags`
    * ("w" for fresh, "r+" for resume) per Decision 3 step 5. */
   createWriteStream(
@@ -473,6 +489,25 @@ export function createDefaultFilesDownloadDeps(deps: {
   const fsBoundary: FsBoundary = {
     access: (path, mode) => nodeFsPromises.access(path, mode),
     statSize: async (path) => (await nodeFsPromises.stat(path)).size,
+    stat: async (path) => {
+      try {
+        const s = await nodeFsPromises.stat(path);
+        return { size: s.size, mtime: s.mtime };
+      } catch (err: unknown) {
+        // ENOENT → null (no file). Other stat errors propagate to the
+        // handler, which wraps them as `tag: "other"` per existing
+        // semantics.
+        if (
+          err !== null &&
+          typeof err === "object" &&
+          "code" in err &&
+          (err as { code?: string }).code === "ENOENT"
+        ) {
+          return null;
+        }
+        throw err;
+      }
+    },
     createWriteStream: (path, options) =>
       nodeFs.createWriteStream(path, options),
     pipeline: (source, sink, signal) => nodePipeline(source, sink, { signal }),
@@ -530,6 +565,90 @@ export function makeFilesDownloadHandler(
           retryable: false,
         },
       };
+    }
+
+    // 1.5. Destination-conflict gate (per add-download-overwrite-confirm
+    // design.md Decision 1). Probes `fs.stat(toPath)`; on existence,
+    // routes by `conflictPolicy` (default `"fail"`). Sits BETWEEN
+    // `validateToPath` (above) and the concurrency guard (below) so:
+    // (a) we never probe an unwritable / traversal-bearing path, and
+    // (b) the conflict envelope returns without minting a job id or
+    // inserting a registry entry.
+    //
+    // Resume-of-self carve-out (per Decision 4): when the registry
+    // already holds an entry for `(datasourceId, sourcePath)` AND that
+    // entry's `targetPath === toPath` AND `bytesDownloaded > 0`, the
+    // partial file at `toPath` belongs to OUR own in-flight job — a
+    // re-dispatch is a resume, not a new download. We skip the gate
+    // entirely; the concurrency guard at the next step rejects this
+    // case as a duplicate today (today's in-memory registry only
+    // surfaces this mid-session). After `migrate-download-registry-
+    // to-sqlite` lands, restart-after-pause flows hydrate the registry
+    // before the gate sees the dispatch — the carve-out becomes
+    // load-bearing then. Forward-compat now keeps the contract honest
+    // when the storage layer flips.
+    const policy: "fail" | "overwrite" | "keep-both" =
+      params.conflictPolicy ?? "fail";
+    const existingJobId = deps.registry.findByKey(
+      params.datasourceId,
+      params.path,
+    );
+    const existingEntry =
+      existingJobId !== undefined
+        ? deps.registry.get(existingJobId)
+        : undefined;
+    const isResumeOfSelf =
+      existingEntry !== undefined &&
+      existingEntry.targetPath === params.toPath &&
+      existingEntry.bytesDownloaded > 0;
+
+    if (!isResumeOfSelf) {
+      let stats: { size: number; mtime: Date } | null;
+      try {
+        stats = await deps.fs.stat(params.toPath);
+      } catch (err) {
+        // Non-ENOENT stat error (EACCES, EIO, etc.) — propagate as
+        // tag:"other" per the existing handler convention.
+        return { ok: false, error: normalizeFilesError(err) };
+      }
+      if (stats !== null) {
+        if (policy === "fail") {
+          return {
+            ok: false,
+            error: {
+              tag: "conflict",
+              message: `destination already exists at ${params.toPath}`,
+              retryable: false,
+              existingPath: params.toPath,
+              existingSize: stats.size,
+              existingModifiedAt: stats.mtime.toISOString(),
+            },
+          };
+        }
+        if (policy === "keep-both") {
+          // Phase B stub — Phase C lands the suffix-loop implementation.
+          // Returning a coded error keeps the failure mode loud rather
+          // than silently truncating a user file (which is exactly the
+          // bug this change is closing). The renderer doesn't dispatch
+          // `"keep-both"` until Phase E; this branch only fires for
+          // hand-constructed requests during the iter-1 → iter-2
+          // transition.
+          return {
+            ok: false,
+            error: {
+              tag: "other",
+              message: "keep-both policy not yet implemented (Phase C)",
+              retryable: false,
+            },
+          };
+        }
+        // policy === "overwrite" → fall through; the cycle loop's first
+        // iteration opens `flags: "w", start: 0` and truncates the
+        // existing file (files-download.ts line ~1018 — unchanged).
+      }
+      // stats === null → no file at toPath; fall through regardless of
+      // policy. `"keep-both"` + no existing file is a no-op per
+      // spec.md scenario "no existing file is a no-op".
     }
 
     // 2. Concurrent-rejection guard. Spec line 248 — reject the SECOND

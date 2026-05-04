@@ -220,6 +220,9 @@ function makeFakeFs(opts: { writableParents?: string[] } = {}): FakeFs {
       }
     },
     statSize: async (path) => files.get(path)?.length ?? 0,
+    // `stat` is unreachable in this suite — the §14 list-active handler
+    // never opens a download. The stub satisfies the FsBoundary type.
+    stat: async () => null,
     createWriteStream: () => {
       // Never reached in this test — the gated `downloadFile` never returns.
       throw new Error("createWriteStream should not be called in §14.3");

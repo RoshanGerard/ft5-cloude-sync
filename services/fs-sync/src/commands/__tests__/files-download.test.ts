@@ -114,6 +114,16 @@ function makeFakeFs(opts: { writableParents?: string[] } = {}): FakeFs {
       if (buf === undefined) throw new Error(`ENOENT: ${path}`);
       return buf.length;
     },
+    // Default `stat` for the destination-conflict gate. Tests that need
+    // a specific mtime (e.g. add-download-overwrite-confirm §2.1)
+    // override `fakeFs.stat = ...` after construction. Returning null
+    // for unknown paths matches the production impl's ENOENT → null
+    // contract; a stored file reports size + a fixed epoch mtime.
+    stat: async (path: string) => {
+      const buf = files.get(path);
+      if (buf === undefined) return null;
+      return { size: buf.length, mtime: new Date(0) };
+    },
     createWriteStream: (path, options) => {
       const existing = files.get(path);
       const head =
@@ -3577,5 +3587,384 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     // post-pipe integrity hash check. Reusing the prefetched object
     // would result in only one call.
     expect(getMetadata).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §2 (add-download-overwrite-confirm) — destination-conflict gate.
+//
+// The handler probes `deps.fs.stat(toPath)` between `validateToPath` and the
+// concurrency guard (per design.md Decision 1). On `"fail"` + existing file
+// (and no resume-of-self carve-out) the gate returns a
+// `tag: "conflict"` envelope carrying `existingPath`, `existingSize`,
+// `existingModifiedAt`. On `"overwrite"` + existing file the gate falls
+// through; the cycle loop's `flags: "w"` truncates as today. On `"keep-both"`
+// the gate is a deliberate Phase B stub — Phase C lands the suffix loop.
+// ---------------------------------------------------------------------------
+
+describe("files:download — destination-conflict gate (add-download-overwrite-confirm §2)", () => {
+  const EXISTING_MTIME_MS = Date.parse("2026-05-05T12:30:00.000Z");
+  const EXISTING_MTIME_ISO = "2026-05-05T12:30:00.000Z";
+
+  // Helper: stand a fake fs that pre-populates `toPath` with a known
+  // size + mtime so the gate's stat probe reports the conflict.
+  function makeFakeFsWithExistingFile(opts: {
+    toPath: string;
+    size: number;
+    mtimeMs: number;
+  }): FakeFs {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    fakeFs.files.set(opts.toPath, Buffer.alloc(opts.size, 0xff));
+    // Override `stat` to return the canned mtime; the default `stat`
+    // would fabricate `new Date(0)` for files without a stored mtime.
+    fakeFs.stat = async (path: string) => {
+      const buf = fakeFs.files.get(path);
+      if (buf === undefined) return null;
+      return { size: buf.length, mtime: new Date(opts.mtimeMs) };
+    };
+    return fakeFs;
+  }
+
+  // §2.1 — `"fail"` policy + existing file → conflict envelope, no job
+  // minted, no registry insert, no engine call.
+  it('§2.1 "fail" policy + existing file at toPath returns conflict envelope (no jobId, no registry, no engine call)', async () => {
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 4_194_304,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    const registry = createDownloadRegistry();
+    const downloadFile = vi.fn();
+    const getMetadata = vi.fn();
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const randomUUID = vi.fn(() => "should-not-be-minted");
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fs: fakeFs,
+        randomUUID,
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "fail",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("conflict");
+      expect(result.error.message).toBe(
+        `destination already exists at ${TO_PATH}`,
+      );
+      expect(result.error.retryable).toBe(false);
+      expect(result.error.existingPath).toBe(TO_PATH);
+      expect(result.error.existingSize).toBe(4_194_304);
+      expect(result.error.existingModifiedAt).toBe(EXISTING_MTIME_ISO);
+    }
+    // No downloadJobId minted (randomUUID untouched).
+    expect(randomUUID).not.toHaveBeenCalled();
+    // No registry entry inserted.
+    expect(registry.size()).toBe(0);
+    // No engine call (engine.downloadFile and even getMetadata prefetch
+    // never run).
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(getMetadata).not.toHaveBeenCalled();
+  });
+
+  // §2.4 — `"fail"` + no existing file → falls through unchanged.
+  it('§2.4 "fail" policy with no existing file at toPath falls through to existing happy-path behavior', async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    // No file pre-populated → stat returns null → gate passes.
+    const registry = createDownloadRegistry();
+    const payload = Buffer.alloc(1024, 0xab);
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(payload),
+      contentLength: 1024,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "fail",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.savedPath).toBe(TO_PATH);
+      expect(result.result.bytes).toBe(1024);
+    }
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+  });
+
+  // §2.5 — `"overwrite"` + existing file → handler proceeds, opens
+  // `flags: "w"`, truncates the existing bytes, response.savedPath ===
+  // toPath. The cycle-loop truncation at files-download.ts:~1018 is
+  // unchanged; the gate just falls through in this branch.
+  it('§2.5 "overwrite" policy with existing file proceeds and truncates via the existing flags:"w" cycle-loop', async () => {
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 4_096, // pre-existing 4KB stub.
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    // Confirm the pre-existing payload is the 0xff stub from the helper.
+    expect(fakeFs.files.get(TO_PATH)?.[0]).toBe(0xff);
+
+    const registry = createDownloadRegistry();
+    const newPayload = Buffer.alloc(1024, 0xab);
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(newPayload),
+      contentLength: 1024,
+    }));
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "overwrite",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.savedPath).toBe(TO_PATH);
+      expect(result.result.bytes).toBe(1024);
+    }
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    // The pre-existing 4KB 0xff payload was truncated and replaced with
+    // the new 1024-byte 0xab payload — proving flags:"w" was honored.
+    const finalBytes = fakeFs.files.get(TO_PATH);
+    expect(finalBytes?.length).toBe(1024);
+    expect(finalBytes?.[0]).toBe(0xab);
+  });
+
+  // §2.6 (a) — gate runs AFTER `validateToPath`. Per advisor: assert via
+  // observable side effect (`fs.stat` spy never called for invalid path),
+  // not by spying the import-level `validateToPath` (which would force a
+  // Phase-B-out-of-scope refactor).
+  it("§2.6 gate runs AFTER validateToPath: invalid toPath rejects without the gate's fs.stat firing", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const statSpy = vi.fn(fakeFs.stat);
+    fakeFs.stat = statSpy;
+    const setSpy = vi.fn();
+    const registry = createDownloadRegistry();
+    const wrappedRegistry: typeof registry = {
+      ...registry,
+      set: (entry) => {
+        setSpy(entry);
+        registry.set(entry);
+      },
+    };
+    const downloadFile = vi.fn();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => makeFakeClient({ downloadFile }),
+        registry: wrappedRegistry,
+        fs: fakeFs,
+      }),
+    );
+
+    const result = await handler(
+      {
+        // Relative toPath — `validateToPath` rejects with "not absolute".
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: "Downloads/welcome.pdf",
+        conflictPolicy: "fail",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("other");
+      expect(result.error.message).toBe("toPath validation: not absolute");
+    }
+    // The gate's fs.stat MUST NOT have been called — proves the gate
+    // sits AFTER validateToPath.
+    expect(statSpy).not.toHaveBeenCalled();
+    // And no registry insert either.
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  // §2.6 (b) — gate runs BEFORE the concurrency guard / registry insert.
+  // Per advisor: pin the contract (no work past the gate) via observable
+  // side effect — `registry.set` MUST NOT have been called on a conflict
+  // return.
+  it("§2.6 gate runs BEFORE the registry insert: conflict envelope leaves the registry untouched", async () => {
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 1024,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    const setSpy = vi.fn();
+    const registry = createDownloadRegistry();
+    const wrappedRegistry: typeof registry = {
+      ...registry,
+      set: (entry) => {
+        setSpy(entry);
+        registry.set(entry);
+      },
+    };
+    const downloadFile = vi.fn();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => makeFakeClient({ downloadFile }),
+        registry: wrappedRegistry,
+        fs: fakeFs,
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "fail",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("conflict");
+    }
+    // No registry insert — gate returns BEFORE the concurrency guard
+    // and registry insert at files-download.ts:~575.
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(registry.size()).toBe(0);
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  // §2.3 — Resume-of-self carve-out (per design.md Decision 4).
+  // Pre-seed the registry with `targetPath === toPath` and
+  // `bytesDownloaded > 0`. Even though a partial file exists at toPath
+  // and the policy is `"fail"`, the gate MUST be skipped — the file
+  // belongs to the registry's own in-flight job. The concurrency guard
+  // at the next step rejects this case as a duplicate dispatch (today's
+  // observable behavior); the carve-out's load-bearing role lands when
+  // `migrate-download-registry-to-sqlite` makes restart-after-pause
+  // flows reachable.
+  it("§2.3 resume-of-self carve-out: registry entry with matching targetPath + bytesDownloaded>0 skips the gate", async () => {
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 1024,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    const registry = createDownloadRegistry();
+    // Pre-seed: an in-flight job whose targetPath is exactly TO_PATH and
+    // has accumulated 1024 bytes. The partial file at TO_PATH is "ours".
+    registry.set({
+      downloadJobId: "in-flight",
+      datasourceId: "ds-1",
+      sourcePath: "/welcome.pdf",
+      targetPath: TO_PATH,
+      bytesDownloaded: 1024,
+      contentLength: 4096,
+      startedAt: 100,
+      abortController: new AbortController(),
+    });
+    const downloadFile = vi.fn();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => makeFakeClient({ downloadFile }),
+        registry,
+        fs: fakeFs,
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "fail",
+      },
+      ctx,
+    );
+
+    // Gate is skipped — the response is the concurrency guard's
+    // duplicate-dispatch rejection, NOT the conflict envelope.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("other");
+      expect(result.error.message).toBe(
+        "download already in progress for this entry",
+      );
+    }
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  // Phase B's deliberate `"keep-both"` stub — surfaces a coded error
+  // rather than silently truncating. Phase C replaces this with the
+  // suffix-loop implementation.
+  it('Phase B stub: "keep-both" policy + existing file returns a not-yet-implemented error envelope (no engine call, no registry insert)', async () => {
+    const fakeFs = makeFakeFsWithExistingFile({
+      toPath: TO_PATH,
+      size: 1024,
+      mtimeMs: EXISTING_MTIME_MS,
+    });
+    const registry = createDownloadRegistry();
+    const downloadFile = vi.fn();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => makeFakeClient({ downloadFile }),
+        registry,
+        fs: fakeFs,
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/welcome.pdf",
+        toPath: TO_PATH,
+        conflictPolicy: "keep-both",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("other");
+      expect(result.error.message).toBe(
+        "keep-both policy not yet implemented (Phase C)",
+      );
+      expect(result.error.retryable).toBe(false);
+    }
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(registry.size()).toBe(0);
   });
 });
