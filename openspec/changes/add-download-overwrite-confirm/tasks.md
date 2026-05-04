@@ -1,9 +1,9 @@
 ## 1. IPC contracts
 
-- [ ] 1.1 Extend `FilesCommandError` in `packages/ipc-contracts/src/files.ts` with optional `existingSize?: number` and `existingModifiedAt?: string` (ISO 8601). Update JSDoc to note that the download conflict gate populates both, and rename callers MAY populate them but are not required to.
-- [ ] 1.2 Extend `FilesDownloadRequest` (in the same file) with `conflictPolicy?: "fail" | "overwrite" | "keep-both"`. Document the default-to-`"fail"` semantics inline.
-- [ ] 1.3 Add type-level test (`packages/ipc-contracts/src/__tests__/files.test-d.ts` or sibling) asserting (a) the new fields are optional on `FilesCommandError`; (b) `FilesDownloadRequest.conflictPolicy` accepts the three string literals and rejects others.
-- [ ] 1.4 If `packages/ipc-contracts/src/sync-service/commands.ts` carries a sibling sync-service-side request literal for `files:download`, propagate the new optional `conflictPolicy` field through it as well. Skim the file and add the field if present; skip if downloads share the desktop-IPC literal directly.
+- [x] 1.1 Extend `FilesCommandError` in `packages/ipc-contracts/src/files.ts` with optional `existingSize?: number` and `existingModifiedAt?: string` (ISO 8601). Update JSDoc to note that the download conflict gate populates both, and rename callers MAY populate them but are not required to.
+- [x] 1.2 Extend `FilesDownloadRequest` (in the same file) with `conflictPolicy?: "fail" | "overwrite" | "keep-both"`. Document the default-to-`"fail"` semantics inline.
+- [x] 1.3 Add type-level test (`packages/ipc-contracts/src/__tests__/files.test-d.ts` or sibling) asserting (a) the new fields are optional on `FilesCommandError`; (b) `FilesDownloadRequest.conflictPolicy` accepts the three string literals and rejects others.
+- [x] 1.4 If `packages/ipc-contracts/src/sync-service/commands.ts` carries a sibling sync-service-side request literal for `files:download`, propagate the new optional `conflictPolicy` field through it as well. Skim the file and add the field if present; skip if downloads share the desktop-IPC literal directly.
 
 ## 2. fs-sync-service handler — gate insertion
 
