@@ -66,6 +66,19 @@ export interface FilesErrorEnvelope {
   // shape mirrors retryAfterMs (NOT a discriminated union) so callers can
   // read the field without re-narrowing on tag.
   existingPath?: string;
+  // Populated by the `files:download` conflict gate (per
+  // add-download-overwrite-confirm design.md Decision 3) from the same
+  // `fs.stat(toPath)` call that detects existence — `stats.size` for
+  // `existingSize`, `stats.mtime.toISOString()` for `existingModifiedAt`.
+  // Both are flat-optional and may travel together or separately; the
+  // renderer's RenameConflictDialog renders the hint block when at least
+  // one is present and omits it when both are absent. Rename callers MAY
+  // populate either field if the strategy already has the data on hand
+  // (Drive / OneDrive metadata sometimes does), but are NOT required to —
+  // the existing rename callsites continue to work unchanged with both
+  // fields absent.
+  existingSize?: number;
+  existingModifiedAt?: string;
 }
 
 export type FilesEnvelope<T> =
@@ -227,6 +240,17 @@ export interface FilesDownloadRequest {
   // could fall back to a "saved-to-mock-path" stub; that fallback no
   // longer exists.
   toPath: string;
+  // Per add-download-overwrite-confirm design.md Decision 1. The wire
+  // type is OPTIONAL with default-to-`"fail"` semantics enforced by the
+  // service handler — a request that omits `conflictPolicy` is treated
+  // as `"fail"`, which surfaces a `tag: "conflict"` envelope when a file
+  // already exists at `toPath`. The renderer's download orchestrator
+  // sets the field explicitly on every dispatch (initial = `"fail"`;
+  // re-dispatch after the conflict dialog = the user's choice). Reuses
+  // the rename `conflictPolicy` enum verbatim — distinct from upload's
+  // (`"overwrite" | "duplicate" | "skip"`) — so the codebase keeps two
+  // conflict-policy vocabularies, not three.
+  conflictPolicy?: "fail" | "overwrite" | "keep-both";
 }
 // Successful download payload (per add-engine-rename-download §2.12:
 // migrated from the legacy bare `{ savedPath }` shape into the tagged

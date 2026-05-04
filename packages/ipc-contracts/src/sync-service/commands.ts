@@ -446,6 +446,16 @@ export type { FilesErrorTag };
  * ConflictResolutionDialog can prompt the user with the exact path.
  * Flat-optional shape mirrors `retryAfterMs` (NOT a discriminated
  * union) so callers can read the field without re-narrowing on tag.
+ *
+ * `existingSize` + `existingModifiedAt` are populated by the
+ * `files:download` conflict gate (per add-download-overwrite-confirm
+ * design.md Decision 3) from the same `fs.stat(toPath)` call that
+ * detects existence — `stats.size` and `stats.mtime.toISOString()`
+ * respectively. Both are flat-optional. Rename callers MAY populate
+ * either field if the strategy already has the data on hand, but are
+ * NOT required to — existing rename callsites work unchanged with both
+ * absent. The renderer's RenameConflictDialog renders the hint block
+ * when at least one is present and omits it when both are absent.
  */
 export interface FilesCommandErrorShape extends ErrorShape {
   readonly tag: FilesErrorTag;
@@ -453,6 +463,8 @@ export interface FilesCommandErrorShape extends ErrorShape {
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
   readonly existingPath?: string;
+  readonly existingSize?: number;
+  readonly existingModifiedAt?: string;
 }
 
 // Canonical `FilesRemoveEntryResult` lives in `../files.ts`. Re-exported
@@ -561,12 +573,21 @@ interface FilesRenameCommand {
 // integrity-failed) under `tag: "other"` per spec.md line 73 / 115; the
 // distinct `tag: "cancelled"` exists for user-driven cancels per spec
 // line 78.
+// `conflictPolicy` was added to the `files:download` wire shape by
+// `add-download-overwrite-confirm` (design.md Decision 1). Optional with
+// default-to-`"fail"` semantics enforced by the handler — a request that
+// omits the field is treated as `"fail"`, which gates on the destination's
+// existence and returns a `tag: "conflict"` envelope (with `existingPath`,
+// `existingSize`, `existingModifiedAt` hints) when the file is present.
+// Reuses the rename `conflictPolicy` enum verbatim; distinct from upload's
+// `ConflictPolicy` (`"overwrite" | "duplicate" | "skip"`).
 interface FilesDownloadCommand {
   readonly command: "files:download";
   readonly params: {
     readonly datasourceId: string;
     readonly path: string;
     readonly toPath: string;
+    readonly conflictPolicy?: "fail" | "overwrite" | "keep-both";
   };
   readonly result: {
     readonly savedPath: string;
