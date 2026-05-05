@@ -14,7 +14,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { SYNC_CHANNELS } from "./channels.js";
 
 describe("sync-service-desktop SYNC_CHANNELS constants", () => {
-  it("exposes exactly the expected keys (post-onboarding + iter-5 cancelDownload)", () => {
+  it("exposes exactly the expected keys (post-onboarding + iter-5 cancelDownload + migrate-upload-orchestration-out-of-engine cancelUpload + uploadsListActive)", () => {
     expect(Object.keys(SYNC_CHANNELS).sort()).toEqual(
       [
         "authenticateStart",
@@ -22,6 +22,7 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
         "authenticateCancel",
         "cancelDownload",
         "cancelJob",
+        "cancelUpload",
         "deleteCredentials",
         "enqueueMirror",
         "enqueueUpload",
@@ -33,6 +34,7 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
         "listJobs",
         "setConfig",
         "setRetryPolicy",
+        "uploadsListActive",
       ].sort(),
     );
   });
@@ -55,6 +57,8 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
     expect(SYNC_CHANNELS.enqueueMirror).toBe("sync:enqueue-mirror");
     expect(SYNC_CHANNELS.cancelJob).toBe("sync:cancel-job");
     expect(SYNC_CHANNELS.cancelDownload).toBe("sync:cancel-download");
+    expect(SYNC_CHANNELS.cancelUpload).toBe("sync:cancel-upload");
+    expect(SYNC_CHANNELS.uploadsListActive).toBe("uploads:list-active");
     expect(SYNC_CHANNELS.authenticateStart).toBe("sync:authenticate-start");
     expect(SYNC_CHANNELS.authenticateComplete).toBe(
       "sync:authenticate-complete",
@@ -85,6 +89,12 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
     >();
     expectTypeOf<typeof SYNC_CHANNELS.cancelDownload>().toEqualTypeOf<
       "sync:cancel-download"
+    >();
+    expectTypeOf<typeof SYNC_CHANNELS.cancelUpload>().toEqualTypeOf<
+      "sync:cancel-upload"
+    >();
+    expectTypeOf<typeof SYNC_CHANNELS.uploadsListActive>().toEqualTypeOf<
+      "uploads:list-active"
     >();
     expectTypeOf<typeof SYNC_CHANNELS.authenticateStart>().toEqualTypeOf<
       "sync:authenticate-start"

@@ -23,6 +23,21 @@ export const SYNC_CHANNELS = {
   // bridge was missing pre-iter-5, so the toaster's Cancel button hit the
   // upload-job cancel by name collision instead of routing here.
   cancelDownload: "sync:cancel-download",
+  // migrate-upload-orchestration-out-of-engine §7.3 / §7.9 — the desktop
+  // renderer-facing bridge for the new `sync:cancel-upload` service
+  // command. Mirrors `cancelDownload`: idempotent, infallible at the
+  // service boundary (an unknown `uploadJobId` resolves
+  // `{ cancelled: false }` rather than erroring). `uploadJobId` here is
+  // the service-minted business-domain key, distinct from the legacy
+  // `cancelJob({ jobId })` (which targeted the queue-based upload job
+  // id and does not exist on the new direct-RPC `files:upload` path).
+  cancelUpload: "sync:cancel-upload",
+  // migrate-upload-orchestration-out-of-engine §7.2 / §7.9 — the
+  // desktop renderer-facing bridge for the new `uploads:list-active`
+  // service command. Mirrors `downloads:list-active`: returns the live
+  // snapshot of in-flight uploads from the service's `UploadRegistry`
+  // for renderer hydrate-on-connect (Sonner toast strip).
+  uploadsListActive: "uploads:list-active",
   // The retired single-shot `sync:authenticate` channel was removed by
   // `implement-datasource-onboarding` per design.md Decision 9. The
   // three-command split below replaces it.

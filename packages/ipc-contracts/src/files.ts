@@ -259,6 +259,18 @@ export interface FilesUploadRequest {
   conflictPolicy: ConflictPolicy;
 }
 export interface FilesUploadValue {
+  /**
+   * Service-minted upload job identifier. Per
+   * `migrate-upload-orchestration-out-of-engine` the field is the canonical
+   * `uploadJobId` (parallel to `downloadJobId` in `FilesDownloadValue`):
+   * the renderer keys its in-flight upload toasts on this id and uses it
+   * for cancellation via `sync:cancel-upload`. The legacy queue model
+   * specified this field but never populated it with the service-level
+   * key — it surfaces the engine-minted `transactionId` in the older
+   * `sync:enqueue-upload` flow. After this migration, `files:upload` is
+   * a direct RPC and `jobId` here is always the service-minted
+   * `uploadJobId`.
+   */
   jobId: string;
 }
 export type FilesUploadResponse = FilesEnvelope<FilesUploadValue>;

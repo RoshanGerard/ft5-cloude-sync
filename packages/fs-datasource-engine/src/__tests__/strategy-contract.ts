@@ -104,6 +104,57 @@ export interface StrategyContractFixture {
    * upload flow issues. */
   primeUploadOk(opts: { parentPath: string }): void;
 
+  /**
+   * Whether the provider's strategy maintains a path-handle LRU cache
+   * (`pathHandleCache`). Drive and OneDrive do (`true`); S3 does not
+   * (`false`). The shared upload contract scenario asserts LRU
+   * population post-resolve only when this flag is `true`. The cache
+   * value shape differs per strategy (Drive: `{ fileId, ambiguousSiblings? }`,
+   * OneDrive: `string`), so the assertion only checks the cache contains
+   * a value for the resolved entry's path — not a particular value
+   * shape (per migrate-upload-orchestration-out-of-engine Decision 4).
+   */
+  hasPathHandleCache: boolean;
+
+  /**
+   * Prime an upload that allocates provider-side resumable state, pushes
+   * a small amount of progress, then awaits the supplied `controller.signal`
+   * for cancellation. On abort, the strategy SHALL:
+   *   - reject with `DatasourceError { tag: "cancelled", retryable: false }`,
+   *   - issue provider-native cleanup against a SEPARATE signal (NOT the
+   *     user's `controller.signal`).
+   * Drive and OneDrive issue `DELETE <sessionUrl>` against
+   * `AbortSignal.timeout(5000)`; S3 invokes `upload.abort()` which uses
+   * the SDK's own internal controller.
+   *
+   * The fixture wires its mock so the strategy's underlying SDK / fetch
+   * call awaits the supplied `controller.signal` before pushing
+   * completion bytes — i.e., the strategy's progress reaches `firstChunkBytes`
+   * (when supplied) and then blocks until cancel.
+   */
+  primeUploadCancellable(opts: {
+    parentPath: string;
+    controller: AbortController;
+    firstChunkBytes?: number;
+  }): void;
+
+  /**
+   * Diagnostic hook for the cancel-upload contract scenario: returns
+   * `true` if the strategy issued a provider-native cleanup that did NOT
+   * use the supplied user signal. For Drive/OneDrive, that means a
+   * `DELETE` fetch on the session URL with a fresh AbortController; for
+   * S3, that means `upload.abort()` (the SDK's own internal cancel —
+   * no user-signal coupling required). The fixture inspects whatever
+   * mock state captures the cleanup attempt and returns the boolean
+   * verdict.
+   *
+   * The hook is invoked AFTER the user signal aborts and the strategy's
+   * promise rejects with `cancelled`.
+   */
+  observedFreshCancelCleanup(opts: {
+    userSignal: AbortSignal;
+  }): boolean;
+
   /** Prime a successful delete. The scenario invokes
    * `client.deleteFile({ kind: "path", path: targetPath })`. */
   primeDeleteOk(targetPath: string): void;
@@ -234,6 +285,24 @@ export function runStrategyContractSuite<T extends DatasourceType>(
   }
 
   describe(`strategy contract suite — ${providerName}`, () => {
+    it("DatasourceClient<T> interface is shrunk: no createFile, no cancelUpload (per migrate-upload-orchestration-out-of-engine)", () => {
+      // The buildClient param's return type already pins each concrete
+      // strategy as `DatasourceClient<T>` — that is the implicit
+      // assignability check. This explicit type-level assertion
+      // additionally verifies the shrunk interface: `createFile` and
+      // `cancelUpload` MUST NOT be keys of `DatasourceClient<T>` after
+      // this migration. A regression that re-introduces either method
+      // (or its shape on a strategy class without a corresponding
+      // interface entry) trips this assertion at typecheck.
+      type ClientKeys = keyof DatasourceClient<DatasourceType>;
+      type HasCreateFile = "createFile" extends ClientKeys ? true : false;
+      type HasCancelUpload = "cancelUpload" extends ClientKeys ? true : false;
+      const hasCreateFile: HasCreateFile = false;
+      const hasCancelUpload: HasCancelUpload = false;
+      expect(hasCreateFile).toBe(false);
+      expect(hasCancelUpload).toBe(false);
+    });
+
     it("listDirectory(root) returns entries carrying both path AND handle with correct kind", async () => {
       fixture.resetMock();
       fixture.primeListOk({ rootPath: "/" });
@@ -280,26 +349,123 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       expect(Array.isArray(handleEntries)).toBe(true);
     });
 
-    it("uploadFile(parent, { path }) resolves with the entry and emits NO upload events on the engine bus (post-migrate-upload-orchestration-out-of-engine)", async () => {
+    it("uploadFile(parent, { path }) resolves with the entry, emits NO upload events on the engine bus, drives onProgress monotonically, and (where applicable) populates the strategy's path-handle LRU", async () => {
       fixture.resetMock();
       fixture.primeUploadOk({ parentPath: "/" });
       const { client, events } = makeHarness();
       const localPath = fixture.buildLocalFile();
+
+      // onProgress invocations are captured for the per-call assertion
+      // below — at least one invocation, monotonically non-decreasing
+      // `loaded` values, final `loaded === total` on success per
+      // migrate-upload-orchestration-out-of-engine spec scenario
+      // "onProgress is invoked with monotonic loaded values".
+      const progressCalls: Array<{ loaded: number; total: number }> = [];
+      const onProgress = (loaded: number, total: number): void => {
+        progressCalls.push({ loaded, total });
+      };
+
       const entry = await client.uploadFile(
         { kind: "path", path: "/" },
         { path: localPath },
+        { onProgress },
       );
       expect(entry).toBeDefined();
       expect(typeof entry.path).toBe("string");
       expect(typeof entry.handle).toBe("string");
-      const names = events.map((e) => e.event);
+
       // Per migrate-upload-orchestration-out-of-engine, the engine bus
       // observes ZERO upload-related events; the consumer (fs-sync handler)
       // emits these on `sync:event-stream` keyed by `uploadJobId`.
+      const names = events.map((e) => e.event);
       expect(names).not.toContain("uploading");
       expect(names).not.toContain("file-created");
       expect(names).not.toContain("upload-failed");
       expect(names).not.toContain("upload-cancelled");
+
+      // onProgress contract: at least one invocation, non-decreasing
+      // `loaded`, and `loaded === total` at the final call when the
+      // strategy advertised a non-zero `total`. The base allows
+      // `total === 0` for size-unknown sources (e.g., zero-byte files
+      // or providers that don't declare upfront content length); in
+      // those cases the final `loaded` matches `total === 0` trivially.
+      expect(progressCalls.length).toBeGreaterThanOrEqual(1);
+      for (let i = 1; i < progressCalls.length; i++) {
+        expect(progressCalls[i]!.loaded).toBeGreaterThanOrEqual(
+          progressCalls[i - 1]!.loaded,
+        );
+      }
+      const final = progressCalls[progressCalls.length - 1]!;
+      expect(final.loaded).toBe(final.total);
+
+      // LRU population is internal post-migration (Decision 4) — Drive
+      // and OneDrive's strategies set `pathHandleCache.set(entry.path,
+      // entry.handle)` inside `doUploadFileImpl` before returning. S3
+      // has no path-handle cache. The fixture's `hasPathHandleCache`
+      // flag selects the assertion.
+      if (fixture.hasPathHandleCache) {
+        // Cache shape differs between Drive (`{ fileId, ambiguousSiblings? }`)
+        // and OneDrive (`string`), so we only assert presence — not a
+        // particular value shape.
+        const cache = (
+          client as unknown as { pathHandleCache?: Map<string, unknown> }
+        ).pathHandleCache;
+        expect(cache).toBeDefined();
+        expect(cache!.has(entry.path)).toBe(true);
+      }
+    });
+
+    it("uploadFile honours options.signal: aborting mid-upload rejects with cancelled, issues fresh-signal cleanup (Decision 3)", async () => {
+      const controller = new AbortController();
+      fixture.resetMock();
+      fixture.primeUploadCancellable({
+        parentPath: "/",
+        controller,
+        firstChunkBytes: 256,
+      });
+      const { client, events } = makeHarness();
+      const localPath = fixture.buildLocalFile();
+
+      const inflight = client.uploadFile(
+        { kind: "path", path: "/" },
+        { path: localPath },
+        { signal: controller.signal },
+      );
+
+      // Give the strategy a microtask tick to allocate provider-side
+      // resumable state (Drive/OneDrive: session URL acquired; S3:
+      // CreateMultipartUpload in flight) before we abort. Each
+      // fixture's `primeUploadCancellable` is responsible for keeping
+      // the upload pending until the controller fires, so the abort
+      // race is deterministic.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      controller.abort();
+
+      // Strategy SHALL reject with the canonical `cancelled` tag —
+      // not a provider-native AbortError — per
+      // migrate-upload-orchestration-out-of-engine spec scenario
+      // "signal forwarded to provider call unblocks promptly on abort".
+      await expect(inflight).rejects.toSatisfy(
+        (e: unknown) =>
+          e instanceof DatasourceError && e.tag === "cancelled",
+      );
+
+      // No upload events on the engine bus — cancellation is consumer-
+      // visible only via the `sync:event-stream` channel which the
+      // engine bus is not (and never was) wired to in this test.
+      const names = events.map((e) => e.event);
+      expect(names).not.toContain("upload-cancelled");
+      expect(names).not.toContain("upload-failed");
+
+      // Provider-native cleanup SHALL run on a separate signal (Decision
+      // 3) — fresh AbortController.timeout(5000) for Drive/OneDrive's
+      // DELETE, the SDK's internal controller for S3's
+      // `upload.abort()`. The fixture's introspection hook returns
+      // `true` when it observed cleanup that did NOT couple to the
+      // user's signal.
+      expect(
+        fixture.observedFreshCancelCleanup({ userSignal: controller.signal }),
+      ).toBe(true);
     });
 
     it("deleteFile emits `deleted` and resolves to void", async () => {

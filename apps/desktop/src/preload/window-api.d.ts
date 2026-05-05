@@ -25,6 +25,12 @@ import type {
   FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
+// `UploadJob` re-export from the wire subpath is not needed here yet —
+// `window.api.uploads.listActive` returns `SyncUploadsListActiveResponse`
+// (which carries a `readonly UploadJob[]` field via the sync-service-
+// desktop re-export). Chunk F adds an `onActiveUploadsHydrate(callback)`
+// binding parallel to `onActiveDownloadsHydrate`; that is when
+// `UploadJob` joins this import for the callback's parameter type.
 import type { DownloadJob } from "@ft5/ipc-contracts/sync-service";
 import type {
   SyncAuthenticateCancelRequest,
@@ -37,6 +43,9 @@ import type {
   SyncCancelDownloadResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
+  SyncCancelUploadRequest,
+  SyncCancelUploadResponse,
+  SyncUploadsListActiveResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
   SyncEnqueueUploadRequest,
@@ -151,6 +160,10 @@ declare global {
         cancelDownload(
           req: SyncCancelDownloadRequest,
         ): Promise<SyncCancelDownloadResponse>;
+        // migrate-upload-orchestration-out-of-engine §7.3 / §7.9.
+        cancelUpload(
+          req: SyncCancelUploadRequest,
+        ): Promise<SyncCancelUploadResponse>;
         authenticateStart(
           req: SyncAuthenticateStartRequest,
         ): Promise<SyncAuthenticateStartResponse>;
@@ -169,6 +182,11 @@ declare global {
           req: SyncSetRetryPolicyRequest,
         ): Promise<SyncSetRetryPolicyResponse>;
         onEvent(callback: (event: SyncEvent) => void): () => void;
+      };
+      // migrate-upload-orchestration-out-of-engine §7.2 / §7.9 —
+      // renderer-facing namespace for the new `uploads:*` commands.
+      uploads: {
+        listActive(): Promise<SyncUploadsListActiveResponse>;
       };
       webUtils: {
         getPathForFile(file: File): string;

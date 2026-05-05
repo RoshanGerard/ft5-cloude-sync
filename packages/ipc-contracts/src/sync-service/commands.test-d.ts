@@ -26,7 +26,10 @@ describe("sync-service command contract", () => {
     // change. `downloads:list-active` was added by
     // `add-engine-rename-download` (tasks §3.1/§3.2) — it carries the
     // service-side download registry snapshot the renderer hydrates on
-    // first connect.
+    // first connect. `uploads:list-active` and `sync:cancel-upload` were
+    // added by `migrate-upload-orchestration-out-of-engine` (tasks §7.2 +
+    // §7.3) — they mirror the download equivalents on the upload side
+    // now that orchestration moved out of the engine.
     type Expected =
       | "sync:enqueue-upload"
       | "sync:enqueue-mirror"
@@ -51,7 +54,9 @@ describe("sync-service command contract", () => {
       | "files:rename"
       | "files:download"
       | "sync:cancel-download"
-      | "downloads:list-active";
+      | "downloads:list-active"
+      | "uploads:list-active"
+      | "sync:cancel-upload";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });
 

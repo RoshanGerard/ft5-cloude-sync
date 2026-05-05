@@ -43,6 +43,9 @@ export type {
   SyncGetConfigError,
   SyncSetConfigError,
   UnknownCommandErrorShape,
+  UploadJob,
+  UploadsListActiveRequest,
+  UploadsListActiveResponse,
   ValidationErrorShape,
 } from "./commands.js";
 export { COMMAND_NAMES } from "./commands.js";

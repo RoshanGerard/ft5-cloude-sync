@@ -31,6 +31,10 @@ import type {
   SyncCancelJobResponse,
   SyncCancelDownloadRequest,
   SyncCancelDownloadResponse,
+  SyncCancelUploadRequest,
+  SyncCancelUploadResponse,
+  SyncUploadsListActiveRequest,
+  SyncUploadsListActiveResponse,
   SyncGetStatusRequest,
   SyncGetStatusResponse,
   SyncGetRetryPolicyRequest,
@@ -38,6 +42,7 @@ import type {
   SyncSetRetryPolicyRequest,
   SyncSetRetryPolicyResponse,
 } from "./requests.js";
+import type { UploadJob } from "../sync-service/commands.js";
 
 describe("sync-service-desktop listJobs request/response", () => {
   it("listJobs request carries optional filter", () => {
@@ -164,6 +169,60 @@ describe("sync-service-desktop cancelDownload request/response (iter-5 §12.6)",
       SyncCancelJobRequest extends SyncCancelDownloadRequest ? true : false;
     expectTypeOf<DownloadAssignableToJob>().toEqualTypeOf<false>();
     expectTypeOf<JobAssignableToDownload>().toEqualTypeOf<false>();
+  });
+});
+
+describe("sync-service-desktop cancelUpload request/response (migrate-upload-orchestration-out-of-engine §7.3)", () => {
+  it("cancelUpload request is { uploadJobId }", () => {
+    expectTypeOf<SyncCancelUploadRequest>().toEqualTypeOf<{
+      readonly uploadJobId: string;
+    }>();
+  });
+
+  it("cancelUpload response is flat { cancelled: boolean } (idempotent — never errors)", () => {
+    expectTypeOf<SyncCancelUploadResponse>().toEqualTypeOf<{
+      readonly cancelled: boolean;
+    }>();
+  });
+
+  it("cancelUpload request is NOT structurally compatible with cancelJob (no { jobId } field)", () => {
+    // Same regression-guard pattern as cancelDownload: a renderer caller
+    // satisfying `SyncCancelJobRequest` with `{ uploadJobId }` (or vice
+    // versa) MUST not type-check. The cancel-upload path targets the
+    // service-minted business-domain id (`uploadJobId`); the legacy
+    // `cancelJob` path targets the queue-based job id (`jobId`).
+    type UploadAssignableToJob =
+      SyncCancelUploadRequest extends SyncCancelJobRequest ? true : false;
+    type JobAssignableToUpload =
+      SyncCancelJobRequest extends SyncCancelUploadRequest ? true : false;
+    expectTypeOf<UploadAssignableToJob>().toEqualTypeOf<false>();
+    expectTypeOf<JobAssignableToUpload>().toEqualTypeOf<false>();
+  });
+
+  it("cancelUpload request is NOT structurally compatible with cancelDownload", () => {
+    // The two sibling shapes differ only by id-field name; the renderer
+    // toaster routes upload Cancel and download Cancel to distinct
+    // bridges, and a structural-compatibility loophole would invite the
+    // same kind of name-collision bug iter-5 (add-download-resilience
+    // §12.6) closed for cancelDownload-vs-cancelJob.
+    type UploadAssignableToDownload =
+      SyncCancelUploadRequest extends SyncCancelDownloadRequest ? true : false;
+    type DownloadAssignableToUpload =
+      SyncCancelDownloadRequest extends SyncCancelUploadRequest ? true : false;
+    expectTypeOf<UploadAssignableToDownload>().toEqualTypeOf<false>();
+    expectTypeOf<DownloadAssignableToUpload>().toEqualTypeOf<false>();
+  });
+});
+
+describe("sync-service-desktop uploadsListActive request/response (migrate-upload-orchestration-out-of-engine §7.2)", () => {
+  it("uploadsListActive request is void (no params)", () => {
+    expectTypeOf<SyncUploadsListActiveRequest>().toEqualTypeOf<void>();
+  });
+
+  it("uploadsListActive response is flat { jobs: readonly UploadJob[] }", () => {
+    expectTypeOf<SyncUploadsListActiveResponse>().toEqualTypeOf<{
+      readonly jobs: readonly UploadJob[];
+    }>();
   });
 });
 

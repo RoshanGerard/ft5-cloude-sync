@@ -36,6 +36,7 @@ import type {
   SyncDeleteCredentialsError,
   SyncGetConfigError,
   SyncSetConfigError,
+  UploadJob,
 } from "../sync-service/commands.js";
 
 // Re-export the wire-safe descriptors so renderer + preload can import
@@ -133,6 +134,58 @@ export interface SyncCancelDownloadRequest {
 
 export interface SyncCancelDownloadResponse {
   readonly cancelled: boolean;
+}
+
+// ---- cancelUpload (INFALLIBLE, idempotent) ------------------------------
+//
+// migrate-upload-orchestration-out-of-engine §7.3 + fs-sync-service spec
+// "sync:cancel-upload RPC". Renderer-facing bridge over the new
+// `sync:cancel-upload` service command; mirrors `cancelDownload` exactly:
+// idempotent on the service side (an unknown `uploadJobId` resolves to
+// `{ cancelled: false }` rather than erroring), so the wire shape is
+// flat — no fallible `{ cancelled } | { error }` discrimination.
+//
+// `uploadJobId` is the service-minted business-domain key (parallel to
+// `downloadJobId`). It is distinct from `cancelJob({ jobId })`: the
+// legacy queue-based `sync:enqueue-upload` route returned a queue
+// `jobId` you cancelled via `cancelJob`, while the new direct-RPC
+// `files:upload` route returns an `uploadJobId` you cancel here. The
+// dedicated request type closes the type-level loophole — a future
+// renderer caller cannot satisfy `SyncCancelJobRequest` with an
+// `uploadJobId` shape or vice versa.
+
+export interface SyncCancelUploadRequest {
+  readonly uploadJobId: string;
+}
+
+export interface SyncCancelUploadResponse {
+  readonly cancelled: boolean;
+}
+
+// ---- uploadsListActive (INFALLIBLE, returns snapshot) -------------------
+//
+// migrate-upload-orchestration-out-of-engine §7.2 + fs-sync-service spec
+// "uploads:list-active RPC". Renderer-facing bridge over the
+// `uploads:list-active` service command; mirrors `downloads:list-active`.
+// Returns the live snapshot of in-flight uploads from the service's
+// in-memory `UploadRegistry` — used for hydrate-on-connect (Sonner
+// toast strip re-mount when the renderer reconnects).
+//
+// `abortController` is intentionally absent from the wire `UploadJob`
+// shape — it is process-local state on the registry entry that the
+// service strips before serialization. Cancellation goes through
+// `sync:cancel-upload` keyed by `uploadJobId`, not via a wire-level
+// abort controller.
+//
+// The `UploadJob` type itself lives in the wire-side `commands.ts`
+// (consistent with `DownloadJob`); callers reach for it through the
+// renderer-facing barrel (`@ft5/ipc-contracts/sync-service-desktop`)
+// re-export below in `index.ts`.
+
+export type SyncUploadsListActiveRequest = void;
+
+export interface SyncUploadsListActiveResponse {
+  readonly jobs: readonly UploadJob[];
 }
 
 // ---- authenticateStart / authenticateComplete / authenticateCancel -------

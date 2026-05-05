@@ -82,7 +82,7 @@ describe("preload sync surface", () => {
     vi.clearAllMocks();
   });
 
-  it("exposes a sync object with exactly 13 members (12 commands + onEvent), no legacy `authenticate`", async () => {
+  it("exposes a sync object with exactly 14 members (13 commands + onEvent), no legacy `authenticate`", async () => {
     const exposed = await loadExposed();
 
     expect(typeof exposed.sync).toBe("object");
@@ -93,6 +93,10 @@ describe("preload sync surface", () => {
         "authenticateStart",
         "cancelDownload",
         "cancelJob",
+        // migrate-upload-orchestration-out-of-engine §7.3 / §7.9 —
+        // dedicated cancel surface for the new `files:upload` direct
+        // RPC, keyed by service-minted `uploadJobId`.
+        "cancelUpload",
         "enqueueMirror",
         "enqueueUpload",
         "getJob",

@@ -286,7 +286,9 @@ describe("CommandMap exhaustive — new commands present, retired commands gone"
       | "files:rename"
       | "files:download"
       | "sync:cancel-download"
-      | "downloads:list-active";
+      | "downloads:list-active"
+      | "uploads:list-active"
+      | "sync:cancel-upload";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });
 

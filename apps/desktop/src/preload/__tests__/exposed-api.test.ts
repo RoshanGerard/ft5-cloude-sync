@@ -96,6 +96,10 @@ describe("preload exposed api", () => {
       "ping",
       "preferences",
       "sync",
+      // migrate-upload-orchestration-out-of-engine §7.9 — new
+      // top-level `uploads` namespace for the renderer-callable
+      // `uploads:list-active` RPC.
+      "uploads",
       "webUtils",
     ]);
     expect(typeof exposed.ping).toBe("function");
@@ -106,6 +110,7 @@ describe("preload exposed api", () => {
     expect(typeof exposed.webUtils).toBe("object");
     expect(typeof exposed.preferences).toBe("object");
     expect(typeof exposed.dialog).toBe("object");
+    expect(typeof exposed.uploads).toBe("object");
   });
 
   it("ping() invokes ipcRenderer.invoke('ping') with no other args and returns its resolved value", async () => {

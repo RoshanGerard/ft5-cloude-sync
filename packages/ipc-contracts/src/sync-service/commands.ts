@@ -649,6 +649,87 @@ interface DownloadsListActiveCommand {
   readonly error: FilesCommandErrorShape;
 }
 
+// ---- uploads:* commands (migrate-upload-orchestration-out-of-engine §7) ---
+//
+// `uploads:list-active` returns the live snapshot of in-flight upload jobs
+// the service is tracking in its `UploadRegistry` (see design.md Decision 6
+// + tasks §10.1). Each `UploadJob` is keyed by the per-job business-domain
+// id (`uploadJobId`) — the registry's reverse-index on
+// `(datasourceId, targetPath)` is internal to the service and never
+// surfaces on the wire.
+//
+// The renderer hydrates its toaster strip on first connect from this
+// snapshot; the live progress feed thereafter arrives through fs-sync's
+// `uploading` / `file-created` / `upload-failed` / `upload-cancelled`
+// events on the `sync:subscribe-events` stream.
+//
+// `abortController` is NOT part of the wire shape — it is process-local
+// state only present on the in-memory registry entry, never serialized
+// out. The wire `UploadJob` mirrors `DownloadJob` exactly minus the
+// upload-vs-download field renames (`bytesUploaded`, `contentLength`).
+
+/**
+ * One in-flight upload job, as observed by the service's
+ * `UploadRegistry`. `bytesUploaded` advances over the job's lifetime;
+ * `contentLength` is `null` until the strategy reports it via
+ * `onProgress(loaded, total)` (the value comes from `fs.stat` of the
+ * local source file at upload start, so it is typically known
+ * immediately and rarely-`null`). `startedAt` is epoch milliseconds
+ * (UTC) and is the response's stable ordering key.
+ */
+export interface UploadJob {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesUploaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
+
+/**
+ * Wire-shape alias for the `uploads:list-active` request. Empty params
+ * — the service returns all live uploads across every datasource. Mirrors
+ * `DownloadsListActiveRequest`.
+ */
+export type UploadsListActiveRequest = Record<string, never>;
+
+/**
+ * Wire-shape alias for the `uploads:list-active` response, expressed
+ * as the standard tagged envelope used across the sync-service surface.
+ * Subscribers branch on `ok` to pick out `value.jobs` vs `error`.
+ */
+export type UploadsListActiveResponse =
+  | { readonly ok: true; readonly value: { readonly jobs: readonly UploadJob[] } }
+  | { readonly ok: false; readonly error: FilesCommandErrorShape };
+
+interface UploadsListActiveCommand {
+  readonly command: "uploads:list-active";
+  readonly params: UploadsListActiveRequest;
+  readonly result: { readonly jobs: readonly UploadJob[] };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `sync:cancel-upload` (migrate-upload-orchestration-out-of-engine §7.3 +
+// fs-sync-service spec "sync:cancel-upload RPC"). Cancels an in-flight
+// `files:upload` identified by its `uploadJobId`. Idempotent — cancel of an
+// unknown / already-terminal job resolves with `cancelled: false` rather
+// than erroring; cancel of a live job invokes
+// `entry.abortController.abort()`, the in-flight strategy rejects with
+// `DatasourceError { tag: "cancelled" }`, the `files:upload` handler emits
+// a single `upload-cancelled` event, and the original `files:upload`
+// promise rejects with the cancelled error. Mirrors `sync:cancel-download`.
+interface SyncCancelUploadCommand {
+  readonly command: "sync:cancel-upload";
+  readonly params: {
+    readonly uploadJobId: string;
+  };
+  readonly result: {
+    readonly cancelled: boolean;
+  };
+  readonly error: ValidationErrorShape;
+}
+
 // ---- Command map + derived helpers ---------------------------------------
 
 export interface CommandMap {
@@ -676,6 +757,8 @@ export interface CommandMap {
   "files:download": FilesDownloadCommand;
   "sync:cancel-download": SyncCancelDownloadCommand;
   "downloads:list-active": DownloadsListActiveCommand;
+  "uploads:list-active": UploadsListActiveCommand;
+  "sync:cancel-upload": SyncCancelUploadCommand;
 }
 
 export type CommandName = keyof CommandMap;
@@ -712,4 +795,6 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "files:download",
   "sync:cancel-download",
   "downloads:list-active",
+  "uploads:list-active",
+  "sync:cancel-upload",
 ] as const;

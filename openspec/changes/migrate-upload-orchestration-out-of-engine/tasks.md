@@ -63,23 +63,23 @@ No blocking prerequisites. `add-engine-rename-download` (the orchestration templ
 
 ## 6. Engine — strategy-contract test
 
-- [ ] 6.1 Update `packages/fs-datasource-engine/src/__tests__/strategy-contract.ts` to remove the `cancelUpload` method check (line ~390+).
-- [ ] 6.2 Update the upload contract scenario (line ~283+) — replace "emits uploading → file-created" assertion with "resolves with the entry; no upload-related bus events fire". Include LRU population assertion.
-- [ ] 6.3 Add a contract scenario asserting AbortSignal-driven cancel: every strategy aborts its underlying provider call when `options.signal` aborts; cleanup HTTP is issued where applicable; reject is `DatasourceError { tag: "cancelled" }`.
-- [ ] 6.4 Remove the `createFile` scenario from the strategy-contract suite (find via grep on `createFile` in the file).
-- [ ] 6.5 Update the `assignable to DatasourceClient<...>` interface check — the interface no longer has `createFile` or `cancelUpload`; the test should reflect the shrunk surface.
+- [x] 6.1 Update `packages/fs-datasource-engine/src/__tests__/strategy-contract.ts` to remove the `cancelUpload` method check (line ~390+). [Chunk B + Chunk C]
+- [x] 6.2 Update the upload contract scenario (line ~283+) — replace "emits uploading → file-created" assertion with "resolves with the entry; no upload-related bus events fire". Include LRU population assertion. [Chunk C]
+- [x] 6.3 Add a contract scenario asserting AbortSignal-driven cancel: every strategy aborts its underlying provider call when `options.signal` aborts; cleanup HTTP is issued where applicable; reject is `DatasourceError { tag: "cancelled" }`. [Chunk C — added `primeUploadCancellable` + `observedFreshCancelCleanup` hooks; Drive/OneDrive verify DELETE on session URL with non-user signal; S3 spies on `Upload.prototype.abort`.]
+- [x] 6.4 Remove the `createFile` scenario from the strategy-contract suite (find via grep on `createFile` in the file). [Chunk A removed; Chunk C verified — only references are in the new shrunk-interface assertion (Task 6.5).]
+- [x] 6.5 Update the `assignable to DatasourceClient<...>` interface check — the interface no longer has `createFile` or `cancelUpload`; the test should reflect the shrunk surface. [Chunk C — added explicit type-level assertion that `keyof DatasourceClient<DatasourceType>` excludes both `createFile` and `cancelUpload`.]
 
 ## 7. IPC contracts
 
-- [ ] 7.1 Update `packages/ipc-contracts/src/files.ts` `FilesUploadValue.jobId` JSDoc — clarify that the field is now the service-minted `uploadJobId` (was specified but unused).
-- [ ] 7.2 Add `UploadsListActiveCommand` to `packages/ipc-contracts/src/sync-service/commands.ts` (mirror `DownloadsListActiveCommand` shape).
-- [ ] 7.3 Add `SyncCancelUploadCommand` to `packages/ipc-contracts/src/sync-service/commands.ts` (mirror `SyncCancelDownloadCommand`: params `{ uploadJobId }`, result `{ cancelled: boolean }`).
-- [ ] 7.4 Remove `SyncEnqueueUploadCommand` from the same file.
-- [ ] 7.5 Update `packages/ipc-contracts/src/datasources.ts` — remove the `DatasourcesUploadProgressEvent` shape and its preload binding declaration.
-- [ ] 7.6 Update `packages/ipc-contracts/src/fs-datasource-engine.ts` — remove the `upload-cancelled` event entry from `CanonicalEventPayloads`; remove the `UploadCancelReason` union; remove the `transactionId` keying from upload-related types.
-- [ ] 7.7 Update `packages/ipc-contracts/src/__tests__/datasources-engine.test-d.ts` — assert the shrunk PayloadMap (no `uploading`, `file-created`-via-upload, `upload-failed`, `upload-cancelled` for upload paths). The `cancelled` tag is RETAINED in `DatasourceErrorTag` for signal-driven uploads.
-- [ ] 7.8 Add type tests for the new `UploadsListActiveCommand` and `SyncCancelUploadCommand` shapes (mirror existing download command type-tests).
-- [ ] 7.9 Update preload `apps/desktop/src/preload/index.ts` (or equivalent): remove `window.api.datasources.onUploadProgress`; add `window.api.uploads.listActive`, the cancel binding, and the upload-event subscription on `sync:event-stream`.
+- [x] 7.1 Update `packages/ipc-contracts/src/files.ts` `FilesUploadValue.jobId` JSDoc — clarify that the field is now the service-minted `uploadJobId` (was specified but unused). [Chunk C]
+- [x] 7.2 Add `UploadsListActiveCommand` to `packages/ipc-contracts/src/sync-service/commands.ts` (mirror `DownloadsListActiveCommand` shape). [Chunk C — added `UploadJob` wire shape, `UploadsListActiveRequest`, `UploadsListActiveResponse`, `UploadsListActiveCommand`, registered in `CommandMap` + `COMMAND_NAMES`.]
+- [x] 7.3 Add `SyncCancelUploadCommand` to `packages/ipc-contracts/src/sync-service/commands.ts` (mirror `SyncCancelDownloadCommand`: params `{ uploadJobId }`, result `{ cancelled: boolean }`). [Chunk C]
+- [ ] 7.4 Remove `SyncEnqueueUploadCommand` from the same file. **[DEFERRED to Chunk E — `sync:enqueue-upload` consumers in `services/fs-sync/` are still live and clean up alongside the executor deletion.]**
+- [ ] 7.5 Update `packages/ipc-contracts/src/datasources.ts` — remove the `DatasourcesUploadProgressEvent` shape and its preload binding declaration. **[DEFERRED to Chunk F — renderer `onUploadProgress` consumer + main-process channel handler are removed in the same chunk.]**
+- [ ] 7.6 Update `packages/ipc-contracts/src/fs-datasource-engine.ts` — remove the `upload-cancelled` event entry from `CanonicalEventPayloads`; remove the `UploadCancelReason` union; remove the `transactionId` keying from upload-related types. **[DEFERRED to Chunk F.]**
+- [ ] 7.7 Update `packages/ipc-contracts/src/__tests__/datasources-engine.test-d.ts` — assert the shrunk PayloadMap (no `uploading`, `file-created`-via-upload, `upload-failed`, `upload-cancelled` for upload paths). The `cancelled` tag is RETAINED in `DatasourceErrorTag` for signal-driven uploads. **[DEFERRED to Chunk F — paired with 7.5/7.6 PayloadMap shrink.]**
+- [x] 7.8 Add type tests for the new `UploadsListActiveCommand` and `SyncCancelUploadCommand` shapes (mirror existing download command type-tests). [Chunk C — new file `packages/ipc-contracts/src/sync-service/__tests__/uploads-commands.test-d.ts` (15 tests); `requests.test-d.ts` adds `cancelUpload` + `uploadsListActive` round-trip assertions; `commands.test-d.ts` + `authenticate-onboarding.test-d.ts` `Expected` unions extended.]
+- [ ] 7.9 Update preload `apps/desktop/src/preload/index.ts` (or equivalent): remove `window.api.datasources.onUploadProgress`; add `window.api.uploads.listActive`, the cancel binding, and the upload-event subscription on `sync:event-stream`. **[Chunk C — additive bindings ADDED: `window.api.uploads.listActive`, `window.api.sync.cancelUpload`, plus `SYNC_CHANNELS.cancelUpload` + `SYNC_CHANNELS.uploadsListActive` channel constants and `SyncCancelUpload*` + `SyncUploadsListActive*` request/response types. Legacy `onUploadProgress` removal + the upload-event subscription on `sync:event-stream` defer to Chunk F where the main-process bridge + renderer consumer rewire happen together.]**
 
 ## 8. Service — `UploadRegistry` module
 

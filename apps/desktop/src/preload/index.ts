@@ -50,6 +50,18 @@ interface DownloadJob {
   readonly contentLength: number | null;
   readonly startedAt: number;
 }
+
+// Note: a local `UploadJob` mirror (parallel to `DownloadJob` above) is
+// NOT declared in this chunk. The additive surface here — `uploads.
+// listActive()` — returns `SyncUploadsListActiveResponse`, which is
+// imported from the renderer-facing barrel
+// `@ft5/ipc-contracts/sync-service-desktop` (the import-boundary test
+// allows that subpath). No callback parameter typed `readonly UploadJob[]`
+// crosses the contextBridge in Chunk C, so the local mirror would be
+// unused. Chunk F adds the one-way upload-hydrate listener — at that
+// point a local `UploadJob` interface (mirroring the `DownloadJob`
+// pattern) gets re-introduced alongside the new
+// `files.onActiveUploadsHydrate` binding.
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -61,6 +73,9 @@ import type {
   SyncCancelDownloadResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
+  SyncCancelUploadRequest,
+  SyncCancelUploadResponse,
+  SyncUploadsListActiveResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
   SyncEnqueueUploadRequest,
@@ -252,6 +267,16 @@ const api = {
       req: SyncCancelDownloadRequest,
     ): Promise<SyncCancelDownloadResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.cancelDownload, req),
+    // migrate-upload-orchestration-out-of-engine §7.3 / §7.9 — renderer
+    // toaster's Cancel button on an in-flight upload routes here, NOT
+    // through `cancelJob` (which targets the legacy queue-based upload
+    // job id) and NOT through `cancelDownload` (different id namespace).
+    // The bridge is a thin pass-through to the service's
+    // `sync:cancel-upload` command; idempotent on unknown `uploadJobId`.
+    cancelUpload: (
+      req: SyncCancelUploadRequest,
+    ): Promise<SyncCancelUploadResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.cancelUpload, req),
     authenticateStart: (
       req: SyncAuthenticateStartRequest,
     ): Promise<SyncAuthenticateStartResponse> =>
@@ -294,6 +319,22 @@ const api = {
         ipcRenderer.removeListener(SYNC_CHANNELS.event, listener);
       };
     },
+  },
+  // migrate-upload-orchestration-out-of-engine §7.2 / §7.9 —
+  // renderer-facing surface for the new uploads:* commands. Mirrors
+  // download's split between renderer-facing and one-way main→renderer
+  // hydrate: `listActive` is a renderer-callable RPC (parallel to a
+  // future `downloads.listActive`, currently unused on the download side
+  // because download hydrates one-way through `files.onActiveDownloadsHydrate`)
+  // intended for explicit re-fetch by the renderer (e.g. on tab focus
+  // recovery). The one-way upload hydrate channel + listener arrive in
+  // a later chunk along with the desktop main bridge — this surface is
+  // additive in chunk C and runtime-functional once chunk F lands the
+  // main-side handler at `sync-service-desktop` channel
+  // `uploads:list-active`.
+  uploads: {
+    listActive: (): Promise<SyncUploadsListActiveResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.uploadsListActive),
   },
   // add-engine-rename-download §18.1-§18.2: download-default-folder
   // preferences API. The renderer's downloads-store (built in §20) is
