@@ -721,10 +721,12 @@ describe("OneDriveClient — upload (simple PUT for <= 4MB)", () => {
         },
       },
     ]);
+    const onProgress = vi.fn<(loaded: number, total: number) => void>();
     const h = makeHarness({ graph: client });
     const entry = await h.client.uploadFile(
       { kind: "path", path: "/uploads" },
       { path: smallFile, name: "small.bin" },
+      { onProgress },
     );
     expect(entry.path).toBe("/uploads/small.bin");
     expect(entry.handle).toBe("new-id-small");
@@ -732,12 +734,16 @@ describe("OneDriveClient — upload (simple PUT for <= 4MB)", () => {
     // Body must be a Buffer, not a path-string (streaming from disk or in-mem buf)
     expect(putBodies[0]).toBeDefined();
 
+    // Engine bus is silent for upload events post-migrate-upload-
+    // orchestration-out-of-engine.
     const names = h.events.map((e) => e.event);
-    expect(names).toContain("uploading");
-    expect(names).toContain("file-created");
-    expect(names.indexOf("uploading")).toBeLessThan(
-      names.indexOf("file-created"),
-    );
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
+
+    // The consumer's onProgress was invoked with monotonic loaded values.
+    expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -778,10 +784,12 @@ describe("OneDriveClient — upload (resumable session for > 4MB)", () => {
       );
     }) as unknown as typeof fetch;
 
+    const onProgress = vi.fn<(loaded: number, total: number) => void>();
     const h = makeHarness({ graph: graphClient, fetchImpl });
     const entry = await h.client.uploadFile(
       { kind: "path", path: "/uploads" },
       { path: bigFile, name: "big.bin" },
+      { onProgress },
     );
     expect(entry.handle).toBe("new-id-big");
     expect(entry.path).toBe("/uploads/big.bin");
@@ -791,9 +799,15 @@ describe("OneDriveClient — upload (resumable session for > 4MB)", () => {
       expect(c.url).toBe("https://up.example.com/session/abc");
       expect((c.init?.method ?? "").toUpperCase()).toBe("PUT");
     }
+    // Engine bus is silent for upload events post-migrate-upload-
+    // orchestration-out-of-engine.
     const names = h.events.map((e) => e.event);
-    expect(names).toContain("uploading");
-    expect(names).toContain("file-created");
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
+
+    expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -951,13 +965,14 @@ describe("OneDriveClient — resumable upload multi-chunk (Content-Range + isLas
 });
 
 // ---------------------------------------------------------------------------
-// cancelUpload — mid-resumable DELETE session URL
+// AbortSignal-driven cancel — mid-resumable DELETE against a fresh
+// AbortController (5s timeout); small-upload post-resolve abort branch
 // ---------------------------------------------------------------------------
 
-describe("OneDriveClient — cancelUpload (resumable session)", () => {
+describe("OneDriveClient — signal-driven cancel (resumable session)", () => {
   const CHUNK = 320 * 1024 * 32;
 
-  it("mid-chunk cancel DELETEs the session URL, emits upload-cancelled, rejects cancelled", async () => {
+  it("mid-chunk abort DELETEs the session URL with a fresh AbortController (NOT the user signal); rejects cancelled", async () => {
     const total = 25 * 1024 * 1024; // 25 MiB — forces resumable path
     const dir = mkdtempSync(join(tmpdir(), "od-cancel-"));
     const file = join(dir, "huge.bin");
@@ -975,31 +990,29 @@ describe("OneDriveClient — cancelUpload (resumable session)", () => {
       },
     ]);
 
-    // fetchImpl: block the first PUT open, let the DELETE resolve. After
-    // DELETE fires we release the pending PUT so the test's cleanup doesn't
-    // hang — the strategy's chunk loop will observe the aborted signal /
-    // fetch rejection and throw.
-    let releasePut!: (value: Response) => void;
-    let abortedMidPut = false;
-    const deleteCalls: Array<{ url: string; method: string }> = [];
+    const deleteCalls: Array<{
+      url: string;
+      method: string;
+      signal?: AbortSignal | null;
+    }> = [];
     const fetchImpl = vi.fn(
-      async (url: string | URL | Request, init?: RequestInit) => {
+      async (_url: string | URL | Request, init?: RequestInit) => {
         const method = (init?.method ?? "GET").toUpperCase();
         if (method === "DELETE") {
-          deleteCalls.push({ url: String(url), method });
-          return new Response("", { status: 204 });
+          deleteCalls.push({
+            url: String(_url),
+            method,
+            signal: init?.signal ?? null,
+          });
+          return new Response(null, { status: 204 });
         }
         if (method === "PUT") {
-          // Honour the signal: if it arrives aborted or is aborted while we
-          // wait, reject with an AbortError (mirrors the real fetch spec).
           const signal = init?.signal;
           if (signal?.aborted) {
             throw Object.assign(new Error("aborted"), { name: "AbortError" });
           }
-          return await new Promise<Response>((resolve, reject) => {
-            releasePut = resolve;
+          return await new Promise<Response>((_resolve, reject) => {
             signal?.addEventListener("abort", () => {
-              abortedMidPut = true;
               reject(
                 Object.assign(new Error("aborted"), { name: "AbortError" }),
               );
@@ -1012,57 +1025,59 @@ describe("OneDriveClient — cancelUpload (resumable session)", () => {
 
     try {
       const h = makeHarness({ graph: graphClient, fetchImpl });
+      const controller = new AbortController();
       const uploadPromise = h.client.uploadFile(
         { kind: "path", path: "/uploads" },
         { path: file, name: "huge.bin" },
+        { signal: controller.signal },
       );
 
+      // Wait for the strategy to issue at least one chunk PUT — that
+      // guarantees the abort listener is wired up.
       await vi.waitFor(() => {
-        expect(
-          (h.events as Array<{ event: string }>).map((e) => e.event),
-        ).toContain("uploading");
+        const methods = fetchImpl.mock.calls.map((c) => {
+          const init = c[1] as RequestInit | undefined;
+          return (init?.method ?? "").toUpperCase();
+        });
+        expect(methods).toContain("PUT");
       });
-      const tx = (
-        (h.events as Array<{ payload: { transactionId: string } }>)[0] ?? {
-          payload: { transactionId: "" },
-        }
-      ).payload.transactionId;
 
-      await h.client.cancelUpload(tx);
-      // Safety net if abort didn't unblock the PUT for any reason.
-      if (!abortedMidPut && typeof releasePut === "function") {
-        releasePut(new Response("", { status: 202 }));
-      }
+      controller.abort();
 
       await expect(uploadPromise).rejects.toSatisfy(
         (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
       );
 
-      // Exactly one DELETE to the session URL.
+      // Exactly one DELETE to the session URL — issued against a FRESH
+      // AbortController (NOT the user's signal). Forwarding the user's
+      // signal would abort the cleanup itself, leaving the session
+      // orphaned on Graph's side.
       expect(deleteCalls).toHaveLength(1);
       expect(deleteCalls[0]!.url).toBe("https://up.example.com/session/cancel");
       expect(deleteCalls[0]!.method).toBe("DELETE");
+      expect(deleteCalls[0]!.signal).not.toBe(controller.signal);
 
+      // Engine bus carries no upload events.
       const names = (h.events as Array<{ event: string }>).map((e) => e.event);
-      expect(names).toContain("upload-cancelled");
+      expect(names).not.toContain("uploading");
+      expect(names).not.toContain("file-created");
       expect(names).not.toContain("upload-failed");
-      // `abortedMidPut` is observational rather than load-bearing: whether
-      // the test's cancel caught the PUT mid-flight or before it started
-      // depends on microtask ordering (graph-session-post vs.
-      // cancelUpload arrival). Either path is a valid cancellation —
-      // the DELETE + cancelled-tag + cancelled-event assertions above
-      // are the invariants.
-      void abortedMidPut;
+      expect(names).not.toContain("upload-cancelled");
     } finally {
       unlinkSync(file);
     }
     void CHUNK;
   });
 
-  it("small-upload (<= 4 MiB) cancel is a silent no-op (no DELETE, no upload-cancelled event)", async () => {
+  it("small-upload post-resolve abort branch: signal aborts after Graph SDK PUT settled, strategy rejects cancelled", async () => {
+    // The Graph SDK's `.put()` does not honor AbortSignal cleanly. The
+    // strategy's contract (per migrate-upload-orchestration-out-of-engine
+    // Decision 2) is to branch on `options.signal?.aborted` post-resolve
+    // and reject with `tag: "cancelled"` to preserve cancellation
+    // semantics on this code path.
     const dir = mkdtempSync(join(tmpdir(), "od-cancel-small-"));
     const file = join(dir, "small.bin");
-    writeFileSync(file, Buffer.alloc(1024, 0x11)); // 1 KiB, well under threshold
+    writeFileSync(file, Buffer.alloc(1024, 0x11)); // 1 KiB, under 4 MiB
 
     const { client: graphClient } = makeFakeGraph([
       {
@@ -1079,35 +1094,31 @@ describe("OneDriveClient — cancelUpload (resumable session)", () => {
         },
       },
     ]);
-    const deleteCalls: string[] = [];
     const fetchImpl = vi.fn(
-      async (url: string | URL | Request, init?: RequestInit) => {
-        const method = (init?.method ?? "GET").toUpperCase();
-        if (method === "DELETE") {
-          deleteCalls.push(String(url));
-        }
-        return new Response("{}", { status: 200 });
-      },
+      async () => new Response("{}", { status: 200 }),
     ) as unknown as typeof fetch;
 
     try {
       const h = makeHarness({ graph: graphClient, fetchImpl });
-      // Complete the upload first so we can test post-completion cancel.
-      const entry = await h.client.uploadFile(
-        { kind: "path", path: "/uploads" },
-        { path: file, name: "small.bin" },
-      );
-      expect(entry.handle).toBe("small-id");
-      const tx = (
-        (h.events as Array<{ payload: { transactionId: string } }>)[0] ?? {
-          payload: { transactionId: "" },
-        }
-      ).payload.transactionId;
+      const controller = new AbortController();
+      // Pre-abort the controller so the post-resolve branch fires
+      // synchronously when the Graph SDK PUT returns.
+      controller.abort();
 
-      // After completion, the tracker is gone — cancel is a no-op.
-      await h.client.cancelUpload(tx);
-      expect(deleteCalls).toHaveLength(0);
+      await expect(
+        h.client.uploadFile(
+          { kind: "path", path: "/uploads" },
+          { path: file, name: "small.bin" },
+          { signal: controller.signal },
+        ),
+      ).rejects.toSatisfy(
+        (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+      );
+
       const names = (h.events as Array<{ event: string }>).map((e) => e.event);
+      expect(names).not.toContain("uploading");
+      expect(names).not.toContain("file-created");
+      expect(names).not.toContain("upload-failed");
       expect(names).not.toContain("upload-cancelled");
     } finally {
       unlinkSync(file);
@@ -1116,7 +1127,9 @@ describe("OneDriveClient — cancelUpload (resumable session)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// LRU handle cache — invalidation on `deleted` and `file-created`
+// LRU handle cache — invalidation on `deleted` (post-migrate-upload-
+// orchestration-out-of-engine: the `file-created` arm was removed; upload
+// success populates the cache internally inside `doUploadFileImpl`).
 // ---------------------------------------------------------------------------
 
 describe("OneDriveClient — path↔handle LRU invalidation", () => {
@@ -1289,9 +1302,11 @@ describe("OneDriveClient — URL encoding", () => {
 // ---------------------------------------------------------------------------
 //
 // Phase 7 code-review finding: OneDriveClient subscribes to `ctx.bus` in its
-// constructor to invalidate its path↔handle LRU on `deleted` / `file-created`
-// events. If the client is discarded without an explicit teardown, the
-// subscription leaks for the lifetime of the bus. `dispose()` unhooks it.
+// constructor to invalidate its path↔handle LRU on `deleted` events
+// (the `file-created` arm was dropped by migrate-upload-orchestration-
+// out-of-engine; upload-success population is internal). If the client
+// is discarded without an explicit teardown, the subscription leaks for
+// the lifetime of the bus. `dispose()` unhooks it.
 
 describe("OneDriveClient — dispose()", () => {
   it("overrides the base no-op — calling dispose() detaches the bus subscription", async () => {

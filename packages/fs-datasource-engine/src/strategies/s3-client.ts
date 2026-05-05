@@ -579,9 +579,10 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
   protected override async doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    _signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<"amazon-s3">> {
     const parentKey = targetToKey(parent);
     const normalisedParent =
@@ -608,32 +609,29 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
         ...(file.mimeType ? { ContentType: file.mimeType } : {}),
       },
     });
-    // Register the provider-native cancel closure. `Upload.abort()` sets the
-    // SDK's internal AbortController signal; `__doMultipartUpload()` then
-    // observes the aborted signal after `Promise.all(concurrentUploaders)`
-    // and calls `markUploadAsAborted()`, which issues
-    // `AbortMultipartUploadCommand` if `UploadId` was allocated. No
-    // supplementary `AbortMultipartUploadCommand` send is required — the
-    // SDK does the cleanup itself. Verified against
+    // Wire the consumer's abort signal to `Upload.abort()`. `Upload.abort()`
+    // sets the SDK's internal AbortController signal;
+    // `__doMultipartUpload()` then observes the aborted signal after
+    // `Promise.all(concurrentUploaders)` and calls `markUploadAsAborted()`,
+    // which issues `AbortMultipartUploadCommand` if `UploadId` was
+    // allocated. No supplementary `AbortMultipartUploadCommand` send is
+    // required — the SDK does the cleanup itself. Verified against
     // `@aws-sdk/lib-storage@3.1032.0/dist-cjs/index.js:229-231, 420-424,
     // 466-470` during the design review for `add-fs-engine-cancellation`.
-    //
-    // The base's `_signal` is unused on S3: the SDK owns its own
-    // AbortController internally, and the pre-upload work (statSync,
-    // createReadStream) completes synchronously. Keep the parameter in
-    // the signature so future S3 changes that do need signal plumbing
-    // don't have to re-thread it.
-    register(async () => {
-      upload.abort();
-    });
-    // `_signal` intentionally unused — see the long-form comment on the
-    // register() call above. Lint the variable to shut the unused-vars
-    // rule up without silently dropping the parameter from the signature.
-    void _signal;
+    // No fresh AbortController is needed on the cleanup side because the
+    // `Upload` instance manages its own controller internally — the SDK's
+    // cleanup HTTP call is not coupled to `options.signal`.
+    options.signal?.addEventListener(
+      "abort",
+      () => {
+        upload.abort();
+      },
+      { once: true },
+    );
     upload.on("httpUploadProgress", (p) => {
       const loaded = p.loaded ?? 0;
       const denom = p.total ?? total;
-      onProgress?.(loaded, denom);
+      options.onProgress?.(loaded, denom);
     });
     const resp = await upload.done();
     // `resp` is CompleteMultipartUploadCommandOutput | PutObjectCommandOutput.

@@ -8,12 +8,12 @@ No blocking prerequisites. `add-engine-rename-download` (the orchestration templ
 
 ## 1. Engine — `BaseDatasourceClient.uploadFile` reshape
 
-- [ ] 1.1 Update `BaseDatasourceClient.uploadFile` in `packages/fs-datasource-engine/src/base-client.ts` to the one-shot signature: `uploadFile(parent, file, options?: { signal?: AbortSignal; onProgress?: (loaded, total) => void }): Promise<DatasourceFileEntry<T>>`. Body becomes `return this.withRefresh(() => this.doUploadFileImpl(parent, file, options ?? {}))`.
-- [ ] 1.2 Delete the `activeUploads: Map<...>` field, `UploadTracker` interface, and any internal `newTransactionId`-for-upload helper from `BaseDatasourceClient`.
-- [ ] 1.3 Delete `BaseDatasourceClient.cancelUpload` method entirely (including its public declaration on `DatasourceClient<T>` and JSDoc).
-- [ ] 1.4 Remove all upload-related `this.emit(...)` calls from `BaseDatasourceClient` (`uploading`, `file-created`-via-upload, `upload-failed`, `upload-cancelled`).
-- [ ] 1.5 Update the `protected abstract doUploadFileImpl` signature: drop the `register` parameter; new shape `(parent: Target, file: { path; name?; mimeType? }, options: { signal?: AbortSignal; onProgress?: (l, t) => void }): Promise<DatasourceFileEntry<T>>`.
-- [ ] 1.6 Update comments in `base-client.ts` (currently reference `cancelUpload`, `activeUploads`, the tracker pattern) to reflect the new architecture.
+- [x] 1.1 Update `BaseDatasourceClient.uploadFile` in `packages/fs-datasource-engine/src/base-client.ts` to the one-shot signature: `uploadFile(parent, file, options?: { signal?: AbortSignal; onProgress?: (loaded, total) => void }): Promise<DatasourceFileEntry<T>>`. Body becomes `return this.withRefresh(() => this.doUploadFileImpl(parent, file, options ?? {}))`.
+- [x] 1.2 Delete the `activeUploads: Map<...>` field, `UploadTracker` interface, and any internal `newTransactionId`-for-upload helper from `BaseDatasourceClient`.
+- [x] 1.3 Delete `BaseDatasourceClient.cancelUpload` method entirely (including its public declaration on `DatasourceClient<T>` and JSDoc).
+- [x] 1.4 Remove all upload-related `this.emit(...)` calls from `BaseDatasourceClient` (`uploading`, `file-created`-via-upload, `upload-failed`, `upload-cancelled`).
+- [x] 1.5 Update the `protected abstract doUploadFileImpl` signature: drop the `register` parameter; new shape `(parent: Target, file: { path; name?; mimeType? }, options: { signal?: AbortSignal; onProgress?: (l, t) => void }): Promise<DatasourceFileEntry<T>>`.
+- [x] 1.6 Update comments in `base-client.ts` (currently reference `cancelUpload`, `activeUploads`, the tracker pattern) to reflect the new architecture.
 
 ## 2. Engine — `createFile` deletion
 
@@ -28,38 +28,38 @@ No blocking prerequisites. `add-engine-rename-download` (the orchestration templ
 
 ## 3. Engine — Google Drive strategy
 
-- [ ] 3.1 Update `GoogleDriveClient.doUploadFileImpl` signature in `packages/fs-datasource-engine/src/strategies/googledrive-client.ts` to the new shape (drop `register`, drop `onProgress` and `signal` from positional params, accept `options` object instead).
-- [ ] 3.2 Inside `doUploadFileImpl`, after the resumable-session URL is acquired: register `options.signal?.addEventListener('abort', cleanup, { once: true })`. The `cleanup` closure issues `fetch(sessionUrl, { method: "DELETE", headers: { "Content-Range": "bytes */*" }, signal: AbortSignal.timeout(5000) })` and `.catch()` logs the failure. NOT the user's signal.
-- [ ] 3.3 Forward `options.signal` directly into the chunked PUT calls so abort unblocks promptly.
-- [ ] 3.4 Forward `options.onProgress?` to the existing per-chunk progress hook.
-- [ ] 3.5 Inside the success branch (after the strategy's resumable-session completes and returns the `DatasourceFileEntry<"google-drive">`), invoke `this.pathHandleCache.set(entry.path, entry.handle)` directly — replaces the prior `file-created` bus emission as the LRU population mechanism.
-- [ ] 3.6 In the strategy's constructor, drop the `else if (e.event === "file-created")` arm of the bus subscription. Keep the `deleted` arm.
-- [ ] 3.7 Remove the helper-shared `noopRegister` and `neverAborted` constants if they are exclusively for the deleted createFile path. Otherwise keep them (the helper itself stays untouched).
-- [ ] 3.8 Update `googledrive-client.test.ts` cancel-related tests (around line 1839+) to assert signal-driven cleanup: aborting the user signal triggers a DELETE on a fresh AbortController; the DELETE itself does NOT abort if the user signal cleans up later.
-- [ ] 3.9 Update `googledrive-client.test.ts` upload tests (around line 1700+) to assert NO `file-created` bus emission; LRU population is observable via `pathHandleCache.get(entry.path) === entry.handle` post-resolve.
+- [x] 3.1 Update `GoogleDriveClient.doUploadFileImpl` signature in `packages/fs-datasource-engine/src/strategies/googledrive-client.ts` to the new shape (drop `register`, drop `onProgress` and `signal` from positional params, accept `options` object instead).
+- [x] 3.2 Inside `doUploadFileImpl`, after the resumable-session URL is acquired: register `options.signal?.addEventListener('abort', cleanup, { once: true })`. The `cleanup` closure issues `fetch(sessionUrl, { method: "DELETE", headers: { "Content-Range": "bytes */*" }, signal: AbortSignal.timeout(5000) })` and `.catch()` logs the failure. NOT the user's signal.
+- [x] 3.3 Forward `options.signal` directly into the chunked PUT calls so abort unblocks promptly.
+- [x] 3.4 Forward `options.onProgress?` to the existing per-chunk progress hook.
+- [x] 3.5 Inside the success branch (after the strategy's resumable-session completes and returns the `DatasourceFileEntry<"google-drive">`), invoke `this.pathHandleCache.set(entry.path, entry.handle)` directly — replaces the prior `file-created` bus emission as the LRU population mechanism.
+- [x] 3.6 In the strategy's constructor, drop the `else if (e.event === "file-created")` arm of the bus subscription. Keep the `deleted` arm.
+- [x] 3.7 Remove the helper-shared `noopRegister` and `neverAborted` constants if they are exclusively for the deleted createFile path. Otherwise keep them (the helper itself stays untouched).
+- [x] 3.8 Update `googledrive-client.test.ts` cancel-related tests (around line 1839+) to assert signal-driven cleanup: aborting the user signal triggers a DELETE on a fresh AbortController; the DELETE itself does NOT abort if the user signal cleans up later.
+- [x] 3.9 Update `googledrive-client.test.ts` upload tests (around line 1700+) to assert NO `file-created` bus emission; LRU population is observable via `pathHandleCache.get(entry.path) === entry.handle` post-resolve.
 
 ## 4. Engine — OneDrive strategy
 
-- [ ] 4.1 Update `OneDriveClient.doUploadFileImpl` signature in `packages/fs-datasource-engine/src/strategies/onedrive-client.ts` (drop `register`, accept `options`).
-- [ ] 4.2 For the resumable-session path (>4 MiB): register `options.signal?.addEventListener('abort', cleanup, { once: true })` with cleanup issuing `fetch(uploadUrl, { method: "DELETE", signal: AbortSignal.timeout(5000) })`.
-- [ ] 4.3 For the small-file `<= 4 MiB` `PUT /content` path: forward `options.signal` to the underlying fetch. If signal aborts post-resolve (the SDK's `.put()` may not honor abort cleanly), branch on `options.signal?.aborted` and reject with `DatasourceError { tag: "cancelled" }`. Match the existing "non-cancellable upload path" behavior.
-- [ ] 4.4 Forward `options.onProgress?` to the chunk-PUT progress hooks (resumable path) or the SDK's progress callback (small path).
-- [ ] 4.5 Inside the success branch: invoke `this.pathHandleCache.set(entry.path, entry.handle)` directly.
-- [ ] 4.6 In the constructor, drop the `else if (e.event === "file-created")` arm of the bus subscription (line ~442).
-- [ ] 4.7 Update `onedrive-client.test.ts` cancel-related tests (around line 957+) to assert signal-driven cleanup with fresh AbortController + 5s timeout.
-- [ ] 4.8 Update `onedrive-client.test.ts` upload tests (around line 737+) to assert NO `file-created` bus emission; LRU population observable directly.
-- [ ] 4.9 Verify OneDrive's small-file path's "non-cancellable" semantics still work end-to-end (test the post-resolve abort branch).
+- [x] 4.1 Update `OneDriveClient.doUploadFileImpl` signature in `packages/fs-datasource-engine/src/strategies/onedrive-client.ts` (drop `register`, accept `options`).
+- [x] 4.2 For the resumable-session path (>4 MiB): register `options.signal?.addEventListener('abort', cleanup, { once: true })` with cleanup issuing `fetch(uploadUrl, { method: "DELETE", signal: AbortSignal.timeout(5000) })`.
+- [x] 4.3 For the small-file `<= 4 MiB` `PUT /content` path: forward `options.signal` to the underlying fetch. If signal aborts post-resolve (the SDK's `.put()` may not honor abort cleanly), branch on `options.signal?.aborted` and reject with `DatasourceError { tag: "cancelled" }`. Match the existing "non-cancellable upload path" behavior.
+- [x] 4.4 Forward `options.onProgress?` to the chunk-PUT progress hooks (resumable path) or the SDK's progress callback (small path).
+- [x] 4.5 Inside the success branch: invoke `this.pathHandleCache.set(entry.path, entry.handle)` directly.
+- [x] 4.6 In the constructor, drop the `else if (e.event === "file-created")` arm of the bus subscription (line ~442).
+- [x] 4.7 Update `onedrive-client.test.ts` cancel-related tests (around line 957+) to assert signal-driven cleanup with fresh AbortController + 5s timeout.
+- [x] 4.8 Update `onedrive-client.test.ts` upload tests (around line 737+) to assert NO `file-created` bus emission; LRU population observable directly.
+- [x] 4.9 Verify OneDrive's small-file path's "non-cancellable" semantics still work end-to-end (test the post-resolve abort branch).
 
 ## 5. Engine — S3 strategy
 
-- [ ] 5.1 Update `S3Client.doUploadFileImpl` signature in `packages/fs-datasource-engine/src/strategies/s3-client.ts` (drop `register`, accept `options`).
-- [ ] 5.2 For the `@aws-sdk/lib-storage` `Upload` path: register `options.signal?.addEventListener('abort', () => upload.abort(), { once: true })`. The `Upload.abort()` issues `AbortMultipartUploadCommand` internally — no need for a fresh AbortController on the cleanup side because `Upload` manages its own controller.
-- [ ] 5.3 Forward `options.onProgress?` to the existing `httpUploadProgress` event subscription.
-- [ ] 5.4 The `_signal: AbortSignal` ignored parameter is removed. Replace with `options.signal` use throughout the body.
-- [ ] 5.5 Inside the success branch: invoke `this.pathHandleCache.set(entry.path, entry.handle)` directly (S3 strategy LRU mirrors Drive's pattern; verify the cache field exists and is wired).
-- [ ] 5.6 If S3's strategy has a similar bus subscription pattern for `file-created` invalidation, drop the upload arm and keep deletion. (Drive and OneDrive have the bus subscription; verify whether S3 mirrors it — if so, same treatment.)
-- [ ] 5.7 Update `s3-client.test.ts` cancel-related tests (around line 582+) to assert signal-driven `upload.abort()` triggering.
-- [ ] 5.8 Update `s3-client.test.ts` upload tests (around line 484+) to assert NO `file-created` bus emission.
+- [x] 5.1 Update `S3Client.doUploadFileImpl` signature in `packages/fs-datasource-engine/src/strategies/s3-client.ts` (drop `register`, accept `options`).
+- [x] 5.2 For the `@aws-sdk/lib-storage` `Upload` path: register `options.signal?.addEventListener('abort', () => upload.abort(), { once: true })`. The `Upload.abort()` issues `AbortMultipartUploadCommand` internally — no need for a fresh AbortController on the cleanup side because `Upload` manages its own controller.
+- [x] 5.3 Forward `options.onProgress?` to the existing `httpUploadProgress` event subscription.
+- [x] 5.4 The `_signal: AbortSignal` ignored parameter is removed. Replace with `options.signal` use throughout the body.
+- [x] 5.5 Inside the success branch: invoke `this.pathHandleCache.set(entry.path, entry.handle)` directly (S3 strategy LRU mirrors Drive's pattern; verify the cache field exists and is wired). [No-op: S3 has no `pathHandleCache` field — verified via grep.]
+- [x] 5.6 If S3's strategy has a similar bus subscription pattern for `file-created` invalidation, drop the upload arm and keep deletion. (Drive and OneDrive have the bus subscription; verify whether S3 mirrors it — if so, same treatment.) [No-op: S3 has no bus subscription — verified via grep.]
+- [x] 5.7 Update `s3-client.test.ts` cancel-related tests (around line 582+) to assert signal-driven `upload.abort()` triggering.
+- [x] 5.8 Update `s3-client.test.ts` upload tests (around line 484+) to assert NO `file-created` bus emission.
 
 ## 6. Engine — strategy-contract test
 

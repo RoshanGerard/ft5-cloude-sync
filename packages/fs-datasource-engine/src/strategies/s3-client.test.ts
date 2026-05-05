@@ -482,18 +482,21 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
   // directory. The OS cleans tmpdir entries on its own schedule; these tests
   // are short-lived, the leak is negligible.
 
-  it("uploads via lib-storage Upload; emits uploading (streaming) progress ticks then file-created", async () => {
-    // For small bodies, lib-storage uses PutObject (not multipart). That's
-    // fine — we assert the Upload path emits progress + file-created.
+  it("uploads via lib-storage Upload; invokes options.onProgress and emits NO upload events on the engine bus (post-migrate-upload-orchestration-out-of-engine)", async () => {
+    // For small bodies, lib-storage uses PutObject (not multipart). The
+    // strategy threads `options.onProgress` to the SDK's
+    // `httpUploadProgress` event but does NOT emit any engine bus events.
     s3Mock.on(PutObjectCommand).resolves({ ETag: '"etag-up"' });
     s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "uid" });
     s3Mock.on(UploadPartCommand).resolves({ ETag: '"p1"' });
     s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"etag-up"' });
 
+    const onProgress = vi.fn<(loaded: number, total: number) => void>();
     const { client, events } = makeHarness();
     const entry = await client.uploadFile(
       { kind: "path", path: "/uploads" },
       { path: bigFile, name: "big.bin" },
+      { onProgress },
     );
 
     expect(entry.path).toBe("/uploads/big.bin");
@@ -502,20 +505,20 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
     expect(entry.providerMetadata.etag).toBeDefined();
 
     const names = (events as Array<{ event: string }>).map((e) => e.event);
-    expect(names).toContain("uploading");
-    expect(names).toContain("file-created");
-    // file-created emits AFTER uploading
-    expect(names.indexOf("uploading")).toBeLessThan(names.indexOf("file-created"));
+    // Engine bus carries no upload-related events post-migration.
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
   });
 
-  it("cancelUpload mid-PutObject causes Upload.abort(), emits upload-cancelled, rejects cancelled", async () => {
-    // Hold PutObject open so the base has a window to observe the cancel.
-    // When `upload.abort()` fires, lib-storage's `__doMultipartUpload` sees
-    // `abortController.signal.aborted` on resumption (since PutObject is the
-    // only in-flight work via `Promise.all(concurrentUploaders)`) and rejects
-    // the done() promise with an AbortError. No CreateMultipartUpload was
-    // issued for a small body, so no AbortMultipartUpload is needed either —
-    // the cleanup path only activates when UploadId was allocated.
+  it("signal-driven cancel mid-upload triggers Upload.abort() and rejects with cancelled tag", async () => {
+    // Hold PutObject open so the cancel has a window. When the consumer
+    // aborts options.signal, the strategy's abort-listener fires
+    // `upload.abort()`. lib-storage's `__doMultipartUpload` sees
+    // `abortController.signal.aborted` on resumption and rejects the
+    // done() promise. The strategy's normalizeError path tags the
+    // rejection `cancelled`.
     let releasePut!: () => void;
     s3Mock.on(PutObjectCommand).callsFake(
       () =>
@@ -524,35 +527,32 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
         }),
     );
     const { client, events } = makeHarness();
+    const controller = new AbortController();
 
     const uploadPromise = client.uploadFile(
       { kind: "path", path: "/uploads" },
       { path: bigFile, name: "big.bin" },
+      { signal: controller.signal },
     );
-    // Wait for the first `uploading` event — that's the signal the tracker
-    // was created and the strategy registered its cancel closure.
-    await vi.waitFor(() => {
-      expect(
-        (events as Array<{ event: string }>).map((e) => e.event),
-      ).toContain("uploading");
-    });
-    const tx = (
-      (events as Array<{ payload: { transactionId: string } }>)[0] ?? {
-        payload: { transactionId: "" },
-      }
-    ).payload.transactionId;
+    // Yield to give the strategy time to register its abort listener
+    // against the user signal and kick off the SDK Upload.
+    await new Promise<void>((r) => setImmediate(r));
 
-    await client.cancelUpload(tx);
-    // Release the pending PutObject so the test doesn't hang if the abort
-    // doesn't unwind (defensive — shouldn't be needed).
+    controller.abort();
+    // Release the pending PutObject so a non-aborted `done()` still
+    // settles deterministically. Defensive — abort itself should
+    // unwind via the SDK's internal AbortController.
     releasePut?.();
 
     await expect(uploadPromise).rejects.toSatisfy(
       (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
     );
+    // Engine bus stays silent for upload events.
     const names = (events as Array<{ event: string }>).map((e) => e.event);
-    expect(names).toContain("upload-cancelled");
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
     expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
   });
 });
 

@@ -280,7 +280,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       expect(Array.isArray(handleEntries)).toBe(true);
     });
 
-    it("uploadFile(parent, { path }) resolves and emits uploading → file-created", async () => {
+    it("uploadFile(parent, { path }) resolves with the entry and emits NO upload events on the engine bus (post-migrate-upload-orchestration-out-of-engine)", async () => {
       fixture.resetMock();
       fixture.primeUploadOk({ parentPath: "/" });
       const { client, events } = makeHarness();
@@ -293,11 +293,13 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       expect(typeof entry.path).toBe("string");
       expect(typeof entry.handle).toBe("string");
       const names = events.map((e) => e.event);
-      expect(names).toContain("uploading");
-      expect(names).toContain("file-created");
-      expect(names.indexOf("uploading")).toBeLessThan(
-        names.indexOf("file-created"),
-      );
+      // Per migrate-upload-orchestration-out-of-engine, the engine bus
+      // observes ZERO upload-related events; the consumer (fs-sync handler)
+      // emits these on `sync:event-stream` keyed by `uploadJobId`.
+      expect(names).not.toContain("uploading");
+      expect(names).not.toContain("file-created");
+      expect(names).not.toContain("upload-failed");
+      expect(names).not.toContain("upload-cancelled");
     });
 
     it("deleteFile emits `deleted` and resolves to void", async () => {
@@ -387,19 +389,11 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       );
     });
 
-    it("cancelUpload against an unknown transactionId resolves silently (idempotent contract)", async () => {
-      // Cheap universal assertion that the strategy exposes `cancelUpload`
-      // and the base's idempotent-no-op path is reachable from every
-      // provider without fixture setup. Per-strategy cancel behaviour
-      // (DELETE session / Upload.abort()) is verified in each provider's
-      // own test file — this scenario guards the interface surface only.
-      fixture.resetMock();
-      const { client, events } = makeHarness();
-      await expect(
-        client.cancelUpload("tx-nonexistent"),
-      ).resolves.toBeUndefined();
-      expect(events).toHaveLength(0);
-    });
+    // The legacy `cancelUpload(transactionId)` interface scenario was
+    // removed by migrate-upload-orchestration-out-of-engine — the engine
+    // no longer exposes that method (cancellation is consumer-driven via
+    // `options.signal`). The deeper signal-driven upload contract sweep
+    // is rebuilt by chunk C of that change.
 
     // -----------------------------------------------------------------------
     // add-engine-rename-download §10.1 — rename + download contract sweep

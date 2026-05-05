@@ -18,8 +18,11 @@
 //     by path. The strategy walks `files.list` segment by segment with a
 //     name filter (and `parents in`) at each step to resolve a path to a
 //     fileId. Handles (`{kind: "handle"}`) skip the walk entirely. Results
-//     are cached in an LRU keyed by the full path; invalidation happens via
-//     a bus subscription that reacts to `deleted` and `file-created`.
+//     are cached in an LRU keyed by the full path. Invalidation:
+//       - Deletion: via a bus subscription that reacts to `deleted`.
+//       - Upload completion: populated directly by `doUploadFileImpl`'s
+//         success branch (per migrate-upload-orchestration-out-of-engine —
+//         the engine no longer emits `file-created`).
 //
 //   - Path ambiguity. Drive allows multiple files with the same name in
 //     the same parent. When `files.list` returns more than one row for a
@@ -562,15 +565,11 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         } else if (payload.target?.kind === "handle") {
           this.evictHandle(payload.target.handle);
         }
-      } else if (e.event === "file-created") {
-        const payload = e.payload as { path?: string; handle?: string };
-        if (
-          typeof payload.path === "string" &&
-          typeof payload.handle === "string"
-        ) {
-          this.cachePathHandle(payload.path, payload.handle);
-        }
       }
+      // Note: the `file-created` arm was removed by
+      // migrate-upload-orchestration-out-of-engine. LRU population on
+      // upload completion is now performed inside `doUploadFileImpl`'s
+      // success branch directly (see `cachePathHandle` below).
     });
   }
 
@@ -1262,35 +1261,35 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
   protected override async doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<"google-drive">> {
     const name = file.name ?? basename(file.path);
-    return this.uploadResumable(
-      parent,
-      name,
-      file,
-      onProgress,
-      file.mimeType,
-      register,
-      signal,
-    );
+    return this.uploadResumable(parent, name, file, file.mimeType, options);
   }
 
   /**
    * Drive resumable upload via raw fetch. One path covers any file size
    * (session-init POST → chunked PUTs to the session URL). Streams from
    * disk — never buffers the full file.
+   *
+   * Cancellation: when `options.signal` aborts, an `'abort'` listener
+   * fires `DELETE <sessionUrl>` against a FRESH AbortController with a
+   * 5-second timeout (per migrate-upload-orchestration-out-of-engine
+   * Decision 3). The user's signal is NOT forwarded to the cleanup —
+   * doing so would abort the cleanup itself.
    */
   private async uploadResumable(
     parent: Target,
     name: string,
     file: { path: string; mimeType?: string },
-    onProgress: ((loaded: number, total: number) => void) | undefined,
     mimeType: string | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<"google-drive">> {
     const { fileId: parentFileId } = await this.resolveTarget(parent);
     let total = 0;
@@ -1338,22 +1337,32 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       });
     }
 
-    // Register the provider-native cancel closure. Drive documents that a
-    // DELETE to the session URL cancels the resumable session; the DELETE
-    // MUST carry a `Content-Range: bytes */<total>` header (or `*/0` when
-    // total is unknown) to match Drive's documented cancellation semantics.
-    // Errors are swallowed by the base — best-effort cleanup.
+    // Wire the consumer-driven cancel cleanup. When `options.signal`
+    // aborts, issue `DELETE <sessionUrl>` against a FRESH AbortController
+    // with a 5-second timeout. The user's signal is NOT forwarded into
+    // the cleanup — doing so would abort the cleanup HTTP call itself,
+    // leaving the resumable session orphaned on Drive's side. Errors in
+    // the cleanup are logged and swallowed (best-effort cleanup).
     const cancelContentRange =
       total > 0 ? `bytes */${total}` : `bytes */0`;
-    register(async () => {
-      await this.fetchImpl(sessionUrl, {
-        method: "DELETE",
-        headers: { "Content-Range": cancelContentRange },
-      });
-    });
+    options.signal?.addEventListener(
+      "abort",
+      () => {
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        this.fetchImpl(sessionUrl, {
+          method: "DELETE",
+          headers: { "Content-Range": cancelContentRange },
+          signal: AbortSignal.timeout(5000),
+        }).catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn("[google-drive] upload-session cleanup failed:", err);
+        });
+      },
+      { once: true },
+    );
 
     // Step 2: stream the file in chunks, PUT each to the session URL.
-    onProgress?.(0, total);
+    options.onProgress?.(0, total);
     const stream = createReadStream(file.path, {
       highWaterMark: UPLOAD_CHUNK_BYTES,
     });
@@ -1369,14 +1378,15 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         "Content-Length": String(chunk.length),
         "Content-Range": `bytes ${start}-${end}/${totalHeader}`,
       };
-      // Thread the abort signal into each chunk PUT so the base's
-      // `cancelUpload` unblocks promptly. An already-aborted signal makes
-      // fetch reject synchronously with AbortError.
+      // Thread the consumer's abort signal into each chunk PUT so an
+      // abort unblocks promptly. An already-aborted signal makes fetch
+      // reject synchronously with AbortError; the rejection is normalized
+      // to `tag: "cancelled"` via `normalizeErrorImpl`.
       const resp = await this.fetchImpl(sessionUrl, {
         method: "PUT",
         headers,
         body: chunk,
-        signal,
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       // Drive returns 308 Resume Incomplete for interim chunks (body
       // typically empty, `Range` header shows bytes received); 200/201
@@ -1389,7 +1399,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         });
       }
       uploaded += chunk.length;
-      onProgress?.(uploaded, total);
+      options.onProgress?.(uploaded, total);
       if (isLast && resp.status !== 308) {
         const text = await resp.text();
         if (text) {
@@ -1413,7 +1423,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         method: "PUT",
         headers,
         body: new Uint8Array(0),
-        signal,
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
@@ -1463,7 +1473,15 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       parentPath === "" || parentPath === "/"
         ? `/${name}`
         : `${parentPath}/${name}`;
-    return this.buildFileEntry(lastFile, { path: entryPath });
+    const entry = this.buildFileEntry(lastFile, { path: entryPath });
+    // LRU population on upload success is internal (per migrate-upload-
+    // orchestration-out-of-engine Decision 4). The constructor's bus
+    // subscription dropped its `file-created` arm; populate the cache
+    // here directly so subsequent path-keyed addressing skips the walk.
+    if (entry.handle) {
+      this.cachePathHandle(entry.path, entry.handle);
+    }
+    return entry;
   }
 
   // -------------------------------------------------------------------------
