@@ -17,14 +17,14 @@ No blocking prerequisites. `add-engine-rename-download` (the orchestration templ
 
 ## 2. Engine — `createFile` deletion
 
-- [ ] 2.1 Delete `BaseDatasourceClient.createFile` method (including its public declaration on `DatasourceClient<T>` and JSDoc).
-- [ ] 2.2 Delete `protected abstract doCreateFileImpl` from `BaseDatasourceClient`.
-- [ ] 2.3 Delete `GoogleDriveClient.doCreateFileImpl` from `packages/fs-datasource-engine/src/strategies/googledrive-client.ts`.
-- [ ] 2.4 Delete `OneDriveClient.doCreateFileImpl` from `packages/fs-datasource-engine/src/strategies/onedrive-client.ts`.
-- [ ] 2.5 Delete `S3Client.doCreateFileImpl` from `packages/fs-datasource-engine/src/strategies/s3-client.ts`.
-- [ ] 2.6 Sweep all `createFile` references in comments across `base-client.ts`, the three strategy files, and `packages/ipc-contracts/src/fs-datasource-engine.ts`. Delete or rephrase to remove the `createFile` mention.
-- [ ] 2.7 Delete createFile-related test cases: `base-client.test.ts` (tests around line 545 + the abstract `doCreateFileImpl` mock around line 236), `s3-client.test.ts` (lines ~487, 509, 533), `onedrive-client.test.ts` (line ~1272). Verify no other test files reference `createFile`.
-- [ ] 2.8 Run the engine test suite — confirm createFile-deletion didn't leave dangling references; the test surface SHALL pass with the deletions.
+- [x] 2.1 Delete `BaseDatasourceClient.createFile` method (including its public declaration on `DatasourceClient<T>` and JSDoc).
+- [x] 2.2 Delete `protected abstract doCreateFileImpl` from `BaseDatasourceClient`.
+- [x] 2.3 Delete `GoogleDriveClient.doCreateFileImpl` from `packages/fs-datasource-engine/src/strategies/googledrive-client.ts`.
+- [x] 2.4 Delete `OneDriveClient.doCreateFileImpl` from `packages/fs-datasource-engine/src/strategies/onedrive-client.ts`.
+- [x] 2.5 Delete `S3Client.doCreateFileImpl` from `packages/fs-datasource-engine/src/strategies/s3-client.ts`.
+- [x] 2.6 Sweep all `createFile` references in comments across `base-client.ts`, the three strategy files, and `packages/ipc-contracts/src/fs-datasource-engine.ts`. Delete or rephrase to remove the `createFile` mention.
+- [x] 2.7 Delete createFile-related test cases: `base-client.test.ts` (tests around line 545 + the abstract `doCreateFileImpl` mock around line 236), `s3-client.test.ts` (lines ~487, 509, 533), `onedrive-client.test.ts` (line ~1272). Verify no other test files reference `createFile`.
+- [x] 2.8 Run the engine test suite — confirm createFile-deletion didn't leave dangling references; the test surface SHALL pass with the deletions.
 
 ## 3. Engine — Google Drive strategy
 

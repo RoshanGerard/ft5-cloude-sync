@@ -1646,7 +1646,7 @@ describe("GoogleDriveClient — getQuota", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createFile / uploadFile (resumable)
+// uploadFile (resumable)
 // ---------------------------------------------------------------------------
 
 describe("GoogleDriveClient — upload (resumable, small file)", () => {

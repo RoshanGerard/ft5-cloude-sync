@@ -138,11 +138,6 @@ export interface DatasourceClient<T extends DatasourceType> {
   listDirectory(target: Target): Promise<DatasourceFileEntry<T>[]>;
   search(query: string, scope?: Target): Promise<DatasourceFileEntry<T>[]>;
   getMetadata(target: Target): Promise<FileMetadata<T>>;
-  createFile(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<T>>;
   uploadFile(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
@@ -172,8 +167,7 @@ export interface DatasourceClient<T extends DatasourceType> {
    * add-engine-rename-download spec). The base wraps the strategy's
    * `doRenameImpl` with the existing `withRefresh` machinery and emits
    * exactly one `entry-renamed { from, to }` event on success or one
-   * `delete-failed { tag, message, via: "rename" }` on failure
-   * (mirroring `createFile`'s `via: "createFile"` pattern).
+   * `delete-failed { tag, message, via: "rename" }` on failure.
    * Per-policy orchestration (sibling-detection, suffix-retry,
    * directory-overwrite refusal) lives inside each strategy's
    * `doRenameImpl` since the introspection is provider-specific —
@@ -315,11 +309,6 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   protected abstract doGetMetadataImpl(
     target: Target,
   ): Promise<FileMetadata<T>>;
-  protected abstract doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<T>>;
   /**
    * Primitive for `uploadFile()`. Base invokes this with an `onProgress`
    * callback; strategies that support streaming progress (e.g., S3 via
@@ -523,38 +512,6 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     return this.runReadOp(() => this.doGetMetadataImpl(target));
   }
 
-  async createFile(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<T>> {
-    // `createFile` has no streaming pre-op but emits `file-created` on
-    // success. Failure routes through `upload-failed` with `via: "createFile"`
-    // because `CanonicalEventPayloads` does not (yet) carry a `create-failed`
-    // name. Flagged as a Phase-3 concern; see report.
-    try {
-      const entry = await this.withRefresh(() =>
-        this.doCreateFileImpl(parent, name, content),
-      );
-      this.emit("file-created", false, {
-        path: entry.path,
-        handle: entry.handle,
-        via: "createFile",
-      });
-      return entry;
-    } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag !== "unsupported") {
-        this.emit("upload-failed", false, {
-          tag: normalized.tag,
-          message: normalized.message,
-          via: "createFile",
-        });
-      }
-      throw normalized;
-    }
-  }
-
   async uploadFile(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
@@ -743,8 +700,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * (one-shot auth-expired retry per the engine's existing pattern),
    * emits `entry-renamed { from, to }` once on success, and routes
    * failures through the existing `delete-failed` taxonomy with
-   * `via: "rename"` (mirroring `createFile`'s use of `upload-failed
-   * { via: "createFile" }`). Unsupported errors stay silent on the bus
+   * `via: "rename"`. Unsupported errors stay silent on the bus
    * per the engine-wide convention applied to every other op.
    *
    * Per design.md Decision 1, per-policy orchestration is strategy-side

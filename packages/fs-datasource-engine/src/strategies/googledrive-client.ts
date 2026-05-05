@@ -384,7 +384,7 @@ function parseContentRangeHeader(
 /** Returns true iff the space-separated `scope` string includes the full
  * Drive scope as a discrete token. Narrower variants (`drive.file`,
  * `drive.readonly`, etc.) are insufficient on their own because the engine
- * performs `createFile`, `uploadFile`, `deleteFile`. */
+ * performs `uploadFile`, `deleteFile`. */
 export function isScopeSufficient(scope: string): boolean {
   return scope.split(/\s+/).filter(Boolean).includes(REQUIRED_DRIVE_SCOPE);
 }
@@ -1253,35 +1253,6 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       this.cachePathHandle(entry.path, entry.handle, ambiguousSiblings);
     }
     return entry;
-  }
-
-  // -------------------------------------------------------------------------
-  // createFile — resumable-session path (covers any size via one path)
-  // -------------------------------------------------------------------------
-
-  protected override async doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<"google-drive">> {
-    // `createFile` is not exposed as cancellable — it's a metadata-adjacent
-    // op, not a user-visible upload. Supply a no-op register + a
-    // never-aborted signal so `uploadResumable` can share the same
-    // codepath as `doUploadFileImpl` without also flowing cancel plumbing
-    // into the createFile surface.
-    const noopRegister = (cancel: () => Promise<void>): void => {
-      void cancel;
-    };
-    const neverAborted = new AbortController().signal;
-    return this.uploadResumable(
-      parent,
-      name,
-      content,
-      undefined,
-      undefined,
-      noopRegister,
-      neverAborted,
-    );
   }
 
   // -------------------------------------------------------------------------

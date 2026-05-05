@@ -785,25 +785,6 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   }
 
   // -------------------------------------------------------------------------
-  // createFile — small PUT via Graph client
-  // -------------------------------------------------------------------------
-
-  protected override async doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<"onedrive">> {
-    const body = await readFile(content.path);
-    const url = childPathUrl(parent, name, "/content");
-    // Use `@name.conflictBehavior=fail` so the upload fails with 409 if the
-    // file already exists; normalizeError maps that to `conflict`.
-    const item = (await this.graph()
-      .api(`${url}?@microsoft.graph.conflictBehavior=fail`)
-      .put(body)) as DriveItem;
-    return buildFileEntry(item);
-  }
-
-  // -------------------------------------------------------------------------
   // uploadFile — small (≤4MB) simple PUT, large (>4MB) resumable session
   // -------------------------------------------------------------------------
 
@@ -1586,7 +1567,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
 /**
  * Build the Graph URL for a `<parent>/<name>` path inside a parent `Target`,
  * with the given suffix (`""`, `/content`, `/createUploadSession`). Used by
- * createFile and uploadFile.
+ * uploadFile.
  */
 function childPathUrl(parent: Target, name: string, suffix: string): string {
   // `name` is user-controlled and must be percent-encoded so characters like

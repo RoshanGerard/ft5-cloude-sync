@@ -693,7 +693,7 @@ describe("OneDriveClient — getQuota", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createFile / uploadFile — small & large
+// uploadFile — small & large
 // ---------------------------------------------------------------------------
 
 describe("OneDriveClient — upload (simple PUT for <= 4MB)", () => {
@@ -1208,7 +1208,7 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
 // strategy's responsibility. Characters like `#`, `?`, `&`, `%`, `+`, and
 // space MUST be percent-encoded in:
 //   - path segments (root-addressed reads/mutates),
-//   - child `name` fragments (createFile / uploadFile / createUploadSession),
+//   - child `name` fragments (uploadFile / createUploadSession),
 //   - OData `search(q='<v>')` values (after the embedded-quote doubling).
 //
 // The resumable-upload URL returned by Graph from `/createUploadSession` is
@@ -1245,41 +1245,6 @@ describe("OneDriveClient — URL encoding", () => {
     expect(used).toContain("%25"); // %
     // The forward-slash separator must NOT be encoded.
     expect(used).toContain("/mix%20%26%20match/");
-  });
-
-  it("createFile encodes the child `name` fragment", async () => {
-    const { client, apiCalls } = makeFakeGraph([
-      {
-        match: "/me/drive/root:/uploads/a%20%26%20b%23.txt:/content",
-        verbs: {
-          put: () => ({
-            id: "amp-id",
-            name: "a & b#.txt",
-            file: { mimeType: "text/plain" },
-            size: 1,
-            lastModifiedDateTime: "2024-06-01T00:00:00Z",
-            parentReference: { path: "/drive/root:/uploads" },
-          }),
-        },
-      },
-    ]);
-    const h = makeHarness({ graph: client });
-    // Write a temp fixture — createFile reads from disk.
-    const dir = mkdtempSync(join(tmpdir(), "od-enc-"));
-    const fpath = join(dir, "src.txt");
-    writeFileSync(fpath, "x");
-    try {
-      const entry = await h.client.createFile(
-        { kind: "path", path: "/uploads" },
-        "a & b#.txt",
-        { path: fpath },
-      );
-      expect(entry.handle).toBe("amp-id");
-      const url = apiCalls[0]!;
-      expect(url).toContain("a%20%26%20b%23.txt");
-    } finally {
-      unlinkSync(fpath);
-    }
   });
 
   it("search encodes the OData query value (space / & / #) AFTER single-quote doubling", async () => {

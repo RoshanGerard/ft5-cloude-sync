@@ -43,11 +43,6 @@ interface FakeConfig {
   doListDirectory?: (target: Target) => Promise<DatasourceFileEntry<FakeType>[]>;
   doSearch?: (query: string, scope?: Target) => Promise<DatasourceFileEntry<FakeType>[]>;
   doGetMetadata?: (target: Target) => Promise<FileMetadata<FakeType>>;
-  doCreateFile?: (
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ) => Promise<DatasourceFileEntry<FakeType>>;
   doUploadFile?: (
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
@@ -116,13 +111,6 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   readonly doGetMetadata = vi.fn<
     (target: Target) => Promise<FileMetadata<FakeType>>
   >();
-  readonly doCreateFile = vi.fn<
-    (
-      parent: Target,
-      name: string,
-      content: { path: string },
-    ) => Promise<DatasourceFileEntry<FakeType>>
-  >();
   readonly doUploadFile = vi.fn<
     (
       parent: Target,
@@ -173,10 +161,6 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
     if (cfg.doGetMetadata)
       this.doGetMetadata.mockImplementation(cfg.doGetMetadata);
     else this.doGetMetadata.mockResolvedValue(makeEntry());
-
-    if (cfg.doCreateFile)
-      this.doCreateFile.mockImplementation(cfg.doCreateFile);
-    else this.doCreateFile.mockResolvedValue(makeEntry());
 
     if (cfg.doUploadFile)
       this.doUploadFile.mockImplementation(cfg.doUploadFile);
@@ -232,13 +216,6 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   }
   protected doGetMetadataImpl(target: Target): Promise<FileMetadata<FakeType>> {
     return this.doGetMetadata(target);
-  }
-  protected doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<FakeType>> {
-    return this.doCreateFile(parent, name, content);
   }
   protected doUploadFileImpl(
     parent: Target,
@@ -534,24 +511,6 @@ describe("BaseDatasourceClient — failure path emission", () => {
     expect(names).toContain("delete-failed");
   });
 
-  it("createFile failure routes through upload-failed (with meta.via=createFile)", async () => {
-    const { client, events } = makeHarness({
-      doCreateFile: async () => {
-        throw { __tag: "conflict" };
-      },
-    });
-
-    await expect(
-      client.createFile({ kind: "path", path: "/p" }, "x.txt", {
-        path: "C:/tmp/x.txt",
-      }),
-    ).rejects.toBeInstanceOf(DatasourceError);
-    const failed = events.find((e) => e.event === "upload-failed");
-    expect(failed).toBeDefined();
-    // Flag: this is deliberate routing until `create-failed` is added.
-    const payload = failed?.payload as { via?: string } | undefined;
-    expect(payload?.via).toBe("createFile");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1295,10 +1254,9 @@ describe("BaseDatasourceClient — dispose()", () => {
 //
 // The base class wraps the strategy's `doRenameImpl` with the existing
 // `withRefresh` machinery and emits exactly one `entry-renamed` event on
-// success or one `delete-failed { via: "rename" }` event on failure
-// (mirroring `createFile`'s `via: "createFile"` pattern). Per design.md
-// Decision 1 + spec.md "Directory rename with conflictPolicy 'overwrite'
-// is refused", per-policy orchestration (sibling-detection,
+// success or one `delete-failed { via: "rename" }` event on failure.
+// Per design.md Decision 1 + spec.md "Directory rename with conflictPolicy
+// 'overwrite' is refused", per-policy orchestration (sibling-detection,
 // suffix-retry, kind-based refusal) lives in each strategy — Section 4
 // only lands the base wrapper + a programmable mock subclass that
 // proves the wrapper's contract behaviour for each policy branch.
@@ -1439,8 +1397,8 @@ describe("BaseDatasourceClient — rename `overwrite` on a directory is refused"
     // the strategy detects kind === "folder" + policy === "overwrite" and
     // throws `DatasourceError { tag: "unsupported" }`. The base passes the
     // policy through and re-throws the strategy-thrown error. Per the
-    // existing codebase convention (deleteFile L546-560, uploadFile
-    // L483-510, createFile L383-393), `*-failed` events are NOT emitted
+    // existing codebase convention (deleteFile, uploadFile), `*-failed`
+    // events are NOT emitted
     // when `tag === "unsupported"` — the unsupported case stays silent on
     // the bus. spec.md's "Directory rename with conflictPolicy 'overwrite'
     // is refused" scenario confirms only "the call rejects ... no rename

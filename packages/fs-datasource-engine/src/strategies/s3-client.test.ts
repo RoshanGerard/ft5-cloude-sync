@@ -466,82 +466,6 @@ describe("S3Client — getQuota", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createFile — PutObject from local path
-// ---------------------------------------------------------------------------
-
-describe("S3Client — createFile", () => {
-  const tmp = mkdtempSync(join(tmpdir(), "s3-test-"));
-  const localFile = join(tmp, "hi.txt");
-  writeFileSync(localFile, "hello from test\n");
-
-  // Note: we deliberately do NOT rmSync the tmp dir in afterAll. The AWS SDK
-  // mock swallows command inputs without consuming the request-body stream,
-  // so `createReadStream` handles may linger one tick after the test body
-  // resolves and trigger an ENOENT when they try to read from a deleted
-  // directory. The OS cleans tmpdir entries on its own schedule; these tests
-  // are short-lived, the leak is negligible.
-
-  it("puts the file under parent/name and emits file-created", async () => {
-    s3Mock.on(PutObjectCommand).resolves({ ETag: '"etag-new"' });
-    const { client, events } = makeHarness();
-    const entry = await client.createFile(
-      { kind: "path", path: "/inbox" },
-      "hi.txt",
-      { path: localFile },
-    );
-    expect(entry.path).toBe("/inbox/hi.txt");
-    expect(entry.handle).toBe("inbox/hi.txt");
-    expect(entry.providerMetadata.bucket).toBe("test-bucket");
-    expect(entry.providerMetadata.key).toBe("inbox/hi.txt");
-    expect(entry.providerMetadata.etag).toBe('"etag-new"');
-
-    const input = s3Mock.commandCalls(PutObjectCommand)[0]!.args[0].input;
-    expect(input.Bucket).toBe("test-bucket");
-    expect(input.Key).toBe("inbox/hi.txt");
-
-    const names = (events as Array<{ event: string }>).map((e) => e.event);
-    expect(names).toContain("file-created");
-  });
-
-  it("createFile succeeds with IfNoneMatch on a fresh key", async () => {
-    s3Mock.on(PutObjectCommand).resolves({ ETag: '"etag-fresh"' });
-    const { client } = makeHarness();
-    const entry = await client.createFile(
-      { kind: "path", path: "/inbox" },
-      "fresh.txt",
-      { path: localFile },
-    );
-    expect(entry.handle).toBe("inbox/fresh.txt");
-    expect(entry.providerMetadata.etag).toBe('"etag-fresh"');
-
-    // Verify IfNoneMatch was set on the PutObject request so S3 rejects
-    // existing keys with 412 instead of silently overwriting.
-    const input = s3Mock.commandCalls(PutObjectCommand)[0]!.args[0].input;
-    expect(input.IfNoneMatch).toBe("*");
-  });
-
-  it("createFile rejects with conflict tag when key already exists (IfNoneMatch collision)", async () => {
-    const err = new Error("PreconditionFailed");
-    (err as { name: string }).name = "PreconditionFailed";
-    (err as { $metadata?: { httpStatusCode: number } }).$metadata = {
-      httpStatusCode: 412,
-    };
-    s3Mock.on(PutObjectCommand).rejects(err);
-
-    const { client } = makeHarness();
-    await expect(
-      client.createFile(
-        { kind: "path", path: "/inbox" },
-        "existing.txt",
-        { path: localFile },
-      ),
-    ).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "conflict",
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
 // uploadFile — multipart via lib-storage Upload, wires httpUploadProgress
 // ---------------------------------------------------------------------------
 
@@ -551,7 +475,12 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
   // Small file — lib-storage falls back to single PutObject under partSize.
   writeFileSync(bigFile, "multipart-small-fake-body");
 
-  // Cleanup intentionally omitted — see note in the createFile describe.
+  // Note: we deliberately do NOT rmSync the tmp dir in afterAll. The AWS SDK
+  // mock swallows command inputs without consuming the request-body stream,
+  // so `createReadStream` handles may linger one tick after the test body
+  // resolves and trigger an ENOENT when they try to read from a deleted
+  // directory. The OS cleans tmpdir entries on its own schedule; these tests
+  // are short-lived, the leak is negligible.
 
   it("uploads via lib-storage Upload; emits uploading (streaming) progress ticks then file-created", async () => {
     // For small bodies, lib-storage uses PutObject (not multipart). That's

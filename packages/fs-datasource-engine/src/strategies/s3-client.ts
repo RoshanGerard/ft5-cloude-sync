@@ -573,52 +573,6 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
   }
 
   // -------------------------------------------------------------------------
-  // createFile — PutObject from a local path (streamed via fs.createReadStream)
-  // -------------------------------------------------------------------------
-
-  /**
-   * Create a new object under `parent/name` from a local file path.
-   *
-   * No-overwrite guarantee: uses S3's `IfNoneMatch: "*"` precondition so the
-   * PutObject fails with HTTP 412 PreconditionFailed if the key already
-   * exists. `normalizeError` maps that to `DatasourceError` tag `"conflict"`.
-   * Callers that want overwrite semantics should use `uploadFile` instead.
-   */
-  protected override async doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<"amazon-s3">> {
-    const parentKey = targetToKey(parent);
-    const normalisedParent =
-      parentKey === "" || parentKey.endsWith("/")
-        ? parentKey
-        : `${parentKey}/`;
-    const key = `${normalisedParent}${name}`;
-    const body = createReadStream(content.path);
-    const resp = await this.aws.send(
-      new PutObjectCommand({
-        Bucket: this.creds.bucket,
-        Key: key,
-        Body: body,
-        IfNoneMatch: "*", // S3 precondition: fail with 412 if key already exists.
-      }),
-    );
-    let size: number | undefined;
-    try {
-      size = statSync(content.path).size;
-    } catch {
-      // Ignore — local file disappeared between upload + stat. The entry
-      // still carries bucket + key + etag.
-    }
-    return buildFileEntry(this.creds.bucket, key, {
-      ...(size !== undefined ? { size } : {}),
-      lastModified: new Date(),
-      ...(resp.ETag ? { etag: resp.ETag } : {}),
-    });
-  }
-
-  // -------------------------------------------------------------------------
   // uploadFile — streaming via lib-storage Upload, wires onProgress
   // -------------------------------------------------------------------------
 
@@ -687,8 +641,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
     const etag = (resp as { ETag?: string }).ETag;
     return buildFileEntry(this.creds.bucket, key, {
       // Omit size when statSync raced (file moved/removed) — total === 0 is
-      // the race sentinel, not a legit zero-byte upload here. Consistent with
-      // how doCreateFileImpl handles the same case.
+      // the race sentinel, not a legit zero-byte upload here.
       ...(total > 0 ? { size: total } : {}),
       lastModified: new Date(),
       ...(etag ? { etag } : {}),
