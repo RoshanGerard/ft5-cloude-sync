@@ -176,12 +176,6 @@ The renderer-callable `window.api.uploads.listActive()` RPC remains exposed for 
 - Stranded pre-migration rows recover via the scheduler's existing startup-recovery path (`services/fs-sync/src/scheduler/scheduler.ts:152-167`): on encountering a `kind: 'upload'` row in `running` state with no executor registered, the row transitions to `failed` with `errorTag: "unsupported"` and `errorMessage: "no executor registered for kind=upload"`. Graceful degradation — the user sees a "Sync failed" entry on the dashboard for that historical row, no crash.
 - `MirrorSyncJobExecutor`'s inner per-file upload calls (which call `client.uploadFile` directly, NOT via `UploadJobExecutor`) are unaffected and continue to work with the engine's new one-shot `uploadFile` signature (per the parallel `fs-datasource-engine` spec delta). The mirror-sync call site is updated to pass `{ signal }` to the new options-object shape.
 
-### Requirement: Upload jobs do not dedup
-
-**Reason**: The "upload jobs do not dedup" scenario was scoped to `sync:enqueue-upload`-queued jobs, which no longer exist. Dedup behavior for direct uploads (`files:upload`) is now governed by the explicit concurrent-target conflict guard (see ADDED Requirement: Concurrent-target upload conflict guard), which actively REJECTS duplicate-target uploads — the polar opposite of the removed "do not dedup" semantics.
-
-**Migration**: The dedup-vs-no-dedup distinction collapses: mirror-sync still dedups (per the existing Sync dedup rule, MODIFIED below), and direct uploads reject duplicates of `(datasourceId, targetPath)`. The renderer's UX for the new conflict-rejection (a duplicate-attempt error toast) is part of the renderer's wire-up scope.
-
 ## MODIFIED Requirements
 
 ### Requirement: IPC command surface

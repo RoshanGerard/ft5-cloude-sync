@@ -119,12 +119,6 @@ Drive and OneDrive strategies maintain a path-handle LRU cache. After this migra
 
 **Migration**: Tests asserting "engine cancel leaves sync-service queue untouched" delete; the analogous concern at the consumer layer is captured by the fs-sync-service spec's `sync:cancel-upload` requirements.
 
-### Requirement: `BaseDatasourceClient` exposes `createFile`
-
-**Reason**: Removed entirely. `BaseDatasourceClient.createFile`, the abstract `doCreateFileImpl`, all three strategies' implementations, and createFile tests are deleted. createFile has zero production callers outside the engine's own tests; creating directory or empty-file entries on a remote datasource is not a planned UX feature. Per YAGNI, the speculative engine surface is removed rather than carried indefinitely.
-
-**Migration**: None — there are no callers. If a future feature needs "create remote entry" semantics, that future change owns its own design and re-introduces the surface shaped to actual consumer requirements.
-
 ## MODIFIED Requirements
 
 ### Requirement: Public contract is the generic `DatasourceClient<T>` Strategy interface
@@ -202,7 +196,7 @@ The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: 
 - **WHEN** a provider permits duplicate sibling names (e.g., Google Drive) and a `{kind: "path"}` `Target` resolves to more than one provider-side item under the same (parent, name) filter
 - **THEN** the strategy selects the oldest hit (e.g., Drive orders by `createdTime asc`), populates the returned `FileEntry<T>.providerMetadata` with `ambiguous: true` and an `ambiguousSiblings` list containing the other items' handles, and emits NO `status-changed` (or any other) event for the ambiguity
 
-### Requirement: `DatasourceErrorTag` includes `"cancelled"` for signal-aborted uploads
+### Requirement: `DatasourceErrorTag` gains `"cancelled"`
 
 The `DatasourceErrorTag` union SHALL include the tag `"cancelled"`. A `DatasourceError<T>` tagged `"cancelled"` SHALL have `retryable: false`. The strategy's `doUploadFileImpl` SHALL throw this error when the upload terminates due to `options.signal` being aborted by the caller. Strategies' `normalizeError` SHALL NOT tag any provider-native exception `"cancelled"` — the tag is reserved for signal-driven cancellation paths.
 
