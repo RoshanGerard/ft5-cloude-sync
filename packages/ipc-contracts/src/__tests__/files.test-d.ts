@@ -159,6 +159,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -190,6 +191,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -249,6 +251,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -343,6 +346,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -350,9 +354,10 @@ describe("ipc-contracts files request/response pairs", () => {
 
   it("upload: { datasourceId, sourcePath, targetPath, conflictPolicy } request, ok envelope with { jobId }", () => {
     // `files:upload` is the renderer-facing upload command introduced by the
-    // `add-file-explorer-drag-drop-upload` change. It lands directly on the
-    // sync-service's `sync:enqueue-upload` via the main-process handler —
-    // the old `datasources:upload` surface is retired.
+    // `add-file-explorer-drag-drop-upload` change. Post
+    // migrate-upload-orchestration-out-of-engine chunk F it lands directly
+    // on the sync-service's `files:upload` direct-RPC handler (the
+    // pre-migration `sync:enqueue-upload` queue route was deleted).
     const req: FilesUploadRequest = {
       datasourceId: "ds-1",
       sourcePath: "C:/Users/me/Documents/a.pdf",
@@ -418,6 +423,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();

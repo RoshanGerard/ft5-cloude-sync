@@ -295,6 +295,84 @@ export interface DownloadCancelledPayload {
   readonly reason: "user";
 }
 
+// ---- Upload-lifecycle event taxonomy -----------------------------------
+// (migrate-upload-orchestration-out-of-engine §9 / §10).
+//
+// Per the fs-sync-service spec delta, the `files:upload` handler emits four
+// `uploadJobId`-keyed lifecycle events on `sync:event-stream`. The engine no
+// longer participates in upload event emission (Decision 1) — these events
+// are 100% derived inside the consumer (the fs-sync handler).
+//
+// Throttling for `uploading` is at the handler level (1s elapsed OR 10%
+// progress delta — Decision 5). Initial-tick (0%) and final-tick (100%) are
+// emitted unthrottled so the renderer's toaster strip always sees the
+// boundaries.
+//
+// The four events are mutually-terminal: one of `file-created`,
+// `upload-failed`, or `upload-cancelled` fires per upload, never two.
+
+/** Streaming-tagged upload progress. `bytesUploaded` is the engine
+ * `onProgress(loaded, total)` last reported value; `bytesTotal` is the
+ * provider's `total` (engines are required to surface a total since the
+ * source is a local file with known size — but the field is typed
+ * `number | null` for symmetry with the download-side payload and to
+ * accommodate engines that do not yet report total). `targetPath` lets
+ * the renderer correlate progress to its in-flight upload toaster
+ * keyed by `uploadJobId` AND fall back to per-target path matching for
+ * legacy renderer code. */
+export interface UploadingPayload {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesUploaded: number;
+  readonly bytesTotal: number | null;
+}
+
+/** Terminal success. `handle` is the engine-minted vendor handle for the
+ * newly-created remote entry — the renderer uses it to refresh the
+ * file-explorer view and correlate to its own row identity post-write.
+ */
+export interface FileCreatedPayload {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly targetPath: string;
+  readonly handle: string;
+}
+
+/** Terminal failure (non-cancellation). The handler collapses the
+ * engine's `DatasourceError.tag` into a renderer-facing tag. The raw
+ * engine error is NOT forwarded — only `tag` + `message` cross the wire.
+ *
+ * The tag union mirrors the surface of `FilesErrorTag` minus tags that
+ * cannot fire on the upload path: `cancelled` is its own event
+ * (`upload-cancelled`), and `conflict` is signaled BEFORE the engine
+ * call as the response envelope's `tag: "conflict"` (per Decision 10
+ * concurrent-target guard) — never as an event. */
+export interface UploadFailedPayload {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly targetPath: string;
+  readonly tag: "auth-revoked" | "disconnected" | "rate-limited" | "other"
+    | "invalid-datasource";
+  readonly message: string;
+}
+
+/** Terminal cancel. `bytesUploaded` is the last value the handler observed
+ * before the AbortSignal fired; `bytesTotal` is the provider's advertised
+ * total (or `null` when unknown). `reason: "user"` is the only v1 source
+ * — service-shutdown cancels are not wired and would surface through
+ * `upload-failed` if they occur. */
+export interface UploadCancelledPayload {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesUploaded: number;
+  readonly bytesTotal: number | null;
+  readonly reason: "user";
+}
+
 // ---- Event map + derived helpers -----------------------------------------
 
 export interface EventPayloadMap {
@@ -325,6 +403,14 @@ export interface EventPayloadMap {
   "file-downloaded": FileDownloadedPayload;
   "download-failed": DownloadFailedPayload;
   "download-cancelled": DownloadCancelledPayload;
+  // migrate-upload-orchestration-out-of-engine §9/§10 — fs-sync's
+  // uploadJobId-keyed upload lifecycle events. The engine no longer
+  // emits upload events; these are emitted by the `files-upload.ts`
+  // handler.
+  "uploading": UploadingPayload;
+  "file-created": FileCreatedPayload;
+  "upload-failed": UploadFailedPayload;
+  "upload-cancelled": UploadCancelledPayload;
 }
 
 export type EventName = keyof EventPayloadMap;
@@ -360,5 +446,9 @@ export const EVENT_NAMES: ReadonlyArray<EventName> = [
   "file-downloaded",
   "download-failed",
   "download-cancelled",
+  "uploading",
+  "file-created",
+  "upload-failed",
+  "upload-cancelled",
 ] as const;
 

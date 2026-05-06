@@ -663,3 +663,177 @@ mid-flight, observe the toast through the three states above.
 dev build; the §9.4 smoke is independent of all other PENDING_TC
 entries (does not require real GCP creds, does not gate on
 `implement-datasource-onboarding`, etc.).
+
+---
+
+## migrate-upload-orchestration-out-of-engine — §17.3–§17.6 manual smoke
+
+The four §17 smoke flows defined in this change's `tasks.md` exercise
+the post-migration upload pipeline end-to-end against real provider
+SDKs (Drive / OneDrive / S3). They were deferred to
+`PENDING_TC.MD` per CLAUDE.md verification rules — unit + integration
+coverage is in place for every code path; only the real-provider
+visual / network behavior can confirm the migration in production.
+
+### §17.3 — packaged-build happy-path upload to Drive / OneDrive / S3
+
+**Scenario:** With the desktop app running against a real GCP / Azure
+/ AWS datasource, drag a small file (~1 MB) into the file-explorer.
+Expect:
+
+1. Sonner toast opens "Uploading <basename>" with a 0% bar.
+2. Bar animates to 100% as bytes flow.
+3. Toast flips to "Uploaded <basename>" terminal state.
+4. The remote datasource shows the new file at the target path
+   (verify via the provider's web UI).
+
+**Why deferred:** Requires real provider credentials and the
+`~/ft5/sync_app/config.json` setup from
+`add-drive-oauth-browser-consent §1`. Code paths verified via:
+
+- `services/fs-sync/src/commands/__tests__/files-upload.test.ts`
+  (12 tests including happy-path: validates request, mints
+  uploadJobId, calls engine.uploadFile, emits one file-created on
+  resolve, replies success).
+- `apps/desktop/src/main/ipc/files/__tests__/upload.test.ts` (7
+  tests asserting direct-RPC forwarding).
+- `apps/desktop/src/renderer/src/features/file-explorer/__tests__/upload-job-toast.test.ts`
+  (10 tests asserting the toast lifecycle).
+
+**Re-verification command:**
+```bash
+cd <worktree-root>
+pnpm -F @ft5/desktop dev
+```
+Drag a file onto the file-explorer for each provider; confirm the
+toast lifecycle and the remote file's existence.
+
+**Owner:** unassigned (HUMAN). Pair with the §1 HUMAN ops setup pass.
+
+### §17.4 — mid-upload cancel + provider session cleanup
+
+**Scenario:** Start a large upload (10+ MB to Drive / OneDrive
+resumable session, or S3 multipart). Within 1-2s, click the toast's
+Cancel action. Expect:
+
+1. Toast flips to silent dismiss (`upload-cancelled` is silent per
+   `upload-job-toast.ts (j)`).
+2. Provider-side session is cleaned up:
+   - **Drive**: `DELETE <sessionUrl>` issued via fresh
+     AbortController + 5s timeout (per design.md Decision 3).
+   - **OneDrive**: `DELETE <uploadUrl>` issued same way.
+   - **S3**: `Upload.abort()` issues `AbortMultipartUploadCommand`
+     internally.
+3. No orphan file appears at the target path on the provider.
+
+**Why deferred:** The fresh-AbortController cleanup behavior is
+unit-tested at the strategy layer
+(`packages/fs-datasource-engine/src/__tests__/strategy-contract.ts`
+and per-strategy `*-client.test.ts`), but provider-side cleanup
+requires inspecting the provider's pending-multipart / pending-
+session list.
+
+**Verification artifacts:**
+
+- Drive: `/upload/drive/v3/files?uploadType=resumable` session URL
+  should not appear in `gdrive list-resumable-uploads` (or
+  equivalent debug API). Drive GCs after ~1 week regardless.
+- OneDrive: Graph API `/me/drive/items/{item-id}/createUploadSession`
+  list — clean within 5s of cancel.
+- S3: `aws s3api list-multipart-uploads --bucket <name>` — should
+  show no in-flight multipart for this `(bucket, key)`.
+
+**Owner:** unassigned (HUMAN). Pair with §17.3.
+
+### §17.5 — concurrent-target rejection (Decision 10)
+
+**Scenario:** Start an upload to a target slot. Without waiting for
+it to finish, attempt a SECOND upload to the same
+`(datasourceId, targetPath)`. Expect:
+
+1. Second upload's dispatch call rejects synchronously at the
+   service boundary with `{ tag: "conflict", message: "An upload
+   to this path is already in progress", existingUploadJobId,
+   existingPath }`.
+2. The renderer surfaces a Sonner error toast with the message; the
+   IN-FLIGHT upload's toast is unaffected.
+3. The first upload completes normally to the original target.
+
+**Why deferred:** The conflict envelope and the renderer toast
+binding are unit-tested
+(`apps/desktop/src/renderer/src/features/file-explorer/__tests__/use-upload-orchestrator.test.ts`
+"surfaces a tag: 'conflict'" + the concurrent-target-rejection cases
+in `files-upload.test.ts`), but verifying the UX requires a real
+multi-stage upload (the unit harness completes synchronously).
+
+**Owner:** unassigned (HUMAN). Pair with §17.3.
+
+### §17.6 — app-restart-while-uploading hydrate
+
+**Scenario:** Start a large upload. While bytes are still flowing,
+quit the app (force-quit if needed). Restart. Expect:
+
+1. The hydrate channel `files:hydrate-active-uploads` fires on
+   first supervisor connect.
+2. If the service was killed alongside the renderer (typical), the
+   `UploadRegistry` is empty post-restart and no toast hydrates —
+   the in-flight upload state is lost (in-memory only per
+   design.md Non-Goals; resumability is `add-upload-resilience`'s
+   future scope).
+3. If the service somehow survived (atypical for a force-quit),
+   the in-flight `UploadJobEntry` SHOULD surface as a Sonner
+   toast subscribed to the live `sync:event-stream`.
+
+**Latent edge case from chunk F (advisor-flagged):** A user DB
+created BEFORE this change's merge may carry `kind: 'upload'` rows
+in `state: 'running'` from the legacy queue path. On first startup
+post-migration, the scheduler's recovery path at
+`services/fs-sync/src/scheduler/scheduler.ts:152-167` transitions
+those rows to `failed` with `errorTag: "unsupported"` and
+`errorMessage: "no executor registered for kind=upload"`. Graceful
+— no hang or crash — but the user may see a "Sync failed" entry
+on the dashboard for that historical row. Acceptable degradation;
+worth observing during this smoke pass to confirm the recovery
+path actually fires (vs being silent).
+
+**Why deferred:** Force-quit + supervisor-survival timing is
+fiddly. Unit-tested code paths:
+`apps/desktop/src/main/sync/on-connect-hydrate-uploads.test.ts`
+(4 tests, fire-once invariant + payload forwarding +
+service-error fallback).
+
+**Re-verification:** Start a deliberate slow upload (throttle the
+network), force-quit (Task Manager / `kill -9`), reopen, observe
+hydrate behavior. For the legacy-DB recovery edge: import a
+pre-chunk-F user DB or manually `UPDATE jobs SET state = 'running'
+WHERE kind = 'upload'` before launch.
+
+**Owner:** unassigned (HUMAN). Pair with §17.3.
+
+---
+
+## migrate-upload-orchestration-out-of-engine — dead `onUploadProgress` mock harness lines
+
+**Scenario:** ~25 renderer test files retain dead mock setup of the
+form `onUploadProgress: vi.fn().mockReturnValue(() => {})` for a
+preload binding (`window.api.datasources.onUploadProgress`) that
+chunk E removed. Type-safe under the loose mock typing the test
+harness uses, so they compile and don't affect behavior. Cleanup-
+worthy per CLAUDE.md "If you are certain that something is unused,
+you can delete it completely."
+
+**Status:** PENDING — not blocking. Polish-only.
+
+**Files affected** (full list in chunk-E commit message):
+`page.test.tsx`, `a11y.test.tsx` (file-explorer + datasources),
+`download-toaster-wiring.test.tsx`, `file-explorer-composite.test.tsx`,
+`handle-download-wiring.test.tsx`, `rename-guard.test.tsx`,
+`states-integration.test.tsx`, `search-ui.test.tsx`,
+`upload-toaster-wiring.test.tsx`, plus ~10 `features/datasources/__tests__/*.tsx`.
+
+**Re-verification:** Grep `onUploadProgress` in
+`apps/desktop/src/renderer/src` — the only legitimate mentions
+post-cleanup should be tombstone comments (zero callers).
+
+**Owner:** unassigned. Suitable for a follow-up cleanup PR; safe to
+do mechanically (the lines are dead code).

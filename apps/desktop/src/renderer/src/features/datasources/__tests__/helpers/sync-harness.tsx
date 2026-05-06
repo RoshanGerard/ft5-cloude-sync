@@ -68,7 +68,6 @@ export function installApiMock(): SyncHarness {
       onEvent,
       listJobs: vi.fn(),
       getJob: vi.fn(),
-      enqueueUpload: vi.fn(),
       enqueueMirror: vi.fn(),
       cancelJob: vi.fn(),
       authenticateStart: vi.fn(),

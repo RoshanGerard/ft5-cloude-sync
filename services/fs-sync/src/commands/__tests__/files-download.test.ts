@@ -3039,7 +3039,7 @@ describe("files:download — Decision 3 rewrite-from-0 budget + sticky flag (§1
             message: `blip ${call}`,
           });
           // unreachable but required for generator type:
-          // eslint-disable-next-line no-unreachable
+           
           yield Buffer.alloc(0);
         })(),
       );

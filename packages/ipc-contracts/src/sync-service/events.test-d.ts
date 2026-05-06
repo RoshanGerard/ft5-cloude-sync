@@ -36,7 +36,12 @@ describe("sync-service event contract", () => {
       | "download-retrying"
       | "file-downloaded"
       | "download-failed"
-      | "download-cancelled";
+      | "download-cancelled"
+      // migrate-upload-orchestration-out-of-engine §9/§10
+      | "uploading"
+      | "file-created"
+      | "upload-failed"
+      | "upload-cancelled";
     expectTypeOf<EventName>().toEqualTypeOf<Expected>();
   });
 

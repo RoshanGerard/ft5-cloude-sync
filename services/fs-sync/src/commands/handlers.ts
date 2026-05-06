@@ -4,8 +4,6 @@
 // handlers touch the DB and emit events; background work is driven by the
 // scheduler on its own timer (wired in Phase 9).
 
-import { randomUUID } from "node:crypto";
-
 import type {
   ClientFactory,
   CredentialStore,
@@ -43,7 +41,14 @@ import {
   type HashComputer,
 } from "./files-download.js";
 import { makeDownloadsListActiveHandler } from "./downloads-list-active.js";
+import {
+  createDefaultFilesUploadDeps,
+  makeFilesUploadHandler,
+} from "./files-upload.js";
+import { makeUploadsListActiveHandler } from "./uploads-list-active.js";
+import { makeSyncCancelUploadHandler } from "./sync-cancel-upload.js";
 import type { DownloadRegistry } from "../downloads/registry.js";
+import type { UploadRegistry } from "../uploads/registry.js";
 import type { ServiceConfigStore } from "../config/service-config-store.js";
 import type { AuthCorrelationStore } from "../state/auth-correlation-store.js";
 import type { OAuthLoopbackBroker } from "../oauth/loopback-broker.js";
@@ -89,6 +94,18 @@ export interface HandlersDeps {
   readonly downloadRegistry?: DownloadRegistry;
   readonly engineBus?: EngineBusSubscriber;
   readonly hashComputer?: HashComputer;
+  /**
+   * Upload-side dependencies — added by
+   * migrate-upload-orchestration-out-of-engine §9. The `files:upload`
+   * handler needs the in-memory `UploadRegistry`. When absent — together
+   * with `resolveClient` — `files:upload`, `sync:cancel-upload`, and
+   * `uploads:list-active` are omitted from the returned map (mirrors the
+   * download-bundle pattern above) so existing tests that pre-date this
+   * change keep compiling. Production bootstrap supplies it alongside
+   * `resolveClient`. The legacy `sync:enqueue-upload` queue path was
+   * deleted in chunk F; uploads are exclusively a service-direct-RPC.
+   */
+  readonly uploadRegistry?: UploadRegistry;
 }
 
 export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
@@ -108,27 +125,13 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       },
     }),
 
-    "sync:enqueue-upload": async (params) => {
-      const jobId = randomUUID();
-      repo.insert({
-        id: jobId,
-        kind: "upload",
-        datasourceId: params.datasourceId,
-        sourcePath: params.sourcePath,
-        targetPath: params.targetPath,
-        conflictPolicy: params.conflictPolicy,
-      });
-      deps.bus.emit("job-enqueued", {
-        jobId,
-        kind: "upload",
-        datasourceId: params.datasourceId,
-        sourcePath: params.sourcePath,
-        targetPath: params.targetPath,
-        conflictPolicy: params.conflictPolicy,
-        enqueuedAt: Date.now(),
-      });
-      return { ok: true, result: { jobId } };
-    },
+    // migrate-upload-orchestration-out-of-engine §7.4 / §11 — the
+    // `sync:enqueue-upload` queue dispatcher entry was removed in chunk F.
+    // Single-file uploads are now handled by the `files:upload` direct-RPC
+    // (see the additive bundle below). The `UploadJobExecutor` was deleted
+    // alongside; no new `kind: 'upload'` rows are minted here. The legacy
+    // `'upload'` value remains in `JobKind` / DB CHECK constraint so
+    // historical rows in user DBs stay readable.
 
     "sync:enqueue-mirror": async (params) => {
       try {
@@ -368,6 +371,28 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
           }),
           "downloads:list-active": makeDownloadsListActiveHandler({
             registry: deps.downloadRegistry,
+          }),
+        }
+      : {}),
+    // files:upload + sync:cancel-upload + uploads:list-active —
+    // wired only when both `resolveClient` and `uploadRegistry` are
+    // supplied. Mirrors the download-bundle pattern above. The legacy
+    // queue-based `sync:enqueue-upload` dispatcher entry was deleted in
+    // chunk F; this is the sole single-file-upload handler bundle.
+    ...(deps.resolveClient && deps.uploadRegistry
+      ? {
+          "files:upload": makeFilesUploadHandler(
+            createDefaultFilesUploadDeps({
+              resolveClient: deps.resolveClient,
+              registry: deps.uploadRegistry,
+              fsSyncBus: deps.bus,
+            }),
+          ),
+          "sync:cancel-upload": makeSyncCancelUploadHandler({
+            registry: deps.uploadRegistry,
+          }),
+          "uploads:list-active": makeUploadsListActiveHandler({
+            registry: deps.uploadRegistry,
           }),
         }
       : {}),

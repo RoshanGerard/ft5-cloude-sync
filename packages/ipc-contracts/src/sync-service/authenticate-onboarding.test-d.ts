@@ -262,8 +262,9 @@ describe("sync:delete-credentials — symmetric counterpart of authenticate", ()
 
 describe("CommandMap exhaustive — new commands present, retired commands gone", () => {
   it("CommandName is exactly the documented set (incl. new commands, no retired sync:authenticate)", () => {
+    // migrate-upload-orchestration-out-of-engine §7.4 —
+    // `"sync:enqueue-upload"` removed from the union (chunk F).
     type Expected =
-      | "sync:enqueue-upload"
       | "sync:enqueue-mirror"
       | "sync:list-jobs"
       | "sync:get-job"
@@ -285,8 +286,11 @@ describe("CommandMap exhaustive — new commands present, retired commands gone"
       | "files:remove"
       | "files:rename"
       | "files:download"
+      | "files:upload"
       | "sync:cancel-download"
-      | "downloads:list-active";
+      | "downloads:list-active"
+      | "uploads:list-active"
+      | "sync:cancel-upload";
     expectTypeOf<CommandName>().toEqualTypeOf<Expected>();
   });
 

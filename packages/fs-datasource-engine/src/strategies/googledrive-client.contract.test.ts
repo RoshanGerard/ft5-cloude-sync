@@ -66,6 +66,13 @@ let creates: Array<{ nameMatch: string; handler: FileHandler }> = [];
 let updates: Array<{ fileId: string; handler: FileHandler }> = [];
 let aboutHandler: AboutHandler | null = null;
 let fetchResponses: Array<() => Response> = [];
+// Cancel-upload state: when `cancelMode = true`, the chunk PUTs hang on a
+// promise that rejects only when `cancelDoneSignal` aborts. The abort
+// listener wired to the session URL's DELETE captures `init.signal` so
+// the contract's `observedFreshCancelCleanup` hook can verify the signal
+// passed to the cleanup is NOT the user's controller.signal.
+let cancelMode = false;
+let cancelDeleteSignal: AbortSignal | null = null;
 
 function buildDrive(): GoogleDriveClientLike {
   return {
@@ -263,17 +270,46 @@ function buildDrive(): GoogleDriveClientLike {
 const fakeFetch = vi.fn(
   async (url: string | URL | Request, init?: RequestInit) => {
     const urlStr = String(url);
+    const method = (init?.method ?? "").toUpperCase();
     // The Drive resumable-session POST is the first fetch in the upload
     // flow; return a Location-header response so the strategy can proceed
     // to the chunk PUT. Subsequent PUTs to the session URL return the
     // file JSON.
-    if (
-      (init?.method ?? "").toUpperCase() === "POST" &&
-      urlStr.includes("upload/drive/v3/files")
-    ) {
+    if (method === "POST" && urlStr.includes("upload/drive/v3/files")) {
       return new Response("", {
         status: 200,
         headers: { Location: "https://googleapis.com/upload/session/CONTRACT" },
+      });
+    }
+    // Cancel-upload contract scenario: chunk PUT hangs until the
+    // user's signal aborts (then rejects with AbortError so the strategy
+    // normalizes to `cancelled`). A separate DELETE on the session URL
+    // is the strategy's cleanup — capture its `init.signal` so the
+    // fixture's `observedFreshCancelCleanup` can verify the cleanup
+    // signal is NOT the user's signal (Decision 3).
+    if (cancelMode && method === "DELETE" && urlStr.includes("/upload/session/CONTRACT")) {
+      cancelDeleteSignal = init?.signal ?? null;
+      // The Response constructor rejects null-body status codes with a
+      // body argument (204 falls into that bucket per the Fetch spec).
+      // Use 200 with an empty body — the strategy's cleanup catch path
+      // does not branch on status, so the choice is purely cosmetic for
+      // the test assertion.
+      return new Response("", { status: 200 });
+    }
+    if (cancelMode && method === "PUT" && urlStr.includes("/upload/session/CONTRACT")) {
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        if (sig?.aborted) {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          return;
+        }
+        sig?.addEventListener(
+          "abort",
+          () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          },
+          { once: true },
+        );
       });
     }
     if (urlStr.includes("/upload/session/CONTRACT")) {
@@ -326,6 +362,7 @@ const fixture: StrategyContractFixture = {
   credentials,
   expectedAuthErrorTag: "auth-expired",
   supportsQuota: true,
+  hasPathHandleCache: true,
 
   resetMock() {
     lists = [];
@@ -336,6 +373,8 @@ const fixture: StrategyContractFixture = {
     updates = [];
     aboutHandler = null;
     fetchResponses = [];
+    cancelMode = false;
+    cancelDeleteSignal = null;
     (fakeFetch as unknown as ReturnType<typeof vi.fn>).mockClear();
   },
 
@@ -527,6 +566,26 @@ const fixture: StrategyContractFixture = {
     }
     // The contract suite calls primeUploadOk → uploadFile({path: "/"}),
     // so no path resolution is needed for the root case.
+  },
+
+  primeUploadCancellable(_opts) {
+    // Drive's upload does not need extra path resolution for parent="/".
+    // `fakeFetch` switches into cancel mode via the module-level flag —
+    // the session POST returns a Location, the chunk PUT hangs until
+    // the user's signal aborts (then rejects AbortError → normalize
+    // to `cancelled`), and a separate DELETE on the session URL is
+    // captured for the `observedFreshCancelCleanup` introspection.
+    cancelMode = true;
+    cancelDeleteSignal = null;
+  },
+
+  observedFreshCancelCleanup(opts) {
+    // Drive's cleanup runs against `AbortSignal.timeout(5000)` per
+    // Decision 3. The captured signal MUST exist (a DELETE was
+    // observed) AND MUST NOT be the user's signal.
+    return (
+      cancelDeleteSignal !== null && cancelDeleteSignal !== opts.userSignal
+    );
   },
 
   primeDeleteOk(targetPath) {

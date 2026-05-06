@@ -94,24 +94,14 @@ describe("sync:get-status", () => {
   });
 });
 
-describe("sync:enqueue-upload", () => {
-  it("inserts a queued row and emits job-enqueued", async () => {
-    const res = await call("sync:enqueue-upload", {
-      datasourceId: "ds-1",
-      sourcePath: "/tmp/a.txt",
-      targetPath: "/remote/a.txt",
-      conflictPolicy: "overwrite",
-    });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.result.jobId).toMatch(/^[0-9a-f-]{36}$/);
-
-    expect(emitted.map(([n]) => n)).toContain("job-enqueued");
-    const list = await call("sync:list-jobs", {});
-    if (!list.ok) throw new Error("list-jobs failed");
-    expect(list.result.jobs.map((j) => j.id)).toContain(res.result.jobId);
-  });
-});
+// migrate-upload-orchestration-out-of-engine §7.4 / §11 — the
+// `sync:enqueue-upload` dispatcher entry was deleted in chunk F.
+// Single-file uploads now flow through the `files:upload` direct-RPC
+// (covered by `services/fs-sync/src/commands/__tests__/files-upload.test.ts`),
+// not through the queue. The scaffolding-tests in this file that used
+// `sync:enqueue-upload` to mint `kind: 'upload'` rows for list / cancel
+// coverage have been switched to `sync:enqueue-mirror` (the sole remaining
+// queue-entry handler).
 
 describe("sync:enqueue-mirror", () => {
   it("succeeds on first call, rejects duplicate with sync-already-running", async () => {
@@ -147,11 +137,9 @@ describe("sync:enqueue-mirror", () => {
 
 describe("sync:list-jobs + sync:get-job", () => {
   it("list and get round-trip an inserted job", async () => {
-    const { ok, result } = (await call("sync:enqueue-upload", {
+    const { ok, result } = (await call("sync:enqueue-mirror", {
       datasourceId: "ds",
-      sourcePath: "/a",
-      targetPath: "/b",
-      conflictPolicy: "overwrite",
+      sourcePath: "/list-and-get",
     })) as { ok: true; result: { jobId: string } };
     expect(ok).toBe(true);
 
@@ -169,11 +157,9 @@ describe("sync:list-jobs + sync:get-job", () => {
 
 describe("sync:cancel-job", () => {
   it("cancels a queued job and emits job-cancelled", async () => {
-    const { ok, result } = (await call("sync:enqueue-upload", {
+    const { ok, result } = (await call("sync:enqueue-mirror", {
       datasourceId: "ds",
-      sourcePath: "/a",
-      targetPath: "/b",
-      conflictPolicy: "overwrite",
+      sourcePath: "/cancel-queued",
     })) as { ok: true; result: { jobId: string } };
     expect(ok).toBe(true);
 
@@ -192,11 +178,9 @@ describe("sync:cancel-job", () => {
   it("refuses to cancel a terminal job with tag=not-cancelable", async () => {
     // Insert + force to completed (illegal path from outside, but we can use
     // the raw DAO). Simpler: cancel one already cancelled.
-    const { ok, result } = (await call("sync:enqueue-upload", {
+    const { ok, result } = (await call("sync:enqueue-mirror", {
       datasourceId: "ds",
-      sourcePath: "/a",
-      targetPath: "/b",
-      conflictPolicy: "overwrite",
+      sourcePath: "/cancel-terminal",
     })) as { ok: true; result: { jobId: string } };
     expect(ok).toBe(true);
     await call("sync:cancel-job", { jobId: result.jobId });

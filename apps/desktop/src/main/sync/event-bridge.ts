@@ -30,21 +30,19 @@
 //      hook and a `service-reconnected` event after the new handshake
 //      completes.
 //
-//   5. Upload-progress translation (task 7.8 + Bug 1 fix): `job-progress`
-//      events for `kind='upload'` jobs are translated to
-//      `DatasourcesUploadProgressEvent` (status `uploading`) and emitted on
-//      `DATASOURCES_CHANNELS.uploadProgress`. Terminal engine events for
-//      upload jobs are also translated: `job-completed` → `status:'completed'`,
-//      `job-failed` and `job-cancelled` → `status:'failed'` (with an `error`
-//      string when one is available). Without these terminal translations the
-//      renderer toaster (`createUploadJobToaster`) never sees a flip-over
-//      event and toasts hang at "Uploading 100%" forever.
-//      The bridge tracks `jobId → kind` via `job-enqueued` events and seeds
-//      the map from the state-seed jobs. Entries are evicted on terminal
-//      events to prevent unbounded growth — the eviction runs AFTER the
-//      terminal translation so `jobKinds.get(jobId) === 'upload'` is still
-//      valid at translation time. Mirror/sync-job progress and terminal
-//      events are NOT emitted on this channel.
+//   5. Upload-progress translation REMOVED by
+//      migrate-upload-orchestration-out-of-engine §13.4 (chunk E). The
+//      legacy `DATASOURCES_CHANNELS.uploadProgress` channel is gone —
+//      the renderer's upload toaster now subscribes to the unified
+//      `sync:event-stream` (filtered to the four upload event kinds
+//      `uploading`/`file-created`/`upload-failed`/`upload-cancelled`),
+//      keyed by service-minted `uploadJobId`. The fs-sync handler at
+//      `services/fs-sync/src/commands/files-upload.ts` is the SOLE
+//      emitter; the engine no longer participates in upload event
+//      emission. The `jobKinds` / `jobDatasources` maps now serve only
+//      the `job-completed` → datasource-status healing path; upload-job
+//      kinds are still seeded (via `job-enqueued` from the legacy
+//      executor) until chunk F deletes the executor itself.
 //
 // Singleton guard: `createSyncEventBridge` registers ONE bridge per supervisor
 // lifetime. A second call throws to catch double-init bugs — same pattern as
@@ -61,11 +59,7 @@ import type { BrowserWindow } from "electron";
 import { shell } from "electron";
 
 import type { EventFrame } from "@ft5/ipc-contracts/sync-service";
-import {
-  DATASOURCES_CHANNELS,
-  type DatasourceSummary,
-  type DatasourcesUploadProgressEvent,
-} from "@ft5/ipc-contracts";
+import type { DatasourceSummary } from "@ft5/ipc-contracts";
 import {
   SYNC_CHANNELS,
   type SyncEvent,
@@ -216,16 +210,11 @@ export function _createBridge(
     }
   }
 
-  function broadcastUploadProgress(event: DatasourcesUploadProgressEvent): void {
-    if (disposed) return;
-    for (const win of windows) {
-      if (win.isDestroyed()) {
-        windows.delete(win);
-        continue;
-      }
-      win.webContents.send(DATASOURCES_CHANNELS.uploadProgress, event);
-    }
-  }
+  // migrate-upload-orchestration-out-of-engine §13.4 — the legacy
+  // `broadcastUploadProgress` helper (which fanned translated upload
+  // events out on `DATASOURCES_CHANNELS.uploadProgress`) is REMOVED.
+  // Upload events flow on `sync:event-stream` directly from the
+  // fs-sync `files:upload` handler keyed by `uploadJobId`.
 
   function deliverSeedToWindow(win: BrowserWindow, seed: SyncStateSeedPayload): void {
     if (win.isDestroyed()) return;
@@ -278,60 +267,22 @@ export function _createBridge(
         }
       }
 
-      // Bug 1 fix: terminal-event translation for upload jobs.
-      // The renderer toaster (`createUploadJobToaster`) waits on a terminal
-      // `DatasourcesUploadProgressEvent` to flip the toast off "Uploading
-      // X%". The engine emits `job-completed`/`job-failed`/`job-cancelled`
-      // but does NOT emit a final `job-progress` event, so without this
-      // translation the toast hangs forever.
-      //
-      // Byte counts on terminal events: emitted as 0/0. The
-      // `JobCompletedPayload` does not carry byte counts, and the toaster
-      // only consumes byte counts on the `uploading` branch — terminal
-      // branches read `status` and `error`. Reporting 0/0 is honest about
-      // "we don't know" rather than smuggling stale per-job state.
-      //
-      // Cancellation: mapped to `status: 'failed'` with an explicit
-      // "upload was cancelled" error message. The contract only allows
-      // `uploading | completed | failed`, and surfacing a Retry-able
-      // failed toast is preferable to a silently-stuck loading toast.
-      //
-      // MUST run BEFORE the eviction block below — eviction deletes the
-      // jobKinds entry and we need `jobKinds.get(jobId) === 'upload'` to
-      // still resolve here.
-      if (
-        (name === "job-completed" || name === "job-failed" || name === "job-cancelled") &&
-        payload
-      ) {
-        const jobId = payload["jobId"] as string | undefined;
-        if (jobId && jobKinds.get(jobId) === "upload") {
-          let status: DatasourcesUploadProgressEvent["status"];
-          let errorMessage: string | undefined;
-          if (name === "job-completed") {
-            status = "completed";
-          } else if (name === "job-failed") {
-            status = "failed";
-            errorMessage =
-              (payload["errorMessage"] as string | undefined) ??
-              (payload["error"] as string | undefined) ??
-              (payload["message"] as string | undefined);
-          } else {
-            // job-cancelled
-            status = "failed";
-            errorMessage = "upload was cancelled";
-          }
-          const terminalEvent: DatasourcesUploadProgressEvent = {
-            transactionId: jobId,
-            bytesUploaded: 0,
-            bytesTotal: 0,
-            status,
-            ...(errorMessage ? { error: errorMessage } : {}),
-          };
-          broadcastUploadProgress(terminalEvent);
-        }
-      }
+      // migrate-upload-orchestration-out-of-engine §13.4 — the legacy
+      // upload-progress translation (terminal + streaming) is REMOVED.
+      // Upload events now flow on `sync:event-stream` directly from the
+      // fs-sync `files:upload` handler — see
+      // `services/fs-sync/src/commands/files-upload.ts`. The renderer's
+      // upload toaster subscribes to `window.api.sync.onEvent` filtered
+      // to the four upload event kinds. The legacy
+      // `DATASOURCES_CHANNELS.uploadProgress` channel + the per-`jobId
+      // → kind` translation map are gone.
 
-      // Evict terminal events to prevent unbounded growth.
+      // Evict jobKinds + jobDatasources entries on terminal events to
+      // prevent unbounded growth. The map is now seeded only by
+      // `job-enqueued` for the `sync:enqueue-mirror` queue path (the
+      // legacy `sync:enqueue-upload` queue path was deleted in chunk F);
+      // it feeds the `job-completed` → datasource-status healing path
+      // above.
       if (
         (name === "job-completed" || name === "job-failed" || name === "job-cancelled") &&
         payload
@@ -340,24 +291,6 @@ export function _createBridge(
         if (jobId) {
           jobKinds.delete(jobId);
           jobDatasources.delete(jobId);
-        }
-      }
-
-      // Upload-progress translation: job-progress for upload jobs →
-      // DatasourcesUploadProgressEvent on the uploadProgress channel.
-      // Mirror-job progress is NOT emitted on this channel.
-      if (name === "job-progress" && payload) {
-        const jobId = payload["jobId"] as string | undefined;
-        if (jobId && jobKinds.get(jobId) === "upload") {
-          const bytesSent = (payload["bytesSent"] as number | undefined) ?? 0;
-          const totalBytes = (payload["totalBytes"] as number | null | undefined) ?? 0;
-          const uploadProgress: DatasourcesUploadProgressEvent = {
-            transactionId: jobId,
-            bytesUploaded: bytesSent,
-            bytesTotal: totalBytes ?? 0,
-            status: "uploading",
-          };
-          broadcastUploadProgress(uploadProgress);
         }
       }
 

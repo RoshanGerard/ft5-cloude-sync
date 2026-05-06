@@ -1,40 +1,133 @@
-// Tasks 9.2 + 9.3 — per-job Sonner upload toaster.
+// migrate-upload-orchestration-out-of-engine §14.2 / §14.5 — per-job
+// Sonner upload toaster post chunk-D direct-RPC cutover.
 //
-// `createUploadJobToaster` is the production wiring of the `UploadToaster`
-// port the orchestrator (Task 5) hands its dispatch + batch-error events
-// to. Every successful `files.upload` dispatch produces ONE toast bound to
-// the new `jobId`'s progress feed; that toast updates in place on
-// `uploading` events, flips to success on `completed`, and flips to red
-// with a Retry action on `failed`. The Retry action invokes the closured
-// `retry()` callback supplied by `createUploadOrchestrator` (which simply
-// re-runs `dispatchOne(plan)`); when that re-dispatch lands, the
-// orchestrator emits a fresh `onJobDispatched` for the new jobId and a
-// brand-new toast is born — see test (h) for the round-trip.
+// `createUploadJobToaster` subscribes ONCE to a unified
+// `sync:event-stream` (filtered to the four upload event kinds
+// `uploading`/`file-created`/`upload-failed`/`upload-cancelled`) and
+// fans events to per-`uploadJobId` toasts. Mirrors
+// `download-job-toast.ts` in shape but retains the orchestrator-driven
+// `onJobDispatched(jobId, basename, retry)` entry point so the
+// dispatch-time renderer wiring stays unchanged.
 //
-// Per-job state lives in the closures returned from `onJobDispatched` —
-// NEVER in a shared map keyed by jobId. Two concurrent dispatches must
-// produce two independent units (test (g)). The progress subscription's
-// unsubscribe is captured per-dispatch; either the terminal event
-// (success/failure) or the Retry click closes it.
+// Spawn paths:
+//   1. Orchestrator dispatch (`onJobDispatched`) — primary path. Mounts
+//      a loading toast keyed on the service-minted `uploadJobId` and
+//      records the basename + retry callback in the per-job tracker.
+//   2. App-launch hydrate (`hydrateActiveUploads`) — for each in-flight
+//      upload returned by `uploads:list-active`, mount a loading toast
+//      at the seeded percentage. Live events for those ids then update
+//      the existing toast rather than spawning a duplicate.
 //
-// Collaborator injection mirrors `createUploadOrchestrator`'s
-// `resolveApi` pattern: the production fallbacks for `toast` (Sonner)
-// and `progressApi` (`window.api.datasources`) are read LAZILY at call
-// time, never at construction. That keeps the helper trivially unit-
-// testable from a node-style environment without window/Sonner setup
-// and keeps the SSR-style rendering path safe.
+// Pre-migration the toaster subscribed to
+// `window.api.datasources.onUploadProgress(transactionId, ...)` —
+// per-dispatch subscriptions, transactionId-keyed events translated
+// from the engine's `job-progress` events by the desktop event-bridge.
+// Post-migration the engine no longer emits upload events; the
+// fs-sync handler is the SOLE emitter (see
+// services/fs-sync/src/commands/files-upload.ts) and events flow on
+// `sync:event-stream` keyed by `uploadJobId`. Eliminates the legacy
+// translation layer entirely.
+//
+// Cancel action: Sonner's `toast.loading(...)` accepts an `action` opt;
+// the toaster wires it to `syncApi.cancelUpload({ uploadJobId })`. Per
+// the design this is fire-and-forget — the user-visible signal is the
+// subsequent `upload-cancelled` event arriving on the bus, which the
+// `upload-cancelled` handler dismisses with `toast.dismiss`.
 
-import type { DatasourcesUploadProgressEvent } from "@ft5/ipc-contracts";
 import { toast as sonnerToast } from "sonner";
 
 import type { UploadToaster } from "./use-upload-orchestrator";
 
-// Toast api the helper uses (subset of sonner's `toast`). Injected for
-// tests; production falls back to `import { toast } from "sonner"`.
+// --- Public types ----------------------------------------------------
+
+// Local mirror of the four upload-event payloads from
+// `@ft5/ipc-contracts/sync-service`. Inlined here rather than imported
+// because the sync-service subpath is forbidden from the renderer
+// barrier (see preload's import-boundary test). Structural shape is
+// identical to the wire contract.
+export type UploadEvent =
+  | {
+      readonly kind: "uploading";
+      readonly payload: {
+        readonly uploadJobId: string;
+        readonly datasourceId: string;
+        readonly sourcePath: string;
+        readonly targetPath: string;
+        readonly bytesUploaded: number;
+        readonly bytesTotal: number | null;
+      };
+    }
+  | {
+      readonly kind: "file-created";
+      readonly payload: {
+        readonly uploadJobId: string;
+        readonly datasourceId: string;
+        readonly targetPath: string;
+        readonly handle: string;
+      };
+    }
+  | {
+      readonly kind: "upload-failed";
+      readonly payload: {
+        readonly uploadJobId: string;
+        readonly datasourceId: string;
+        readonly targetPath: string;
+        readonly tag:
+          | "auth-revoked"
+          | "disconnected"
+          | "rate-limited"
+          | "other"
+          | "invalid-datasource";
+        readonly message: string;
+      };
+    }
+  | {
+      readonly kind: "upload-cancelled";
+      readonly payload: {
+        readonly uploadJobId: string;
+        readonly datasourceId: string;
+        readonly sourcePath: string;
+        readonly targetPath: string;
+        readonly bytesUploaded: number;
+        readonly bytesTotal: number | null;
+        readonly reason: "user";
+      };
+    };
+
+export type UploadEventKind = UploadEvent["kind"];
+
+const UPLOAD_EVENT_KINDS: ReadonlySet<UploadEventKind> = new Set<UploadEventKind>([
+  "uploading",
+  "file-created",
+  "upload-failed",
+  "upload-cancelled",
+]);
+
+/**
+ * Local mirror of `UploadJob` from the sync-service wire surface.
+ * Structurally identical; mirrored here for the same reason as
+ * `UploadEvent` (the sync-service subpath is forbidden from the
+ * renderer barrier).
+ */
+export interface UploadJobSummary {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesUploaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
+
+/** Subset of Sonner's `toast` callable shape used by the toaster. */
 export interface ToastApi {
   loading(
     message: string,
-    opts?: { id?: string | number; duration?: number },
+    opts?: {
+      id?: string | number;
+      duration?: number;
+      action?: { label: string; onClick: () => void };
+    },
   ): string | number;
   success(
     message: string,
@@ -46,49 +139,64 @@ export interface ToastApi {
       id?: string | number;
       duration?: number;
       action?: { label: string; onClick: () => void };
-      // Sonner's per-toast richColors override. When true, the toast
-      // renders with red bg/border per Sonner's "rich" error palette
-      // even though the global Toaster is configured without
-      // richColors (see components/ui/sonner.tsx). Used on terminal
-      // upload failures per spec § "flips to red error state".
+      // Sonner's per-toast richColors override.
       richColors?: boolean;
     },
   ): string | number;
   dismiss(id: string | number): void;
 }
 
-// Subscription api keyed by transactionId (≡ jobId from files.upload).
-// Returns an unsubscribe fn. Injected for tests; production falls back
-// to `window.api.datasources.onUploadProgress`.
-export interface UploadProgressApi {
-  onUploadProgress(
-    transactionId: string,
-    callback: (event: DatasourcesUploadProgressEvent) => void,
-  ): () => void;
+/**
+ * Subscription port. The factory hands the callback to whichever event
+ * stream the host wires up. In production this is
+ * `window.api.sync.onEvent` filtered to the four upload kinds; tests
+ * inject a stub that calls back synchronously.
+ */
+export interface UploadEventApi {
+  onUploadEvent(callback: (event: UploadEvent) => void): () => void;
+}
+
+/**
+ * Cancel action bridge — invoked by the Cancel button on an in-flight
+ * loading toast. Production resolves to
+ * `window.api.sync.cancelUpload({ uploadJobId })`; tests inject a stub.
+ * Fire-and-forget — the toaster does NOT await the Promise; the
+ * user-visible signal is the subsequent `upload-cancelled` event
+ * arriving on the bus.
+ */
+export interface SyncActionsApi {
+  cancelUpload(req: { uploadJobId: string }): Promise<unknown>;
 }
 
 export interface UploadToasterDeps {
   readonly toast?: ToastApi;
-  readonly progressApi?: UploadProgressApi;
+  readonly eventApi?: UploadEventApi;
+  readonly syncApi?: SyncActionsApi;
   /**
-   * Optional per-job-completed callback. Fires when a `status: "completed"`
-   * upload-progress event arrives for any dispatched job, BEFORE the
-   * progress subscription is closed. The file-explorer wires this to
+   * Optional per-job-completed callback. Fires when a `file-created`
+   * event arrives for any dispatched job, BEFORE the per-job tracker
+   * entry is finalised. The file-explorer wires this to
    * `store.retryLoad()` so the entries list refreshes once the provider
-   * has acknowledged the new file (Bug 2 fix). Failed uploads do not
-   * trigger this callback — the entries list stays as-is until the user
-   * either retries or navigates.
+   * has acknowledged the new file (Bug 2 fix). Failed / cancelled
+   * uploads do not trigger this callback.
    */
-  readonly onJobCompleted?: (jobId: string) => void;
+  readonly onJobCompleted?: (uploadJobId: string) => void;
+}
+
+export interface UploadJobToaster extends UploadToaster {
+  /**
+   * Pre-seed the per-job tracker with one toast per active upload
+   * returned by `uploads:list-active`. Called from the file-explorer's
+   * `useEffect(... onActiveUploadsHydrate)`. Mirrors the download
+   * toaster's `hydrateActiveDownloads`.
+   */
+  hydrateActiveUploads(jobs: readonly UploadJobSummary[]): void;
+  /** Tear down the upload-event subscription. */
+  dispose(): void;
 }
 
 // --- Production fallbacks --------------------------------------------
 
-// Thin adapter that maps the tightly-typed `ToastApi` surface onto
-// Sonner's runtime `toast` callable. Sonner's signatures accept the same
-// `{ id, duration, action }` options shape, so the adapter is essentially
-// pass-through; the wrapper exists so we have a single place to absorb
-// any future Sonner typing drift without touching call sites.
 function sonnerAdapter(): ToastApi {
   return {
     loading: (message, opts) =>
@@ -103,50 +211,144 @@ function sonnerAdapter(): ToastApi {
   };
 }
 
-function resolveProgressApi(
-  injected: UploadProgressApi | undefined,
-): UploadProgressApi {
+function resolveEventApi(
+  injected: UploadEventApi | undefined,
+): UploadEventApi {
   if (injected) return injected;
-  // Production fallback — pull from the preload bridge. Lazy lookup so
-  // tests that never touch `window.api` still satisfy the type.
-  const api = (
+  // Production fallback: subscribe to `window.api.sync.onEvent` and
+  // filter to the four upload kinds. The renderer-facing `SyncEvent`
+  // type does NOT enumerate the upload kinds (the
+  // `sync-service-desktop` re-export omits them), but the main-process
+  // `event-bridge` forwards every service event to the renderer
+  // verbatim — the runtime payload includes the four upload events
+  // regardless. Cast through `unknown` accordingly. Same pattern as
+  // download-job-toast.ts's `resolveEventApi`.
+  //
+  // Test-harness fallback: when `window.api.sync.onEvent` is not
+  // available (e.g. node-style unit tests for the dashboard's
+  // `<DatasourceCard>` and `<FileExplorer>` mounted without the
+  // preload), return a no-op subscription. The toaster constructs
+  // safely, no listener is registered, and no events are routed. This
+  // is the right choice for two reasons: (1) the toaster is the only
+  // pre-mounted dependency on `window.api.sync.onEvent`, and tests
+  // that don't install the preload also don't fire upload events, so
+  // a no-op is functionally equivalent to a wired-up subscription
+  // that never receives anything; (2) throwing here would force every
+  // mounted test that uses the dashboard / explorer (and there are
+  // many) to install a stub, which masks unrelated test concerns.
+  // Mirrors the lazy-fallback pattern in
+  // `useDownloadOrchestrator.resolveApi`.
+  type LooseEvent = { kind: string; payload: unknown };
+  const bridge = (
     globalThis as unknown as {
-      window?: { api?: { datasources?: UploadProgressApi } };
+      window?: {
+        api?: {
+          sync?: {
+            onEvent?: (
+              cb: (event: LooseEvent) => void,
+            ) => () => void;
+          };
+        };
+      };
     }
-  ).window?.api?.datasources;
-  if (!api) {
-    throw new Error(
-      "createUploadJobToaster: no progressApi provided and window.api.datasources is unavailable",
-    );
+  ).window?.api?.sync?.onEvent;
+  if (typeof bridge !== "function") {
+    return { onUploadEvent: () => () => {} };
   }
-  return api;
+  return {
+    onUploadEvent(callback) {
+      const unsubscribe = bridge((event) => {
+        if (UPLOAD_EVENT_KINDS.has(event.kind as UploadEventKind)) {
+          callback(event as UploadEvent);
+        }
+      });
+      return unsubscribe;
+    },
+  };
+}
+
+function resolveSyncApi(
+  injected: SyncActionsApi | undefined,
+): SyncActionsApi {
+  if (injected) return injected;
+  // Production fallback: pull from the preload bridge. Lazy resolution —
+  // we look up `window.api.sync.cancelUpload` at click time so the
+  // toaster can mount safely in test harnesses without the preload
+  // (e.g. node-style tests for unrelated code paths). Throwing at the
+  // click site keeps the failure mode diagnosable; non-throwing here
+  // would silently swallow user clicks. Same pattern as
+  // download-job-toast's resolveSyncApi.
+  type CancelFn = (req: { uploadJobId: string }) => Promise<unknown>;
+  return {
+    async cancelUpload(req) {
+      const fn = (
+        globalThis as unknown as {
+          window?: {
+            api?: {
+              sync?: { cancelUpload?: CancelFn };
+            };
+          };
+        }
+      ).window?.api?.sync?.cancelUpload;
+      if (typeof fn !== "function") {
+        throw new Error(
+          "createUploadJobToaster: window.api.sync.cancelUpload is unavailable",
+        );
+      }
+      return fn(req);
+    },
+  };
+}
+
+// --- Helpers ---------------------------------------------------------
+
+function basenameFromPath(path: string): string {
+  const trimmed = path.endsWith("/") ? path.slice(0, -1) : path;
+  const lastSlash = trimmed.lastIndexOf("/");
+  return lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
+}
+
+function formatProgressMessage(
+  basename: string,
+  bytesUploaded: number,
+  bytesTotal: number | null,
+): string {
+  if (bytesTotal !== null && bytesTotal > 0) {
+    const pct = Math.max(
+      0,
+      Math.min(100, Math.round((100 * bytesUploaded) / bytesTotal)),
+    );
+    return `Uploading ${basename} — ${pct}%`;
+  }
+  return `Uploading ${basename}…`;
+}
+
+function formatSeededRatio(
+  bytesUploaded: number,
+  contentLength: number | null,
+): { bytesUploaded: number; bytesTotal: number | null } {
+  return { bytesUploaded, bytesTotal: contentLength };
 }
 
 // --- Implementation --------------------------------------------------
 
+interface ToastEntry {
+  readonly toastId: string | number;
+  readonly basename: string;
+  readonly retry?: () => Promise<void>;
+  /** Marker set on terminal events (success/failure/cancel). */
+  readonly terminal?: boolean;
+}
+
 export function createUploadJobToaster(
   deps?: UploadToasterDeps,
-): UploadToaster {
-  // Resolve the toast adapter eagerly — Sonner's `toast` is a stable
-  // module export so there's no SSR concern, and the adapter itself is
-  // a pure object. The progressApi fallback stays lazy because it
-  // touches `window`.
+): UploadJobToaster {
   const toast: ToastApi = deps?.toast ?? sonnerAdapter();
+  const eventApi = resolveEventApi(deps?.eventApi);
+  const syncApi = resolveSyncApi(deps?.syncApi);
 
-  // Per-dispatch id counter — each `onJobDispatched` invocation gets a
-  // unique id we PRE-GENERATE and pass to Sonner via the initial
-  // `toast.loading({ id })`. Two reasons:
-  //   1. Test (a) asserts the initial loading call carries an `id`
-  //      option (`expect(opts?.id).toBeDefined()`). Sonner accepts a
-  //      caller-supplied id and uses it as the toast key.
-  //   2. The return value is what we use to address the toast in
-  //      subsequent updates / success / error / dismiss calls. Sonner
-  //      echoes the supplied id back; the test mock can override via
-  //      `mockReturnValueOnce(...)` to assert that downstream calls
-  //      use the RETURN value as the canonical identifier (test (b)).
-  // Counter closed over by the factory so concurrent dispatches never
-  // collide; tests that don't override the return get a stable
-  // sequence (`upload-toast-1`, `upload-toast-2`, ...).
+  // Per-uploadJobId tracker.
+  const tracker = new Map<string, ToastEntry>();
   let nextLocalId = 1;
   function generateToastId(): string {
     const n = nextLocalId;
@@ -154,96 +356,190 @@ export function createUploadJobToaster(
     return `upload-toast-${n}`;
   }
 
+  function buildCancelAction(uploadJobId: string): {
+    label: string;
+    onClick: () => void;
+  } {
+    return {
+      label: "Cancel",
+      onClick: () => {
+        // Fire-and-forget; the user-visible signal is the subsequent
+        // `upload-cancelled` event. Errors at the IPC layer surface as
+        // unhandled rejections on the console — production callers
+        // always have the bridge wired, so this only matters for
+        // harness misconfigurations. Mirrors download-job-toast.ts's
+        // buildCancelAction.
+        void syncApi.cancelUpload({ uploadJobId });
+      },
+    };
+  }
+
+  function handleEvent(event: UploadEvent): void {
+    const uploadJobId = event.payload.uploadJobId;
+    const existing = tracker.get(uploadJobId);
+
+    if (event.kind === "uploading") {
+      const basename =
+        existing?.basename ?? basenameFromPath(event.payload.targetPath);
+      if (existing) {
+        toast.loading(
+          formatProgressMessage(
+            basename,
+            event.payload.bytesUploaded,
+            event.payload.bytesTotal,
+          ),
+          {
+            id: existing.toastId,
+            action: buildCancelAction(uploadJobId),
+          },
+        );
+      } else {
+        // First event for an uploadJobId we haven't seen yet (e.g.
+        // hydrate didn't catch it OR the orchestrator's
+        // onJobDispatched ran out of order). Spawn a fresh toast.
+        const initialId = generateToastId();
+        const toastId = toast.loading(
+          formatProgressMessage(
+            basename,
+            event.payload.bytesUploaded,
+            event.payload.bytesTotal,
+          ),
+          {
+            id: initialId,
+            action: buildCancelAction(uploadJobId),
+          },
+        );
+        tracker.set(uploadJobId, { toastId, basename });
+      }
+      return;
+    }
+
+    if (event.kind === "file-created") {
+      // Duplicate-terminal guard: if this id has already received a
+      // terminal event, do not re-render. (Defensive — see download
+      // toaster's `terminal` docstring for the race window.)
+      if (existing?.terminal === true) return;
+      const basename =
+        existing?.basename ?? basenameFromPath(event.payload.targetPath);
+      const toastId = existing?.toastId ?? generateToastId();
+      toast.success(`Uploaded ${basename}`, {
+        id: toastId,
+        duration: 4000,
+      });
+      tracker.set(uploadJobId, { toastId, basename, terminal: true });
+      deps?.onJobCompleted?.(uploadJobId);
+      return;
+    }
+
+    if (event.kind === "upload-failed") {
+      if (existing?.terminal === true) return;
+      const basename =
+        existing?.basename ?? basenameFromPath(event.payload.targetPath);
+      const retry = existing?.retry;
+      const toastId = existing?.toastId ?? generateToastId();
+      const reason = event.payload.message
+        ? `Upload failed (${event.payload.tag}): ${basename}`
+        : `Upload failed: ${basename}`;
+      toast.error(reason, {
+        id: toastId,
+        duration: Number.POSITIVE_INFINITY,
+        // Per-toast richColors override — the global Toaster runs
+        // without richColors so neutral toasts use the project's
+        // --popover surface; the override gives THIS toast the red
+        // treatment without changing every error toast app-wide.
+        // Same pattern as the legacy upload toaster + download
+        // failure toast.
+        richColors: true,
+        action: {
+          label: "Retry",
+          onClick: () => {
+            // Dismiss the OLD toast; the orchestrator's `retry()`
+            // closure re-runs the dispatch which fires
+            // `onJobDispatched(newUploadJobId)` and spawns a fresh
+            // toast bound to the new id. Same pattern as the legacy
+            // upload toaster (test (e) in upload-job-toast.test.ts).
+            toast.dismiss(toastId);
+            if (retry !== undefined) {
+              void retry();
+            }
+          },
+        },
+      });
+      tracker.set(uploadJobId, {
+        toastId,
+        basename,
+        retry,
+        terminal: true,
+      });
+      return;
+    }
+
+    if (event.kind === "upload-cancelled") {
+      if (existing) {
+        toast.dismiss(existing.toastId);
+        tracker.delete(uploadJobId);
+      }
+      return;
+    }
+  }
+
+  const unsubscribe = eventApi.onUploadEvent(handleEvent);
+
   function onJobDispatched(args: {
     jobId: string;
     basename: string;
     retry: () => Promise<void>;
   }): void {
-    const progressApi = resolveProgressApi(deps?.progressApi);
-
-    // Pass an explicit id (test (a)); use the RETURN value as the
-    // canonical identifier for subsequent updates (test (b)).
+    // If we already saw an event for this id (rare race — e.g. the
+    // service emitted the initial `uploading 0%` before the dispatch
+    // response landed in the renderer), don't double-mount. Update the
+    // tracker's `retry` so the failure-toast Retry button works.
+    const existing = tracker.get(args.jobId);
+    if (existing) {
+      tracker.set(args.jobId, { ...existing, retry: args.retry });
+      return;
+    }
     const initialId = generateToastId();
     const toastId = toast.loading(`Uploading ${args.basename}…`, {
       id: initialId,
+      action: buildCancelAction(args.jobId),
     });
-
-    // Subscribe to the per-job progress feed. Capture the unsubscribe so
-    // the terminal handler (or the retry click) can close it.
-    const unsubscribe = progressApi.onUploadProgress(
-      args.jobId,
-      (event: DatasourcesUploadProgressEvent) => {
-        if (event.status === "uploading") {
-          // Guard divide-by-zero: until we have a non-zero total we
-          // can't compute a meaningful pct, so display 0%.
-          const pct =
-            event.bytesTotal > 0
-              ? Math.round((100 * event.bytesUploaded) / event.bytesTotal)
-              : 0;
-          toast.loading(`Uploading ${args.basename} — ${pct}%`, {
-            id: toastId,
-          });
-          return;
-        }
-        if (event.status === "completed") {
-          toast.success(`Uploaded ${args.basename}`, {
-            id: toastId,
-            duration: 4000,
-          });
-          deps?.onJobCompleted?.(args.jobId);
-          unsubscribe();
-          return;
-        }
-        if (event.status === "failed") {
-          const reason = event.error
-            ? `Upload failed (${event.error}): ${args.basename}`
-            : `Upload failed: ${args.basename}`;
-          toast.error(reason, {
-            id: toastId,
-            duration: Number.POSITIVE_INFINITY,
-            // Spec § "flips to red error state" — the global Toaster
-            // is configured without richColors so neutral toasts use
-            // the project's --popover surface; per-toast override
-            // here gives THIS toast the red treatment without
-            // changing every error toast app-wide.
-            richColors: true,
-            action: {
-              label: "Retry",
-              onClick: () => {
-                // Close the OLD feed + dismiss the OLD toast so the
-                // new dispatch (when it fires `onJobDispatched` for the
-                // new jobId) gets a clean slate. We intentionally do
-                // NOT await `retry()` — the orchestrator's
-                // `dispatchOne` flows through the toaster ports for
-                // both success and error paths, so any caller awaiting
-                // here would block the Sonner action callback for no
-                // benefit. `void retry()` lets the action handler
-                // return synchronously.
-                unsubscribe();
-                toast.dismiss(toastId);
-                void args.retry();
-              },
-            },
-          });
-          // Note: do NOT call `unsubscribe()` here — the user may click
-          // Retry, and a new terminal event for THIS jobId is no longer
-          // possible (the engine emits one terminal status per job),
-          // but leaving the subscription open is harmless and the
-          // Retry handler unsubscribes deterministically. If Retry is
-          // never clicked, the toast stays open with `Infinity`
-          // duration and the listener is collected when the renderer
-          // unmounts. This matches the test contract: test (d) only
-          // asserts on the action shape, not on unsubscribe timing for
-          // the failure path.
-          return;
-        }
-      },
-    );
+    tracker.set(args.jobId, {
+      toastId,
+      basename: args.basename,
+      retry: args.retry,
+    });
   }
 
   function onBatchError(message: string): void {
     toast.error(message);
   }
 
-  return { onJobDispatched, onBatchError };
+  function hydrateActiveUploads(jobs: readonly UploadJobSummary[]): void {
+    for (const job of jobs) {
+      // Skip if a live event already spawned a toast for this id.
+      if (tracker.has(job.uploadJobId)) continue;
+      const basename = basenameFromPath(job.targetPath);
+      const seed = formatSeededRatio(job.bytesUploaded, job.contentLength);
+      const initialId = generateToastId();
+      const toastId = toast.loading(
+        formatProgressMessage(basename, seed.bytesUploaded, seed.bytesTotal),
+        {
+          id: initialId,
+          action: buildCancelAction(job.uploadJobId),
+        },
+      );
+      tracker.set(job.uploadJobId, { toastId, basename });
+    }
+  }
+
+  return {
+    onJobDispatched,
+    onBatchError,
+    hydrateActiveUploads,
+    dispose: () => {
+      unsubscribe();
+      tracker.clear();
+    },
+  };
 }

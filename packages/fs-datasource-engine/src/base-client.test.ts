@@ -43,17 +43,13 @@ interface FakeConfig {
   doListDirectory?: (target: Target) => Promise<DatasourceFileEntry<FakeType>[]>;
   doSearch?: (query: string, scope?: Target) => Promise<DatasourceFileEntry<FakeType>[]>;
   doGetMetadata?: (target: Target) => Promise<FileMetadata<FakeType>>;
-  doCreateFile?: (
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ) => Promise<DatasourceFileEntry<FakeType>>;
   doUploadFile?: (
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ) => Promise<DatasourceFileEntry<FakeType>>;
   doDeleteFile?: (target: Target) => Promise<void>;
   doRename?: (
@@ -116,20 +112,14 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   readonly doGetMetadata = vi.fn<
     (target: Target) => Promise<FileMetadata<FakeType>>
   >();
-  readonly doCreateFile = vi.fn<
-    (
-      parent: Target,
-      name: string,
-      content: { path: string },
-    ) => Promise<DatasourceFileEntry<FakeType>>
-  >();
   readonly doUploadFile = vi.fn<
     (
       parent: Target,
       file: { path: string; name?: string; mimeType?: string },
-      onProgress: ((loaded: number, total: number) => void) | undefined,
-      register: (cancel: () => Promise<void>) => void,
-      signal: AbortSignal,
+      options: {
+        signal?: AbortSignal;
+        onProgress?: (loaded: number, total: number) => void;
+      },
     ) => Promise<DatasourceFileEntry<FakeType>>
   >();
   readonly doDeleteFile = vi.fn<(target: Target) => Promise<void>>();
@@ -173,10 +163,6 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
     if (cfg.doGetMetadata)
       this.doGetMetadata.mockImplementation(cfg.doGetMetadata);
     else this.doGetMetadata.mockResolvedValue(makeEntry());
-
-    if (cfg.doCreateFile)
-      this.doCreateFile.mockImplementation(cfg.doCreateFile);
-    else this.doCreateFile.mockResolvedValue(makeEntry());
 
     if (cfg.doUploadFile)
       this.doUploadFile.mockImplementation(cfg.doUploadFile);
@@ -233,21 +219,15 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   protected doGetMetadataImpl(target: Target): Promise<FileMetadata<FakeType>> {
     return this.doGetMetadata(target);
   }
-  protected doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<FakeType>> {
-    return this.doCreateFile(parent, name, content);
-  }
   protected doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<FakeType>> {
-    return this.doUploadFile(parent, file, onProgress, register, signal);
+    return this.doUploadFile(parent, file, options);
   }
   protected doDeleteFileImpl(target: Target): Promise<void> {
     return this.doDeleteFile(target);
@@ -370,32 +350,39 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("BaseDatasourceClient — success path emission", () => {
-  it("uploadFile emits uploading then file-created in order", async () => {
+  it("uploadFile resolves with the entry and emits NO upload events on the engine bus (post-migrate-upload-orchestration-out-of-engine)", async () => {
+    const onProgress = vi.fn<(loaded: number, total: number) => void>();
     const { client, events } = makeHarness({
-      doUploadFile: async () => makeEntry("/demo.txt"),
+      doUploadFile: async (_parent, _file, options) => {
+        // Strategies invoke the consumer's onProgress callback as bytes
+        // flow. Simulate two ticks plus a final at total.
+        options.onProgress?.(0, 1000);
+        options.onProgress?.(500, 1000);
+        options.onProgress?.(1000, 1000);
+        return makeEntry("/demo.txt");
+      },
     });
 
     const result = await client.uploadFile(
       { kind: "path", path: "/parent" },
       { path: "C:/tmp/demo.txt", name: "demo.txt" },
+      { onProgress },
     );
 
     expect(result.path).toBe("/demo.txt");
-    // Extract the ordered event names, filtering to the two we expect.
+    // Engine bus is silent for upload (Decision 1):
     const names = events.map((e) => e.event);
-    const uploadingIdx = names.indexOf("uploading");
-    const createdIdx = names.indexOf("file-created");
-    expect(uploadingIdx).toBeGreaterThanOrEqual(0);
-    expect(createdIdx).toBeGreaterThanOrEqual(0);
-    expect(uploadingIdx).toBeLessThan(createdIdx);
-    // Envelope fields must carry the provider + datasource ids
-    const uploading = events[uploadingIdx]!;
-    expect(uploading.datasourceType).toBe("amazon-s3");
-    expect(uploading.datasourceId).toBe("ds-1");
-    expect(uploading.streaming).toBe(true);
-    const created = events[createdIdx]!;
-    expect(created.datasourceType).toBe("amazon-s3");
-    expect(created.datasourceId).toBe("ds-1");
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
+    // Consumer's onProgress callback DID fire with monotonic non-decreasing
+    // loaded values (the strategy's contract).
+    expect(onProgress).toHaveBeenCalledTimes(3);
+    const calls = onProgress.mock.calls;
+    expect(calls[0]).toEqual([0, 1000]);
+    expect(calls[1]).toEqual([500, 1000]);
+    expect(calls[2]).toEqual([1000, 1000]);
   });
 
   it("deleteFile emits `deleted` on success and no `delete-failed`", async () => {
@@ -412,88 +399,144 @@ describe("BaseDatasourceClient — success path emission", () => {
 });
 
 // ---------------------------------------------------------------------------
-// uploadFile passes an onProgress callback to doUploadFileImpl that re-emits
-// `uploading` with streaming: true for mid-upload progress ticks. The ticks
-// share the initial `uploading` event's transactionId so the bus coalesces
-// them per-transaction. (Added for Phase 6 — S3Client's Upload helper fires
-// httpUploadProgress events which the strategy pipes through this callback.)
+// uploadFile forwards options.onProgress directly to doUploadFileImpl.
+// Strategies invoke it (loaded, total) as bytes flow. The base does NOT
+// translate those calls into bus events any more (per migrate-upload-
+// orchestration-out-of-engine) — the consumer (fs-sync handler) owns
+// throttle + bus emission.
 // ---------------------------------------------------------------------------
 
-describe("BaseDatasourceClient — uploadFile onProgress streaming ticks", () => {
-  it("doUploadFileImpl receives onProgress; invoking it emits streaming uploading ticks sharing the initial transactionId", async () => {
+describe("BaseDatasourceClient — uploadFile options forwarding", () => {
+  it("options.onProgress is forwarded to doUploadFileImpl; invoking it does NOT emit bus events", async () => {
     let captured: ((loaded: number, total: number) => void) | undefined;
 
     const { client, events } = makeHarness({
-      doUploadFile: async (_parent, _file, onProgress) => {
-        captured = onProgress;
+      doUploadFile: async (_parent, _file, options) => {
+        captured = options.onProgress;
         // Simulate mid-upload progress ticks.
-        onProgress?.(500, 1000);
-        onProgress?.(1000, 1000);
+        options.onProgress?.(500, 1000);
+        options.onProgress?.(1000, 1000);
         return makeEntry("/demo.txt");
       },
     });
 
+    const onProgress = vi.fn<(loaded: number, total: number) => void>();
     await client.uploadFile(
       { kind: "path", path: "/parent" },
       { path: "C:/tmp/demo.txt", name: "demo.txt" },
+      { onProgress },
     );
 
-    // The base must have handed a real callback down.
+    // The base forwarded the consumer's callback down to the strategy.
     expect(typeof captured).toBe("function");
-
-    // Collect every `uploading` event.
-    const uploadings = events.filter((e) => e.event === "uploading");
-    // Initial (progress:0) + at least one mid-upload tick must be visible.
-    // The bus throttles on 1s/10%, but the first streaming emission for a new
-    // key delivers immediately AND a progress jump of 0→50 crosses the 10%
-    // delta threshold, so the tick at loaded=500/total=1000 must emit.
-    expect(uploadings.length).toBeGreaterThanOrEqual(2);
-
-    // All uploading events must be streaming-flagged.
-    for (const u of uploadings) {
-      expect(u.streaming).toBe(true);
-    }
-
-    // The mid-upload tick must carry a numeric `progress` representing the
-    // loaded/total ratio as percentage points, and must reuse the initial
-    // emission's transactionId so the bus coalesces the stream.
-    const initial = uploadings[0]!;
-    const initialPayload = initial.payload as { transactionId?: string };
-    const tick = uploadings[1]!;
-    const tickPayload = tick.payload as {
-      transactionId?: string;
-      progress?: number;
-    };
-    expect(tickPayload.transactionId).toBe(initialPayload.transactionId);
-    expect(tickPayload.progress).toBe(50);
+    expect(captured).toBe(onProgress);
+    // The strategy's two ticks reached the consumer's callback.
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress.mock.calls[0]).toEqual([500, 1000]);
+    expect(onProgress.mock.calls[1]).toEqual([1000, 1000]);
+    // No upload-related bus events fire from the base.
+    const names = events.map((e) => e.event);
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
   });
 
-  it("onProgress handles total=0 defensively (no NaN, no crash)", async () => {
-    const { client } = makeHarness({
-      doUploadFile: async (_parent, _file, onProgress) => {
-        // Edge: an SDK emits progress before the total is known.
-        onProgress?.(0, 0);
-        return makeEntry("/demo.txt");
-      },
+  it("options.signal is forwarded to doUploadFileImpl; abort propagates as DatasourceError(cancelled) WITHOUT bus emission", async () => {
+    // The consumer constructs an AbortController, passes its signal to
+    // uploadFile, aborts mid-upload. The strategy detects the abort and
+    // rejects with DatasourceError { tag: "cancelled" }. The wrapper
+    // propagates the rejection. NO bus emission for upload events.
+    const { client, events } = makeHarness({
+      doUploadFile: (_parent, _file, options) =>
+        new Promise<DatasourceFileEntry<FakeType>>((_res, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            reject(
+              new DatasourceError<FakeType>({
+                tag: "cancelled",
+                datasourceType: "amazon-s3",
+                datasourceId: "ds-1",
+                retryable: false,
+                message: "upload cancelled",
+              }),
+            );
+          });
+        }),
     });
 
-    // Must not reject — the base's onProgress wrapper must guard against
-    // division-by-zero when computing percentage.
-    await expect(
-      client.uploadFile(
-        { kind: "path", path: "/parent" },
-        { path: "C:/tmp/demo.txt" },
-      ),
-    ).resolves.toBeDefined();
+    const controller = new AbortController();
+    const promise = client.uploadFile(
+      { kind: "path", path: "/parent" },
+      { path: "C:/tmp/big.bin" },
+      { signal: controller.signal },
+    );
+    // Abort on the next microtask so the strategy's signal listener has
+    // been registered.
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(promise).rejects.toSatisfy(
+      (e: unknown) =>
+        e instanceof DatasourceError &&
+        e.tag === "cancelled" &&
+        e.retryable === false,
+    );
+
+    // Engine bus stays silent for the entire upload lifecycle.
+    const names = events.map((e) => e.event);
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
+  });
+
+  it("withRefresh still applies to uploadFile — auth-expired refreshes once and retries", async () => {
+    let attempt = 0;
+    const onProgress = vi.fn<(loaded: number, total: number) => void>();
+    const { client, events } = makeHarness({
+      doUploadFile: async (_parent, _file, options) => {
+        attempt += 1;
+        if (attempt === 1) {
+          throw { __tag: "auth-expired" };
+        }
+        // Second attempt fires the consumer's onProgress as normal.
+        options.onProgress?.(0, 100);
+        options.onProgress?.(100, 100);
+        return makeEntry("/post-refresh.txt");
+      },
+      refreshToken: async () => ({ accessToken: "fresh" }),
+    });
+
+    const result = await client.uploadFile(
+      { kind: "path", path: "/" },
+      { path: "C:/tmp/x.txt" },
+      { onProgress },
+    );
+    expect(result.path).toBe("/post-refresh.txt");
+    // Single retry; onProgress fires only on the successful attempt.
+    expect(attempt).toBe(2);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    // Bus carries the refresh event only — no upload events.
+    const names = events.map((e) => e.event);
+    expect(names).toContain("token-refreshed");
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
   });
 });
+
+// Note: the legacy "transactionId / progress percentage" assertions and
+// the "total=0 defensive" test are obsolete post-migrate-upload-
+// orchestration-out-of-engine — the base no longer translates onProgress
+// into a transactionId-keyed bus event with percentage. The consumer
+// (fs-sync handler) owns that translation.
+
 
 // ---------------------------------------------------------------------------
 // Failing op: pre + failed, throws normalized error
 // ---------------------------------------------------------------------------
 
 describe("BaseDatasourceClient — failure path emission", () => {
-  it("uploadFile failure emits uploading then upload-failed and throws DatasourceError", async () => {
+  it("uploadFile rejects with normalized DatasourceError and emits NO upload events on the engine bus", async () => {
     const { client, events } = makeHarness({
       doUploadFile: async () => {
         throw { __tag: "network-error" };
@@ -510,14 +553,17 @@ describe("BaseDatasourceClient — failure path emission", () => {
       caught = e;
     }
 
+    // The wrapper still applies normalizeError — the rejection surfaces
+    // as a DatasourceError carrying the strategy's tag.
     expect(caught).toBeInstanceOf(DatasourceError);
     expect((caught as DatasourceError).tag).toBe("network-error");
+    // But the engine bus is silent for upload events
+    // (per migrate-upload-orchestration-out-of-engine).
     const names = events.map((e) => e.event);
-    expect(names).toContain("uploading");
-    expect(names).toContain("upload-failed");
-    const uploadingIdx = names.indexOf("uploading");
-    const failedIdx = names.indexOf("upload-failed");
-    expect(uploadingIdx).toBeLessThan(failedIdx);
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-cancelled");
   });
 
   it("deleteFile failure emits delete-failed and throws", async () => {
@@ -534,266 +580,17 @@ describe("BaseDatasourceClient — failure path emission", () => {
     expect(names).toContain("delete-failed");
   });
 
-  it("createFile failure routes through upload-failed (with meta.via=createFile)", async () => {
-    const { client, events } = makeHarness({
-      doCreateFile: async () => {
-        throw { __tag: "conflict" };
-      },
-    });
-
-    await expect(
-      client.createFile({ kind: "path", path: "/p" }, "x.txt", {
-        path: "C:/tmp/x.txt",
-      }),
-    ).rejects.toBeInstanceOf(DatasourceError);
-    const failed = events.find((e) => e.event === "upload-failed");
-    expect(failed).toBeDefined();
-    // Flag: this is deliberate routing until `create-failed` is added.
-    const payload = failed?.payload as { via?: string } | undefined;
-    expect(payload?.via).toBe("createFile");
-  });
 });
 
 // ---------------------------------------------------------------------------
-// cancelUpload — in-flight cancellation
+// The "BaseDatasourceClient — cancelUpload" describe block was removed by
+// migrate-upload-orchestration-out-of-engine. The base no longer exposes
+// `cancelUpload`; cancellation is consumer-driven via `options.signal`
+// on `uploadFile`. The signal-driven semantics are exercised by the
+// "options.signal is forwarded …" scenario in the
+// "BaseDatasourceClient — uploadFile options forwarding" describe above
+// and by per-strategy cancel tests in each strategy's own *.test.ts.
 // ---------------------------------------------------------------------------
-
-describe("BaseDatasourceClient — cancelUpload", () => {
-  it("mid-upload cancel emits upload-cancelled, skips upload-failed, rejects with cancelled tag", async () => {
-    // A fake strategy that:
-    //   1. registers a cancel closure,
-    //   2. reports progress via onProgress,
-    //   3. waits for the abort signal, then throws AbortError.
-    const closureSpy = vi.fn<() => Promise<void>>().mockResolvedValue();
-    const { client, events } = makeHarness({
-      doUploadFile: (_parent, _file, onProgress, register, signal) => {
-        register(closureSpy);
-        onProgress?.(4096, 10_000);
-        return new Promise<DatasourceFileEntry<FakeType>>((_resolve, reject) => {
-          signal.addEventListener("abort", () => {
-            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-          });
-        });
-      },
-    });
-
-    const uploadPromise = client.uploadFile(
-      { kind: "path", path: "/" },
-      { path: "/big.bin" },
-    );
-    // Let the initial `uploading` event fire and the fake register its cancel
-    // closure before the cancel arrives.
-    await vi.waitFor(() => {
-      expect(events.map((e) => e.event)).toContain("uploading");
-    });
-    const first = events.find((e) => e.event === "uploading");
-    const tx = (first?.payload as { transactionId: string }).transactionId;
-    await client.cancelUpload(tx);
-    await expect(uploadPromise).rejects.toSatisfy(
-      (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "cancelled" && !e.retryable,
-    );
-
-    expect(closureSpy).toHaveBeenCalledTimes(1);
-    const names = events.map((e) => e.event);
-    expect(names).toContain("upload-cancelled");
-    expect(names).not.toContain("upload-failed");
-    const cancelled = events.find((e) => e.event === "upload-cancelled");
-    expect(cancelled?.streaming).toBeUndefined();
-    expect(cancelled?.payload).toEqual({
-      transactionId: tx,
-      bytesUploaded: 4096,
-      bytesTotal: 10_000,
-      reason: "user",
-    });
-  });
-
-  it("cancel-before-register race: strategy not yet registered when cancel arrives", async () => {
-    // Strategy delays registration by one microtask; the caller cancels
-    // before `register` runs. The base must apply the cancel the moment
-    // register lands. The registered closure itself rejects the pending
-    // upload promise — mirroring how real strategies react to a DELETE
-    // of their session URL (the in-flight chunk PUT unwinds).
-    let rejectUpload!: (err: Error) => void;
-    const closureSpy = vi.fn<() => Promise<void>>(async () => {
-      rejectUpload(Object.assign(new Error("aborted"), { name: "AbortError" }));
-    });
-    const { client, events } = makeHarness({
-      doUploadFile: async (_parent, _file, _op, register, signal) => {
-        // Simulate the session-init round-trip by yielding before registration.
-        await new Promise<void>((r) => setTimeout(r, 0));
-        // If the signal was aborted while we were yielding, short-circuit.
-        // Real strategies (OneDrive/Drive) hit this via `fetch(url, {signal})`
-        // throwing synchronously; the fake reconstructs the same guard.
-        if (signal.aborted) {
-          throw Object.assign(new Error("aborted"), { name: "AbortError" });
-        }
-        register(closureSpy);
-        return new Promise<DatasourceFileEntry<FakeType>>((_resolve, reject) => {
-          rejectUpload = reject;
-        });
-      },
-    });
-
-    const upload = client.uploadFile(
-      { kind: "path", path: "/" },
-      { path: "/pending.bin" },
-    );
-    await vi.waitFor(() => {
-      expect(events.map((e) => e.event)).toContain("uploading");
-    });
-    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
-    // Cancel BEFORE the fake registers. The base aborts the signal; when the
-    // strategy's setTimeout(0) yield resolves, the fake sees `signal.aborted`
-    // and throws — mirroring a real fetch(sessionUrl, {signal}) failing
-    // synchronously on an already-aborted signal.
-    await client.cancelUpload(tx);
-    await expect(upload).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
-    );
-
-    // The strategy bailed from its session-init guard rather than reaching
-    // the `register(closureSpy)` line — closureSpy was not called. This is
-    // correct: the abort signal fired first, no provider-side state to clean.
-    expect(closureSpy).not.toHaveBeenCalled();
-    expect(events.map((e) => e.event)).toContain("upload-cancelled");
-  });
-
-  it("cancel-before-register race with registration still reached: closure runs from register()", async () => {
-    // Variant: strategy does NOT check `signal.aborted` on yield resume; it
-    // reaches `register(cancel)` with cancelPending already set. The base
-    // invokes the closure synchronously from `register` (Decision 5 of
-    // design.md). The closure then rejects the upload.
-    //
-    // Note the deferred-reject pattern: `rejectUpload` MUST be assigned
-    // before `register(closureSpy)` runs, because the base invokes the
-    // closure synchronously from `register` when `cancelPending` is set.
-    // If we assigned `rejectUpload` inside the Promise executor AFTER
-    // `register(...)`, the closure would call a not-yet-wired reject
-    // and the upload promise would never settle.
-    let rejectUpload!: (err: Error) => void;
-    const uploadPromise = new Promise<DatasourceFileEntry<FakeType>>(
-      (_res, rej) => {
-        rejectUpload = rej;
-      },
-    );
-    const closureSpy = vi.fn<() => Promise<void>>(async () => {
-      rejectUpload(Object.assign(new Error("aborted"), { name: "AbortError" }));
-    });
-    const { client, events } = makeHarness({
-      doUploadFile: async (_parent, _file, _op, register, signal) => {
-        // Yield once, then ALWAYS register — no signal.aborted guard.
-        await new Promise<void>((r) => setTimeout(r, 0));
-        register(closureSpy);
-        void signal;
-        return uploadPromise;
-      },
-    });
-
-    const upload = client.uploadFile(
-      { kind: "path", path: "/" },
-      { path: "/race.bin" },
-    );
-    await vi.waitFor(() => {
-      expect(events.map((e) => e.event)).toContain("uploading");
-    });
-    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
-    await client.cancelUpload(tx);
-    await expect(upload).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
-    );
-    expect(closureSpy).toHaveBeenCalledTimes(1);
-    expect(events.map((e) => e.event)).toContain("upload-cancelled");
-  });
-
-  it("unknown transactionId resolves silently with no side effects", async () => {
-    const { client, events } = makeHarness();
-    await expect(client.cancelUpload("tx-does-not-exist")).resolves.toBeUndefined();
-    expect(events).toHaveLength(0);
-  });
-
-  it("double-cancel is idempotent — second call awaits settlement, no duplicate event", async () => {
-    const closureSpy = vi.fn<() => Promise<void>>().mockResolvedValue();
-    const { client, events } = makeHarness({
-      doUploadFile: async (_p, _f, _o, register, signal) => {
-        register(closureSpy);
-        return new Promise<DatasourceFileEntry<FakeType>>((_res, rej) =>
-          signal.addEventListener("abort", () =>
-            rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
-          ),
-        );
-      },
-    });
-    const upload = client.uploadFile(
-      { kind: "path", path: "/" },
-      { path: "/x.bin" },
-    );
-    await vi.waitFor(() => {
-      expect(events.map((e) => e.event)).toContain("uploading");
-    });
-    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
-    const [a, b] = await Promise.all([
-      client.cancelUpload(tx),
-      client.cancelUpload(tx),
-    ]);
-    expect(a).toBeUndefined();
-    expect(b).toBeUndefined();
-    await expect(upload).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
-    );
-
-    // Exactly one closure invocation (race was coalesced), exactly one event.
-    expect(closureSpy).toHaveBeenCalledTimes(1);
-    expect(
-      events.filter((e) => e.event === "upload-cancelled"),
-    ).toHaveLength(1);
-  });
-
-  it("completed upload removes the tracker — cancel-after-complete is a no-op", async () => {
-    const { client, events } = makeHarness({
-      doUploadFile: async (_p, _f, _o, register, signal) => {
-        register(async () => {});
-        void signal;
-        return makeEntry("/done.txt");
-      },
-    });
-    await client.uploadFile(
-      { kind: "path", path: "/" },
-      { path: "/done.txt" },
-    );
-    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
-    await expect(client.cancelUpload(tx)).resolves.toBeUndefined();
-    expect(
-      events.filter((e) => e.event === "upload-cancelled"),
-    ).toHaveLength(0);
-    expect(events.filter((e) => e.event === "file-created")).toHaveLength(1);
-  });
-
-  it("explicit reason arg is carried through to the event payload", async () => {
-    const { client, events } = makeHarness({
-      doUploadFile: async (_p, _f, _o, register, signal) => {
-        register(async () => {});
-        return new Promise<DatasourceFileEntry<FakeType>>((_res, rej) =>
-          signal.addEventListener("abort", () =>
-            rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
-          ),
-        );
-      },
-    });
-    const upload = client.uploadFile(
-      { kind: "path", path: "/" },
-      { path: "/x.bin" },
-    );
-    await vi.waitFor(() => {
-      expect(events.map((e) => e.event)).toContain("uploading");
-    });
-    const tx = (events[0]?.payload as { transactionId: string }).transactionId;
-    await client.cancelUpload(tx, "shutdown");
-    await expect(upload).rejects.toBeInstanceOf(DatasourceError);
-    const cancelled = events.find((e) => e.event === "upload-cancelled");
-    expect((cancelled?.payload as { reason: string }).reason).toBe("shutdown");
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Unsupported error does NOT emit a failed event
@@ -1295,10 +1092,9 @@ describe("BaseDatasourceClient — dispose()", () => {
 //
 // The base class wraps the strategy's `doRenameImpl` with the existing
 // `withRefresh` machinery and emits exactly one `entry-renamed` event on
-// success or one `delete-failed { via: "rename" }` event on failure
-// (mirroring `createFile`'s `via: "createFile"` pattern). Per design.md
-// Decision 1 + spec.md "Directory rename with conflictPolicy 'overwrite'
-// is refused", per-policy orchestration (sibling-detection,
+// success or one `delete-failed { via: "rename" }` event on failure.
+// Per design.md Decision 1 + spec.md "Directory rename with conflictPolicy
+// 'overwrite' is refused", per-policy orchestration (sibling-detection,
 // suffix-retry, kind-based refusal) lives in each strategy — Section 4
 // only lands the base wrapper + a programmable mock subclass that
 // proves the wrapper's contract behaviour for each policy branch.
@@ -1439,8 +1235,8 @@ describe("BaseDatasourceClient — rename `overwrite` on a directory is refused"
     // the strategy detects kind === "folder" + policy === "overwrite" and
     // throws `DatasourceError { tag: "unsupported" }`. The base passes the
     // policy through and re-throws the strategy-thrown error. Per the
-    // existing codebase convention (deleteFile L546-560, uploadFile
-    // L483-510, createFile L383-393), `*-failed` events are NOT emitted
+    // existing codebase convention (deleteFile, uploadFile), `*-failed`
+    // events are NOT emitted
     // when `tag === "unsupported"` — the unsupported case stays silent on
     // the bus. spec.md's "Directory rename with conflictPolicy 'overwrite'
     // is refused" scenario confirms only "the call rejects ... no rename

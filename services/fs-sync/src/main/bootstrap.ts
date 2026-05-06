@@ -29,6 +29,7 @@ import { buildCommandHandlers } from "../commands/handlers.js";
 import { ServiceConfigStore } from "../config/service-config-store.js";
 import { ConfigFileCredentialStore } from "../credential-store/config-file.js";
 import { createDownloadRegistry } from "../downloads/registry.js";
+import { createUploadRegistry } from "../uploads/registry.js";
 import { applyMigrations } from "../db/migrations.js";
 import { openDatabase } from "../db/open.js";
 import { ensureDataDir } from "../env/ensure-dir.js";
@@ -42,7 +43,6 @@ import {
 } from "../env/paths.js";
 import { createEventBus, type EventBus } from "../events/event-bus.js";
 import { buildMirrorSyncExecutor } from "../executors/mirror-sync.js";
-import { buildUploadExecutor } from "../executors/upload.js";
 import {
   startServer,
   type CommandHandler,
@@ -214,6 +214,15 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     // unreachable from `SyncClient.request(...)`.
     const downloadRegistry = createDownloadRegistry();
     const hashComputer = createHashComputer();
+    // Upload-side singleton (per migrate-upload-orchestration-out-of-engine
+    // §8 + §9). Mirrors `downloadRegistry`: in-memory `Map<uploadJobId,
+    // entry>` shared by `files:upload` (mutates per progress tick),
+    // `sync:cancel-upload` (drives the AbortController), and
+    // `uploads:list-active` (snapshots for the IPC reply). Single
+    // instance per service lifetime — its registry contract pins
+    // identity to `uploadJobId`, so a second instance would split the
+    // namespace and break the concurrent-target rejection guard.
+    const uploadRegistry = createUploadRegistry();
     const credentialStore = new ConfigFileCredentialStore({
       filePath: credentialsPath,
     });
@@ -251,13 +260,16 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     observer?.onStage("construct-client-factory");
 
     // 8. construct-scheduler
-    // Pass engineBus so the executor can translate the engine's streaming
-    // `"uploading"` events into service-side `job-progress` events. Without
-    // this wiring, progress bars only get the terminal 100% tick.
-    const uploadExec = buildUploadExecutor({ factory, resolveClient, engineBus });
+    // migrate-upload-orchestration-out-of-engine §11.3 — the `upload` job
+    // kind no longer has a registered executor. Single-file uploads now
+    // flow through the `files:upload` direct-RPC handler (chunk D/E),
+    // bypassing the scheduler entirely. The `'upload'` value remains in
+    // `JobKind` / DB CHECK constraint to keep historical rows readable;
+    // no new `kind: 'upload'` jobs can be enqueued (chunk F deleted the
+    // `sync:enqueue-upload` dispatcher entry).
     const mirrorExec = buildMirrorSyncExecutor({ db, resolveClient });
     scheduler = new Scheduler(db, {
-      executors: { upload: uploadExec, sync: mirrorExec },
+      executors: { sync: mirrorExec },
       bus,
     });
     scheduler.start();
@@ -333,6 +345,14 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       downloadRegistry,
       engineBus,
       hashComputer,
+      // migrate-upload-orchestration-out-of-engine §9/§10 upload
+      // bundle. With both `resolveClient` (already above) and
+      // `uploadRegistry` present, `buildCommandHandlers` wires
+      // `files:upload`, `sync:cancel-upload`, and
+      // `uploads:list-active`. The legacy `sync:enqueue-upload`
+      // queue-based handler + `UploadJobExecutor` were deleted in
+      // chunk F; uploads are now exclusively a service-direct-RPC.
+      uploadRegistry,
     });
     const subscribeHandler: CommandHandler<"sync:subscribe-events"> = async (
       _params,

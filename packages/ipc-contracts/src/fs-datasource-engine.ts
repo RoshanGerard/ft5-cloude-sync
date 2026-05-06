@@ -143,11 +143,21 @@ export type FileMetadata<T extends DatasourceType> = DatasourceFileEntry<T>;
 
 /**
  * Canonical event payload shape. Every provider's `PayloadMap` entry MUST
- * start from this shape to guarantee the 11 event names stay in lockstep
- * across providers. Phase 6–8 strategies override individual payload types
- * per provider (for example, `amazon-s3` tightens `"file-created"` to
- * `{ bucket, key, etag }`) by widening via a second generic layer or
- * interface merging — NOT by restating the key set.
+ * start from this shape to guarantee the canonical event names stay in
+ * lockstep across providers. Phase 6–8 strategies override individual
+ * payload types per provider (for example, `amazon-s3` tightens
+ * `"file-created"` to `{ bucket, key, etag }`) by widening via a second
+ * generic layer or interface merging — NOT by restating the key set.
+ *
+ * migrate-upload-orchestration-out-of-engine §7.6 — `"upload-cancelled"`
+ * REMOVED from the engine bus. The engine no longer emits any upload-
+ * lifecycle events; the sole emitter is now the fs-sync `files:upload`
+ * handler, which fires `upload-cancelled` (a different shape, keyed by
+ * `uploadJobId`) on `sync:event-stream` instead. The `uploading`,
+ * `upload-failed`, and `file-created` slots remain as `unknown` for now
+ * (preserved so existing strategy-contract tests + audit-log subscribers
+ * keep typing) but no engine code path emits them post-chunk-B; they
+ * will be removed in a follow-up alongside the strategy bus refactor.
  *
  * Intentionally file-local: this is an internal seam, not part of the
  * package's public surface. Downstream phases widen per provider.
@@ -155,7 +165,6 @@ export type FileMetadata<T extends DatasourceType> = DatasourceFileEntry<T>;
 interface CanonicalEventPayloads<T extends DatasourceType = DatasourceType> {
   uploading: unknown;
   "upload-failed": unknown;
-  "upload-cancelled": UploadCancelledPayload;
   "file-created": unknown;
   deleted: unknown;
   "delete-failed": unknown;
@@ -228,30 +237,16 @@ interface CanonicalEventPayloads<T extends DatasourceType = DatasourceType> {
   "entry-renamed": { from: Target; to: DatasourceFileEntry<T> };
 }
 
-/**
- * Reason a `cancelUpload` call was issued. Emitted verbatim in the
- * `upload-cancelled` event payload so subscribers can distinguish
- * user-initiated cancels from engine-originated shutdown / timeout
- * cancels (both reserved for future use in v1 — only `"user"` is emitted).
- */
-export type UploadCancelReason = "user" | "timeout" | "shutdown";
-
-/**
- * Shared payload shape for the `upload-cancelled` terminal event. The
- * event fires exactly once per cancelled upload, bypasses the streaming
- * coalescer (no `streaming: true` on the envelope), and replaces the
- * `upload-failed` event that would otherwise fire on error-path exit.
- *
- * `bytesUploaded` / `bytesTotal` reflect the last known progress tick
- * (from the strategy's `onProgress` callback). When the cancel fires
- * before any progress was reported, both are `0`.
- */
-export interface UploadCancelledPayload {
-  transactionId: string;
-  bytesUploaded: number;
-  bytesTotal: number;
-  reason: UploadCancelReason;
-}
+// migrate-upload-orchestration-out-of-engine §7.6 — `UploadCancelReason`
+// and the engine-bus `UploadCancelledPayload` are REMOVED. The engine no
+// longer participates in upload-lifecycle events: chunk B deleted
+// `BaseDatasourceClient.cancelUpload` and the strategies' `register` /
+// `cancelUpload`-emission code, replacing them with signal-driven
+// AbortSignal cancellation. The `upload-cancelled` event on
+// `sync:event-stream` (chunk D) is a NEW shape — keyed by `uploadJobId`,
+// not `transactionId` — emitted by `services/fs-sync/src/commands/files-
+// upload.ts`. See `packages/ipc-contracts/src/sync-service/events.ts`
+// `UploadCancelledPayload` for the post-migration shape.
 
 /**
  * Per-provider event payloads. Phase 1 declares each event name with

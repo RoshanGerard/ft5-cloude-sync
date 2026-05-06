@@ -26,7 +26,6 @@ export type {
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadProgressEvent,
   ErroredDatasourceSummary,
   ProviderCapabilities,
   ProviderDescriptor,
@@ -106,8 +105,6 @@ export type {
   SerializedDatasourceError,
   StoredCredentials,
   Target,
-  UploadCancelReason,
-  UploadCancelledPayload,
 } from "./fs-datasource-engine.js";
 // `DatasourceErrorTag` is now an `as const` object (per
 // add-invalid-datasource-state Decision 1) — re-exported as a value so
