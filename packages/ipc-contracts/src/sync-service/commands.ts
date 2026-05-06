@@ -86,17 +86,20 @@ export interface ValidationErrorShape extends ErrorShape {
 
 // ---- Individual command definitions --------------------------------------
 
-interface EnqueueUploadCommand {
-  readonly command: "sync:enqueue-upload";
-  readonly params: {
-    readonly datasourceId: string;
-    readonly sourcePath: string;
-    readonly targetPath: string;
-    readonly conflictPolicy: ConflictPolicy;
-  };
-  readonly result: { readonly jobId: string };
-  readonly error: ValidationErrorShape;
-}
+// migrate-upload-orchestration-out-of-engine §7.4 — `EnqueueUploadCommand`
+// (`sync:enqueue-upload`) REMOVED. The queue-based single-file upload
+// path was replaced by `files:upload` (a direct RPC; see
+// `packages/ipc-contracts/src/files.ts` `FilesUploadCommand`). The
+// service-side dispatcher (`services/fs-sync/src/commands/handlers.ts`),
+// the desktop bridge (`apps/desktop/src/main/ipc/sync/enqueue-upload.ts`),
+// the typed wrapper (`SyncClient.enqueueUpload`), the
+// `SYNC_CHANNELS.enqueueUpload` constant, the
+// `SyncEnqueueUploadRequest` / `SyncEnqueueUploadResponse` interfaces,
+// and the preload binding (`window.api.sync.enqueueUpload`) were all
+// deleted in chunk F. The `UploadJobExecutor` was deleted alongside;
+// the `'upload'` value remains in `JobKind` / DB CHECK constraint so
+// historical rows in user DBs stay readable, but no new `kind: 'upload'`
+// jobs can be enqueued.
 
 interface EnqueueMirrorCommand {
   readonly command: "sync:enqueue-mirror";
@@ -778,7 +781,8 @@ interface SyncCancelUploadCommand {
 // ---- Command map + derived helpers ---------------------------------------
 
 export interface CommandMap {
-  "sync:enqueue-upload": EnqueueUploadCommand;
+  // migrate-upload-orchestration-out-of-engine §7.4 — `"sync:enqueue-upload"`
+  // entry removed. See the EnqueueUploadCommand tombstone above.
   "sync:enqueue-mirror": EnqueueMirrorCommand;
   "sync:list-jobs": ListJobsCommand;
   "sync:get-job": GetJobCommand;
@@ -817,7 +821,8 @@ export type CommandError<N extends CommandName> = CommandMap[N]["error"];
 // `Object.keys(commandMap)` at runtime isn't statically typed and the
 // dispatcher needs the enumerated set for exhaustive switch coverage.
 export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
-  "sync:enqueue-upload",
+  // migrate-upload-orchestration-out-of-engine §7.4 — `"sync:enqueue-upload"`
+  // entry removed.
   "sync:enqueue-mirror",
   "sync:list-jobs",
   "sync:get-job",

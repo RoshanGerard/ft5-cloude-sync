@@ -269,12 +269,10 @@ export class SyncClient {
     return this.request("sync:get-job", params, opts);
   }
 
-  enqueueUpload(
-    params: CommandParams<"sync:enqueue-upload">,
-    opts?: { timeoutMs?: number },
-  ): Promise<CommandResult<"sync:enqueue-upload">> {
-    return this.request("sync:enqueue-upload", params, opts);
-  }
+  // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+  // `enqueueUpload` typed wrapper was deleted in chunk F. Single-file
+  // uploads now use `files:upload` (see
+  // `apps/desktop/src/main/ipc/files/upload.ts`).
 
   enqueueMirror(
     params: CommandParams<"sync:enqueue-mirror">,

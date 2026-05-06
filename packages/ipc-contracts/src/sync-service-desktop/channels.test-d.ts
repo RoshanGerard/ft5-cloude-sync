@@ -14,7 +14,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { SYNC_CHANNELS } from "./channels.js";
 
 describe("sync-service-desktop SYNC_CHANNELS constants", () => {
-  it("exposes exactly the expected keys (post-onboarding + iter-5 cancelDownload + migrate-upload-orchestration-out-of-engine cancelUpload + uploadsListActive)", () => {
+  it("exposes exactly the expected keys (post-migrate-upload-orchestration-out-of-engine chunk F: enqueueUpload removed)", () => {
     expect(Object.keys(SYNC_CHANNELS).sort()).toEqual(
       [
         "authenticateStart",
@@ -25,7 +25,8 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
         "cancelUpload",
         "deleteCredentials",
         "enqueueMirror",
-        "enqueueUpload",
+        // migrate-upload-orchestration-out-of-engine §7.4 — `enqueueUpload`
+        // removed from SYNC_CHANNELS in chunk F.
         "event",
         "getConfig",
         "getJob",
@@ -37,6 +38,17 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
         "uploadsListActive",
       ].sort(),
     );
+  });
+
+  it("legacy `enqueueUpload` channel is absent (chunk F removal)", () => {
+    type Channels = typeof SYNC_CHANNELS;
+    type HasEnqueueUpload = "enqueueUpload" extends keyof Channels
+      ? true
+      : false;
+    expectTypeOf<HasEnqueueUpload>().toEqualTypeOf<false>();
+    expect(
+      Object.prototype.hasOwnProperty.call(SYNC_CHANNELS, "enqueueUpload"),
+    ).toBe(false);
   });
 
   it("retired single-shot `authenticate` channel is absent", () => {
@@ -53,7 +65,6 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
   it("each channel resolves to its stable string literal", () => {
     expect(SYNC_CHANNELS.listJobs).toBe("sync:list-jobs");
     expect(SYNC_CHANNELS.getJob).toBe("sync:get-job");
-    expect(SYNC_CHANNELS.enqueueUpload).toBe("sync:enqueue-upload");
     expect(SYNC_CHANNELS.enqueueMirror).toBe("sync:enqueue-mirror");
     expect(SYNC_CHANNELS.cancelJob).toBe("sync:cancel-job");
     expect(SYNC_CHANNELS.cancelDownload).toBe("sync:cancel-download");
@@ -78,9 +89,6 @@ describe("sync-service-desktop SYNC_CHANNELS constants", () => {
       "sync:list-jobs"
     >();
     expectTypeOf<typeof SYNC_CHANNELS.getJob>().toEqualTypeOf<"sync:get-job">();
-    expectTypeOf<typeof SYNC_CHANNELS.enqueueUpload>().toEqualTypeOf<
-      "sync:enqueue-upload"
-    >();
     expectTypeOf<typeof SYNC_CHANNELS.enqueueMirror>().toEqualTypeOf<
       "sync:enqueue-mirror"
     >();

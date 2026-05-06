@@ -136,17 +136,10 @@ const wrappers: ReadonlyArray<{
     expectedCommand: SYNC_CHANNELS.getJob,
     invoke: (c) => c.getJob({ jobId: "j-1" }),
   },
-  {
-    method: "enqueueUpload",
-    expectedCommand: SYNC_CHANNELS.enqueueUpload,
-    invoke: (c) =>
-      c.enqueueUpload({
-        datasourceId: "ds-1",
-        sourcePath: "/tmp/x",
-        targetPath: "/x",
-        conflictPolicy: "overwrite",
-      }),
-  },
+  // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+  // `enqueueUpload` typed wrapper was deleted in chunk F (single-file
+  // uploads now flow via `files:upload`); the corresponding case is
+  // intentionally absent from this matrix.
   {
     method: "enqueueMirror",
     expectedCommand: SYNC_CHANNELS.enqueueMirror,

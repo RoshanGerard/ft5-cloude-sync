@@ -23,8 +23,6 @@ import type {
   SyncListJobsResponse,
   SyncGetJobRequest,
   SyncGetJobResponse,
-  SyncEnqueueUploadRequest,
-  SyncEnqueueUploadResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
   SyncCancelJobRequest,
@@ -76,22 +74,12 @@ describe("sync-service-desktop getJob request/response", () => {
   });
 });
 
-describe("sync-service-desktop enqueueUpload request/response", () => {
-  it("enqueueUpload request has datasourceId, sourcePath, targetPath, conflictPolicy", () => {
-    expectTypeOf<SyncEnqueueUploadRequest>().toEqualTypeOf<{
-      readonly datasourceId: string;
-      readonly sourcePath: string;
-      readonly targetPath: string;
-      readonly conflictPolicy: ConflictPolicy;
-    }>();
-  });
-
-  it("enqueueUpload response is a flat { jobId } (happy-path only)", () => {
-    expectTypeOf<SyncEnqueueUploadResponse>().toEqualTypeOf<{
-      readonly jobId: string;
-    }>();
-  });
-});
+// migrate-upload-orchestration-out-of-engine §7.4 — the
+// `sync-service-desktop enqueueUpload request/response` describe block
+// was deleted in chunk F. The renderer's upload path is now
+// `window.api.files.upload`, with request/response types
+// `FilesUploadRequest` / `FilesUploadResponse` (covered by
+// `packages/ipc-contracts/src/__tests__/files.test-d.ts`).
 
 describe("sync-service-desktop enqueueMirror request/response", () => {
   it("enqueueMirror request allows optional conflictPolicy", () => {

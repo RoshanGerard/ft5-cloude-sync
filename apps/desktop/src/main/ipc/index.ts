@@ -25,7 +25,6 @@ import type {
   SyncCancelJobRequest,
   SyncCancelUploadRequest,
   SyncEnqueueMirrorRequest,
-  SyncEnqueueUploadRequest,
   SyncGetJobRequest,
   SyncGetRetryPolicyRequest,
   SyncListJobsRequest,
@@ -68,7 +67,6 @@ import { handleSyncCancelJob } from "./sync/cancel-job.js";
 import { handleSyncCancelUpload } from "./sync/cancel-upload.js";
 import { handleUploadsListActive } from "./sync/uploads-list-active.js";
 import { handleSyncEnqueueMirror } from "./sync/enqueue-mirror.js";
-import { handleSyncEnqueueUpload } from "./sync/enqueue-upload.js";
 import { handleSyncGetJob } from "./sync/get-job.js";
 import { handleSyncGetRetryPolicy } from "./sync/get-retry-policy.js";
 import { handleSyncGetStatus } from "./sync/get-status.js";
@@ -189,11 +187,10 @@ export function registerIpcHandlers(
     SYNC_CHANNELS.getJob,
     async (_event, req: SyncGetJobRequest) => handleSyncGetJob(req),
   );
-  ipcMain.handle(
-    SYNC_CHANNELS.enqueueUpload,
-    async (_event, req: SyncEnqueueUploadRequest) =>
-      handleSyncEnqueueUpload(req),
-  );
+  // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+  // `SYNC_CHANNELS.enqueueUpload` IPC handler was deleted in chunk F.
+  // Single-file uploads now flow through the `files:upload` direct-RPC
+  // (`./files/upload.ts` / `FILES_CHANNELS.upload`).
   ipcMain.handle(
     SYNC_CHANNELS.enqueueMirror,
     async (_event, req: SyncEnqueueMirrorRequest) =>

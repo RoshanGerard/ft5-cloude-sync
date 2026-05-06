@@ -77,18 +77,18 @@ export interface SyncGetJobResponse {
   readonly job: JobSummary | null;
 }
 
-// ---- enqueueUpload -------------------------------------------------------
-
-export interface SyncEnqueueUploadRequest {
-  readonly datasourceId: string;
-  readonly sourcePath: string;
-  readonly targetPath: string;
-  readonly conflictPolicy: ConflictPolicy;
-}
-
-export interface SyncEnqueueUploadResponse {
-  readonly jobId: string;
-}
+// ---- enqueueUpload (REMOVED) --------------------------------------------
+//
+// migrate-upload-orchestration-out-of-engine §7.4 — `SyncEnqueueUploadRequest`
+// + `SyncEnqueueUploadResponse` REMOVED in chunk F. The queue-based
+// single-file upload path (`sync:enqueue-upload`) was replaced by the
+// `files:upload` direct RPC; the renderer talks to it via
+// `window.api.files.upload(req)` whose request/response shape is
+// `FilesUploadRequest` / `FilesUploadResponse` (see
+// `packages/ipc-contracts/src/files.ts`). The `UploadJobExecutor`,
+// the desktop bridge `apps/desktop/src/main/ipc/sync/enqueue-upload.ts`,
+// the typed wrapper `SyncClient.enqueueUpload`, and the
+// `SYNC_CHANNELS.enqueueUpload` channel constant were deleted alongside.
 
 // ---- enqueueMirror (FALLIBLE) -------------------------------------------
 
@@ -147,12 +147,12 @@ export interface SyncCancelDownloadResponse {
 //
 // `uploadJobId` is the service-minted business-domain key (parallel to
 // `downloadJobId`). It is distinct from `cancelJob({ jobId })`: the
-// legacy queue-based `sync:enqueue-upload` route returned a queue
-// `jobId` you cancelled via `cancelJob`, while the new direct-RPC
-// `files:upload` route returns an `uploadJobId` you cancel here. The
-// dedicated request type closes the type-level loophole — a future
-// renderer caller cannot satisfy `SyncCancelJobRequest` with an
-// `uploadJobId` shape or vice versa.
+// pre-migration queue-based `sync:enqueue-upload` route (deleted in
+// chunk F) returned a queue `jobId` you cancelled via `cancelJob`,
+// while the post-migration direct-RPC `files:upload` route returns an
+// `uploadJobId` you cancel here. The dedicated request type closes the
+// type-level loophole — a future renderer caller cannot satisfy
+// `SyncCancelJobRequest` with an `uploadJobId` shape or vice versa.
 
 export interface SyncCancelUploadRequest {
   readonly uploadJobId: string;

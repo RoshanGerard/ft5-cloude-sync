@@ -4,8 +4,6 @@
 // handlers touch the DB and emit events; background work is driven by the
 // scheduler on its own timer (wired in Phase 9).
 
-import { randomUUID } from "node:crypto";
-
 import type {
   ClientFactory,
   CredentialStore,
@@ -104,9 +102,8 @@ export interface HandlersDeps {
    * `uploads:list-active` are omitted from the returned map (mirrors the
    * download-bundle pattern above) so existing tests that pre-date this
    * change keep compiling. Production bootstrap supplies it alongside
-   * `resolveClient`. The legacy `sync:enqueue-upload` queue path
-   * coexists with `files:upload` until Chunk E rewires the executor
-   * deletion.
+   * `resolveClient`. The legacy `sync:enqueue-upload` queue path was
+   * deleted in chunk F; uploads are exclusively a service-direct-RPC.
    */
   readonly uploadRegistry?: UploadRegistry;
 }
@@ -128,27 +125,13 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       },
     }),
 
-    "sync:enqueue-upload": async (params) => {
-      const jobId = randomUUID();
-      repo.insert({
-        id: jobId,
-        kind: "upload",
-        datasourceId: params.datasourceId,
-        sourcePath: params.sourcePath,
-        targetPath: params.targetPath,
-        conflictPolicy: params.conflictPolicy,
-      });
-      deps.bus.emit("job-enqueued", {
-        jobId,
-        kind: "upload",
-        datasourceId: params.datasourceId,
-        sourcePath: params.sourcePath,
-        targetPath: params.targetPath,
-        conflictPolicy: params.conflictPolicy,
-        enqueuedAt: Date.now(),
-      });
-      return { ok: true, result: { jobId } };
-    },
+    // migrate-upload-orchestration-out-of-engine §7.4 / §11 — the
+    // `sync:enqueue-upload` queue dispatcher entry was removed in chunk F.
+    // Single-file uploads are now handled by the `files:upload` direct-RPC
+    // (see the additive bundle below). The `UploadJobExecutor` was deleted
+    // alongside; no new `kind: 'upload'` rows are minted here. The legacy
+    // `'upload'` value remains in `JobKind` / DB CHECK constraint so
+    // historical rows in user DBs stay readable.
 
     "sync:enqueue-mirror": async (params) => {
       try {
@@ -393,11 +376,9 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
       : {}),
     // files:upload + sync:cancel-upload + uploads:list-active —
     // wired only when both `resolveClient` and `uploadRegistry` are
-    // supplied. Mirrors the download-bundle pattern above.
-    //
-    // ADDITIVE — the legacy `sync:enqueue-upload` queue handler above
-    // continues to dispatch alongside the new direct-RPC `files:upload`
-    // until Chunk E rewires the renderer + deletes the executor.
+    // supplied. Mirrors the download-bundle pattern above. The legacy
+    // queue-based `sync:enqueue-upload` dispatcher entry was deleted in
+    // chunk F; this is the sole single-file-upload handler bundle.
     ...(deps.resolveClient && deps.uploadRegistry
       ? {
           "files:upload": makeFilesUploadHandler(

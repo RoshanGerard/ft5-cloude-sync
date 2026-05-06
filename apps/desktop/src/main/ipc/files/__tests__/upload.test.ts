@@ -10,8 +10,8 @@
 // `FilesUploadValue.jobId` JSDoc), and route service rejections through
 // `toFilesErrorEnvelope`. The previous chunk's wiring went through
 // `SyncClient.enqueueUpload` (the queue-based `sync:enqueue-upload`
-// command); that surface is retained service-side until chunk F
-// removes the executor.
+// command); both the desktop wrapper and the service-side dispatcher
+// were deleted in chunk F.
 
 import { describe, expect, it, vi } from "vitest";
 

@@ -79,9 +79,17 @@ export function buildMirrorSyncExecutor(deps: MirrorSyncDeps): Executor {
       try {
         if (op.kind === "upload-new" || op.kind === "upload-changed") {
           const abs = path.join(job.sourcePath, op.relPath);
+          // migrate-upload-orchestration-out-of-engine §12.1 — uploadFile
+          // now takes an options object with `signal` (and optional
+          // `onProgress`). Mirror-sync forwards the executor's signal
+          // so an in-flight chunk-PUT aborts promptly when the scheduler
+          // cancels the job; per-file progress is not surfaced to the
+          // renderer (mirror-sync emits only the terminal `sync-completed`
+          // event), so `onProgress` is intentionally omitted.
           const entry = await client.uploadFile(
             { kind: "path", path: `${job.sourcePath}/${op.relPath}` },
             { path: abs },
+            { signal },
           );
           const sha =
             op.kind === "upload-new"

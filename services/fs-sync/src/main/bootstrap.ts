@@ -43,7 +43,6 @@ import {
 } from "../env/paths.js";
 import { createEventBus, type EventBus } from "../events/event-bus.js";
 import { buildMirrorSyncExecutor } from "../executors/mirror-sync.js";
-import { buildUploadExecutor } from "../executors/upload.js";
 import {
   startServer,
   type CommandHandler,
@@ -261,13 +260,16 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     observer?.onStage("construct-client-factory");
 
     // 8. construct-scheduler
-    // Pass engineBus so the executor can translate the engine's streaming
-    // `"uploading"` events into service-side `job-progress` events. Without
-    // this wiring, progress bars only get the terminal 100% tick.
-    const uploadExec = buildUploadExecutor({ factory, resolveClient, engineBus });
+    // migrate-upload-orchestration-out-of-engine §11.3 — the `upload` job
+    // kind no longer has a registered executor. Single-file uploads now
+    // flow through the `files:upload` direct-RPC handler (chunk D/E),
+    // bypassing the scheduler entirely. The `'upload'` value remains in
+    // `JobKind` / DB CHECK constraint to keep historical rows readable;
+    // no new `kind: 'upload'` jobs can be enqueued (chunk F deleted the
+    // `sync:enqueue-upload` dispatcher entry).
     const mirrorExec = buildMirrorSyncExecutor({ db, resolveClient });
     scheduler = new Scheduler(db, {
-      executors: { upload: uploadExec, sync: mirrorExec },
+      executors: { sync: mirrorExec },
       bus,
     });
     scheduler.start();
@@ -347,9 +349,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       // bundle. With both `resolveClient` (already above) and
       // `uploadRegistry` present, `buildCommandHandlers` wires
       // `files:upload`, `sync:cancel-upload`, and
-      // `uploads:list-active`. Coexists with the legacy queue-based
-      // `sync:enqueue-upload` handler until Chunk E rewires the
-      // executor deletion + renderer cutover.
+      // `uploads:list-active`. The legacy `sync:enqueue-upload`
+      // queue-based handler + `UploadJobExecutor` were deleted in
+      // chunk F; uploads are now exclusively a service-direct-RPC.
       uploadRegistry,
     });
     const subscribeHandler: CommandHandler<"sync:subscribe-events"> = async (

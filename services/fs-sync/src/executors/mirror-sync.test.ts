@@ -135,6 +135,17 @@ describe("MirrorSyncJobExecutor — end-to-end", () => {
     const res = await exec(ctxFor(root));
     expect(res.outcome).toBe("completed");
     expect(uploadFile).toHaveBeenCalledTimes(1);
+    // migrate-upload-orchestration-out-of-engine §12.1 — the executor
+    // forwards its AbortSignal to client.uploadFile via the new options
+    // arg; assert the call shape so a future regression that drops the
+    // signal is caught.
+    const [parent, file, options] = uploadFile.mock.calls[0];
+    expect(parent).toMatchObject({ kind: "path" });
+    expect(file).toMatchObject({ path: expect.stringContaining("a.txt") });
+    expect(options).toBeDefined();
+    expect((options as { signal?: AbortSignal }).signal).toBeInstanceOf(
+      AbortSignal,
+    );
     const completed = emitted.find((e) => e.name === "sync-completed");
     expect(completed).toBeTruthy();
     expect(completed?.payload).toMatchObject({

@@ -13,7 +13,10 @@
 export const SYNC_CHANNELS = {
   listJobs: "sync:list-jobs",
   getJob: "sync:get-job",
-  enqueueUpload: "sync:enqueue-upload",
+  // migrate-upload-orchestration-out-of-engine §7.4 — `enqueueUpload`
+  // (`"sync:enqueue-upload"`) REMOVED in chunk F. The renderer's upload
+  // path is now `window.api.files.upload` (see `FILES_CHANNELS.upload`
+  // in `packages/ipc-contracts/src/files-desktop.ts` or its equivalent).
   enqueueMirror: "sync:enqueue-mirror",
   cancelJob: "sync:cancel-job",
   // add-download-resilience §12.6 (Decision 16) — the desktop main↔preload
@@ -24,13 +27,13 @@ export const SYNC_CHANNELS = {
   // upload-job cancel by name collision instead of routing here.
   cancelDownload: "sync:cancel-download",
   // migrate-upload-orchestration-out-of-engine §7.3 / §7.9 — the desktop
-  // renderer-facing bridge for the new `sync:cancel-upload` service
-  // command. Mirrors `cancelDownload`: idempotent, infallible at the
-  // service boundary (an unknown `uploadJobId` resolves
-  // `{ cancelled: false }` rather than erroring). `uploadJobId` here is
-  // the service-minted business-domain key, distinct from the legacy
-  // `cancelJob({ jobId })` (which targeted the queue-based upload job
-  // id and does not exist on the new direct-RPC `files:upload` path).
+  // renderer-facing bridge for the `sync:cancel-upload` service command.
+  // Mirrors `cancelDownload`: idempotent, infallible at the service
+  // boundary (an unknown `uploadJobId` resolves `{ cancelled: false }`
+  // rather than erroring). `uploadJobId` here is the service-minted
+  // business-domain key on the direct-RPC `files:upload` path; the
+  // pre-migration queue-based upload-cancel route (`cancelJob({ jobId })`
+  // against a `kind: 'upload'` row) was deleted in chunk F.
   cancelUpload: "sync:cancel-upload",
   // migrate-upload-orchestration-out-of-engine §7.2 / §7.9 — the
   // desktop renderer-facing bridge for the new `uploads:list-active`

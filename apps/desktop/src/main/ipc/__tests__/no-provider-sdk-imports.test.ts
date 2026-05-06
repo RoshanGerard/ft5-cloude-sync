@@ -85,13 +85,14 @@ describe("no-provider-sdk-imports guardrail", () => {
   // add-file-explorer-drag-drop-upload task 2.7 — stricter scan scoped
   // to `files/`. On top of the provider-SDK ban above, the files
   // handlers must NOT call `engine.uploadFile` directly; uploads go
-  // through `syncClient.enqueueUpload` in `files/upload.ts`, and any
-  // in-process engine call-through would re-introduce the coupling
-  // `wire-fs-sync-service` removed. We match the method-call shape
-  // (`engine.uploadFile(` or a common `.uploadFile(` invocation on any
-  // variable named `engine*`) rather than a substring search so that
-  // comments / doc-strings that merely mention the old API stay
-  // legal.
+  // through `syncClient.request("files:upload", ...)` (see
+  // `files/upload.ts`) post-migrate-upload-orchestration-out-of-engine
+  // chunk E. Any in-process engine call-through would re-introduce
+  // the coupling that `wire-fs-sync-service` removed. We match the
+  // method-call shape (`engine.uploadFile(` or a common `.uploadFile(`
+  // invocation on any variable named `engine*`) rather than a substring
+  // search so that comments / doc-strings that merely mention the old
+  // API stay legal.
   const filesRoot = path.join(ipcRoot, "files");
   const forbiddenEnginePattern =
     /\b(?:engine|engineRef|engineClient)\s*\.\s*uploadFile\s*\(/;
@@ -135,7 +136,7 @@ describe("no-provider-sdk-imports guardrail", () => {
 
     expect(
       offenders,
-      `files/ handler layer must not call engine.uploadFile directly — uploads go through syncClient.enqueueUpload (see files/upload.ts). Offenders:\n${offenders
+      `files/ handler layer must not call engine.uploadFile directly — uploads go through syncClient.request("files:upload", ...) (see files/upload.ts). Offenders:\n${offenders
         .map((f) => `  ${f}`)
         .join("\n")}`,
     ).toEqual([]);

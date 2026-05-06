@@ -48,8 +48,6 @@ import type {
   SyncUploadsListActiveResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
-  SyncEnqueueUploadRequest,
-  SyncEnqueueUploadResponse,
   SyncEvent,
   SyncGetJobRequest,
   SyncGetJobResponse,
@@ -154,9 +152,9 @@ declare global {
       sync: {
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
         getJob(req: SyncGetJobRequest): Promise<SyncGetJobResponse>;
-        enqueueUpload(
-          req: SyncEnqueueUploadRequest,
-        ): Promise<SyncEnqueueUploadResponse>;
+        // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+        // `enqueueUpload` preload binding was deleted in chunk F. The
+        // renderer's upload path is `window.api.files.upload`.
         enqueueMirror(
           req: SyncEnqueueMirrorRequest,
         ): Promise<SyncEnqueueMirrorResponse>;

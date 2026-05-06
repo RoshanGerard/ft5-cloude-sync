@@ -23,8 +23,9 @@ export type {
   SyncListJobsResponse,
   SyncGetJobRequest,
   SyncGetJobResponse,
-  SyncEnqueueUploadRequest,
-  SyncEnqueueUploadResponse,
+  // migrate-upload-orchestration-out-of-engine §7.4 —
+  // `SyncEnqueueUploadRequest` + `SyncEnqueueUploadResponse` REMOVED in
+  // chunk F. The renderer's upload path is `window.api.files.upload`.
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
   SyncCancelJobRequest,

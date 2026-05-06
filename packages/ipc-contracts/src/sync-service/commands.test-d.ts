@@ -30,8 +30,9 @@ describe("sync-service command contract", () => {
     // added by `migrate-upload-orchestration-out-of-engine` (tasks §7.2 +
     // §7.3) — they mirror the download equivalents on the upload side
     // now that orchestration moved out of the engine.
+    // migrate-upload-orchestration-out-of-engine §7.4 —
+    // `"sync:enqueue-upload"` removed from the union (chunk F).
     type Expected =
-      | "sync:enqueue-upload"
       | "sync:enqueue-mirror"
       | "sync:list-jobs"
       | "sync:get-job"
@@ -65,16 +66,14 @@ describe("sync-service command contract", () => {
     expectTypeOf<(typeof COMMAND_NAMES)[number]>().toEqualTypeOf<CommandName>();
   });
 
-  it("sync:enqueue-upload params and result match the spec", () => {
-    expectTypeOf<CommandParams<"sync:enqueue-upload">>().toEqualTypeOf<{
-      readonly datasourceId: string;
-      readonly sourcePath: string;
-      readonly targetPath: string;
-      readonly conflictPolicy: ConflictPolicy;
-    }>();
-    expectTypeOf<CommandResult<"sync:enqueue-upload">>().toEqualTypeOf<{
-      readonly jobId: string;
-    }>();
+  // migrate-upload-orchestration-out-of-engine §7.4 — the
+  // `sync:enqueue-upload` params/result type test was removed in chunk F.
+  // The `files:upload` direct RPC's params/result shapes are covered by
+  // `packages/ipc-contracts/src/__tests__/files.test-d.ts`.
+  it("CommandMap does NOT carry a 'sync:enqueue-upload' key (chunk F removal)", () => {
+    type Names = keyof CommandMap;
+    type HasEnqueueUpload = "sync:enqueue-upload" extends Names ? true : false;
+    expectTypeOf<HasEnqueueUpload>().toEqualTypeOf<false>();
   });
 
   it("sync:enqueue-mirror error includes SyncAlreadyRunningErrorShape", () => {

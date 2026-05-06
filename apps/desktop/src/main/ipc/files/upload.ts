@@ -3,7 +3,8 @@
 //
 // Pre-migration (add-file-explorer-drag-drop-upload era) this delegated
 // to `SyncClient.enqueueUpload` (the queue-based `sync:enqueue-upload`
-// command). The migration replaced the queue with a direct RPC: the
+// command — both deleted in chunk F). The migration replaced the queue
+// with a direct RPC: the
 // service's `files:upload` handler validates the request, mints a
 // service-level `uploadJobId`, registers the in-flight job in the
 // `UploadRegistry`, and invokes `client.uploadFile(parent, file, {

@@ -225,52 +225,17 @@ function client(socket: net.Socket): RoundTrip {
   };
 }
 
-describe("end-to-end: upload", () => {
-  it("enqueue-upload → job-enqueued → job-started → job-completed; row = completed", async () => {
-    const { pipePath } = await wireService({});
-    const sock = await connect(pipePath);
-    const cli = client(sock);
-    try {
-      cli.send({
-        id: "sub",
-        kind: "request",
-        command: "sync:subscribe-events",
-        params: {},
-      });
-      await cli.waitFor("sub");
-
-      cli.send({
-        id: "enq",
-        kind: "request",
-        command: "sync:enqueue-upload",
-        params: {
-          datasourceId: "ds-1",
-          sourcePath: "/local/a.txt",
-          targetPath: "/remote/a.txt",
-          conflictPolicy: "overwrite",
-        },
-      });
-      const res = await cli.waitFor("enq");
-      if (!res.ok) throw new Error("enqueue-upload failed");
-      const jobId = (res.result as { jobId: string }).jobId;
-
-      const events = await cli.events([
-        "job-enqueued",
-        "job-started",
-        "job-completed",
-      ]);
-      const names = events.map((e) => e.name);
-      expect(names).toContain("job-enqueued");
-      expect(names).toContain("job-started");
-      expect(names).toContain("job-completed");
-
-      const job = new JobRepository(db).getById(jobId);
-      expect(job?.status).toBe("completed");
-    } finally {
-      cli.close();
-    }
-  });
-});
+// migrate-upload-orchestration-out-of-engine §11 — the previous
+// `end-to-end: upload` describe block exercised the legacy
+// `sync:enqueue-upload` → scheduler → `UploadJobExecutor` → job-completed
+// pipeline. That pipeline was deleted in chunk F: single-file uploads
+// now flow through the `files:upload` direct-RPC handler, bypassing the
+// scheduler entirely. End-to-end coverage for the new path lives in
+// `services/fs-sync/src/commands/__tests__/files-upload.test.ts`
+// (handler-level, with a fake `DatasourceClient`) and the desktop-side
+// `apps/desktop/src/main/ipc/files/__tests__/upload.test.ts` (RPC-bridge
+// level). No scheduler integration test is needed for the new path
+// because the scheduler is no longer in the upload critical path.
 
 describe("end-to-end: dedup", () => {
   it("concurrent enqueue-mirror for same (datasourceId, sourcePath) rejects second", async () => {

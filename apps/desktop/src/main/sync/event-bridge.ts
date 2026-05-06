@@ -278,10 +278,11 @@ export function _createBridge(
       // → kind` translation map are gone.
 
       // Evict jobKinds + jobDatasources entries on terminal events to
-      // prevent unbounded growth. The map is still seeded by
-      // `job-enqueued` for the queue-based `sync:enqueue-upload` path
-      // (which chunk F deletes alongside the executor) and used by the
-      // `job-completed` → datasource-status healing path above.
+      // prevent unbounded growth. The map is now seeded only by
+      // `job-enqueued` for the `sync:enqueue-mirror` queue path (the
+      // legacy `sync:enqueue-upload` queue path was deleted in chunk F);
+      // it feeds the `job-completed` → datasource-status healing path
+      // above.
       if (
         (name === "job-completed" || name === "job-failed" || name === "job-cancelled") &&
         payload

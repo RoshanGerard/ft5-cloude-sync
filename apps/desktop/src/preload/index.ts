@@ -85,8 +85,6 @@ import type {
   SyncUploadsListActiveResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
-  SyncEnqueueUploadRequest,
-  SyncEnqueueUploadResponse,
   SyncEvent,
   SyncGetJobRequest,
   SyncGetJobResponse,
@@ -266,10 +264,10 @@ const api = {
       req: SyncGetJobRequest,
     ): Promise<SyncGetJobResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.getJob, req),
-    enqueueUpload: (
-      req: SyncEnqueueUploadRequest,
-    ): Promise<SyncEnqueueUploadResponse> =>
-      ipcRenderer.invoke(SYNC_CHANNELS.enqueueUpload, req),
+    // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+    // `enqueueUpload` preload binding was deleted in chunk F. The
+    // renderer reaches the upload path via `window.api.files.upload`
+    // (the direct-RPC handler at `apps/desktop/src/main/ipc/files/upload.ts`).
     enqueueMirror: (
       req: SyncEnqueueMirrorRequest,
     ): Promise<SyncEnqueueMirrorResponse> =>
