@@ -880,12 +880,12 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     options.signal?.addEventListener(
       "abort",
       () => {
-        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+         
         this.fetchImpl(uploadUrl, {
           method: "DELETE",
           signal: AbortSignal.timeout(5000),
         }).catch((err) => {
-          // eslint-disable-next-line no-console
+           
           console.warn("[onedrive] upload-session cleanup failed:", err);
         });
       },

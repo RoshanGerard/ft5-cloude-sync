@@ -1348,13 +1348,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     options.signal?.addEventListener(
       "abort",
       () => {
-        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+         
         this.fetchImpl(sessionUrl, {
           method: "DELETE",
           headers: { "Content-Range": cancelContentRange },
           signal: AbortSignal.timeout(5000),
         }).catch((err) => {
-          // eslint-disable-next-line no-console
+           
           console.warn("[google-drive] upload-session cleanup failed:", err);
         });
       },
