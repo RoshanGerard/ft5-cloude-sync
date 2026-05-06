@@ -29,6 +29,7 @@ import { buildCommandHandlers } from "../commands/handlers.js";
 import { ServiceConfigStore } from "../config/service-config-store.js";
 import { ConfigFileCredentialStore } from "../credential-store/config-file.js";
 import { createDownloadRegistry } from "../downloads/registry.js";
+import { createUploadRegistry } from "../uploads/registry.js";
 import { applyMigrations } from "../db/migrations.js";
 import { openDatabase } from "../db/open.js";
 import { ensureDataDir } from "../env/ensure-dir.js";
@@ -214,6 +215,15 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     // unreachable from `SyncClient.request(...)`.
     const downloadRegistry = createDownloadRegistry();
     const hashComputer = createHashComputer();
+    // Upload-side singleton (per migrate-upload-orchestration-out-of-engine
+    // §8 + §9). Mirrors `downloadRegistry`: in-memory `Map<uploadJobId,
+    // entry>` shared by `files:upload` (mutates per progress tick),
+    // `sync:cancel-upload` (drives the AbortController), and
+    // `uploads:list-active` (snapshots for the IPC reply). Single
+    // instance per service lifetime — its registry contract pins
+    // identity to `uploadJobId`, so a second instance would split the
+    // namespace and break the concurrent-target rejection guard.
+    const uploadRegistry = createUploadRegistry();
     const credentialStore = new ConfigFileCredentialStore({
       filePath: credentialsPath,
     });
@@ -333,6 +343,14 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       downloadRegistry,
       engineBus,
       hashComputer,
+      // migrate-upload-orchestration-out-of-engine §9/§10 upload
+      // bundle. With both `resolveClient` (already above) and
+      // `uploadRegistry` present, `buildCommandHandlers` wires
+      // `files:upload`, `sync:cancel-upload`, and
+      // `uploads:list-active`. Coexists with the legacy queue-based
+      // `sync:enqueue-upload` handler until Chunk E rewires the
+      // executor deletion + renderer cutover.
+      uploadRegistry,
     });
     const subscribeHandler: CommandHandler<"sync:subscribe-events"> = async (
       _params,

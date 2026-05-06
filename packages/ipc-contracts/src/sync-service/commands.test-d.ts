@@ -53,6 +53,7 @@ describe("sync-service command contract", () => {
       | "files:remove"
       | "files:rename"
       | "files:download"
+      | "files:upload"
       | "sync:cancel-download"
       | "downloads:list-active"
       | "uploads:list-active"

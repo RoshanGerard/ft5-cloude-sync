@@ -64,6 +64,7 @@ export type {
   DownloadingPayload,
   EventName,
   EventPayloadMap,
+  FileCreatedPayload,
   FileDownloadedPayload,
   JobCancelledPayload,
   JobCompletedPayload,
@@ -77,6 +78,9 @@ export type {
   ServiceEvent,
   SourceUnavailablePayload,
   SyncCompletedPayload,
+  UploadCancelledPayload,
+  UploadFailedPayload,
+  UploadingPayload,
 } from "./events.js";
 export { EVENT_NAMES } from "./events.js";
 

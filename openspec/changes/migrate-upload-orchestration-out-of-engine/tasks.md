@@ -4,7 +4,7 @@
 
 No blocking prerequisites. `add-engine-rename-download` (the orchestration template) merged 2026-04-29.
 
-- [ ] 0.1 Pre-apply staleness check on `design.md` file paths and function names per CLAUDE.md `## Workflow` step 5
+- [x] 0.1 Pre-apply staleness check on `design.md` file paths and function names per CLAUDE.md `## Workflow` step 5 [Verified 2026-05-06: download templates all exist as design.md predicts; `UploadJobExecutor` lives at `services/fs-sync/src/executors/upload.ts` (not `scheduler/executors/upload-job-executor.ts`) — tasks.md §11.1 already noted "or wherever it lives"; 41 files reference `sync:enqueue-upload` (confirms §7.4 + §11 chunk-E scope).]
 
 ## 1. Engine — `BaseDatasourceClient.uploadFile` reshape
 
@@ -83,35 +83,35 @@ No blocking prerequisites. `add-engine-rename-download` (the orchestration templ
 
 ## 8. Service — `UploadRegistry` module
 
-- [ ] 8.1 Create `services/fs-sync/src/uploads/registry.ts` with `UploadJobEntry` interface and `UploadRegistry` interface (`set`, `get`, `update`, `delete`, `snapshot`, `findByTarget`).
-- [ ] 8.2 Implement the registry as a class with a forward `Map<uploadJobId, UploadJobEntry>` and a reverse-index `Map<string, string>` keyed `${datasourceId}::${targetPath}` → `uploadJobId`.
-- [ ] 8.3 Both indexes update atomically on `set` and `delete` (no reverse-index leak on rapid set/delete cycles).
-- [ ] 8.4 `snapshot()` returns a fresh array (no shared reference); mutations to the returned array don't affect later snapshots.
-- [ ] 8.5 Create `services/fs-sync/src/uploads/registry.test.ts` covering: set + get + delete; reverse-index hit-after-set, miss-after-delete; concurrent set/delete atomicity; snapshot immutability.
+- [x] 8.1 Create `services/fs-sync/src/uploads/registry.ts` with `UploadJobEntry` interface and `UploadRegistry` interface (`set`, `get`, `update`, `delete`, `snapshot`, `findByTarget`).
+- [x] 8.2 Implement the registry as a class with a forward `Map<uploadJobId, UploadJobEntry>` and a reverse-index `Map<string, string>` keyed `${datasourceId}::${targetPath}` → `uploadJobId`.
+- [x] 8.3 Both indexes update atomically on `set` and `delete` (no reverse-index leak on rapid set/delete cycles).
+- [x] 8.4 `snapshot()` returns a fresh array (no shared reference); mutations to the returned array don't affect later snapshots.
+- [x] 8.5 Create `services/fs-sync/src/uploads/__tests__/registry.test.ts` covering: set + get + delete; reverse-index hit-after-set, miss-after-delete; concurrent set/delete atomicity; snapshot immutability.
 
 ## 9. Service — `files:upload` handler
 
-- [ ] 9.1 Create `services/fs-sync/src/commands/files-upload.ts` mirroring `files-download.ts` shape.
-- [ ] 9.2 Validate `sourcePath` is absolute, `targetPath` is syntactically valid; reject with `tag: "other"` on validation failure.
-- [ ] 9.3 Check `registry.findByTarget(datasourceId, targetPath)` — if hit, reject with `tag: "conflict"` payload `{ existingUploadJobId, targetPath }` BEFORE engine call.
-- [ ] 9.4 Mint `uploadJobId = crypto.randomUUID()`; create `AbortController`; insert `UploadJobEntry` into registry.
-- [ ] 9.5 Resolve `DatasourceClient<T>` via `ClientFactory.create(datasourceId)`.
-- [ ] 9.6 Invoke `await client.uploadFile(target, file, { signal: abortController.signal, onProgress: <emit-throttled-uploading> })`.
-- [ ] 9.7 `onProgress` callback updates registry entry's `bytesUploaded` and `contentLength`; emits `uploading` on `sync:event-stream` with throttle (1s OR 10% delta).
-- [ ] 9.8 On engine resolve: emit `file-created` on `sync:event-stream`; delete registry entry; reply `{ uploadJobId }`.
-- [ ] 9.9 On engine reject `tag === "cancelled"`: emit `upload-cancelled`; delete registry entry; reply with cancelled error (mirror download handler's cancel reply convention).
-- [ ] 9.10 On engine reject other tag: emit `upload-failed`; delete registry entry; reply with normalized error.
-- [ ] 9.11 Wire `files-upload.ts` into the dispatcher at `services/fs-sync/src/commands/handlers.ts` (or wherever the dispatcher lives).
-- [ ] 9.12 Create `services/fs-sync/src/commands/__tests__/files-upload.test.ts` covering: happy-path resolve with single file-created event; engine network-error → upload-failed event + reject; mid-upload cancel → upload-cancelled event + cleanup; concurrent-target rejection (Decision 10); duplicate `(datasourceId, targetPath)` with different sourcePath → still rejected; same target on different datasourceId → both succeed.
-- [ ] 9.13 Verify `SELECT COUNT(*) FROM jobs WHERE kind = 'upload'` returns 0 after `files:upload` completes (queue is bypassed).
+- [x] 9.1 Create `services/fs-sync/src/commands/files-upload.ts` mirroring `files-download.ts` shape.
+- [x] 9.2 Validate `sourcePath` is absolute, `targetPath` is syntactically valid; reject with `tag: "other"` on validation failure.
+- [x] 9.3 Check `registry.findByTarget(datasourceId, targetPath)` — if hit, reject with `tag: "conflict"` payload `{ existingUploadJobId, targetPath }` BEFORE engine call.
+- [x] 9.4 Mint `uploadJobId = crypto.randomUUID()`; create `AbortController`; insert `UploadJobEntry` into registry.
+- [x] 9.5 Resolve `DatasourceClient<T>` via `ClientFactory.create(datasourceId)`. [Implemented via the same `resolveClient` dependency the download handler uses — `services/fs-sync/src/main/resolve-client.ts` wraps the factory.]
+- [x] 9.6 Invoke `await client.uploadFile(target, file, { signal: abortController.signal, onProgress: <emit-throttled-uploading> })`.
+- [x] 9.7 `onProgress` callback updates registry entry's `bytesUploaded` and `contentLength`; emits `uploading` on `sync:event-stream` with throttle (1s OR 10% delta).
+- [x] 9.8 On engine resolve: emit `file-created` on `sync:event-stream`; delete registry entry; reply `{ uploadJobId }`.
+- [x] 9.9 On engine reject `tag === "cancelled"`: emit `upload-cancelled`; delete registry entry; reply with cancelled error (mirror download handler's cancel reply convention).
+- [x] 9.10 On engine reject other tag: emit `upload-failed`; delete registry entry; reply with normalized error.
+- [x] 9.11 Wire `files-upload.ts` into the dispatcher at `services/fs-sync/src/commands/handlers.ts`. ADDITIVE — coexists with `sync:enqueue-upload` until Chunk E.
+- [x] 9.12 Create `services/fs-sync/src/commands/__tests__/files-upload.test.ts` covering: happy-path resolve with single file-created event; engine network-error → upload-failed event + reject; mid-upload cancel → upload-cancelled event + cleanup; concurrent-target rejection (Decision 10); duplicate `(datasourceId, targetPath)` with different sourcePath → still rejected; same target on different datasourceId → both succeed.
+- [x] 9.13 [N/A — chunk D adds `files:upload` alongside `sync:enqueue-upload`; queue-bypass smoke deferred to chunk E once executor is deleted.]
 
 ## 10. Service — `uploads:list-active` and `sync:cancel-upload` handlers
 
-- [ ] 10.1 Create `services/fs-sync/src/commands/uploads-list-active.ts`. Returns `{ ok: true, value: registry.snapshot().map(entry => omit(entry, 'abortController')) }`.
-- [ ] 10.2 Create `services/fs-sync/src/commands/sync-cancel-upload.ts`. Looks up `registry.get(uploadJobId)`; if entry exists, calls `entry.abortController.abort()`; replies `{ cancelled: <boolean> }`.
-- [ ] 10.3 Wire both into `commands/handlers.ts`.
-- [ ] 10.4 Create `services/fs-sync/src/commands/__tests__/uploads-list-active.test.ts` (mirrors `downloads-list-active.test.ts` structure): empty case, populated case, abortController stripped from wire shape.
-- [ ] 10.5 Create `services/fs-sync/src/commands/__tests__/sync-cancel-upload.test.ts`: known id → `cancelled: true` + signal aborted; unknown id → `cancelled: false`; idempotent on repeat cancel.
+- [x] 10.1 Create `services/fs-sync/src/commands/uploads-list-active.ts`. Returns the registry snapshot projected to wire `UploadJob[]` (drops `abortController`).
+- [x] 10.2 Create `services/fs-sync/src/commands/sync-cancel-upload.ts`. Looks up `registry.get(uploadJobId)`; if entry exists, calls `entry.abortController.abort()`; replies `{ cancelled: <boolean> }`. Idempotent on unknown ids.
+- [x] 10.3 Wire both into `commands/handlers.ts`.
+- [x] 10.4 Create `services/fs-sync/src/commands/__tests__/uploads-list-active.test.ts` (mirrors `downloads-list-active.test.ts` structure): empty case, populated case, abortController stripped from wire shape.
+- [x] 10.5 Create `services/fs-sync/src/commands/__tests__/sync-cancel-upload.test.ts`: known id → `cancelled: true` + signal aborted; unknown id → `cancelled: false`; idempotent on repeat cancel.
 
 ## 11. Service — `UploadJobExecutor` deletion
 

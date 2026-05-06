@@ -43,7 +43,14 @@ import {
   type HashComputer,
 } from "./files-download.js";
 import { makeDownloadsListActiveHandler } from "./downloads-list-active.js";
+import {
+  createDefaultFilesUploadDeps,
+  makeFilesUploadHandler,
+} from "./files-upload.js";
+import { makeUploadsListActiveHandler } from "./uploads-list-active.js";
+import { makeSyncCancelUploadHandler } from "./sync-cancel-upload.js";
 import type { DownloadRegistry } from "../downloads/registry.js";
+import type { UploadRegistry } from "../uploads/registry.js";
 import type { ServiceConfigStore } from "../config/service-config-store.js";
 import type { AuthCorrelationStore } from "../state/auth-correlation-store.js";
 import type { OAuthLoopbackBroker } from "../oauth/loopback-broker.js";
@@ -89,6 +96,19 @@ export interface HandlersDeps {
   readonly downloadRegistry?: DownloadRegistry;
   readonly engineBus?: EngineBusSubscriber;
   readonly hashComputer?: HashComputer;
+  /**
+   * Upload-side dependencies — added by
+   * migrate-upload-orchestration-out-of-engine §9. The `files:upload`
+   * handler needs the in-memory `UploadRegistry`. When absent — together
+   * with `resolveClient` — `files:upload`, `sync:cancel-upload`, and
+   * `uploads:list-active` are omitted from the returned map (mirrors the
+   * download-bundle pattern above) so existing tests that pre-date this
+   * change keep compiling. Production bootstrap supplies it alongside
+   * `resolveClient`. The legacy `sync:enqueue-upload` queue path
+   * coexists with `files:upload` until Chunk E rewires the executor
+   * deletion.
+   */
+  readonly uploadRegistry?: UploadRegistry;
 }
 
 export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
@@ -368,6 +388,30 @@ export function buildCommandHandlers(deps: HandlersDeps): CommandHandlers {
           }),
           "downloads:list-active": makeDownloadsListActiveHandler({
             registry: deps.downloadRegistry,
+          }),
+        }
+      : {}),
+    // files:upload + sync:cancel-upload + uploads:list-active —
+    // wired only when both `resolveClient` and `uploadRegistry` are
+    // supplied. Mirrors the download-bundle pattern above.
+    //
+    // ADDITIVE — the legacy `sync:enqueue-upload` queue handler above
+    // continues to dispatch alongside the new direct-RPC `files:upload`
+    // until Chunk E rewires the renderer + deletes the executor.
+    ...(deps.resolveClient && deps.uploadRegistry
+      ? {
+          "files:upload": makeFilesUploadHandler(
+            createDefaultFilesUploadDeps({
+              resolveClient: deps.resolveClient,
+              registry: deps.uploadRegistry,
+              fsSyncBus: deps.bus,
+            }),
+          ),
+          "sync:cancel-upload": makeSyncCancelUploadHandler({
+            registry: deps.uploadRegistry,
+          }),
+          "uploads:list-active": makeUploadsListActiveHandler({
+            registry: deps.uploadRegistry,
           }),
         }
       : {}),

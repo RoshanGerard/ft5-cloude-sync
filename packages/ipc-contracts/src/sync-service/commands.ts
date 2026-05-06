@@ -453,6 +453,22 @@ export interface FilesCommandErrorShape extends ErrorShape {
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
   readonly existingPath?: string;
+  /**
+   * Populated only when `tag === "conflict"` is surfaced from the
+   * `files:upload` concurrent-target guard (per
+   * migrate-upload-orchestration-out-of-engine design.md Decision 10 +
+   * spec scenario "Concurrent-target upload conflict guard"). Carries
+   * the `uploadJobId` of the FIRST in-flight upload occupying the
+   * `(datasourceId, targetPath)` slot — the renderer surfaces it in a
+   * Sonner error toast pointing at the existing toast. Flat-optional
+   * shape mirrors `existingPath` / `retryAfterMs` (NOT a discriminated
+   * union) so callers can read the field without re-narrowing on tag.
+   *
+   * Conflicts on `files:rename` continue to use `existingPath` only —
+   * rename does not have a job-identity concept and the colliding
+   * sibling path is the only useful piece of context.
+   */
+  readonly existingUploadJobId?: string;
 }
 
 // Canonical `FilesRemoveEntryResult` lives in `../files.ts`. Re-exported
@@ -571,6 +587,35 @@ interface FilesDownloadCommand {
   readonly result: {
     readonly savedPath: string;
     readonly bytes: number;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `files:upload` (migrate-upload-orchestration-out-of-engine §9). The
+// service handler validates the request envelope, mints a service-level
+// `uploadJobId`, creates an AbortController, registers the in-flight job
+// in the `UploadRegistry`, and invokes `client.uploadFile(parent, file,
+// { signal, onProgress })` on the resolved engine client. The handler
+// emits four uploadJobId-keyed lifecycle events on `sync:event-stream`
+// (`uploading` / `file-created` / `upload-failed` / `upload-cancelled`)
+// — the engine no longer participates in upload event emission. Cancel
+// surface lives on the sibling `sync:cancel-upload` command. Concurrent
+// uploads to the same `(datasourceId, targetPath)` are rejected with
+// `tag: "conflict"` BEFORE any engine call (Decision 10 — the
+// `existingUploadJobId` field on `FilesCommandErrorShape` carries the
+// pre-existing job's id so the renderer can surface it in a Sonner
+// error toast). The `existingPath` field on the same shape carries the
+// disputed `targetPath`.
+interface FilesUploadCommand {
+  readonly command: "files:upload";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly sourcePath: string;
+    readonly targetPath: string;
+    readonly conflictPolicy: ConflictPolicy;
+  };
+  readonly result: {
+    readonly uploadJobId: string;
   };
   readonly error: FilesCommandErrorShape;
 }
@@ -755,6 +800,7 @@ export interface CommandMap {
   "files:remove": FilesRemoveCommand;
   "files:rename": FilesRenameCommand;
   "files:download": FilesDownloadCommand;
+  "files:upload": FilesUploadCommand;
   "sync:cancel-download": SyncCancelDownloadCommand;
   "downloads:list-active": DownloadsListActiveCommand;
   "uploads:list-active": UploadsListActiveCommand;
@@ -793,6 +839,7 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "files:remove",
   "files:rename",
   "files:download",
+  "files:upload",
   "sync:cancel-download",
   "downloads:list-active",
   "uploads:list-active",
