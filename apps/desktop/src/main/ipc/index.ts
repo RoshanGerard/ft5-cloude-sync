@@ -23,6 +23,7 @@ import type {
   SyncAuthenticateStartRequest,
   SyncCancelDownloadRequest,
   SyncCancelJobRequest,
+  SyncCancelUploadRequest,
   SyncEnqueueMirrorRequest,
   SyncEnqueueUploadRequest,
   SyncGetJobRequest,
@@ -64,6 +65,8 @@ import { handleSyncAuthenticateComplete } from "./sync/authenticate-complete.js"
 import { handleSyncAuthenticateStart } from "./sync/authenticate-start.js";
 import { handleSyncCancelDownload } from "./sync/cancel-download.js";
 import { handleSyncCancelJob } from "./sync/cancel-job.js";
+import { handleSyncCancelUpload } from "./sync/cancel-upload.js";
+import { handleUploadsListActive } from "./sync/uploads-list-active.js";
 import { handleSyncEnqueueMirror } from "./sync/enqueue-mirror.js";
 import { handleSyncEnqueueUpload } from "./sync/enqueue-upload.js";
 import { handleSyncGetJob } from "./sync/get-job.js";
@@ -161,11 +164,13 @@ export function registerIpcHandlers(
     (_event, req: FilesDownloadRequest) => handleFilesDownload(req),
   );
   // Files upload — renderer-supplied `{ sourcePath, targetPath,
-  // conflictPolicy }`. Thin proxy over `syncClient.enqueueUpload`
-  // (see `files/upload.ts`); progress events continue to reach the
-  // renderer through the sync event-bridge's translation into
-  // `DATASOURCES_CHANNELS.uploadProgress`, keyed by the returned
-  // `jobId`.
+  // conflictPolicy }`. Thin proxy over the service's `files:upload`
+  // direct-RPC handler (see `files/upload.ts`). Lifecycle events
+  // (`uploading` / `file-created` / `upload-failed` /
+  // `upload-cancelled`) flow on `sync:event-stream` keyed by service-
+  // minted `uploadJobId`. The legacy `DATASOURCES_CHANNELS.uploadProgress`
+  // translation layer was removed by
+  // migrate-upload-orchestration-out-of-engine §13.4.
   ipcMain.handle(
     FILES_CHANNELS.upload,
     (_event, req: FilesUploadRequest) => handleFilesUpload(req),
@@ -206,6 +211,27 @@ export function registerIpcHandlers(
     SYNC_CHANNELS.cancelDownload,
     async (_event, req: SyncCancelDownloadRequest) =>
       handleSyncCancelDownload(req),
+  );
+  // migrate-upload-orchestration-out-of-engine §13.2 — desktop bridge for
+  // the new `sync:cancel-upload` service command. Mirrors cancelDownload:
+  // idempotent at the service boundary, flat `{ cancelled: boolean }`
+  // response, transport-level errors re-throw to the renderer.
+  ipcMain.handle(
+    SYNC_CHANNELS.cancelUpload,
+    async (_event, req: SyncCancelUploadRequest) =>
+      handleSyncCancelUpload(req),
+  );
+  // migrate-upload-orchestration-out-of-engine §10 / §13 — desktop bridge
+  // for the new `uploads:list-active` service command. Returns the
+  // current `UploadRegistry` snapshot. The renderer calls this on
+  // app-init for the upload-toaster hydrate path (parallel to the
+  // download-side `files:hydrate-active-downloads` channel which fires
+  // one-way from main); exposing a request-able variant lets the
+  // renderer re-fetch on tab focus etc. without waiting for a fresh
+  // supervisor connect.
+  ipcMain.handle(
+    SYNC_CHANNELS.uploadsListActive,
+    async () => handleUploadsListActive(),
   );
   ipcMain.handle(
     SYNC_CHANNELS.authenticateStart,

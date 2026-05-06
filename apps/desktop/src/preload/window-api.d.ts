@@ -8,7 +8,6 @@ import type {
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -25,13 +24,14 @@ import type {
   FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
-// `UploadJob` re-export from the wire subpath is not needed here yet —
-// `window.api.uploads.listActive` returns `SyncUploadsListActiveResponse`
-// (which carries a `readonly UploadJob[]` field via the sync-service-
-// desktop re-export). Chunk F adds an `onActiveUploadsHydrate(callback)`
-// binding parallel to `onActiveDownloadsHydrate`; that is when
-// `UploadJob` joins this import for the callback's parameter type.
-import type { DownloadJob } from "@ft5/ipc-contracts/sync-service";
+// migrate-upload-orchestration-out-of-engine §13.3 — `UploadJob` joins
+// the import set alongside `DownloadJob`. The callback parameter on
+// `files.onActiveUploadsHydrate` is `readonly UploadJob[]`, parallel to
+// the download equivalent. Chunk C kept this import out because the
+// hydrate channel hadn't been wired yet; chunk E adds the desktop
+// bridge + preload binding so the type now lives on the cross-bridge
+// callback.
+import type { DownloadJob, UploadJob } from "@ft5/ipc-contracts/sync-service";
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -87,10 +87,6 @@ declare global {
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
         pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
-        onUploadProgress(
-          transactionId: string,
-          callback: (event: DatasourcesUploadProgressEvent) => void,
-        ): () => void;
         onEvent(callback: (event: AnyDatasourceEvent) => void): () => void;
       };
       files: {
@@ -105,6 +101,14 @@ declare global {
         showSavedInFolder(savedPath: string): Promise<void>;
         onActiveDownloadsHydrate(
           callback: (jobs: readonly DownloadJob[]) => void,
+        ): () => void;
+        // migrate-upload-orchestration-out-of-engine §13.3 — symmetric
+        // upload-side hydrate channel. Fires once per app session on
+        // the supervisor's first connect. Reconnects mid-session do
+        // NOT re-fire — the live event feed (sync:event-stream filtered
+        // to the four upload kinds) drives in-flight progress instead.
+        onActiveUploadsHydrate(
+          callback: (jobs: readonly UploadJob[]) => void,
         ): () => void;
       };
       preferences: {

@@ -11,7 +11,6 @@ import type {
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -51,17 +50,25 @@ interface DownloadJob {
   readonly startedAt: number;
 }
 
-// Note: a local `UploadJob` mirror (parallel to `DownloadJob` above) is
-// NOT declared in this chunk. The additive surface here — `uploads.
-// listActive()` — returns `SyncUploadsListActiveResponse`, which is
-// imported from the renderer-facing barrel
-// `@ft5/ipc-contracts/sync-service-desktop` (the import-boundary test
-// allows that subpath). No callback parameter typed `readonly UploadJob[]`
-// crosses the contextBridge in Chunk C, so the local mirror would be
-// unused. Chunk F adds the one-way upload-hydrate listener — at that
-// point a local `UploadJob` interface (mirroring the `DownloadJob`
-// pattern) gets re-introduced alongside the new
-// `files.onActiveUploadsHydrate` binding.
+// migrate-upload-orchestration-out-of-engine §13.3 — local mirror of
+// `UploadJob` (parallel to `DownloadJob` above). Same import-boundary
+// rationale: the preload's import-boundary test forbids the
+// `@ft5/ipc-contracts/sync-service` subpath here. The renderer-facing
+// barrel `sync-service-desktop` does NOT re-export `UploadJob`, so we
+// mirror the structural shape locally for the
+// `onActiveUploadsHydrate(callback)` parameter type. The
+// `window-api.d.ts` keeps the typed import (the import-boundary test
+// scopes to `preload/index.ts` only). Identity coverage of the wire
+// shape sits in the contract package's `__tests__/`.
+interface UploadJob {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesUploaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -129,26 +136,15 @@ const api = {
     // void-request pattern above.
     pickFilesToUpload: (): Promise<DatasourcesPickFilesResponse> =>
       ipcRenderer.invoke(DATASOURCES_CHANNELS.pickFilesToUpload),
-    onUploadProgress: (
-      transactionId: string,
-      callback: (event: DatasourcesUploadProgressEvent) => void,
-    ): (() => void) => {
-      const listener = (
-        _event: IpcRendererEvent,
-        payload: DatasourcesUploadProgressEvent,
-      ): void => {
-        if (payload.transactionId === transactionId) {
-          callback(payload);
-        }
-      };
-      ipcRenderer.on(DATASOURCES_CHANNELS.uploadProgress, listener);
-      return () => {
-        ipcRenderer.removeListener(
-          DATASOURCES_CHANNELS.uploadProgress,
-          listener,
-        );
-      };
-    },
+    // migrate-upload-orchestration-out-of-engine §7.9 — `onUploadProgress`
+    // (the legacy per-transactionId progress subscription on the
+    // `datasources:upload:progress` channel) is REMOVED. Upload events
+    // now flow on `sync:event-stream` keyed by `uploadJobId` alongside
+    // download events; the renderer's upload toaster subscribes via
+    // `window.api.sync.onEvent` filtered to the four upload event
+    // kinds (`uploading` / `file-created` / `upload-failed` /
+    // `upload-cancelled`). See `upload-job-toast.ts`'s
+    // `resolveEventApi` for the production fallback.
     // Broad subscription to the engine's event stream over
     // `DATASOURCES_CHANNELS.event`. Unlike `onUploadProgress`, there is no
     // filter here — every `DatasourceEvent<T, K>` that crosses the main →
@@ -223,6 +219,31 @@ const api = {
       return () => {
         ipcRenderer.removeListener(
           "files:hydrate-active-downloads",
+          listener,
+        );
+      };
+    },
+    // migrate-upload-orchestration-out-of-engine §13.3 — symmetric
+    // upload-side hydrate channel. Same shape as the download
+    // equivalent: one-way main → renderer, fires EXACTLY ONCE per app
+    // session on the supervisor's first connect with the active-
+    // uploads snapshot from `uploads:list-active`. Reconnects mid-
+    // session do NOT re-fire; the renderer's live `sync:event-stream`
+    // subscription (filtered to the four upload kinds) drives in-
+    // flight progress instead.
+    onActiveUploadsHydrate: (
+      callback: (jobs: readonly UploadJob[]) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: IpcRendererEvent,
+        payload: readonly UploadJob[],
+      ): void => {
+        callback(payload);
+      };
+      ipcRenderer.on("files:hydrate-active-uploads", listener);
+      return () => {
+        ipcRenderer.removeListener(
+          "files:hydrate-active-uploads",
           listener,
         );
       };

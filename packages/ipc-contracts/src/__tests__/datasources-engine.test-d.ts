@@ -168,27 +168,37 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     void ({} as OneDrivePayloads);
   });
 
-  it("PayloadMap declares the seventeen canonical event names for every provider", () => {
+  it("PayloadMap declares the sixteen canonical event names for every provider (post migrate-upload-orchestration-out-of-engine §7.6 / §7.7)", () => {
     // The assertion is compile-time: every provider's key set must be
     // EXACTLY the canonical set — bidirectional equality, not one-way
     // subtype. This catches both accidental drop (a provider missing
     // "rate-limited") and accidental drift (a provider adding a new
     // event name without updating the others).
     //
-    // The twelfth name, `"upload-cancelled"`, lands with
-    // `add-fs-engine-cancellation`. The 13th–17th names land with
-    // `add-engine-rename-download`: the four download-lifecycle events
-    // (`downloading`, `file-downloaded`, `download-failed`,
-    // `download-cancelled`) and `entry-renamed`. Any future proposal
-    // that adds an 18th event name MUST update this enumeration in
-    // the same change.
+    // History:
+    //   - `"upload-cancelled"` was added by `add-fs-engine-cancellation`
+    //     and REMOVED from the engine bus by
+    //     `migrate-upload-orchestration-out-of-engine` §7.6 (chunk E).
+    //     The engine no longer participates in upload-lifecycle events;
+    //     the post-migration shape lives on the fs-sync
+    //     `sync:event-stream` keyed by `uploadJobId` (see
+    //     `packages/ipc-contracts/src/sync-service/events.ts`
+    //     `UploadCancelledPayload`). The `uploading`, `upload-failed`,
+    //     and `file-created` slots remain on the engine bus as `unknown`
+    //     for legacy subscriber compatibility — no engine code path
+    //     emits them post-chunk-B.
+    //   - The download-lifecycle four (`downloading`, `file-downloaded`,
+    //     `download-failed`, `download-cancelled`) and `entry-renamed`
+    //     joined the bus with `add-engine-rename-download`.
+    //
+    // Any future proposal that adds another event name MUST update this
+    // enumeration in the same change.
     type S3Keys = keyof PayloadMap["amazon-s3"];
     type DriveKeys = keyof PayloadMap["google-drive"];
     type OneDriveKeys = keyof PayloadMap["onedrive"];
     type Canonical =
       | "uploading"
       | "upload-failed"
-      | "upload-cancelled"
       | "file-created"
       | "deleted"
       | "delete-failed"
@@ -206,6 +216,29 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     expectTypeOf<S3Keys>().toEqualTypeOf<Canonical>();
     expectTypeOf<DriveKeys>().toEqualTypeOf<Canonical>();
     expectTypeOf<OneDriveKeys>().toEqualTypeOf<Canonical>();
+  });
+
+  it("`upload-cancelled` is REMOVED from PayloadMap on every provider (engine no longer emits upload-lifecycle events)", () => {
+    // §7.6 — the engine's `upload-cancelled` slot is gone. The shape
+    // moved to `services/fs-sync/src/commands/files-upload.ts`'s
+    // emitter on `sync:event-stream`, keyed by `uploadJobId` instead
+    // of `transactionId`. The `cancelled` tag in `DatasourceErrorTag`
+    // is RETAINED — strategies still reject with `tag: "cancelled"`
+    // when their AbortSignal fires (chunk B refactor).
+    type HasS3 = "upload-cancelled" extends keyof PayloadMap["amazon-s3"]
+      ? true
+      : never;
+    expectTypeOf<HasS3>().toEqualTypeOf<never>();
+
+    type HasDrive = "upload-cancelled" extends keyof PayloadMap["google-drive"]
+      ? true
+      : never;
+    expectTypeOf<HasDrive>().toEqualTypeOf<never>();
+
+    type HasOneDrive = "upload-cancelled" extends keyof PayloadMap["onedrive"]
+      ? true
+      : never;
+    expectTypeOf<HasOneDrive>().toEqualTypeOf<never>();
   });
 
   it("DatasourceEvent<T, K> carries the required event envelope fields", () => {
@@ -285,25 +318,11 @@ describe("ipc-contracts fs-datasource-engine types — events", () => {
     expect(t).toBe("amazon-s3");
   });
 
-  it("upload-cancelled payload is the shared UploadCancelledPayload on every provider", () => {
-    // Unlike `authentication-failed` (pinned per-provider via
-    // `SerializedDatasourceError<T>`), `upload-cancelled` carries base-level
-    // state — transaction id, byte counts, reason — that is identical
-    // across providers. Pinning the payload in `CanonicalEventPayloads`
-    // guarantees that provenance.
-    type S3Cancel = PayloadMap["amazon-s3"]["upload-cancelled"];
-    type DriveCancel = PayloadMap["google-drive"]["upload-cancelled"];
-    type OneDriveCancel = PayloadMap["onedrive"]["upload-cancelled"];
-    type Expected = {
-      transactionId: string;
-      bytesUploaded: number;
-      bytesTotal: number;
-      reason: "user" | "timeout" | "shutdown";
-    };
-    expectTypeOf<S3Cancel>().toEqualTypeOf<Expected>();
-    expectTypeOf<DriveCancel>().toEqualTypeOf<Expected>();
-    expectTypeOf<OneDriveCancel>().toEqualTypeOf<Expected>();
-  });
+  // migrate-upload-orchestration-out-of-engine §7.7 — the
+  // `upload-cancelled` engine-bus payload-shape test is REMOVED
+  // alongside the slot itself. The post-migration `UploadCancelledPayload`
+  // lives on `sync:event-stream` (keyed by `uploadJobId`) — coverage
+  // moved to `packages/ipc-contracts/src/sync-service/events.test-d.ts`.
 
   it("entry-renamed payload is { from: Target; to: DatasourceFileEntry<T> } pinned per provider (add-engine-rename-download §3.5/§3.6)", () => {
     // The base class emits exactly one `entry-renamed` per successful

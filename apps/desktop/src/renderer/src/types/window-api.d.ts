@@ -13,7 +13,6 @@ import type {
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -30,7 +29,7 @@ import type {
   FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
-import type { DownloadJob } from "@ft5/ipc-contracts/sync-service";
+import type { DownloadJob, UploadJob } from "@ft5/ipc-contracts/sync-service";
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -38,9 +37,12 @@ import type {
   SyncAuthenticateCompleteResponse,
   SyncAuthenticateStartRequest,
   SyncAuthenticateStartResponse,
+  SyncCancelUploadRequest,
+  SyncCancelUploadResponse,
   SyncEvent,
   SyncListJobsRequest,
   SyncListJobsResponse,
+  SyncUploadsListActiveResponse,
 } from "@ft5/ipc-contracts/sync-service-desktop";
 
 declare global {
@@ -57,10 +59,6 @@ declare global {
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
         pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
-        onUploadProgress(
-          transactionId: string,
-          callback: (event: DatasourcesUploadProgressEvent) => void,
-        ): () => void;
         onEvent(callback: (event: AnyDatasourceEvent) => void): () => void;
       };
       files: {
@@ -82,6 +80,15 @@ declare global {
         // Reconnects mid-session do NOT re-fire.
         onActiveDownloadsHydrate(
           callback: (jobs: readonly DownloadJob[]) => void,
+        ): () => void;
+        // migrate-upload-orchestration-out-of-engine §13.3 / §15 — symmetric
+        // upload-side hydrate channel. Fires once per app session on the
+        // supervisor's first connect with the active-uploads snapshot
+        // from `uploads:list-active`. Reconnects mid-session do NOT
+        // re-fire — the live event feed (sync:event-stream filtered to
+        // the four upload kinds) drives in-flight progress instead.
+        onActiveUploadsHydrate(
+          callback: (jobs: readonly UploadJob[]) => void,
         ): () => void;
       };
       clipboard: {
@@ -131,6 +138,20 @@ declare global {
         authenticateCancel(
           req: SyncAuthenticateCancelRequest,
         ): Promise<SyncAuthenticateCancelResponse>;
+        // migrate-upload-orchestration-out-of-engine §7.3 / §13.2 — the
+        // upload-toaster's Cancel button routes through here, NOT
+        // through `cancelJob` (which targets the legacy queue-based
+        // upload job id). The bridge is a thin pass-through to the
+        // service's `sync:cancel-upload` command; idempotent on
+        // unknown `uploadJobId`.
+        cancelUpload(
+          req: SyncCancelUploadRequest,
+        ): Promise<SyncCancelUploadResponse>;
+      };
+      // migrate-upload-orchestration-out-of-engine §7.2 — renderer-facing
+      // namespace for the new `uploads:*` commands.
+      uploads: {
+        listActive(): Promise<SyncUploadsListActiveResponse>;
       };
       // Electron 32+ removed `File.path`. Drag-drop reads each dropped
       // File's absolute filesystem path via this contextBridge wrapper

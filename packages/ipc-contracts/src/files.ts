@@ -66,6 +66,15 @@ export interface FilesErrorEnvelope {
   // shape mirrors retryAfterMs (NOT a discriminated union) so callers can
   // read the field without re-narrowing on tag.
   existingPath?: string;
+  // Populated only when `tag === "conflict"` is surfaced from the
+  // `files:upload` concurrent-target guard (per
+  // migrate-upload-orchestration-out-of-engine design.md Decision 10).
+  // Carries the `uploadJobId` of the in-flight upload occupying the
+  // `(datasourceId, targetPath)` slot so the renderer's Sonner error
+  // toast can reference the existing toast. Flat-optional shape mirrors
+  // `existingPath` / `retryAfterMs`. Conflicts on `files:rename` continue
+  // to use `existingPath` only — rename has no job-identity concept.
+  existingUploadJobId?: string;
 }
 
 export type FilesEnvelope<T> =
@@ -241,11 +250,15 @@ export interface FilesDownloadValue {
 export type FilesDownloadResponse = FilesEnvelope<FilesDownloadValue>;
 
 // `files:upload` is the renderer-facing upload command introduced by
-// `add-file-explorer-drag-drop-upload`. The main-process handler is a
-// thin proxy over `syncClient.enqueueUpload` (→ sync-service's
-// `sync:enqueue-upload`). The `datasources:upload` surface it replaces has
-// been retired; the `datasources:upload:progress` channel stays as the
-// transport for per-job progress events keyed by the returned `jobId`.
+// `add-file-explorer-drag-drop-upload` and migrated to a direct-RPC
+// service handler by `migrate-upload-orchestration-out-of-engine`. The
+// main-process handler is now a thin proxy over the service's
+// `files:upload` command (was `sync:enqueue-upload` pre-migration).
+// Lifecycle events (`uploading` / `file-created` / `upload-failed` /
+// `upload-cancelled`) flow on `sync:event-stream` keyed by the service-
+// minted `uploadJobId` — the legacy `datasources:upload:progress`
+// channel + the `transactionId`-keyed translation layer are gone (§7.5
+// / §13.4).
 //
 // `sourcePath` is an absolute OS path (the renderer receives it either
 // from the OS drop payload or via `datasources:pick-files-to-upload`).

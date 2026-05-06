@@ -1,13 +1,17 @@
-// add-file-explorer-drag-drop-upload task 2.1 — RED test for the
-// renderer-facing `files.upload` handler.
+// migrate-upload-orchestration-out-of-engine §13.5 — tests for the
+// renderer-facing `files.upload` handler post chunk-D direct-RPC cutover.
 //
-// The handler is a thin proxy over `SyncClient.enqueueUpload`
-// (equivalent to `sync:enqueue-upload` on the wire). It MUST forward
-// the renderer-supplied `{ datasourceId, sourcePath, targetPath,
-// conflictPolicy }` verbatim — NO basename derivation, NO picker open,
-// NO implicit overwrite. Failures come back via `toFilesErrorEnvelope`
-// so tagged errors from the service (`rate-limited`, `auth-revoked`,
-// etc.) keep their `retryable` / `retryAfterMs` metadata.
+// The handler is now a thin proxy over `SyncClient.request("files:upload",
+// req)` (parallel to `files:download`). It MUST forward the renderer-
+// supplied `{ datasourceId, sourcePath, targetPath, conflictPolicy }`
+// verbatim, surface the service's `{ uploadJobId }` as `value.jobId`
+// (the `FilesUploadValue.jobId` field is the canonical service-minted
+// upload job id post-migration — see `packages/ipc-contracts/src/files.ts`
+// `FilesUploadValue.jobId` JSDoc), and route service rejections through
+// `toFilesErrorEnvelope`. The previous chunk's wiring went through
+// `SyncClient.enqueueUpload` (the queue-based `sync:enqueue-upload`
+// command); that surface is retained service-side until chunk F
+// removes the executor.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -20,12 +24,12 @@ import { handleFilesUpload } from "../upload.js";
 function makeFakeClient(opts?: {
   resolve?: unknown;
   reject?: unknown;
-}): { enqueueUpload: ReturnType<typeof vi.fn> } {
+}): { request: ReturnType<typeof vi.fn> } {
   const fn = vi.fn();
   if (opts?.resolve !== undefined) fn.mockResolvedValue(opts.resolve);
   else if (opts?.reject !== undefined) fn.mockRejectedValue(opts.reject);
-  else fn.mockResolvedValue({ jobId: "job-default" });
-  return { enqueueUpload: fn };
+  else fn.mockResolvedValue({ uploadJobId: "job-default" });
+  return { request: fn };
 }
 
 const REQ: FilesUploadRequest = {
@@ -35,26 +39,26 @@ const REQ: FilesUploadRequest = {
   conflictPolicy: "overwrite",
 };
 
-describe("handleFilesUpload — delegates to SyncClient.enqueueUpload", () => {
-  it("forwards datasourceId/sourcePath/targetPath/conflictPolicy verbatim and wraps jobId in the files envelope", async () => {
-    const client = makeFakeClient({ resolve: { jobId: "job_a" } });
+describe("handleFilesUpload — direct RPC over SyncClient.request", () => {
+  it("forwards datasourceId/sourcePath/targetPath/conflictPolicy verbatim and wraps the service-minted uploadJobId in the files envelope", async () => {
+    const client = makeFakeClient({ resolve: { uploadJobId: "u_a" } });
 
     const result = await handleFilesUpload(REQ, {
       syncClient: client as never,
     });
 
-    expect(client.enqueueUpload).toHaveBeenCalledTimes(1);
-    expect(client.enqueueUpload).toHaveBeenCalledWith({
+    expect(client.request).toHaveBeenCalledTimes(1);
+    expect(client.request).toHaveBeenCalledWith("files:upload", {
       datasourceId: "ds-1",
       sourcePath: "C:/mock/report.pdf",
       targetPath: "/projects/2026/report.pdf",
       conflictPolicy: "overwrite",
     });
-    expect(result).toEqual({ ok: true, value: { jobId: "job_a" } });
+    expect(result).toEqual({ ok: true, value: { jobId: "u_a" } });
   });
 
   it("forwards conflictPolicy=duplicate without mutation (no implicit overwrite default)", async () => {
-    const client = makeFakeClient({ resolve: { jobId: "job_b" } });
+    const client = makeFakeClient({ resolve: { uploadJobId: "u_b" } });
 
     await handleFilesUpload(
       {
@@ -66,7 +70,7 @@ describe("handleFilesUpload — delegates to SyncClient.enqueueUpload", () => {
       { syncClient: client as never },
     );
 
-    expect(client.enqueueUpload).toHaveBeenCalledWith({
+    expect(client.request).toHaveBeenCalledWith("files:upload", {
       datasourceId: "ds-2",
       sourcePath: "/home/user/a.txt",
       targetPath: "/a.txt",
@@ -82,7 +86,7 @@ describe("handleFilesUpload — delegates to SyncClient.enqueueUpload", () => {
       retryAfterMs: 5000,
     } as const;
     const client = makeFakeClient({
-      reject: new SyncCommandError("sync:enqueue-upload", wireError),
+      reject: new SyncCommandError("files:upload", wireError),
     });
 
     const result = await handleFilesUpload(REQ, {
@@ -95,6 +99,63 @@ describe("handleFilesUpload — delegates to SyncClient.enqueueUpload", () => {
       expect(result.error.message).toBe("too many requests");
       expect(result.error.retryable).toBe(true);
       expect(result.error.retryAfterMs).toBe(5000);
+    }
+  });
+
+  it("maps a SyncCommandError with tag:'conflict' from the concurrent-target guard, preserving existingUploadJobId + existingPath for the renderer toast", async () => {
+    // Decision 10 — `files:upload` rejects a SECOND request to an
+    // in-flight `(datasourceId, targetPath)` BEFORE minting the second
+    // job. The wire error envelope carries `existingUploadJobId` (the
+    // first job's id) and `existingPath` (the disputed target). The
+    // desktop bridge MUST forward both so the renderer's Sonner error
+    // toast can point at the existing upload's toast. See
+    // packages/ipc-contracts/src/sync-service/commands.ts
+    // `FilesCommandErrorShape.existingUploadJobId`.
+    const wireError = {
+      tag: "conflict",
+      message: "An upload to this path is already in progress",
+      retryable: false,
+      existingUploadJobId: "u-first",
+      existingPath: "/projects/2026/report.pdf",
+    } as const;
+    const client = makeFakeClient({
+      reject: new SyncCommandError("files:upload", wireError),
+    });
+
+    const result = await handleFilesUpload(REQ, {
+      syncClient: client as never,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("conflict");
+      expect(result.error.existingUploadJobId).toBe("u-first");
+      expect(result.error.existingPath).toBe("/projects/2026/report.pdf");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("maps a SyncCommandError with tag:'cancelled' from a mid-flight cancel reply", async () => {
+    // The service handler replies with `tag: "cancelled"` AFTER an
+    // in-flight upload is aborted via `sync:cancel-upload`. Round-trips
+    // through the same envelope as the rest of the files surface.
+    const wireError = {
+      tag: "cancelled",
+      message: "upload cancelled",
+      retryable: false,
+    } as const;
+    const client = makeFakeClient({
+      reject: new SyncCommandError("files:upload", wireError),
+    });
+
+    const result = await handleFilesUpload(REQ, {
+      syncClient: client as never,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("cancelled");
+      expect(result.error.message).toBe("upload cancelled");
     }
   });
 
@@ -118,14 +179,14 @@ describe("handleFilesUpload — delegates to SyncClient.enqueueUpload", () => {
     // that tries to inject a `showOpenDialog` stub should fail at the
     // type level; at runtime the handler must complete without calling
     // any picker. We assert the latter by verifying the ONLY side
-    // effect is the enqueueUpload call and nothing else on the deps
-    // object is touched.
-    const client = makeFakeClient({ resolve: { jobId: "job_c" } });
+    // effect is the request call and nothing else on the deps object
+    // is touched.
+    const client = makeFakeClient({ resolve: { uploadJobId: "u_c" } });
     const deps = { syncClient: client as never };
 
     await handleFilesUpload(REQ, deps);
 
-    expect(client.enqueueUpload).toHaveBeenCalledTimes(1);
+    expect(client.request).toHaveBeenCalledTimes(1);
     expect(Object.keys(deps)).toEqual(["syncClient"]);
   });
 });

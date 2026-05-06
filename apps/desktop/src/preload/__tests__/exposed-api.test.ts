@@ -19,7 +19,6 @@ import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
   AnyDatasourceEvent,
   DatasourceEvent,
-  DatasourcesUploadProgressEvent,
 } from "@ft5/ipc-contracts";
 
 type ExposedApi = {
@@ -30,10 +29,6 @@ type ExposedApi = {
     remove: (req: unknown) => Promise<unknown>;
     action: (req: unknown) => Promise<unknown>;
     pickFilesToUpload: () => Promise<unknown>;
-    onUploadProgress: (
-      transactionId: string,
-      callback: (event: DatasourcesUploadProgressEvent) => void,
-    ) => () => void;
     onEvent: (
       callback: (event: AnyDatasourceEvent) => void,
     ) => () => void;
@@ -49,6 +44,9 @@ type ExposedApi = {
     openSavedPath: (savedPath: string) => Promise<void>;
     showSavedInFolder: (savedPath: string) => Promise<void>;
     onActiveDownloadsHydrate: (
+      callback: (jobs: readonly unknown[]) => void,
+    ) => () => void;
+    onActiveUploadsHydrate: (
       callback: (jobs: readonly unknown[]) => void,
     ) => () => void;
   };
@@ -126,7 +124,7 @@ describe("preload exposed api", () => {
   });
 
   describe("datasources surface", () => {
-    it("exposes list/add/remove/action/pickFilesToUpload as functions and onUploadProgress/onEvent as functions", async () => {
+    it("exposes list/add/remove/action/pickFilesToUpload/onEvent as functions; onUploadProgress is REMOVED post migrate-upload-orchestration-out-of-engine §7.9", async () => {
       const exposed = await loadExposed();
 
       expect(typeof exposed.datasources.list).toBe("function");
@@ -134,8 +132,21 @@ describe("preload exposed api", () => {
       expect(typeof exposed.datasources.remove).toBe("function");
       expect(typeof exposed.datasources.action).toBe("function");
       expect(typeof exposed.datasources.pickFilesToUpload).toBe("function");
-      expect(typeof exposed.datasources.onUploadProgress).toBe("function");
       expect(typeof exposed.datasources.onEvent).toBe("function");
+      // §7.9 — `onUploadProgress` is gone. The renderer's upload toaster
+      // now subscribes to `window.api.sync.onEvent` filtered to the four
+      // upload event kinds keyed by service-minted `uploadJobId`.
+      const datasources = exposed.datasources as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(datasources.onUploadProgress).toBeUndefined();
+      expect(
+        Object.prototype.hasOwnProperty.call(
+          datasources,
+          "onUploadProgress",
+        ),
+      ).toBe(false);
     });
 
     // Spec scenario: "startConsent and cancelConsent are absent from the
@@ -252,63 +263,13 @@ describe("preload exposed api", () => {
       expect(result).toBe(response);
     });
 
-    it("onUploadProgress registers a listener on the progress channel and filters by transactionId", async () => {
-      const onMock = ipcRenderer.on as unknown as ReturnType<typeof vi.fn>;
-      const removeListenerMock = ipcRenderer.removeListener as unknown as ReturnType<
-        typeof vi.fn
-      >;
-
-      const exposed = await loadExposed();
-      const callback = vi.fn();
-      const subscribedTxId = "tx-42";
-
-      const unsubscribe = exposed.datasources.onUploadProgress(
-        subscribedTxId,
-        callback,
-      );
-
-      expect(onMock).toHaveBeenCalledTimes(1);
-      const [channel, listener] = onMock.mock.calls[0]!;
-      expect(channel).toBe(DATASOURCES_CHANNELS.uploadProgress);
-      expect(typeof listener).toBe("function");
-
-      // Simulate an event for a DIFFERENT transaction: callback must NOT fire.
-      const otherEvent: DatasourcesUploadProgressEvent = {
-        transactionId: "tx-99",
-        bytesUploaded: 1,
-        bytesTotal: 10,
-        status: "uploading",
-      };
-      (listener as (ev: unknown, payload: DatasourcesUploadProgressEvent) => void)(
-        {},
-        otherEvent,
-      );
-      expect(callback).not.toHaveBeenCalled();
-
-      // Simulate an event for the SUBSCRIBED transaction: callback fires with payload.
-      const matchingEvent: DatasourcesUploadProgressEvent = {
-        transactionId: subscribedTxId,
-        bytesUploaded: 5,
-        bytesTotal: 10,
-        status: "uploading",
-      };
-      (listener as (ev: unknown, payload: DatasourcesUploadProgressEvent) => void)(
-        {},
-        matchingEvent,
-      );
-      expect(callback).toHaveBeenCalledTimes(1);
-      expect(callback).toHaveBeenCalledWith(matchingEvent);
-
-      // The returned unsubscribe must be a function that removes THAT listener
-      // from THAT channel.
-      expect(typeof unsubscribe).toBe("function");
-      unsubscribe();
-      expect(removeListenerMock).toHaveBeenCalledTimes(1);
-      expect(removeListenerMock.mock.calls[0]).toEqual([
-        DATASOURCES_CHANNELS.uploadProgress,
-        listener,
-      ]);
-    });
+    // migrate-upload-orchestration-out-of-engine §7.9 / §13.4 — the
+    // `onUploadProgress` per-transactionId subscription test is REMOVED
+    // alongside the binding itself. Coverage of the new upload-event
+    // path lives at `apps/desktop/src/renderer/src/features/file-explorer/
+    // __tests__/upload-job-toast.test.ts` (toaster filters
+    // `sync:event-stream` to the four upload event kinds keyed by
+    // `uploadJobId`).
 
     it("onEvent subscribes to DATASOURCES_CHANNELS.event without filtering and returns an unsubscribe that removes the SAME listener", async () => {
       // Unlike `onUploadProgress`, `onEvent` is a broad subscription: every
@@ -621,6 +582,52 @@ describe("preload exposed api", () => {
       expect(removeListenerMock).toHaveBeenCalledTimes(1);
       expect(removeListenerMock.mock.calls[0]).toEqual([
         "files:hydrate-active-downloads",
+        listener,
+      ]);
+    });
+
+    // migrate-upload-orchestration-out-of-engine §13.3 — symmetric
+    // upload-side hydrate channel. Same shape as the download
+    // equivalent: registers ONE listener on the dedicated
+    // `files:hydrate-active-uploads` channel, returns an unsubscribe
+    // that removes that listener.
+    it("onActiveUploadsHydrate registers a listener on 'files:hydrate-active-uploads' and returns an unsubscribe that removes that listener", async () => {
+      const onMock = ipcRenderer.on as unknown as ReturnType<typeof vi.fn>;
+      const removeListenerMock =
+        ipcRenderer.removeListener as unknown as ReturnType<typeof vi.fn>;
+
+      const exposed = await loadExposed();
+      const callback = vi.fn();
+
+      const unsubscribe = exposed.files.onActiveUploadsHydrate(callback);
+
+      expect(onMock).toHaveBeenCalledTimes(1);
+      const [channel, listener] = onMock.mock.calls[0]!;
+      expect(channel).toBe("files:hydrate-active-uploads");
+      expect(typeof listener).toBe("function");
+
+      const sampleJobs = [
+        {
+          uploadJobId: "u-1",
+          datasourceId: "ds-1",
+          sourcePath: "C:/local/a.pdf",
+          targetPath: "/projects/2026/a.pdf",
+          bytesUploaded: 100,
+          contentLength: 1000,
+          startedAt: 1700000000000,
+        },
+      ];
+      (
+        listener as (ev: unknown, payload: readonly unknown[]) => void
+      )({}, sampleJobs);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(sampleJobs);
+
+      expect(typeof unsubscribe).toBe("function");
+      unsubscribe();
+      expect(removeListenerMock).toHaveBeenCalledTimes(1);
+      expect(removeListenerMock.mock.calls[0]).toEqual([
+        "files:hydrate-active-uploads",
         listener,
       ]);
     });

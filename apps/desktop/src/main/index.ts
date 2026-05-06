@@ -13,6 +13,7 @@ import { createEventBridge } from "./ipc/datasources/event-bridge.js";
 import { startSupervisor } from "./sync/supervisor.js";
 import { createSyncEventBridge } from "./sync/event-bridge.js";
 import { hydrateActiveDownloadsOnce } from "./sync/on-connect-hydrate-downloads.js";
+import { hydrateActiveUploadsOnce } from "./sync/on-connect-hydrate-uploads.js";
 import { resolveSyncPipePath } from "./sync/pipe-paths.js";
 import { resolveServiceNodeBinary } from "./sync/node-binary-resolver.js";
 import { getSyncClient, setSyncClient } from "./sync/sync-client-holder.js";
@@ -288,6 +289,18 @@ async function bootstrap(): Promise<void> {
       // Closure reads via `getSyncClient()` so the always-current client
       // is used (matches the IPC handler pattern in sync-client-holder.ts).
       void hydrateActiveDownloadsOnce(
+        { request: (cmd, params) => getSyncClient().request(cmd, params) },
+        (channel, payload) => {
+          if (window.isDestroyed()) return;
+          window.webContents.send(channel, payload);
+        },
+      );
+      // migrate-upload-orchestration-out-of-engine §13.3 — symmetric
+      // upload hydrate. Fires once per app session on the same
+      // `did-finish-load` tick as the download hydrate; reconnects
+      // mid-session do NOT re-fire (Decision 4). Renderer subscribes
+      // via `window.api.files.onActiveUploadsHydrate`.
+      void hydrateActiveUploadsOnce(
         { request: (cmd, params) => getSyncClient().request(cmd, params) },
         (channel, payload) => {
           if (window.isDestroyed()) return;

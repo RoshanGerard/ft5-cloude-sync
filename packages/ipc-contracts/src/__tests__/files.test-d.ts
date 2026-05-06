@@ -159,6 +159,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -190,6 +191,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -249,6 +251,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -343,6 +346,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
@@ -418,6 +422,7 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingUploadJobId?: string;
           };
         }
     >();
