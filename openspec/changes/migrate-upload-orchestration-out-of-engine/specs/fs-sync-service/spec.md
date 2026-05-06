@@ -153,12 +153,14 @@ These events SHALL NOT be emitted on the engine bus — the engine layer has bee
 
 ### Requirement: On-connect hydrate forwards in-flight uploads to renderer
 
-The desktop main process's supervisor-connect handler SHALL query `uploads:list-active` after connection establishment and forward the resulting snapshot to the renderer over the existing `datasources:event` relay (or an equivalent main-to-renderer channel). The renderer subscribes to this hydrate event and re-creates Sonner toasts for in-flight uploads. Mirror behavior to `downloads:list-active` hydration.
+The desktop main process's supervisor-connect handler SHALL query `uploads:list-active` after connection establishment and forward the resulting snapshot to the renderer over the dedicated one-way channel `files:hydrate-active-uploads` (paralleling `files:hydrate-active-downloads` per design.md Decision 13). The renderer subscribes to this channel via `window.api.files.onActiveUploadsHydrate(callback)` and re-creates Sonner toasts for in-flight uploads. Fire-once-per-session is a structural invariant at the main-process call site (the bootstrap handler invokes the hydrate function exactly once on `did-finish-load` and does NOT register it on `syncHandle.on("reconnect", ...)`).
+
+The renderer-callable `window.api.uploads.listActive()` RPC remains exposed for future tab-focus refresh scenarios but is NOT used by the app-init hydrate path.
 
 #### Scenario: Renderer hydrates toasts from uploads:list-active on first connect
 
 - **WHEN** the renderer attaches to the desktop main process and the service has two in-flight uploads in its registry
-- **THEN** the renderer receives a hydrate payload containing two upload-job snapshots; two Sonner toasts are mounted with the corresponding `uploadJobId`s; each toast subsequently receives progress updates from the live `sync:event-stream` subscription
+- **THEN** the renderer receives a hydrate payload over `files:hydrate-active-uploads` containing two upload-job snapshots; two Sonner toasts are mounted with the corresponding `uploadJobId`s; each toast subsequently receives progress updates from the live `sync:event-stream` subscription owned by the toaster (per design.md Decision 12)
 
 ## REMOVED Requirements
 
@@ -168,9 +170,11 @@ The desktop main process's supervisor-connect handler SHALL query `uploads:list-
 
 **Migration**:
 - Renderer call sites that previously dispatched `sync:enqueue-upload` migrate to `files:upload`.
-- The `UploadJobExecutor` module is deleted along with its tests (`services/fs-sync/src/scheduler/executors/upload-job-executor.ts` and adjacent test files).
-- The `'upload'` `kind` value in the `JobExecutor<...>` discriminator is removed; the `jobs` table no longer has rows with `kind = 'upload'`.
-- `MirrorSyncJobExecutor`'s inner per-file upload calls (which call `client.uploadFile` directly, NOT via `UploadJobExecutor`) are unaffected and continue to work with the engine's new one-shot `uploadFile` signature (per the parallel `fs-datasource-engine` spec delta).
+- The `UploadJobExecutor` module is deleted along with its tests (located at `services/fs-sync/src/executors/upload.ts` and adjacent test files — NOT under a `scheduler/` subdir as the original task description anticipated).
+- The factory registration `executors: { upload: buildUploadExecutor(...) }` is removed; no executor is registered for `kind: "upload"` post-migration. New `kind: "upload"` rows cannot be minted (the `'sync:enqueue-upload'` dispatcher entry is removed in lockstep — see the MODIFIED IPC command surface requirement).
+- The `'upload'` value REMAINS in the `JobKind` type union and the `jobs` table's `kind` CHECK constraint. This is a deliberate backward-compat decision (see design.md Decision 11): pre-migration user databases may carry `kind: 'upload'` rows in `running` state from a crashed app, and removing the discriminator value would fail-load the entire DB (CHECK constraint violation → service crash on startup).
+- Stranded pre-migration rows recover via the scheduler's existing startup-recovery path (`services/fs-sync/src/scheduler/scheduler.ts:152-167`): on encountering a `kind: 'upload'` row in `running` state with no executor registered, the row transitions to `failed` with `errorTag: "unsupported"` and `errorMessage: "no executor registered for kind=upload"`. Graceful degradation — the user sees a "Sync failed" entry on the dashboard for that historical row, no crash.
+- `MirrorSyncJobExecutor`'s inner per-file upload calls (which call `client.uploadFile` directly, NOT via `UploadJobExecutor`) are unaffected and continue to work with the engine's new one-shot `uploadFile` signature (per the parallel `fs-datasource-engine` spec delta). The mirror-sync call site is updated to pass `{ signal }` to the new options-object shape.
 
 ### Requirement: Upload jobs do not dedup
 

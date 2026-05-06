@@ -476,6 +476,142 @@ Mitigation: the renderer's button should be disabled while a dispatch
 is in flight (standard form pattern). If a regression slips, the conflict
 toast is acceptable degradation.
 
+### Decision 11 — `JobKind = "upload"` value retained for backward-compat (chunk-F deviation)
+
+**Context.** Chunk F's original tasks.md §11.3 instruction was to
+"Remove the `'upload'` discriminator value from the `JobExecutor<...>`
+union type and any factory that maps `kind → executor`." The chunk-F
+subagent surfaced — and an inline advisor call confirmed — that
+removing the value entirely would break recovery for **pre-migration
+user databases**: a user who upgraded mid-upload would have rows in
+`jobs` with `kind = 'upload'` and `state = 'running'` that the new
+service would refuse to load (DB CHECK constraint failure → service
+crash on startup).
+
+**What.** Chunk F retained:
+
+- `JobKind = "upload" | "sync"` in the type union.
+- The `kind` CHECK constraint on the `jobs` table (allows
+  `'upload'` rows to exist).
+- The DB schema unchanged — no migration needed.
+
+What chunk F removed:
+
+- The `UploadJobExecutor` factory entry (no `executors: { upload:
+  buildUploadExecutor(...) }` registration).
+- The `UploadJobExecutor` body itself (`executors/upload.ts` deleted).
+- The handler-side `'sync:enqueue-upload'` dispatcher entry — no new
+  `kind: 'upload'` rows can be minted post-migration.
+
+**Recovery path for stranded rows.** When the scheduler's startup-
+recovery sweep encounters a `kind: 'upload'` row in `state: 'running'`
+(carried over from a pre-migration crashed app), the existing branch
+at `services/fs-sync/src/scheduler/scheduler.ts:152-167` transitions
+it to `failed` with `errorTag: "unsupported"` and `errorMessage: "no
+executor registered for kind=upload"`. Graceful degradation — the
+user sees a "Sync failed" entry on the dashboard for that historical
+row, no hang or crash. New `kind: 'upload'` rows cannot be minted.
+
+**Why not migrate the data?** A migration that rewrites historical
+upload rows would commit to a "what should they become?" answer
+(failed? deleted? skipped?). The current scheduler-driven graceful-
+degradation path is the same answer ("failed: unsupported") without
+the migration's complexity or the risk of partial-rewrite leaving
+the DB in a half-migrated state.
+
+**Risks.** A user inspecting their `jobs` table sees `'upload'`
+rows and may think the kind is still active. Documentation in the
+service README would clarify (out of scope for this change). Worth
+surfacing in the §17.6 smoke (app-restart-while-uploading).
+
+### Decision 12 — Toast-owned `sync:event-stream` subscription (chunk-E §14.1 deviation)
+
+**Context.** Chunk E's original tasks.md §14.1 instruction had
+`use-upload-orchestrator.ts` itself swap from
+`onUploadProgress(transactionId, ...)` to a `sync:event-stream`
+subscription. During implementation, the chunk-E subagent observed
+that the existing `download-job-toast.ts` (the chunk-D / `add-engine-
+rename-download` template) does NOT have its orchestrator subscribe
+to events — instead the **toaster** owns ONE global subscription,
+filters to the relevant event names, and routes to per-job
+trackers. The orchestrator's role is just to call
+`toaster.onJobDispatched({ jobId, basename, retry })` at dispatch
+time.
+
+**What.** Chunk E mirrored the download pattern for uploads:
+
+- The renderer's `upload-job-toast.ts` owns ONE global
+  `sync:event-stream` subscription via injected
+  `eventApi.onUploadEvent` — filters to the four upload event names
+  AND `payload.uploadJobId === <tracked id>`.
+- `use-upload-orchestrator.ts` carries near-zero change — it
+  dispatches via `window.api.files.upload`, receives `uploadJobId`
+  in the response, and calls `toaster.onJobDispatched(...)` to
+  register the tracker. No event subscription in the orchestrator
+  itself.
+- Per-`uploadJobId` tracker holds toastId + basename + retry
+  callback + terminal flag, mounted lazily on first event arrival
+  for that id (or eagerly via `hydrateActiveUploads(jobs)` per
+  Decision 13).
+
+**Why?** Two reasons:
+
+1. **Mirrors download.** Single subscription pattern across both
+   features keeps the renderer surface uniform — fewer
+   pattern-recognition burdens for future contributors.
+2. **Decoupling.** The toaster is the lifecycle owner; the
+   orchestrator is the dispatcher. Separating concerns means a
+   future "list-of-active-uploads" UI surface (different from
+   Sonner toasts) can subscribe to the same `sync:event-stream`
+   without coordinating with the orchestrator's lifecycle.
+
+**Risks.** A test harness that doesn't mount the toaster (or
+doesn't stub `window.api.sync.onEvent`) gets no event flow during
+the test. Mitigated by `resolveEventApi` returning a no-op
+subscription fallback when the binding is absent — tests that
+don't exercise event flow stay green; tests that do exercise it
+pass an explicit `MockEventApi`.
+
+### Decision 13 — One-way `files:hydrate-active-uploads` channel (chunk-E §15.1 deviation)
+
+**Context.** Chunk E's original tasks.md §15.1 instruction had the
+renderer call `window.api.uploads.listActive()` directly from the
+app-init effect. During implementation, the chunk-E subagent
+observed that the equivalent download surface uses a **one-way
+main→renderer channel** (`files:hydrate-active-downloads`) where
+the desktop main owns the `downloads:list-active` RPC call and
+forwards the snapshot to the renderer. The renderer subscribes to
+the channel via `window.api.files.onActiveDownloadsHydrate(callback)`.
+
+**What.** Chunk E mirrored that pattern for uploads:
+
+- New main-process module
+  `apps/desktop/src/main/sync/on-connect-hydrate-uploads.ts`
+  (mirrors `on-connect-hydrate-downloads.ts`).
+- Channel: `files:hydrate-active-uploads` (matches the download
+  channel-naming convention).
+- Renderer binding:
+  `window.api.files.onActiveUploadsHydrate(callback)`.
+- The renderer-callable `window.api.uploads.listActive()` RPC is
+  STILL exposed (added in chunk C) for future tab-focus refresh
+  scenarios — but the app-init hydrate path uses the one-way
+  channel, not a renderer-initiated RPC.
+
+**Why?** Two reasons:
+
+1. **Mirrors download.** Same as Decision 12 — uniform pattern
+   across upload + download.
+2. **Fire-once-per-session is structural at the call site.**
+   `apps/desktop/src/main/index.ts`'s `did-finish-load` handler
+   invokes the hydrate function exactly once and does NOT
+   register it on `syncHandle.on("reconnect", ...)`. Renderer-
+   initiated would have to coordinate the same fire-once
+   invariant on the renderer side, which is more complex than
+   "main fires once, renderer subscribes."
+
+**Risks.** None substantive. The one-way channel is a thin send;
+both bindings are typed via the existing IPC contract surface.
+
 ## Visual direction
 
 N/A. This change has zero new UI surface and zero visual changes.
