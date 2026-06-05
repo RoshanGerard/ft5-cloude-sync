@@ -25,11 +25,13 @@ Pick the shape that matches your starting point. If a "fix" turns out to be a mi
 ```
   idea / request
        ↓
-  Stage 0: pick entry point (3 branches)
+  Stage 0: pick entry point (2 branches: Brainstorm-first / Propose-direct)
        ↓
-  Stage 1: brainstorm (if Brainstorm-first or Propose-first-with-UI)
+  Stage 1: brainstorm — architectural resolution (only if Brainstorm-first)
        ↓
   Stage 2: /opsx:propose <name>          ← Claude generates artifacts
+       ↓
+  Stage 2b: brainstorm — visual refinement (only if the change has visible UI)
        ↓
   Stage 3: review artifacts → approve
        ↓
@@ -41,7 +43,7 @@ Pick the shape that matches your starting point. If a "fix" turns out to be a mi
        ↓
   Stage 6: /opsx:archive <name>          ← in worktree, BEFORE merge
        ↓
-  Stage 7: finishing-a-development-branch (merge / PR / cleanup)
+  Stage 7: finishing-a-development-branch ← MANDATORY handoff (archive is NOT the finish line)
 ```
 
 For bugs / fixes / improvements, jump to §13 Reactive workflow.
@@ -50,34 +52,32 @@ For bugs / fixes / improvements, jump to §13 Reactive workflow.
 
 ## 3. Stage 0 — Pick your entry point
 
-**First, ask: is this reactive?** A failing test, regression, perf fix, accessibility tweak, hotfix, or improvement to previously-shipped behavior → jump to §13. The three branches below are the **forward** path only.
+**First, ask: is this reactive?** A failing test, regression, perf fix, accessibility tweak, hotfix, or improvement to previously-shipped behavior → jump to §13. The two branches below are the **forward** path only.
 
 Pick based on how resolved the request is:
 
 | Situation | Branch | What you type |
 |---|---|---|
 | Stub or unresolved architectural ambiguity — `proposal.md` marked stub, `## Open questions`, `Status: Stub`, embedded TBDs, missing `## What Changes` body, no spec delta yet, no `tasks.md`, OR open architectural questions in the request | **Brainstorm-first** | `Use the brainstorming skill to resolve <topic>` |
-| Clear requirements; only visual decisions remain | **Propose-first-with-UI** | `/opsx:propose <description>` (Claude then runs brainstorming as refinement) |
-| Everything else — clear requirements, no UI, no architectural ambiguity | **Propose-direct** | `/opsx:propose <description>` |
+| Everything else — clear requirements, no architectural ambiguity. **Visible-UI work belongs here too** (even when only visual decisions remain) | **Propose-direct** | `/opsx:propose <description>` |
+
+**Visible UI is not a separate entry point.** It goes through **Propose-direct**, then gets visual refinement automatically *after* propose — Stage 2b (§5), before human review. That does not change where you start.
 
 If unsure, default to Brainstorm-first. Wasted brainstorming is cheaper than wasted artifact-rewrites.
 
 ---
 
-## 4. Stage 1 — Brainstorming (conditional)
+## 4. Stage 1 — Brainstorming: architectural resolution (conditional)
 
-Brainstorming runs if Stage 0 picked **Brainstorm-first** OR **Propose-first-with-UI**. Claude invokes `superpowers:brainstorming` automatically; you only trigger it manually for Brainstorm-first before any artifacts exist.
+This runs **only when Stage 0 picked Brainstorm-first.** It converges architectural / conceptual / scope / error-vocabulary ambiguity into decisions BEFORE any artifacts exist, then ends by running `/opsx:propose`. It is **conceptual only — no Visual Companion here** (there are no artifacts to refine yet; that's Stage 2b, §5). You trigger it manually with `Use the brainstorming skill to resolve <topic>`.
 
 What you'll see:
 
 1. Claude reads the relevant code (context exploration).
-2. If the upcoming questions are visual: Claude offers the Visual Companion in its own message. Reply `sure` (or decline). Companion runs at a `localhost:<port>` URL Claude provides.
-3. Claude asks clarifying questions ONE AT A TIME:
-   - Conceptual questions → terminal multi-choice
-   - Visual questions → browser side-by-side mockups (click your pick)
-4. Claude proposes 2–3 approaches with trade-offs and a recommendation.
-5. Claude presents the design in sections (architecture, UX surfaces, edge cases, testing). Reply `looks good` or `change X` per section.
-6. At the end, Claude either runs `/opsx:propose` (Brainstorm-first) or rewrites the existing `design.md` (Propose-first-with-UI).
+2. Claude asks clarifying questions ONE AT A TIME → terminal multi-choice.
+3. Claude proposes 2–3 approaches with trade-offs and a recommendation.
+4. Claude presents the design in sections (architecture, edge cases, testing). Reply `looks good` or `change X` per section.
+5. At the end, Claude runs `/opsx:propose` with the resolved approach.
 
 What you type:
 - Letters (`A`, `B`, `C`) for multi-choice
@@ -100,7 +100,20 @@ What Claude does:
 2. Generates `proposal.md`, `design.md`, `specs/<cap>/spec.md` deltas, `tasks.md`.
 3. Runs `openspec validate <name>` and reports green.
 
-If Stage 0 picked Propose-first-with-UI, Claude THEN invokes brainstorming as a refinement step before Stage 3 to populate `design.md`'s `## Visual direction`.
+### Stage 2b — Brainstorming: visual refinement (conditional)
+
+If the change involves **visible UI** (component, layout, color, motion, copy, accessibility-affecting markup), Claude THEN invokes `superpowers:brainstorming` again — and here its load-bearing contribution is the **Visual Companion** (browser mockups / layouts / comparisons). This runs **after `/opsx:propose`, before human review (Stage 3)**, and populates `design.md`'s `## Visual direction`. Non-UI changes skip it entirely.
+
+What you'll see:
+
+1. Claude offers the Visual Companion in its own message. Reply `sure` (or decline). The Companion runs at a `localhost:<port>` URL Claude provides.
+2. Claude asks visual questions ONE AT A TIME → browser side-by-side mockups (click your pick). Any conceptual sub-questions stay in the terminal as multi-choice.
+3. Claude folds your picks into `design.md`'s `## Visual direction` (aesthetic / type / color / spacing / motion / accessibility).
+
+What you type:
+- `sure` / `no thanks` to accept or decline the Visual Companion
+- Click your pick in the browser for visual questions
+- `looks good` / `change X to Y` for the proposed visual direction
 
 ---
 
@@ -158,18 +171,14 @@ What you do:
 
 ## 9. Stage 5b — Context management during apply
 
-Claude suggests `/compact` or `/clear` when triggers fire (whichever first):
+Context is **auto-managed by the harness** now — when a session grows long it summarizes older context and continues, so you don't need to babysit it or wrap tasks up early. CLAUDE.md no longer prescribes manual compaction triggers (the "every 3–5 tasks" protocol has been retired).
 
-- After every 3–5 completed tasks
-- When Claude notices it's re-reading the same file 3+ times
-- When a single task's tool output exceeds 50 lines AND that output is in git / `tasks.md`
+You still have manual controls if you want them:
 
-Choose:
-- `/compact` — preserves a summary; use when next task BUILDS on previous
-- `/clear` — drops everything; use when next task is in a different folder with no shared identifiers
-- **Neither** — if mid-debug or holding state only in chat, finish first
+- `/compact` — preserves a summary; useful when the next task BUILDS on the previous one
+- `/clear` — drops everything; useful when the next task is in a different folder with no shared identifiers
 
-After compaction, Claude restates the current task from `tasks.md` + active `design.md` constraints in one short message before resuming. If you don't see this, ask `what's the current task?`.
+**Hard rule — never compact mid-debug**, or while a decision lives only in chat and isn't yet written to `design.md` / `tasks.md` / git. Finish the debug or write the decision down first.
 
 ---
 
@@ -242,14 +251,16 @@ If `openspec validate <name>` fails at archive time:
 
 ---
 
-## 12. Stage 7 — Merge
+## 12. Stage 7 — Finish the branch (merge / PR / cleanup)
+
+`finishing-a-development-branch` is the **mandatory entry point for every branch handoff** — and completing `/opsx:archive` is **NOT** the finish line. Archive closes the OpenSpec lifecycle; this step closes the *branch*. Run it when all tasks are done, and ALWAYS before any merge-to-base or PR.
 
 What you type:
 ```
 Use finishing-a-development-branch
 ```
 
-Claude presents merge / PR / cleanup options based on your repo state. You pick. Before declaring the branch PR-ready, Claude runs the **pre-handoff backstop** (see §13) to catch any uncovered Outcome-3 commit on the branch.
+What Claude does inside the skill: re-verifies the test suite, runs the **pre-handoff backstop** over the whole branch (`git log <base>..HEAD` — see §13) to catch any uncovered Outcome-3 commit, then presents merge / PR / cleanup options for you to pick. Any `gh pr create` or merge happens *inside* this skill — never as a bare command. PR opening is still your call on **whether/when** to hand off; it is never optional **whether** to run the skill.
 
 ---
 
@@ -268,7 +279,7 @@ If during investigation you realise this is actually a missing feature rather th
    - **Outcome 1** (no contract change) → plain commit, no OpenSpec.
    - **Outcome 2** (code wrong, spec right) → plain commit + spec citation in commit body.
    - **Outcome 3** (contract changed) → back-fill chain (Pattern A / B / C).
-5. **Pre-handoff backstop** — before the branch is declared PR-ready (whether you ask Claude to open the PR or open it yourself), Claude audits every commit on the branch against the trigger checklist to catch any Outcome-3 commit that slipped through. Any uncovered Outcome-3 commit blocks the handoff until back-filled.
+5. **Pre-handoff backstop** — runs inside `finishing-a-development-branch`, before the branch is declared PR-ready (whether you ask Claude to open the PR or open it yourself). Claude audits **every commit on the whole branch** (`git log <base>..HEAD --no-merges`) against the trigger checklist — not just this session's commits, because the branch may carry sibling sub-task commits that ride into the PR too. Any uncovered Outcome-3 commit blocks the handoff until back-filled.
 
 ### Audit gate — three outcomes
 
@@ -348,19 +359,19 @@ Cap: at most **ONE open deferred back-fill per branch**. A second one blocks mer
 |---|---|
 | Vague idea or unresolved architectural questions | Brainstorm-first |
 | Stub with open questions / TBDs / missing `## What Changes` / no spec delta / no `tasks.md` | Brainstorm-first |
-| Clear feature, visuals open | Propose-first-with-UI: `/opsx:propose` then visual brainstorm |
+| Clear feature, visuals open | Propose-direct: `/opsx:propose` — visual refinement (Stage 2b) follows automatically |
 | Clear feature, no UI, no architectural ambiguity | Propose-direct: `/opsx:propose <description>` |
-| Pure UI polish | Propose-first-with-UI |
+| Pure UI polish | Propose-direct — visual refinement (Stage 2b) follows automatically |
 | Failing test / bug / regression | Reactive workflow (§13) — Claude investigates → fixes → audits → back-fills if needed |
 | Hotfix needs to ship NOW, full OpenSpec round-trip impossible | Reactive Pattern C — file ticket + deadline, cap of one per branch |
 | Fix already shipped, contract changed, need to back-fill | Reactive Pattern A — `/opsx:propose <change-id>` → review → `/opsx:sync` → `/opsx:archive` |
 | Fix is internal-only / refactor / perf / already-AA accessibility | Reactive Outcome 1 — plain commit, no OpenSpec |
 | Fix restores spec-documented behavior | Reactive Outcome 2 — plain commit + cite the restored requirement |
-| 3–5 tasks finished, next is related | `/compact` |
-| 3–5 tasks finished, next is unrelated | `/clear` |
-| Mid-debug | Neither — finish debug first |
+| Next task builds on this one; want a tighter context | `/compact` (optional — context auto-manages) |
+| Next task is unrelated; want a clean slate | `/clear` (optional — context auto-manages) |
+| Mid-debug | Neither — finish the debug first (hard rule) |
 | Need a second opinion | Tell Claude `call advisor` |
-| All tasks checked off | `/opsx:archive` (in worktree) → merge |
+| All tasks checked off | `/opsx:archive` (in worktree) → then `Use finishing-a-development-branch` (archive is not the finish line) |
 | Validate fails at archive | Fix spec deltas in worktree, re-run validate; never skip |
 | Need merged main specs BEFORE archive (downstream change blocks on them, or Pattern A back-fill chain) | `/opsx:sync <change-name>` (requires `sync` enabled — see §20) |
 | `/opsx:sync` slash command not present | Enable `sync` in your openspec profile (`openspec config profile` → custom) and re-run `openspec update` |
@@ -403,7 +414,6 @@ Forward-specific:
 
 - Creates a worktree for every `/opsx:apply` (you only pick placement)
 - Keeps `tasks.md` checkboxes in sync
-- Restates the current task after any compaction
 - Spot-checks `design.md` staleness before `/opsx:apply`
 
 Reactive-specific:
@@ -419,9 +429,12 @@ Reactive-specific:
 
 - **Never commit directly to `main`** — always work in a worktree branch
 - **Never edit `openspec/specs/` directly** — only the OpenSpec lifecycle (forward change OR reactive back-fill) modifies them
+- **Never use direct git / shell ops on anything under `openspec/changes/`** (`git mv`, `git rm`, `git checkout`, `mv`, `rm`, `cp`, etc.) — all moves go through the OpenSpec lifecycle (`/opsx:propose` · `/opsx:apply` · `/opsx:sync` · `/opsx:archive`)
+- **Never delete a change directory as a shortcut for archiving** — every completed change archives via `/opsx:archive`, even if a stub's `tasks.md` says "delete"
 - **Never merge before `/opsx:archive`** — archive in worktree first
+- **Never run `gh pr create` or merge a branch into its base outside `finishing-a-development-branch`** — the handoff goes *through* the skill (test re-verification + pre-handoff backstop). Completing `/opsx:archive` is not a substitute; it is not the branch finish line
 - **Never let Claude add a dependency without justifying it in `design.md`**
-- **Never compact mid-debug** — even if Claude suggests it
+- **Never compact mid-debug** — or while a decision lives only in chat; finish the debug or write the decision down first
 - **Never let brainstorming output land in `docs/plans/`** — must go to OpenSpec artifacts
 - **Never skip a `requesting-code-review` checkpoint** — critical issues block for a reason
 - **Never silently ship a deviation from `design.md`** — update `## Decisions` first
@@ -672,4 +685,4 @@ Profile changes are global. Every project on this machine that uses OpenSpec inh
 
 ---
 
-The short version: forward workflow for new features (Brainstorm-first when ambiguous, Propose-first-with-UI when only visuals are open, Propose-direct when trivially clear); reactive workflow for bugs and improvements (investigate → fix → audit → back-fill if the contract changed); always archive in the worktree before merging.
+The short version: forward workflow for new features (Brainstorm-first when there's architectural ambiguity, Propose-direct otherwise — visual refinement follows propose automatically when there's UI); reactive workflow for bugs and improvements (investigate → fix → audit → back-fill if the contract changed); always archive in the worktree, then finish the branch via `finishing-a-development-branch` (archive is not the finish line).
