@@ -122,10 +122,15 @@ function reducer(state: DatasourcesState, action: Action): DatasourcesState {
 // the SAME `window.api.sync.onEvent` subscription: `jobsByDatasource` from
 // the seed + lifecycle events, `uploadProgressByJob` from `job-progress`
 // events whose jobId belongs to a kind=upload row in `jobsByDatasource`.
-// There is NO second `DATASOURCES_CHANNELS.uploadProgress` consumer —
-// the legacy channel still exists for `window.api.datasources.onUploadProgress`
-// callers, but section 10's bar consumes the upstream SyncEvent directly so
-// store-membership and per-job byte ticks share a single ordered stream.
+// migrate-upload-orchestration-out-of-engine §13.4: the legacy
+// `DATASOURCES_CHANNELS.uploadProgress` channel + the
+// `window.api.datasources.onUploadProgress` binding are GONE; section 10's
+// bar consumed the upstream SyncEvent directly all along, so this slice
+// keeps working unchanged. The new `files:upload`-driven upload events
+// (`uploading` / `file-created` / `upload-failed` / `upload-cancelled`,
+// keyed by `uploadJobId`) flow on the same `sync:event-stream` and are
+// consumed by the file-explorer's upload toaster, not by this dashboard
+// slice.
 // ---------------------------------------------------------------------------
 
 export interface JobsState {

@@ -8,7 +8,6 @@ import type {
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -25,7 +24,14 @@ import type {
   FilesUploadResponse,
   PingResponse,
 } from "@ft5/ipc-contracts";
-import type { DownloadJob } from "@ft5/ipc-contracts/sync-service";
+// migrate-upload-orchestration-out-of-engine §13.3 — `UploadJob` joins
+// the import set alongside `DownloadJob`. The callback parameter on
+// `files.onActiveUploadsHydrate` is `readonly UploadJob[]`, parallel to
+// the download equivalent. Chunk C kept this import out because the
+// hydrate channel hadn't been wired yet; chunk E adds the desktop
+// bridge + preload binding so the type now lives on the cross-bridge
+// callback.
+import type { DownloadJob, UploadJob } from "@ft5/ipc-contracts/sync-service";
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -37,10 +43,11 @@ import type {
   SyncCancelDownloadResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
+  SyncCancelUploadRequest,
+  SyncCancelUploadResponse,
+  SyncUploadsListActiveResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
-  SyncEnqueueUploadRequest,
-  SyncEnqueueUploadResponse,
   SyncEvent,
   SyncGetJobRequest,
   SyncGetJobResponse,
@@ -78,10 +85,6 @@ declare global {
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
         pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
-        onUploadProgress(
-          transactionId: string,
-          callback: (event: DatasourcesUploadProgressEvent) => void,
-        ): () => void;
         onEvent(callback: (event: AnyDatasourceEvent) => void): () => void;
       };
       files: {
@@ -96,6 +99,14 @@ declare global {
         showSavedInFolder(savedPath: string): Promise<void>;
         onActiveDownloadsHydrate(
           callback: (jobs: readonly DownloadJob[]) => void,
+        ): () => void;
+        // migrate-upload-orchestration-out-of-engine §13.3 — symmetric
+        // upload-side hydrate channel. Fires once per app session on
+        // the supervisor's first connect. Reconnects mid-session do
+        // NOT re-fire — the live event feed (sync:event-stream filtered
+        // to the four upload kinds) drives in-flight progress instead.
+        onActiveUploadsHydrate(
+          callback: (jobs: readonly UploadJob[]) => void,
         ): () => void;
       };
       preferences: {
@@ -141,9 +152,9 @@ declare global {
       sync: {
         listJobs(req: SyncListJobsRequest): Promise<SyncListJobsResponse>;
         getJob(req: SyncGetJobRequest): Promise<SyncGetJobResponse>;
-        enqueueUpload(
-          req: SyncEnqueueUploadRequest,
-        ): Promise<SyncEnqueueUploadResponse>;
+        // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+        // `enqueueUpload` preload binding was deleted in chunk F. The
+        // renderer's upload path is `window.api.files.upload`.
         enqueueMirror(
           req: SyncEnqueueMirrorRequest,
         ): Promise<SyncEnqueueMirrorResponse>;
@@ -151,6 +162,10 @@ declare global {
         cancelDownload(
           req: SyncCancelDownloadRequest,
         ): Promise<SyncCancelDownloadResponse>;
+        // migrate-upload-orchestration-out-of-engine §7.3 / §7.9.
+        cancelUpload(
+          req: SyncCancelUploadRequest,
+        ): Promise<SyncCancelUploadResponse>;
         authenticateStart(
           req: SyncAuthenticateStartRequest,
         ): Promise<SyncAuthenticateStartResponse>;
@@ -169,6 +184,11 @@ declare global {
           req: SyncSetRetryPolicyRequest,
         ): Promise<SyncSetRetryPolicyResponse>;
         onEvent(callback: (event: SyncEvent) => void): () => void;
+      };
+      // migrate-upload-orchestration-out-of-engine §7.2 / §7.9 —
+      // renderer-facing namespace for the new `uploads:*` commands.
+      uploads: {
+        listActive(): Promise<SyncUploadsListActiveResponse>;
       };
       webUtils: {
         getPathForFile(file: File): string;

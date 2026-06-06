@@ -11,7 +11,6 @@ import type {
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadProgressEvent,
   FilesDownloadRequest,
   FilesDownloadResponse,
   FilesListRequest,
@@ -50,6 +49,26 @@ interface DownloadJob {
   readonly contentLength: number | null;
   readonly startedAt: number;
 }
+
+// migrate-upload-orchestration-out-of-engine §13.3 — local mirror of
+// `UploadJob` (parallel to `DownloadJob` above). Same import-boundary
+// rationale: the preload's import-boundary test forbids the
+// `@ft5/ipc-contracts/sync-service` subpath here. The renderer-facing
+// barrel `sync-service-desktop` does NOT re-export `UploadJob`, so we
+// mirror the structural shape locally for the
+// `onActiveUploadsHydrate(callback)` parameter type. The
+// `window-api.d.ts` keeps the typed import (the import-boundary test
+// scopes to `preload/index.ts` only). Identity coverage of the wire
+// shape sits in the contract package's `__tests__/`.
+interface UploadJob {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesUploaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
 import type {
   SyncAuthenticateCancelRequest,
   SyncAuthenticateCancelResponse,
@@ -61,10 +80,11 @@ import type {
   SyncCancelDownloadResponse,
   SyncCancelJobRequest,
   SyncCancelJobResponse,
+  SyncCancelUploadRequest,
+  SyncCancelUploadResponse,
+  SyncUploadsListActiveResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
-  SyncEnqueueUploadRequest,
-  SyncEnqueueUploadResponse,
   SyncEvent,
   SyncGetJobRequest,
   SyncGetJobResponse,
@@ -114,26 +134,15 @@ const api = {
     // void-request pattern above.
     pickFilesToUpload: (): Promise<DatasourcesPickFilesResponse> =>
       ipcRenderer.invoke(DATASOURCES_CHANNELS.pickFilesToUpload),
-    onUploadProgress: (
-      transactionId: string,
-      callback: (event: DatasourcesUploadProgressEvent) => void,
-    ): (() => void) => {
-      const listener = (
-        _event: IpcRendererEvent,
-        payload: DatasourcesUploadProgressEvent,
-      ): void => {
-        if (payload.transactionId === transactionId) {
-          callback(payload);
-        }
-      };
-      ipcRenderer.on(DATASOURCES_CHANNELS.uploadProgress, listener);
-      return () => {
-        ipcRenderer.removeListener(
-          DATASOURCES_CHANNELS.uploadProgress,
-          listener,
-        );
-      };
-    },
+    // migrate-upload-orchestration-out-of-engine §7.9 — `onUploadProgress`
+    // (the legacy per-transactionId progress subscription on the
+    // `datasources:upload:progress` channel) is REMOVED. Upload events
+    // now flow on `sync:event-stream` keyed by `uploadJobId` alongside
+    // download events; the renderer's upload toaster subscribes via
+    // `window.api.sync.onEvent` filtered to the four upload event
+    // kinds (`uploading` / `file-created` / `upload-failed` /
+    // `upload-cancelled`). See `upload-job-toast.ts`'s
+    // `resolveEventApi` for the production fallback.
     // Broad subscription to the engine's event stream over
     // `DATASOURCES_CHANNELS.event`. Unlike `onUploadProgress`, there is no
     // filter here — every `DatasourceEvent<T, K>` that crosses the main →
@@ -212,6 +221,31 @@ const api = {
         );
       };
     },
+    // migrate-upload-orchestration-out-of-engine §13.3 — symmetric
+    // upload-side hydrate channel. Same shape as the download
+    // equivalent: one-way main → renderer, fires EXACTLY ONCE per app
+    // session on the supervisor's first connect with the active-
+    // uploads snapshot from `uploads:list-active`. Reconnects mid-
+    // session do NOT re-fire; the renderer's live `sync:event-stream`
+    // subscription (filtered to the four upload kinds) drives in-
+    // flight progress instead.
+    onActiveUploadsHydrate: (
+      callback: (jobs: readonly UploadJob[]) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: IpcRendererEvent,
+        payload: readonly UploadJob[],
+      ): void => {
+        callback(payload);
+      };
+      ipcRenderer.on("files:hydrate-active-uploads", listener);
+      return () => {
+        ipcRenderer.removeListener(
+          "files:hydrate-active-uploads",
+          listener,
+        );
+      };
+    },
   },
   clipboard: {
     // Main-process clipboard bridge. `navigator.clipboard.writeText` is
@@ -230,10 +264,10 @@ const api = {
       req: SyncGetJobRequest,
     ): Promise<SyncGetJobResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.getJob, req),
-    enqueueUpload: (
-      req: SyncEnqueueUploadRequest,
-    ): Promise<SyncEnqueueUploadResponse> =>
-      ipcRenderer.invoke(SYNC_CHANNELS.enqueueUpload, req),
+    // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+    // `enqueueUpload` preload binding was deleted in chunk F. The
+    // renderer reaches the upload path via `window.api.files.upload`
+    // (the direct-RPC handler at `apps/desktop/src/main/ipc/files/upload.ts`).
     enqueueMirror: (
       req: SyncEnqueueMirrorRequest,
     ): Promise<SyncEnqueueMirrorResponse> =>
@@ -252,6 +286,16 @@ const api = {
       req: SyncCancelDownloadRequest,
     ): Promise<SyncCancelDownloadResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.cancelDownload, req),
+    // migrate-upload-orchestration-out-of-engine §7.3 / §7.9 — renderer
+    // toaster's Cancel button on an in-flight upload routes here, NOT
+    // through `cancelJob` (which targets the legacy queue-based upload
+    // job id) and NOT through `cancelDownload` (different id namespace).
+    // The bridge is a thin pass-through to the service's
+    // `sync:cancel-upload` command; idempotent on unknown `uploadJobId`.
+    cancelUpload: (
+      req: SyncCancelUploadRequest,
+    ): Promise<SyncCancelUploadResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.cancelUpload, req),
     authenticateStart: (
       req: SyncAuthenticateStartRequest,
     ): Promise<SyncAuthenticateStartResponse> =>
@@ -294,6 +338,22 @@ const api = {
         ipcRenderer.removeListener(SYNC_CHANNELS.event, listener);
       };
     },
+  },
+  // migrate-upload-orchestration-out-of-engine §7.2 / §7.9 —
+  // renderer-facing surface for the new uploads:* commands. Mirrors
+  // download's split between renderer-facing and one-way main→renderer
+  // hydrate: `listActive` is a renderer-callable RPC (parallel to a
+  // future `downloads.listActive`, currently unused on the download side
+  // because download hydrates one-way through `files.onActiveDownloadsHydrate`)
+  // intended for explicit re-fetch by the renderer (e.g. on tab focus
+  // recovery). The one-way upload hydrate channel + listener arrive in
+  // a later chunk along with the desktop main bridge — this surface is
+  // additive in chunk C and runtime-functional once chunk F lands the
+  // main-side handler at `sync-service-desktop` channel
+  // `uploads:list-active`.
+  uploads: {
+    listActive: (): Promise<SyncUploadsListActiveResponse> =>
+      ipcRenderer.invoke(SYNC_CHANNELS.uploadsListActive),
   },
   // add-engine-rename-download §18.1-§18.2: download-default-folder
   // preferences API. The renderer's downloads-store (built in §20) is

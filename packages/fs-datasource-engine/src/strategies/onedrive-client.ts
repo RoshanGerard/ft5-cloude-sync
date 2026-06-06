@@ -23,9 +23,12 @@
 //     (`/me/drive/items/<id>`). `DatasourceFileEntry<T>.handle` carries the driveItemId,
 //     so subsequent calls via `{ kind: "handle", handle }` skip the path
 //     lookup entirely. Path→id resolution is cached in an LRU keyed by the
-//     engine path; invalidation happens via a bus subscription in the
-//     constructor: every `deleted` or `file-created` event for this
-//     datasource evicts the affected path.
+//     engine path. Invalidation:
+//       - Deletion: bus subscription in the constructor reacts to
+//         `deleted` events for this datasource and evicts the affected path.
+//       - Upload completion: populated directly by `doUploadFileImpl`'s
+//         success branch (per migrate-upload-orchestration-out-of-engine —
+//         the engine no longer emits `file-created`).
 //
 //   - Upload. Files ≤ 4 MB go over a simple PUT to
 //     `/me/drive/root:/<parent>/<name>:/content`. Files > 4 MB use the
@@ -37,11 +40,9 @@
 //
 //   - Event-driven LRU invalidation. The base class owns the bus; strategies
 //     MUST NOT emit directly. But a strategy MAY subscribe — and we do, to
-//     hook `deleted` / `file-created` for invalidation. Because the factory
-//     creates a fresh client per call with no explicit dispose, the
-//     subscription currently leaks until the bus itself is discarded; a
-//     future phase will add a `dispose()` method on `BaseDatasourceClient`
-//     (flagged in the phase-7 report).
+//     hook `deleted` events for path-cache invalidation. Upload-completion
+//     LRU population happens inside `doUploadFileImpl`'s success branch
+//     directly (per migrate-upload-orchestration-out-of-engine).
 //
 //   - `refreshToken`. OAuth refresh posts `grant_type=refresh_token` to
 //     `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`. This is
@@ -429,7 +430,10 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     this.lruCap = options.lruCap ?? 512;
 
     // Subscribe to bus events for cache invalidation. Narrow to this
-    // datasource, and react to terminal `deleted` / `file-created` events.
+    // datasource, and react to terminal `deleted` events. The
+    // `file-created` arm was removed by migrate-upload-orchestration-
+    // out-of-engine; LRU population on upload completion happens
+    // internally inside `doUploadFileImpl`.
     this.unsubscribe = this.ctx.bus.subscribe((e) => {
       if (e.datasourceId !== this.datasourceId) return;
       if (e.event === "deleted") {
@@ -439,24 +443,13 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         } else if (payload.target?.kind === "handle") {
           this.evictHandle(payload.target.handle);
         }
-      } else if (e.event === "file-created") {
-        const payload = e.payload as { path?: string; handle?: string };
-        // Refresh the cache with the new mapping so a subsequent path
-        // lookup sees the new item without a round-trip.
-        if (
-          typeof payload.path === "string" &&
-          typeof payload.handle === "string"
-        ) {
-          this.cachePathHandle(payload.path, payload.handle);
-        }
       }
     });
   }
 
   /**
    * Tear down the bus subscription so a discarded client stops reacting to
-   * `deleted` / `file-created` events. Idempotent — calling twice is
-   * harmless.
+   * `deleted` events. Idempotent — calling twice is harmless.
    */
   override dispose(): void {
     if (this.disposed) return;
@@ -785,34 +778,16 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   }
 
   // -------------------------------------------------------------------------
-  // createFile — small PUT via Graph client
-  // -------------------------------------------------------------------------
-
-  protected override async doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<"onedrive">> {
-    const body = await readFile(content.path);
-    const url = childPathUrl(parent, name, "/content");
-    // Use `@name.conflictBehavior=fail` so the upload fails with 409 if the
-    // file already exists; normalizeError maps that to `conflict`.
-    const item = (await this.graph()
-      .api(`${url}?@microsoft.graph.conflictBehavior=fail`)
-      .put(body)) as DriveItem;
-    return buildFileEntry(item);
-  }
-
-  // -------------------------------------------------------------------------
   // uploadFile — small (≤4MB) simple PUT, large (>4MB) resumable session
   // -------------------------------------------------------------------------
 
   protected override async doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<"onedrive">> {
     const name = file.name ?? basename(file.path);
     let total = 0;
@@ -822,23 +797,16 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       total = 0;
     }
     if (total <= RESUMABLE_THRESHOLD_BYTES) {
-      // Small-upload path: single `PUT /content` via Graph SDK. There is no
-      // long-running provider-side session to clean up, so we deliberately
-      // skip `register()` — a `cancelUpload` against an in-flight small
-      // upload resolves as a no-op. The Graph SDK does not expose an
-      // `AbortSignal` parameter on `api().put()`, so mid-PUT interruption
-      // is not available on this path anyway.
-      return this.uploadSmall(parent, name, file, total, onProgress);
+      // Small-upload path: single `PUT /content` via Graph SDK. The Graph
+      // SDK does not expose an `AbortSignal` parameter on `api().put()`,
+      // so mid-PUT interruption is not available on this path. Per
+      // migrate-upload-orchestration-out-of-engine Decision 2, the
+      // strategy branches on `options.signal?.aborted` post-resolve and
+      // rejects with `tag: "cancelled"` to preserve cancellation
+      // semantics on this code path.
+      return this.uploadSmall(parent, name, file, total, options);
     }
-    return this.uploadResumable(
-      parent,
-      name,
-      file,
-      total,
-      onProgress,
-      register,
-      signal,
-    );
+    return this.uploadResumable(parent, name, file, total, options);
   }
 
   private async uploadSmall(
@@ -846,14 +814,34 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     name: string,
     file: { path: string; mimeType?: string },
     total: number,
-    onProgress?: (loaded: number, total: number) => void,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<"onedrive">> {
-    onProgress?.(0, total);
+    options.onProgress?.(0, total);
     const body = await readFile(file.path);
     const url = childPathUrl(parent, name, "/content");
     const item = (await this.graph().api(url).put(body)) as DriveItem;
-    onProgress?.(total, total);
-    return buildFileEntry(item);
+    // Post-resolve cancellation guard (per migrate-upload-orchestration-
+    // out-of-engine Decision 2): the Graph SDK's `.put()` does not honor
+    // AbortSignal cleanly, so we check the signal after the call settles
+    // and reject with `cancelled` if the consumer aborted.
+    if (options.signal?.aborted) {
+      throw new DatasourceError<"onedrive">({
+        tag: "cancelled",
+        datasourceType: "onedrive",
+        datasourceId: this.datasourceId,
+        retryable: false,
+        message: "upload cancelled",
+      });
+    }
+    options.onProgress?.(total, total);
+    const entry = buildFileEntry(item);
+    if (entry.handle) {
+      this.cachePathHandle(entry.path, entry.handle);
+    }
+    return entry;
   }
 
   private async uploadResumable(
@@ -861,9 +849,10 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     name: string,
     file: { path: string; mimeType?: string },
     total: number,
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<"onedrive">> {
     // Step 1: ask Graph for an upload session; get back `uploadUrl`.
     const sessionUrl = childPathUrl(parent, name, "/createUploadSession");
@@ -881,18 +870,32 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     }
     const uploadUrl = session.uploadUrl;
 
-    // Register the provider-native cancel closure. Graph documents that
-    // DELETE-ing the `uploadUrl` cancels the session server-side, releasing
-    // the URL and any uploaded ranges. Errors in the DELETE are swallowed by
-    // the base — a best-effort cleanup is all that's required on this path.
-    register(async () => {
-      await this.fetchImpl(uploadUrl, { method: "DELETE" });
-    });
+    // Wire the consumer-driven cancel cleanup (per migrate-upload-
+    // orchestration-out-of-engine Decision 3). When `options.signal`
+    // aborts, issue `DELETE <uploadUrl>` against a FRESH AbortController
+    // with a 5-second timeout. The user's signal is NOT forwarded into
+    // the cleanup — that would abort the cleanup itself, leaving the
+    // resumable session orphaned on Graph's side. Errors in the cleanup
+    // are logged and swallowed (best-effort cleanup).
+    options.signal?.addEventListener(
+      "abort",
+      () => {
+         
+        this.fetchImpl(uploadUrl, {
+          method: "DELETE",
+          signal: AbortSignal.timeout(5000),
+        }).catch((err) => {
+           
+          console.warn("[onedrive] upload-session cleanup failed:", err);
+        });
+      },
+      { once: true },
+    );
 
     // Step 2: stream the file from disk in chunks and PUT each chunk to the
     // session URL via raw fetch. The final chunk response carries the new
     // DriveItem.
-    onProgress?.(0, total);
+    options.onProgress?.(0, total);
     const stream = createReadStream(file.path, {
       highWaterMark: UPLOAD_CHUNK_BYTES,
     });
@@ -909,14 +912,15 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         "Content-Length": String(chunk.length),
         "Content-Range": `bytes ${start}-${end}/${total}`,
       };
-      // Thread the abort signal into each chunk PUT so the base's
-      // `cancelUpload` unblocks promptly. An already-aborted signal makes
-      // fetch reject synchronously with an AbortError.
+      // Thread the consumer's abort signal into each chunk PUT so an
+      // abort unblocks promptly. An already-aborted signal makes fetch
+      // reject synchronously with an AbortError; the rejection is
+      // normalized to `tag: "cancelled"` via `normalizeErrorImpl`.
       const resp = await this.fetchImpl(uploadUrl, {
         method: "PUT",
         headers,
         body: chunk,
-        signal,
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
@@ -926,7 +930,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         });
       }
       uploaded += chunk.length;
-      onProgress?.(uploaded, total);
+      options.onProgress?.(uploaded, total);
       if (isLast) {
         // Final chunk: Graph returns 200/201 with the DriveItem JSON.
         const text = await resp.text();
@@ -962,7 +966,15 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         .get()) as DriveItem;
       lastItem = meta;
     }
-    return buildFileEntry(lastItem);
+    const entry = buildFileEntry(lastItem);
+    // LRU population on upload success is internal (per migrate-upload-
+    // orchestration-out-of-engine Decision 4). The constructor's bus
+    // subscription dropped its `file-created` arm; populate the cache
+    // here so subsequent path-keyed addressing skips the round-trip.
+    if (entry.handle) {
+      this.cachePathHandle(entry.path, entry.handle);
+    }
+    return entry;
   }
 
   // -------------------------------------------------------------------------
@@ -1586,7 +1598,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
 /**
  * Build the Graph URL for a `<parent>/<name>` path inside a parent `Target`,
  * with the given suffix (`""`, `/content`, `/createUploadSession`). Used by
- * createFile and uploadFile.
+ * uploadFile.
  */
 function childPathUrl(parent: Target, name: string, suffix: string): string {
   // `name` is user-controlled and must be percent-encoded so characters like

@@ -40,6 +40,10 @@ describe("ipc-contracts datasources — consent surface is fully retired", () =>
 
   it("DATASOURCES_CHANNELS still exposes the non-consent keys", () => {
     // Sanity check: removing consent-* should leave the rest intact.
+    // `uploadProgress` was additionally removed by
+    // migrate-upload-orchestration-out-of-engine §7.5 / §13.4 — the
+    // upload-event channel migrated to `sync:event-stream` keyed by
+    // `uploadJobId`.
     const remaining = Object.keys(DATASOURCES_CHANNELS).sort();
     expect(remaining).toEqual(
       [
@@ -49,7 +53,6 @@ describe("ipc-contracts datasources — consent surface is fully retired", () =>
         "list",
         "pickFilesToUpload",
         "remove",
-        "uploadProgress",
       ].sort(),
     );
   });

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 
 import {
+  AbortMultipartUploadCommand,
   CopyObjectCommand,
   CreateMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -24,7 +25,9 @@ import {
   S3Client as AwsS3Client,
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 import { mockClient } from "aws-sdk-client-mock";
+import { vi } from "vitest";
 
 import { providers, type StoredCredentials } from "@ft5/ipc-contracts";
 
@@ -33,6 +36,13 @@ import { runStrategyContractSuite, type StrategyContractFixture } from "../__tes
 import { createS3Client } from "./s3-client.js";
 
 const s3Mock = mockClient(AwsS3Client);
+
+// Spy on `Upload.prototype.abort` so the cancel-upload contract scenario
+// can verify the strategy invoked it (per migrate-upload-orchestration-
+// out-of-engine Decision 3 — S3 uses the SDK's own internal controller
+// for cleanup, no fresh AbortController is needed). The spy is reset
+// inside `resetMock()` per scenario.
+const uploadAbortSpy = vi.spyOn(Upload.prototype, "abort");
 
 const credentials: StoredCredentials = {
   providerId: "amazon-s3",
@@ -55,9 +65,11 @@ const fixture: StrategyContractFixture = {
   credentials,
   expectedAuthErrorTag: "auth-revoked",
   supportsQuota: false,
+  hasPathHandleCache: false,
 
   resetMock() {
     s3Mock.reset();
+    uploadAbortSpy.mockClear();
   },
 
   primeListOk() {
@@ -115,6 +127,61 @@ const fixture: StrategyContractFixture = {
     s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "uid" });
     s3Mock.on(UploadPartCommand).resolves({ ETag: '"p1"' });
     s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"up-etag"' });
+  },
+
+  primeUploadCancellable(opts) {
+    // Multipart path: PutObjectCommand never resolves — `Upload.done()`
+    // hangs until `upload.abort()` is invoked by the strategy's
+    // signal listener, at which point the SDK's internal controller
+    // cancels the in-flight commands. The mock-client's `.callsFake()`
+    // returns a promise that rejects only when the cancel is observed
+    // by the lib-storage internals. We use the simplest shape that
+    // surfaces an abort-driven rejection: PutObject hangs forever, and
+    // the strategy's `upload.abort()` call (verified via the
+    // `uploadAbortSpy`) terminates the upload by triggering
+    // `markUploadAsAborted()`. Since the mock's command never reaches
+    // a real SDK signal, lib-storage's `.done()` rejects synchronously
+    // after `.abort()` runs. Prime an AbortMultipartUploadCommand
+    // resolution defensively in case multipart was initiated.
+    s3Mock.on(PutObjectCommand).callsFake(
+      (_input: unknown, _ctx: unknown) =>
+        new Promise<never>((_resolve, reject) => {
+          opts.controller.signal.addEventListener(
+            "abort",
+            () => {
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" }),
+              );
+            },
+            { once: true },
+          );
+        }),
+    );
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "uid" });
+    s3Mock.on(UploadPartCommand).callsFake(
+      (_input: unknown, _ctx: unknown) =>
+        new Promise<never>((_resolve, reject) => {
+          opts.controller.signal.addEventListener(
+            "abort",
+            () => {
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" }),
+              );
+            },
+            { once: true },
+          );
+        }),
+    );
+    s3Mock.on(AbortMultipartUploadCommand).resolves({});
+  },
+
+  observedFreshCancelCleanup(_opts) {
+    // S3's cleanup is `upload.abort()` — the SDK's internal controller
+    // takes care of issuing `AbortMultipartUploadCommand` if a multipart
+    // was allocated. No user-signal coupling is required because the
+    // `Upload` instance manages its own controller. The verdict: the
+    // strategy invoked `upload.abort()` at least once.
+    return uploadAbortSpy.mock.calls.length > 0;
   },
 
   primeDeleteOk() {

@@ -46,6 +46,19 @@ type PathResponder = { match: string; verbs: VerbResponder };
 let responders: PathResponder[] = [];
 let fetchResponses: Array<() => Response> = [];
 let graphApiCalls: string[] = [];
+// Cancel-upload state. `cancelMode = true` switches the fakeFetch and the
+// `buildLocalFile` hook into the resumable-cancel scenario:
+//   - `buildLocalFile()` writes a >4 MiB file so the strategy routes to
+//     the resumable-session path (small-file <=4 MiB goes through
+//     `uploadSmall` which has no DELETE-cleanup to inspect).
+//   - The fakeFetch DELETE on the upload URL captures `init.signal` so
+//     `observedFreshCancelCleanup` can verify the signal is NOT the
+//     user's signal (Decision 3).
+//   - The fakeFetch chunk PUTs hang on the user's signal so the upload
+//     stays in flight until the test calls `controller.abort()`.
+let cancelMode = false;
+let cancelDeleteSignal: AbortSignal | null = null;
+const RESUMABLE_FILE_BYTES = 5 * 1024 * 1024 + 16; // > 4 MiB threshold
 
 function buildGraphClient(): GraphClientLike {
   return {
@@ -104,13 +117,45 @@ function buildGraphClient(): GraphClientLike {
   };
 }
 
-const fakeFetch = vi.fn(async () => {
-  const next = fetchResponses.shift();
-  if (!next) {
-    return new Response("{}", { status: 500 });
-  }
-  return next();
-}) as unknown as typeof fetch;
+const fakeFetch = vi.fn(
+  async (url: string | URL | Request, init?: RequestInit) => {
+    const urlStr = String(url);
+    const method = (init?.method ?? "").toUpperCase();
+    if (cancelMode) {
+      if (method === "DELETE" && urlStr.includes("/CONTRACT-UPLOAD-URL")) {
+        cancelDeleteSignal = init?.signal ?? null;
+        // The Response constructor rejects null-body status codes (204)
+        // with a body arg per the Fetch spec; use 200 to keep the test
+        // stderr clean. The strategy's cleanup catch does not branch on
+        // status, so the choice is purely cosmetic.
+        return new Response("", { status: 200 });
+      }
+      if (method === "PUT" && urlStr.includes("/CONTRACT-UPLOAD-URL")) {
+        return new Promise<Response>((_resolve, reject) => {
+          const sig = init?.signal;
+          if (sig?.aborted) {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            return;
+          }
+          sig?.addEventListener(
+            "abort",
+            () => {
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" }),
+              );
+            },
+            { once: true },
+          );
+        });
+      }
+    }
+    const next = fetchResponses.shift();
+    if (!next) {
+      return new Response("{}", { status: 500 });
+    }
+    return next();
+  },
+) as unknown as typeof fetch;
 
 // ---------------------------------------------------------------------------
 // Credentials
@@ -141,11 +186,14 @@ const fixture: StrategyContractFixture = {
   credentials,
   expectedAuthErrorTag: "auth-expired",
   supportsQuota: true,
+  hasPathHandleCache: true,
 
   resetMock() {
     responders = [];
     fetchResponses = [];
     graphApiCalls = [];
+    cancelMode = false;
+    cancelDeleteSignal = null;
     (fakeFetch as unknown as ReturnType<typeof vi.fn>).mockClear();
   },
 
@@ -244,7 +292,16 @@ const fixture: StrategyContractFixture = {
 
   buildLocalFile() {
     const p = join(tmp, `contract-${Date.now()}-${Math.random()}.txt`);
-    writeFileSync(p, "contract-body");
+    if (cancelMode) {
+      // OneDrive routes to the resumable-session path only for files
+      // > 4 MiB (`RESUMABLE_THRESHOLD_BYTES`). The resumable path is the
+      // one with the cleanup-DELETE under test (Decision 3); the small-
+      // file `PUT /content` has no cleanup hook to inspect. Use a
+      // sparse zero-buffer to avoid burning CPU on actual data.
+      writeFileSync(p, Buffer.alloc(RESUMABLE_FILE_BYTES));
+    } else {
+      writeFileSync(p, "contract-body");
+    }
     return p;
   },
 
@@ -267,6 +324,34 @@ const fixture: StrategyContractFixture = {
         }),
       },
     });
+  },
+
+  primeUploadCancellable(opts) {
+    cancelMode = true;
+    cancelDeleteSignal = null;
+    // For files > 4 MiB OneDrive routes to `uploadResumable`. The
+    // strategy POSTs `/createUploadSession` against the parent's
+    // child-path URL; reply with a synthetic uploadUrl that fakeFetch
+    // routes the chunk-PUT and DELETE-cleanup against.
+    const base =
+      opts.parentPath === "/" || opts.parentPath === ""
+        ? `/me/drive/root:/`
+        : `/me/drive/root:${opts.parentPath}/`;
+    responders.push({
+      match: base,
+      verbs: {
+        post: () => ({
+          uploadUrl:
+            "https://contract.onedrive.local/CONTRACT-UPLOAD-URL",
+        }),
+      },
+    });
+  },
+
+  observedFreshCancelCleanup(opts) {
+    return (
+      cancelDeleteSignal !== null && cancelDeleteSignal !== opts.userSignal
+    );
   },
 
   primeDeleteOk(targetPath) {

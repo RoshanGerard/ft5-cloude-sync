@@ -24,8 +24,6 @@ import type {
   SyncListJobsResponse,
   SyncGetJobRequest,
   SyncGetJobResponse,
-  SyncEnqueueUploadRequest,
-  SyncEnqueueUploadResponse,
   SyncEnqueueMirrorRequest,
   SyncEnqueueMirrorResponse,
   SyncCancelDownloadRequest,
@@ -48,7 +46,8 @@ import type {
 type ExposedSync = {
   listJobs: (req: SyncListJobsRequest) => Promise<SyncListJobsResponse>;
   getJob: (req: SyncGetJobRequest) => Promise<SyncGetJobResponse>;
-  enqueueUpload: (req: SyncEnqueueUploadRequest) => Promise<SyncEnqueueUploadResponse>;
+  // migrate-upload-orchestration-out-of-engine §11 / §7.4 — `enqueueUpload`
+  // was deleted in chunk F; the renderer's upload path is `window.api.files.upload`.
   enqueueMirror: (req: SyncEnqueueMirrorRequest) => Promise<SyncEnqueueMirrorResponse>;
   cancelJob: (req: SyncCancelJobRequest) => Promise<SyncCancelJobResponse>;
   cancelDownload: (
@@ -82,7 +81,7 @@ describe("preload sync surface", () => {
     vi.clearAllMocks();
   });
 
-  it("exposes a sync object with exactly 13 members (12 commands + onEvent), no legacy `authenticate`", async () => {
+  it("exposes a sync object with exactly 13 members (12 commands + onEvent), no legacy `authenticate` or `enqueueUpload`", async () => {
     const exposed = await loadExposed();
 
     expect(typeof exposed.sync).toBe("object");
@@ -93,8 +92,14 @@ describe("preload sync surface", () => {
         "authenticateStart",
         "cancelDownload",
         "cancelJob",
+        // migrate-upload-orchestration-out-of-engine §7.3 / §7.9 —
+        // dedicated cancel surface for the new `files:upload` direct
+        // RPC, keyed by service-minted `uploadJobId`.
+        "cancelUpload",
         "enqueueMirror",
-        "enqueueUpload",
+        // migrate-upload-orchestration-out-of-engine §11 / §7.4 —
+        // `enqueueUpload` was deleted in chunk F; the renderer's
+        // upload path is `window.api.files.upload`.
         "getJob",
         "getRetryPolicy",
         "getStatus",
@@ -105,6 +110,8 @@ describe("preload sync surface", () => {
     );
     // legacy single-shot `authenticate` must NOT be exposed
     expect("authenticate" in exposed.sync).toBe(false);
+    // chunk F invariant: legacy `enqueueUpload` MUST NOT be exposed
+    expect("enqueueUpload" in exposed.sync).toBe(false);
   });
 
   describe("request/response commands", () => {
@@ -139,24 +146,10 @@ describe("preload sync surface", () => {
       expect(result).toBe(response);
     });
 
-    it("enqueueUpload(req) invokes SYNC_CHANNELS.enqueueUpload with req and returns the resolved value", async () => {
-      const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;
-      const response: SyncEnqueueUploadResponse = { jobId: "j-2" };
-      invokeMock.mockResolvedValue(response);
-
-      const exposed = await loadExposed();
-      const req: SyncEnqueueUploadRequest = {
-        datasourceId: "ds-1",
-        sourcePath: "/tmp/file.txt",
-        targetPath: "/remote/file.txt",
-        conflictPolicy: "overwrite",
-      };
-      const result = await exposed.sync.enqueueUpload(req);
-
-      expect(invokeMock).toHaveBeenCalledTimes(1);
-      expect(invokeMock.mock.calls[0]).toEqual([SYNC_CHANNELS.enqueueUpload, req]);
-      expect(result).toBe(response);
-    });
+    // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+    // `enqueueUpload(req)` round-trip test was deleted in chunk F.
+    // The upload RPC now goes through `window.api.files.upload`,
+    // covered by `apps/desktop/src/main/ipc/files/__tests__/upload.test.ts`.
 
     it("enqueueMirror(req) invokes SYNC_CHANNELS.enqueueMirror with req and returns the resolved value", async () => {
       const invokeMock = ipcRenderer.invoke as unknown as ReturnType<typeof vi.fn>;

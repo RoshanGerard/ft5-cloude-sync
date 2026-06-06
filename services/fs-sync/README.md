@@ -34,9 +34,13 @@ Unix; `-dev` suffix in dev mode). Each frame is `Request`,
 
 Commands (see `COMMAND_NAMES`):
 
-- `sync:enqueue-upload` — enqueue a single-file upload
+- `files:upload` — single-file upload via direct RPC. Migrated out of the
+  scheduler by `migrate-upload-orchestration-out-of-engine` (chunk F):
+  the legacy queue-based `sync:enqueue-upload` route + `UploadJobExecutor`
+  were deleted; uploads are now handled in-handler with the in-memory
+  `UploadRegistry`.
 - `sync:enqueue-mirror` — enqueue a one-way mirror sync (dedup-guarded
-  per `(datasourceId, sourcePath)`)
+  per `(datasourceId, sourcePath)`). Sole remaining queue-entry handler.
 - `sync:list-jobs` / `sync:get-job` — read-only queries over the
   `jobs` table
 - `sync:cancel-job` — cancel a queued or waiting-network job

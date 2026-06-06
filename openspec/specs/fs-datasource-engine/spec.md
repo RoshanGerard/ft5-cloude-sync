@@ -20,21 +20,12 @@ The FS Datasource Engine SHALL live at `packages/fs-datasource-engine` as a pnpm
 
 ### Requirement: Public contract is the generic `DatasourceClient<T>` Strategy interface
 
-The engine SHALL export a public interface `DatasourceClient<T extends
-DatasourceType>` with the methods `status`, `testConnection`, `authenticate`,
-`listDirectory`, `search`, `getMetadata`, `createFile`, `uploadFile`,
-`cancelUpload`, `deleteFile`, `deleteDirectory`, `getQuota`, `rename`, and
-`downloadFile`. The type parameter
-`T` SHALL flow into every generic return payload (`FileEntry<T>`,
-`FileMetadata<T>`, and event payloads). Concrete implementations
-(`S3Client`, `OneDriveClient`, `GoogleDriveClient`) SHALL conform to this
-interface and SHALL be constructible only via the engine's factory — not
-via `new` directly by consumers.
+The engine SHALL export a public interface `DatasourceClient<T extends DatasourceType>` with the methods `status`, `testConnection`, `authenticate`, `listDirectory`, `search`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `getQuota`, `rename`, and `downloadFile`. The methods `createFile` and `cancelUpload` are NOT present (deleted by this change). The type parameter `T` SHALL flow into every generic return payload (`FileEntry<T>`, `FileMetadata<T>`, and event payloads). Concrete implementations (`S3Client`, `OneDriveClient`, `GoogleDriveClient`) SHALL conform to this interface and SHALL be constructible only via the engine's factory — not via `new` directly by consumers.
 
 #### Scenario: Every concrete client conforms to the shared interface
 
 - **WHEN** a contract test in `packages/fs-datasource-engine/src/__tests__/strategy-contract.ts` enumerates every exported client class
-- **THEN** each class is `assignable` to `DatasourceClient<its provider type>`, every method on the interface (including the two added in this change) is present with the correct signature, and a shared suite of scenarios (list, search, upload, delete, error, rename, download with rangeStart, AbortSignal-driven cancel) passes against each
+- **THEN** each class is `assignable` to `DatasourceClient<its provider type>`, every method on the interface is present with the correct signature (no `createFile`, no `cancelUpload`), and a shared suite of scenarios (list, search, upload via signal-driven cancel, delete, error, rename, download with rangeStart, AbortSignal-driven download cancel) passes against each
 
 #### Scenario: Consumers program to the interface, not the concrete class
 
@@ -43,24 +34,26 @@ via `new` directly by consumers.
 
 ### Requirement: Template base class wraps every operation with emission, refresh, and error normalization
 
-The engine SHALL provide `abstract class BaseDatasourceClient<T extends DatasourceType>` that concrete strategies extend. Every public method SHALL be implemented on the base such that it (a) emits a `pre-operation` event (e.g., `uploading`, `deleting`) before calling the concrete `doX` method, (b) emits a `post-operation` event (`file-created`, `deleted`) on success, (c) emits a `*-failed` event and throws `DatasourceError` on failure, (d) attempts single-flight token refresh exactly once on `auth-expired`, (e) calls `normalizeError(e)` to convert any raw exception to `DatasourceError` before emitting or throwing.
+The engine SHALL provide `abstract class BaseDatasourceClient<T extends DatasourceType>` that concrete strategies extend. The base class SHALL wrap operations that emit lifecycle events (`deleteFile`, `rename`, `downloadFile`) such that it (a) emits a pre-operation event where applicable (e.g., `downloading`), (b) emits a post-operation event on success (`deleted`, `entry-renamed`, `file-downloaded`), (c) emits a `*-failed` event and throws `DatasourceError` on failure, (d) attempts single-flight token refresh exactly once on `auth-expired`, (e) calls `normalizeError(e)` to convert any raw exception to `DatasourceError` before emitting or throwing.
+
+The `uploadFile` method is exempt from bus emission (per ADDED Requirement: `uploadFile` is a one-shot stateless primitive); it returns the entry directly without emitting any of `uploading`, `file-created`, `upload-failed`, or `upload-cancelled` from this layer. The `withRefresh` and `normalizeError` wrappers DO apply to `uploadFile`.
 
 Concrete strategies SHALL implement only the `protected abstract doX(...)` methods plus `protected abstract refreshToken(): Promise<AuthResult>` and `protected abstract normalizeError(raw: unknown): DatasourceError<T>`. Strategies SHALL NOT emit events directly and SHALL NOT call the base's retry logic.
 
-#### Scenario: Base emits uploading, then file-created, on a successful upload
+#### Scenario: Base does NOT emit upload events for uploadFile
 
-- **WHEN** a concrete strategy's `doUpload` resolves with a valid `FileEntry<T>`
-- **THEN** the bus observes in order: at least one `uploading` event (streaming-tagged), exactly one `file-created` event with the returned entry's fields, and the method resolves with that entry
+- **WHEN** a concrete strategy's `doUploadFileImpl` resolves successfully or throws
+- **THEN** the engine bus observes ZERO `uploading`, `file-created`, `upload-failed`, or `upload-cancelled` events for this upload (these events are emitted by the fs-sync service handler on `sync:event-stream`, not on the engine bus)
 
-#### Scenario: Base emits upload-failed and throws normalized error on failure
+#### Scenario: Base emits download lifecycle events
 
-- **WHEN** a concrete strategy's `doUpload` throws a raw provider exception
-- **THEN** the bus observes at least one `uploading` event, then exactly one `upload-failed` event whose payload carries the `DatasourceError.tag`, and the caller receives a `DatasourceError<T>` (not the raw exception)
+- **WHEN** a concrete strategy's `doDownloadFileImpl` produces bytes flowing through the returned Readable
+- **THEN** the engine bus observes the `downloading` streaming event and the appropriate terminal event (`file-downloaded`, `download-failed`, or `download-cancelled`) — download is unchanged by this migration
 
 #### Scenario: Base retries once on auth-expired, serialized per datasource
 
 - **WHEN** two concurrent operations each invoke `doX` on the same `datasourceId` and both throw an error that `normalizeError` tags `auth-expired`
-- **THEN** `refreshToken` is called exactly once, both operations await the same refresh promise, both retry their `doX` after refresh resolves, a single `token-refreshed` event is emitted, and no second refresh is attempted on the retry
+- **THEN** `refreshToken` is called exactly once, both operations await the same refresh promise, both retry their `doX` after refresh resolves, a single `token-refreshed` event is emitted, and no second refresh is attempted on the retry — `withRefresh` semantics are unchanged by this migration
 
 #### Scenario: Strategies do not emit events directly
 
@@ -69,7 +62,11 @@ Concrete strategies SHALL implement only the `protected abstract doX(...)` metho
 
 ### Requirement: Hybrid `Target` type supports both path and handle addressing
 
-The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: "handle"; handle: string }` in `packages/ipc-contracts`. Every method that addresses a filesystem location (`listDirectory`, `getMetadata`, `createFile`, `uploadFile`, `deleteFile`, `deleteDirectory`, `search` scope) SHALL accept `Target` as its location parameter. `FileEntry<T>` SHALL always carry both `path: string` and `handle: string` so any entry returned by a list call can be re-addressed by either mechanism. Internally, each concrete strategy SHALL maintain an LRU path↔handle cache and invalidate it in response to `deleted` and `file-created` events it emits.
+The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: "handle"; handle: string }` in `packages/ipc-contracts`. Every method that addresses a filesystem location (`listDirectory`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `search` scope) SHALL accept `Target` as its location parameter. `FileEntry<T>` SHALL always carry both `path: string` and `handle: string` so any entry returned by a list call can be re-addressed by either mechanism. Internally, each concrete strategy SHALL maintain an LRU path↔handle cache. Cache invalidation SHALL be wired as follows:
+
+- On successful `uploadFile`: invalidation is internal — `doUploadFileImpl` populates the LRU directly inside its success branch, before returning. NO bus event drives invalidation in this path.
+- On successful `deleteFile`: invalidation is bus-driven — the strategy's constructor subscribes to `deleted` on the engine bus and invalidates the entry's LRU on observation. (`deleteFile` is not migrated by this change and continues to emit on the engine bus.)
+- The `createFile` invalidation path is no longer relevant: `createFile` is deleted by this change.
 
 #### Scenario: listDirectory accepts a path target
 
@@ -81,7 +78,12 @@ The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: 
 - **WHEN** a caller obtains a `FileEntry<T>` from a prior `listDirectory` call, then invokes `client.listDirectory({ kind: "handle", handle: entry.handle })` where `entry.kind === "folder"`
 - **THEN** the method resolves with the children of that folder, and no path-resolution round-trip is issued to the provider (observable in a spy-wrapped strategy test)
 
-#### Scenario: Handle cache is invalidated by deletion
+#### Scenario: Handle cache is populated by upload success internally
+
+- **WHEN** a strategy's `doUploadFileImpl` resolves successfully with an entry whose `path` was not previously in the LRU
+- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; the engine bus observes ZERO `file-created` events for the upload
+
+#### Scenario: Handle cache is invalidated by deletion via engine bus
 
 - **WHEN** a strategy successfully deletes an entry at a known path, then another operation addresses the same path
 - **THEN** the strategy does NOT return the cached handle; the second operation re-resolves the path (observable by a spy on the provider's name-resolution API)
@@ -89,17 +91,7 @@ The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: 
 #### Scenario: Path ambiguity surfaces via providerMetadata, not a status-changed event
 
 - **WHEN** a provider permits duplicate sibling names (e.g., Google Drive) and a `{kind: "path"}` `Target` resolves to more than one provider-side item under the same (parent, name) filter
-- **THEN** the strategy selects the oldest hit (e.g., Drive orders by `createdTime asc`), populates the returned `FileEntry<T>.providerMetadata` with `ambiguous: true` and an `ambiguousSiblings` list containing the other items' handles, and emits NO `status-changed` (or any other) event for the ambiguity — the siblings remain reachable via subsequent `{kind: "handle"}` `Target` calls, and consumers detect the ambiguity by checking `providerMetadata.ambiguous` on the entry
-
-#### Scenario: Mutation on an ambiguous path-form target is rejected; handle-form bypasses the check
-
-- **WHEN** a mutating operation (e.g., `deleteFile`) targets a `{kind: "path"}` `Target` whose resolution would be ambiguous (multiple provider-side items at the terminal (parent, name))
-- **THEN** the strategy rejects with a `DatasourceError` whose `tag` is `"conflict"`, whose `raw` payload includes all candidate handles in `ambiguousSiblings`, and whose `retryable` flag is `false`; no mutation is issued to the provider, and the caller is expected to re-address the desired file via `{kind: "handle"}` to disambiguate. Handle-form targets bypass this check entirely — they explicitly name one provider-side item.
-
-#### Scenario: Search results and handle-form listings expose non-re-addressable synthesized paths
-
-- **WHEN** a caller invokes `client.search(query)` or `client.listDirectory({kind: "handle", handle})` and the provider cannot supply a full engine-facing path for each result
-- **THEN** the strategy synthesizes `path: "/<name>"` on each returned `FileEntry` (good enough for display), but this synthesized path is NOT guaranteed to resolve back to the same file via `{kind: "path"}`; callers re-addressing such entries MUST use `{kind: "handle", handle: entry.handle}` — which names the specific provider-side item — so the original file is reached regardless of its real path depth
+- **THEN** the strategy selects the oldest hit (e.g., Drive orders by `createdTime asc`), populates the returned `FileEntry<T>.providerMetadata` with `ambiguous: true` and an `ambiguousSiblings` list containing the other items' handles, and emits NO `status-changed` (or any other) event for the ambiguity
 
 ### Requirement: Event schema is typed per provider via `PayloadMap`
 
@@ -122,27 +114,27 @@ The engine SHALL define event types generically: `type DatasourceEvent<T extends
 
 ### Requirement: Streaming events are throttled at 1 second OR 10% progress delta
 
-Events tagged `streaming: true` SHALL pass through a coalescing filter in the `EventBus` keyed by `(datasourceId, transactionId)`. The filter SHALL emit the current event when EITHER (a) at least 1 second has elapsed since the previous emission for that key, OR (b) the `progress` field (if present in the payload) has changed by at least 10 percentage points since the previous emission for that key. Terminal events — events whose `event` name ends in `-created`, `-failed`, `token-refreshed`, `token-expired`, or `deleted` — SHALL bypass the throttle entirely and be delivered immediately on emission, even if a throttled event for the same key is pending.
+The engine bus SHALL throttle streaming events emitted from operations that produce continuous byte-flow progress. Throttle scope post-migration: the `downloading` streaming event from `downloadFile`. (The `uploading` streaming event no longer flows through the engine bus per this change; throttle for upload progress is the consumer's concern at the fs-sync handler level.)
 
-#### Scenario: Fast upload emits at progress checkpoints regardless of time
+#### Scenario: Fast download emits at progress checkpoints regardless of time
 
-- **WHEN** a test emits 20 `uploading` events over 300 ms with progress values 0%, 5%, 10%, 15%, ..., 95%, 100%
-- **THEN** subscribers observe at most the events at 10% boundaries (0, 10, 20, ..., 90) plus the final terminal `file-created` event; fewer if some fall inside a <10% delta window
+- **WHEN** a download streams ≥2 MB of progress in <1 second (faster than the time threshold but exceeding the 10% threshold)
+- **THEN** the engine bus emits at least one `downloading` event per 10% delta crossed; not all byte-level updates are emitted
 
-#### Scenario: Slow upload emits on the 1-second cadence
+#### Scenario: Slow download emits on the 1-second cadence
 
-- **WHEN** a test emits `uploading` events once per 200 ms over 3 seconds with progress creeping from 0% to 1.5%
-- **THEN** subscribers observe approximately one event per second plus the terminal `file-created` event; the sub-10% progress deltas do not block time-based emission
+- **WHEN** a download streams ~10 KB/s (below the 10% threshold within 1 second)
+- **THEN** the engine bus emits exactly one `downloading` event per second of stream lifetime, even though no 10% delta was crossed
 
 #### Scenario: Terminal events bypass the throttle
 
-- **WHEN** an `uploading` streaming event is emitted 100 ms after the last delivery and a `file-created` terminal event is emitted 10 ms later
-- **THEN** the `file-created` event is delivered to subscribers immediately (within one microtask of emission), regardless of the 1-second window for the streaming event
+- **WHEN** a download completes (terminal `file-downloaded`) or aborts (terminal `download-cancelled`)
+- **THEN** the terminal event fires immediately regardless of throttle state, and any pending throttled streaming event is flushed before the terminal event
 
-#### Scenario: Throttle keys by transaction, not just datasource
+#### Scenario: Throttle keys by path, not just datasource
 
-- **WHEN** two concurrent uploads on the same `datasourceId` (different `transactionId`s) each emit streaming events every 200 ms
-- **THEN** each transaction's stream is coalesced independently; the 1-second window of one upload does not suppress the other's emissions
+- **WHEN** two concurrent downloads on the same datasource emit `downloading` events
+- **THEN** the throttle is independent per `path` — both streams emit at their own cadences without coalescing
 
 ### Requirement: Authentication returns an `AuthIntent`; engine never opens UI
 
@@ -302,7 +294,7 @@ The engine's `EventBus` SHALL be bridged to the renderer by a main-process forwa
 
 ### Requirement: Upload takes a local file path and streams from disk
 
-`uploadFile(parent: Target, file: { path: string; name?: string; mimeType?: string })` SHALL accept an absolute local filesystem path. The engine SHALL stream the file from disk to the provider in chunks (implementation-defined, but MUST NOT buffer the entire file into memory). Progress events SHALL reference bytes transferred vs `file.size` resolved at stream start. The interface SHALL NOT accept a `Blob`, `Readable`, or any renderer-originated stream in this change.
+`uploadFile(parent: Target, file: { path: string; name?: string; mimeType?: string }, options?)` SHALL accept an absolute local filesystem path. The engine SHALL stream the file from disk to the provider in chunks (implementation-defined, but MUST NOT buffer the entire file into memory). Progress is reported via `options.onProgress` (when provided) with `(loaded, total)` byte counts; `total` resolves at stream start from the file's size. The interface SHALL NOT accept a `Blob`, `Readable`, or any renderer-originated stream in this change.
 
 #### Scenario: Upload does not buffer the full file
 
@@ -311,103 +303,27 @@ The engine's `EventBus` SHALL be bridged to the renderer by a main-process forwa
 
 #### Scenario: Upload rejects a non-path input shape
 
-- **WHEN** a test invokes `uploadFile(target, new Blob([...]))` (cast to satisfy types)
+- **WHEN** a test invokes `uploadFile(target, new Blob([...]) as unknown as { path: string })`
 - **THEN** TypeScript reports a type error at the call site, and the runtime receives `undefined` for `file.path` and throws a typed validation error before any provider call is issued
 
-### Requirement: `DatasourceClient<T>` exposes `cancelUpload` for in-flight uploads
+#### Scenario: onProgress is invoked with monotonic loaded values
 
-The public `DatasourceClient<T>` interface SHALL gain a method `cancelUpload(transactionId: string, reason?: "user" | "timeout" | "shutdown"): Promise<void>`. The method SHALL:
-
-- Resolve without error when `transactionId` is unknown (never started, already terminal, or cancelled previously) — cancel is idempotent.
-- When `transactionId` is in-flight, trigger cancellation such that (a) the provider-side upload state (S3 multipart, OneDrive resumable session, Drive resumable session) is cleaned up via the provider's documented cancellation primitive, (b) a `upload-cancelled` event fires exactly once for that `transactionId`, and (c) the original `uploadFile(...)` promise rejects with `DatasourceError<T>{ tag: "cancelled", retryable: false }` (NOT a `upload-failed` event).
-- Default `reason` to `"user"` when the caller omits it.
-- Be callable before the strategy's session-init HTTP round-trip completes (cancel-before-register race): the base SHALL buffer the cancel and apply it as soon as the strategy registers its cancel closure, or — if the session-init observes the base's `AbortSignal` — unwind without opening provider-side state at all.
-
-#### Scenario: cancelUpload mid-upload emits upload-cancelled and rejects with cancelled tag
-
-- **WHEN** a caller invokes `uploadFile` on a large file, receives a `transactionId` via the first `uploading` event, and then calls `cancelUpload(transactionId)` while chunks are still being streamed
-- **THEN** the bus observes exactly one `upload-cancelled` event carrying `{ transactionId, bytesUploaded, bytesTotal, reason: "user" }`, no `upload-failed` event fires, and the original `uploadFile` promise rejects with `DatasourceError<T>{ tag: "cancelled", retryable: false }`
-
-#### Scenario: cancelUpload with unknown transactionId resolves silently
-
-- **WHEN** a caller invokes `cancelUpload("tx-does-not-exist")` or calls `cancelUpload` a second time for a transaction that already cancelled / completed
-- **THEN** the call resolves without rejection, no event fires, and no side-effect hits the provider
-
-#### Scenario: cancel against an upload the strategy opted not to register is a silent no-op — the upload completes normally
-
-- **WHEN** a caller invokes `cancelUpload(transactionId)` during a small-file upload path that the strategy chose not to register with (e.g. OneDrive's `<= 4 MiB` `PUT /content` path, where no resumable session exists to DELETE and the Graph SDK's `.put()` does not honour an `AbortSignal`)
-- **THEN** the base aborts its `AbortSignal` but has no `cancel` closure to invoke; the strategy's in-flight PUT completes normally and returns a `DriveItem`; the base's `uploadFile` emits `file-created` on the success branch, does NOT emit `upload-cancelled`, and the caller's `cancelUpload` awaiter resolves `undefined` once the upload's tracker is removed by the success path — the file lands on the provider despite the cancel call, which is documented behaviour for non-cancellable upload paths
-
-#### Scenario: cancel-before-register race is handled
-
-- **WHEN** a caller invokes `uploadFile` and immediately calls `cancelUpload(transactionId)` in the synchronous turn after the first `uploading` event — before the strategy has finished its session-init HTTP round-trip and called `register(cancel)` on the base
-- **THEN** the cancel is buffered on the tracker; when the strategy either (a) calls `register`, the base invokes the closure immediately, or (b) observes the base's `AbortSignal` during the session-init fetch and unwinds without completing the session — in either case a single `upload-cancelled` event fires and `uploadFile` rejects with `DatasourceError<T>{ tag: "cancelled" }`
-
-### Requirement: `upload-cancelled` terminal event is declared on every provider's PayloadMap
-
-The `CanonicalEventPayloads` shape SHALL declare a twelfth event name `"upload-cancelled"` with payload type `{ transactionId: string; bytesUploaded: number; bytesTotal: number; reason: "user" | "timeout" | "shutdown" }`. Every provider's entry in `PayloadMap` SHALL inherit this event name through the canonical shape; no provider-specific override is permitted. The event SHALL be terminal (not `streaming: true`), bypassing the engine's streaming coalescer the same way `file-created` and `upload-failed` do.
-
-#### Scenario: upload-cancelled is on every provider's PayloadMap
-
-- **WHEN** a type-test scans `PayloadMap[T]["upload-cancelled"]` for `T` in `"amazon-s3" | "google-drive" | "onedrive"`
-- **THEN** every entry equals `{ transactionId: string; bytesUploaded: number; bytesTotal: number; reason: "user" | "timeout" | "shutdown" }`, and the existing `PayloadMap[T]` canonical-keys `toEqualTypeOf` tripwire is updated to enumerate 12 event names rather than 11
-
-#### Scenario: upload-cancelled is terminal, not streaming
-
-- **WHEN** the base emits `upload-cancelled` in response to a `cancelUpload` call
-- **THEN** the `DatasourceEvent` envelope has `streaming` absent (not `true`); a subscriber reading the bus observes the event as a terminal signal that does not pass through the streaming coalescer throttle
+- **WHEN** an `uploadFile` call provides `onProgress` and the strategy uploads bytes
+- **THEN** `onProgress` is invoked at least once during the upload; consecutive invocations have non-decreasing `loaded` values; the final `loaded` equals `total` on success
 
 ### Requirement: `DatasourceErrorTag` gains `"cancelled"`
 
-The `DatasourceErrorTag` union SHALL add a ninth tag `"cancelled"`. A `DatasourceError<T>` tagged `"cancelled"` SHALL have `retryable: false`. The base SHALL throw this error from `uploadFile(...)` when the upload terminates due to a `cancelUpload` call; strategies' `normalizeError` SHALL NOT tag any provider-native exception `"cancelled"` — the tag is reserved for base-originated cancellation.
+The `DatasourceErrorTag` union SHALL include the tag `"cancelled"`. A `DatasourceError<T>` tagged `"cancelled"` SHALL have `retryable: false`. The strategy's `doUploadFileImpl` SHALL throw this error when the upload terminates due to `options.signal` being aborted by the caller. Strategies' `normalizeError` SHALL NOT tag any provider-native exception `"cancelled"` — the tag is reserved for signal-driven cancellation paths.
 
-#### Scenario: cancelled tag flows through system-retry and user-retry as terminal
+#### Scenario: cancelled tag flows through fs-sync handler as terminal
 
-- **WHEN** `services/fs-sync`'s scheduler consumes a job whose upload rejected with `tag: "cancelled"` and hands it to `classifySystemRetry` / `decideUserRetry`
-- **THEN** `classifySystemRetry` returns `{ branch: "terminal" }` (unknown-to-system tag falls through), `decideUserRetry` returns `{ branch: "terminal", reason: "not-retryable" }` (`"cancelled" !== "provider-error"`), and the job ends as `failed` without further retry attempts
+- **WHEN** the fs-sync service handler awaits `client.uploadFile(...)` with an aborted `signal` and the strategy throws `DatasourceError { tag: "cancelled" }`
+- **THEN** the handler emits `upload-cancelled` on `sync:event-stream` with `{ uploadJobId, bytesUploaded, bytesTotal, reason: "user" }`; the registry entry for `uploadJobId` is deleted; the handler's reply rejects with the cancelled error
 
 #### Scenario: DatasourceErrorTag tripwire test updated
 
 - **WHEN** the existing `DatasourceErrorTag` `toEqualTypeOf` assertion in `packages/ipc-contracts/src/__tests__/datasources-engine.test-d.ts` runs against the updated taxonomy
-- **THEN** the asserted union enumerates the nine tags (`"auth-expired" | "auth-revoked" | "not-found" | "conflict" | "unsupported" | "rate-limited" | "network-error" | "provider-error" | "cancelled"`) and the test passes
-
-### Requirement: Strategies wire SDK-native cancellation via a `register(cancel)` callback
-
-Each concrete strategy's `doUploadFileImpl` SHALL accept two new parameters: a `register(cancel: () => Promise<void>)` callback and an `AbortSignal`. The strategy SHALL:
-
-- Call `register` exactly once, as early as possible after the provider-side upload state is created, passing a closure that invokes the provider's documented cancellation primitive (see per-strategy scenarios below).
-- Pass the `AbortSignal` to HTTP calls that accept one (raw `fetch` for OneDrive chunk PUTs, raw `fetch` for Drive chunk PUTs, the `Upload` constructor's `abortController` for S3) so in-flight HTTP requests unblock promptly when the base aborts.
-- NOT emit events directly in the cancel path (the base emits `upload-cancelled`; strategies remain emission-free per the engine's existing Requirement: *Template base class wraps every operation with emission, refresh, and error normalization*).
-
-#### Scenario: S3 strategy registers Upload.abort() as its cancel closure
-
-- **WHEN** `S3Client.doUploadFileImpl` constructs the `@aws-sdk/lib-storage` `Upload` and invokes `register`
-- **THEN** the registered closure calls `upload.abort()`, which (via the SDK's internal `markUploadAsAborted`) sends `AbortMultipartUploadCommand` if `UploadId` was allocated — no orphan multipart state remains on S3
-
-#### Scenario: OneDrive strategy registers DELETE sessionUrl as its cancel closure
-
-- **WHEN** `OneDriveClient.doUploadFileImpl` creates the resumable session, receives `uploadUrl`, and invokes `register`
-- **THEN** the registered closure issues `fetch(uploadUrl, { method: "DELETE" })` — per Graph documentation this cancels the session server-side, releasing the `uploadUrl` and any uploaded ranges
-
-#### Scenario: Google Drive strategy registers DELETE sessionUrl as its cancel closure
-
-- **WHEN** `GoogleDriveClient.doUploadFileImpl` initiates the resumable session, extracts the session URL from the `Location` header, and invokes `register`
-- **THEN** the registered closure issues `fetch(sessionUrl, { method: "DELETE", headers: { "Content-Range": "bytes */<total>" } })` (or `"bytes */0"` when total is unknown) — per Drive documentation this cancels the session server-side
-
-### Requirement: Engine's cancel is scoped to in-flight upload; sync-service queue coordination is out of scope
-
-The engine's `cancelUpload` SHALL affect ONLY the currently-in-flight upload identified by `transactionId`. It SHALL NOT:
-
-- Remove queued jobs from `services/fs-sync`'s scheduler.
-- De-prioritise or re-order other pending uploads.
-- Cascade into any sync-service state.
-
-The queue-coordination behaviour (when cancel-a-file also means remove-from-queue) is owned by `services/fs-sync`'s `Scheduler.cancel(jobId)` path and is out of scope for this change. The engine primitive is a building block the scheduler calls into; it is not the whole story.
-
-#### Scenario: Engine cancel leaves sync-service queue untouched
-
-- **WHEN** `services/fs-sync` has a queued mirror-sync job about to execute upload A, another upload B running, and upload C queued behind; the host calls `cancelUpload(B.transactionId)` directly against the engine
-- **THEN** only upload B aborts; A and C remain queued and the scheduler's state is unchanged; coordination of the queue is the caller's responsibility (typically via `services/fs-sync`'s own `Scheduler.cancel(B.jobId)` which in turn calls the engine's `cancelUpload`)
+- **THEN** the asserted union enumerates the nine tags including `"cancelled"`; the cancellation source documented in the type's JSDoc reflects signal-driven cancel (no engine `cancelUpload` method)
 
 ### Requirement: Google Drive strategy persists the issued OAuth scope on the credential
 
@@ -754,4 +670,95 @@ collapses `provider-error` → `tag: "other"` before the renderer sees it.
 
 - **WHEN** the user renames `foo.pdf` to `bar.pdf` and both `bar.pdf` and `bar-2.pdf` exist, with `conflictPolicy: "keep-both"`
 - **THEN** the engine retries with `bar-2.pdf` (collides), then `bar-3.pdf` (succeeds); the bus emits one `entry-renamed { from: {…foo.pdf…}, to: {…bar-3.pdf…} }`
+
+### Requirement: `uploadFile` is a one-shot stateless primitive
+
+`BaseDatasourceClient.uploadFile(parent: Target, file: { path: string; name?: string; mimeType?: string }, options?: { signal?: AbortSignal; onProgress?: (loaded: number, total: number) => void }): Promise<DatasourceFileEntry<T>>` SHALL be a one-shot wrapper around `withRefresh(() => doUploadFileImpl(parent, file, options))`. The base SHALL NOT mint a transaction-id, SHALL NOT maintain an `activeUploads` tracker map, SHALL NOT emit any of `uploading`, `file-created`, `upload-failed`, `upload-cancelled` from this code path, and SHALL NOT expose a `cancelUpload` method. Cancellation is consumer-driven via `options.signal`. Progress is consumer-observed via `options.onProgress`. The strategy returns the entry on success; rejections propagate as normalized `DatasourceError`.
+
+The `withRefresh` wrapper is retained on `uploadFile` in this change. The follow-up `migrate-engine-retry-policy-to-consumer` covers retry-policy ownership; this change does not touch that wrapper.
+
+#### Scenario: uploadFile resolves with the entry on success and emits no bus events
+
+- **WHEN** a caller invokes `client.uploadFile(parent, { path: "/local/x.txt" }, { onProgress })` against a strategy whose `doUploadFileImpl` resolves with a valid `DatasourceFileEntry<T>`
+- **THEN** the call resolves with that entry; the engine bus observes ZERO `uploading`, `file-created`, `upload-failed`, or `upload-cancelled` events for this upload; `onProgress` was invoked at least once during the upload with non-decreasing `loaded` values
+
+#### Scenario: uploadFile rejects with the strategy's normalized error on failure and emits no bus events
+
+- **WHEN** a caller invokes `client.uploadFile(...)` and the strategy's `doUploadFileImpl` throws a raw provider exception
+- **THEN** the wrapper invokes `normalizeError(raw)` and rejects with the resulting `DatasourceError<T>`; the engine bus observes ZERO upload-related events
+
+#### Scenario: uploadFile single-flight refreshes once on auth-expired
+
+- **WHEN** two concurrent `uploadFile` calls on the same datasource each receive a raw exception that `normalizeError` tags `"auth-expired"`
+- **THEN** `refreshToken` is invoked exactly once, both calls await the same refresh promise, both retry their `doUploadFileImpl` after refresh resolves, and a single `token-refreshed` event is emitted on the engine bus (`withRefresh` semantics unchanged from before this migration)
+
+### Requirement: `doUploadFileImpl` signature is `(parent, file, options)` — no `register` callback
+
+Each concrete strategy's `doUploadFileImpl` SHALL be declared:
+
+```typescript
+protected abstract doUploadFileImpl(
+  parent: Target,
+  file: { path: string; name?: string; mimeType?: string },
+  options: {
+    signal?: AbortSignal;
+    onProgress?: (loaded: number, total: number) => void;
+  },
+): Promise<DatasourceFileEntry<T>>;
+```
+
+The `register: (cancel: () => Promise<void>) => void` parameter SHALL NOT be present. Strategies SHALL forward `options.signal` (when provided) into the underlying SDK / fetch calls so consumer-aborted uploads unblock promptly. Strategies SHALL invoke `options.onProgress` (when provided) with `(loaded, total)` byte counts as bytes flow.
+
+#### Scenario: doUploadFileImpl signature has no register parameter
+
+- **WHEN** a Vitest `expectTypeOf` test asserts the signature of `doUploadFileImpl` against the abstract declaration on `BaseDatasourceClient`
+- **THEN** the parameter list is exactly `(parent: Target, file: { path; name?; mimeType? }, options: { signal?: AbortSignal; onProgress?: (l, t) => void })`; no `register` parameter is present at any position
+
+#### Scenario: signal forwarded to provider call unblocks promptly on abort
+
+- **WHEN** a caller invokes `uploadFile(target, { path: "/local/large.bin" }, { signal })` and aborts `signal` mid-stream
+- **THEN** the strategy's underlying SDK / fetch call rejects with an `AbortError` (or the SDK equivalent); the strategy throws `DatasourceError { tag: "cancelled", retryable: false }`; the rejection surfaces via `withRefresh` to the caller within 1 second of the abort
+
+### Requirement: Strategy cleanup-on-abort uses a fresh AbortController with a 5s timeout
+
+When a strategy's `doUploadFileImpl` allocates provider-side state that requires cleanup on cancellation (Drive resumable session URL, OneDrive resumable session URL, S3 multipart upload), the strategy SHALL register an `'abort'` listener on `options.signal` (`{ once: true }`). The listener SHALL issue the cleanup HTTP call against a **fresh** `AbortController` with a 5-second timeout, NOT against the user's `signal`. The cleanup is fire-and-forget from the user's perspective; failures are logged but do not affect the user-visible cancel outcome.
+
+#### Scenario: OneDrive cleanup-DELETE uses a fresh AbortController
+
+- **WHEN** a caller invokes `uploadFile` against `OneDriveClient` for a >4 MiB file (resumable-session path), the session URL is acquired, and the caller aborts the user signal mid-upload
+- **THEN** the strategy issues `fetch(uploadUrl, { method: "DELETE", signal: <fresh AbortController.timeout(5000)> })`; the `signal` passed to the cleanup fetch is NOT the user's signal; on simulated provider response of 204 No Content within 5 seconds, the cleanup succeeds and is logged
+
+#### Scenario: Drive cleanup-DELETE uses a fresh AbortController
+
+- **WHEN** the analogous resumable-session path on `GoogleDriveClient` is aborted mid-upload
+- **THEN** the strategy issues `fetch(sessionUrl, { method: "DELETE", headers: { "Content-Range": "bytes */*" }, signal: <fresh AbortController.timeout(5000)> })`; the user's signal is NOT used for the cleanup
+
+#### Scenario: S3 cleanup uses upload.abort()
+
+- **WHEN** an `S3Client.doUploadFileImpl` upload is aborted mid-stream via `options.signal`
+- **THEN** the strategy invokes `upload.abort()` (which the `@aws-sdk/lib-storage` SDK uses to issue `AbortMultipartUploadCommand` if a `UploadId` was allocated); no user-signal coupling is required because the SDK manages its own controller internally
+
+#### Scenario: Cleanup-DELETE timeout does not affect user-visible cancel
+
+- **WHEN** the cleanup-DELETE timer expires (e.g., the provider takes longer than 5s to respond)
+- **THEN** the cleanup is logged as a warning; the user-visible cancel completes regardless; the strategy's reject promise from `doUploadFileImpl` was already resolved with `cancelled` before the cleanup timer started
+
+### Requirement: Strategy LRU path-handle invalidation on upload completion is internal
+
+Drive and OneDrive strategies maintain a path-handle LRU cache. After this migration, LRU population on successful upload SHALL be performed internally inside `doUploadFileImpl` (calling `this.pathHandleCache.set(entry.path, entry.handle)` directly before returning), NOT via the engine bus. The strategies' constructor bus subscriptions SHALL drop the `file-created` arm. They SHALL retain the `deleted` arm — `deleteFile` continues to emit `deleted` on the engine bus (not migrated by this change).
+
+#### Scenario: Drive LRU is populated by uploadFile success without engine bus emission
+
+- **WHEN** an upload to Google Drive resolves successfully and returns an entry whose `path` was not previously in the strategy's LRU
+- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; the engine bus observes ZERO `file-created` events for this upload (Decision 1)
+
+#### Scenario: OneDrive LRU is populated by uploadFile success without engine bus emission
+
+- **WHEN** an upload to OneDrive resolves successfully and returns an entry whose `path` was not previously in the strategy's LRU
+- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; the engine bus observes ZERO `file-created` events for this upload
+
+#### Scenario: Drive LRU is invalidated by deleteFile via engine bus subscription
+
+- **WHEN** `deleteFile` succeeds for a path present in the strategy's LRU
+- **THEN** the strategy's bus subscription on `deleted` invalidates the path's LRU entry (deleteFile is NOT migrated by this change and continues to emit on the engine bus)
 

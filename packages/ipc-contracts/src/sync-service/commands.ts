@@ -86,17 +86,20 @@ export interface ValidationErrorShape extends ErrorShape {
 
 // ---- Individual command definitions --------------------------------------
 
-interface EnqueueUploadCommand {
-  readonly command: "sync:enqueue-upload";
-  readonly params: {
-    readonly datasourceId: string;
-    readonly sourcePath: string;
-    readonly targetPath: string;
-    readonly conflictPolicy: ConflictPolicy;
-  };
-  readonly result: { readonly jobId: string };
-  readonly error: ValidationErrorShape;
-}
+// migrate-upload-orchestration-out-of-engine §7.4 — `EnqueueUploadCommand`
+// (`sync:enqueue-upload`) REMOVED. The queue-based single-file upload
+// path was replaced by `files:upload` (a direct RPC; see
+// `packages/ipc-contracts/src/files.ts` `FilesUploadCommand`). The
+// service-side dispatcher (`services/fs-sync/src/commands/handlers.ts`),
+// the desktop bridge (`apps/desktop/src/main/ipc/sync/enqueue-upload.ts`),
+// the typed wrapper (`SyncClient.enqueueUpload`), the
+// `SYNC_CHANNELS.enqueueUpload` constant, the
+// `SyncEnqueueUploadRequest` / `SyncEnqueueUploadResponse` interfaces,
+// and the preload binding (`window.api.sync.enqueueUpload`) were all
+// deleted in chunk F. The `UploadJobExecutor` was deleted alongside;
+// the `'upload'` value remains in `JobKind` / DB CHECK constraint so
+// historical rows in user DBs stay readable, but no new `kind: 'upload'`
+// jobs can be enqueued.
 
 interface EnqueueMirrorCommand {
   readonly command: "sync:enqueue-mirror";
@@ -465,6 +468,22 @@ export interface FilesCommandErrorShape extends ErrorShape {
   readonly existingPath?: string;
   readonly existingSize?: number;
   readonly existingModifiedAt?: string;
+  /**
+   * Populated only when `tag === "conflict"` is surfaced from the
+   * `files:upload` concurrent-target guard (per
+   * migrate-upload-orchestration-out-of-engine design.md Decision 10 +
+   * spec scenario "Concurrent-target upload conflict guard"). Carries
+   * the `uploadJobId` of the FIRST in-flight upload occupying the
+   * `(datasourceId, targetPath)` slot — the renderer surfaces it in a
+   * Sonner error toast pointing at the existing toast. Flat-optional
+   * shape mirrors `existingPath` / `retryAfterMs` (NOT a discriminated
+   * union) so callers can read the field without re-narrowing on tag.
+   *
+   * Conflicts on `files:rename` continue to use `existingPath` only —
+   * rename does not have a job-identity concept and the colliding
+   * sibling path is the only useful piece of context.
+   */
+  readonly existingUploadJobId?: string;
 }
 
 // Canonical `FilesRemoveEntryResult` lives in `../files.ts`. Re-exported
@@ -596,6 +615,35 @@ interface FilesDownloadCommand {
   readonly error: FilesCommandErrorShape;
 }
 
+// `files:upload` (migrate-upload-orchestration-out-of-engine §9). The
+// service handler validates the request envelope, mints a service-level
+// `uploadJobId`, creates an AbortController, registers the in-flight job
+// in the `UploadRegistry`, and invokes `client.uploadFile(parent, file,
+// { signal, onProgress })` on the resolved engine client. The handler
+// emits four uploadJobId-keyed lifecycle events on `sync:event-stream`
+// (`uploading` / `file-created` / `upload-failed` / `upload-cancelled`)
+// — the engine no longer participates in upload event emission. Cancel
+// surface lives on the sibling `sync:cancel-upload` command. Concurrent
+// uploads to the same `(datasourceId, targetPath)` are rejected with
+// `tag: "conflict"` BEFORE any engine call (Decision 10 — the
+// `existingUploadJobId` field on `FilesCommandErrorShape` carries the
+// pre-existing job's id so the renderer can surface it in a Sonner
+// error toast). The `existingPath` field on the same shape carries the
+// disputed `targetPath`.
+interface FilesUploadCommand {
+  readonly command: "files:upload";
+  readonly params: {
+    readonly datasourceId: string;
+    readonly sourcePath: string;
+    readonly targetPath: string;
+    readonly conflictPolicy: ConflictPolicy;
+  };
+  readonly result: {
+    readonly uploadJobId: string;
+  };
+  readonly error: FilesCommandErrorShape;
+}
+
 // `sync:cancel-download` (add-engine-rename-download §13.15-§13.16).
 // Cancels an in-flight `files:download` identified by its
 // `downloadJobId`. Idempotent — cancel of an unknown / already-terminal
@@ -670,10 +718,92 @@ interface DownloadsListActiveCommand {
   readonly error: FilesCommandErrorShape;
 }
 
+// ---- uploads:* commands (migrate-upload-orchestration-out-of-engine §7) ---
+//
+// `uploads:list-active` returns the live snapshot of in-flight upload jobs
+// the service is tracking in its `UploadRegistry` (see design.md Decision 6
+// + tasks §10.1). Each `UploadJob` is keyed by the per-job business-domain
+// id (`uploadJobId`) — the registry's reverse-index on
+// `(datasourceId, targetPath)` is internal to the service and never
+// surfaces on the wire.
+//
+// The renderer hydrates its toaster strip on first connect from this
+// snapshot; the live progress feed thereafter arrives through fs-sync's
+// `uploading` / `file-created` / `upload-failed` / `upload-cancelled`
+// events on the `sync:subscribe-events` stream.
+//
+// `abortController` is NOT part of the wire shape — it is process-local
+// state only present on the in-memory registry entry, never serialized
+// out. The wire `UploadJob` mirrors `DownloadJob` exactly minus the
+// upload-vs-download field renames (`bytesUploaded`, `contentLength`).
+
+/**
+ * One in-flight upload job, as observed by the service's
+ * `UploadRegistry`. `bytesUploaded` advances over the job's lifetime;
+ * `contentLength` is `null` until the strategy reports it via
+ * `onProgress(loaded, total)` (the value comes from `fs.stat` of the
+ * local source file at upload start, so it is typically known
+ * immediately and rarely-`null`). `startedAt` is epoch milliseconds
+ * (UTC) and is the response's stable ordering key.
+ */
+export interface UploadJob {
+  readonly uploadJobId: string;
+  readonly datasourceId: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly bytesUploaded: number;
+  readonly contentLength: number | null;
+  readonly startedAt: number;
+}
+
+/**
+ * Wire-shape alias for the `uploads:list-active` request. Empty params
+ * — the service returns all live uploads across every datasource. Mirrors
+ * `DownloadsListActiveRequest`.
+ */
+export type UploadsListActiveRequest = Record<string, never>;
+
+/**
+ * Wire-shape alias for the `uploads:list-active` response, expressed
+ * as the standard tagged envelope used across the sync-service surface.
+ * Subscribers branch on `ok` to pick out `value.jobs` vs `error`.
+ */
+export type UploadsListActiveResponse =
+  | { readonly ok: true; readonly value: { readonly jobs: readonly UploadJob[] } }
+  | { readonly ok: false; readonly error: FilesCommandErrorShape };
+
+interface UploadsListActiveCommand {
+  readonly command: "uploads:list-active";
+  readonly params: UploadsListActiveRequest;
+  readonly result: { readonly jobs: readonly UploadJob[] };
+  readonly error: FilesCommandErrorShape;
+}
+
+// `sync:cancel-upload` (migrate-upload-orchestration-out-of-engine §7.3 +
+// fs-sync-service spec "sync:cancel-upload RPC"). Cancels an in-flight
+// `files:upload` identified by its `uploadJobId`. Idempotent — cancel of an
+// unknown / already-terminal job resolves with `cancelled: false` rather
+// than erroring; cancel of a live job invokes
+// `entry.abortController.abort()`, the in-flight strategy rejects with
+// `DatasourceError { tag: "cancelled" }`, the `files:upload` handler emits
+// a single `upload-cancelled` event, and the original `files:upload`
+// promise rejects with the cancelled error. Mirrors `sync:cancel-download`.
+interface SyncCancelUploadCommand {
+  readonly command: "sync:cancel-upload";
+  readonly params: {
+    readonly uploadJobId: string;
+  };
+  readonly result: {
+    readonly cancelled: boolean;
+  };
+  readonly error: ValidationErrorShape;
+}
+
 // ---- Command map + derived helpers ---------------------------------------
 
 export interface CommandMap {
-  "sync:enqueue-upload": EnqueueUploadCommand;
+  // migrate-upload-orchestration-out-of-engine §7.4 — `"sync:enqueue-upload"`
+  // entry removed. See the EnqueueUploadCommand tombstone above.
   "sync:enqueue-mirror": EnqueueMirrorCommand;
   "sync:list-jobs": ListJobsCommand;
   "sync:get-job": GetJobCommand;
@@ -695,8 +825,11 @@ export interface CommandMap {
   "files:remove": FilesRemoveCommand;
   "files:rename": FilesRenameCommand;
   "files:download": FilesDownloadCommand;
+  "files:upload": FilesUploadCommand;
   "sync:cancel-download": SyncCancelDownloadCommand;
   "downloads:list-active": DownloadsListActiveCommand;
+  "uploads:list-active": UploadsListActiveCommand;
+  "sync:cancel-upload": SyncCancelUploadCommand;
 }
 
 export type CommandName = keyof CommandMap;
@@ -709,7 +842,8 @@ export type CommandError<N extends CommandName> = CommandMap[N]["error"];
 // `Object.keys(commandMap)` at runtime isn't statically typed and the
 // dispatcher needs the enumerated set for exhaustive switch coverage.
 export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
-  "sync:enqueue-upload",
+  // migrate-upload-orchestration-out-of-engine §7.4 — `"sync:enqueue-upload"`
+  // entry removed.
   "sync:enqueue-mirror",
   "sync:list-jobs",
   "sync:get-job",
@@ -731,6 +865,9 @@ export const COMMAND_NAMES: ReadonlyArray<CommandName> = [
   "files:remove",
   "files:rename",
   "files:download",
+  "files:upload",
   "sync:cancel-download",
   "downloads:list-active",
+  "uploads:list-active",
+  "sync:cancel-upload",
 ] as const;

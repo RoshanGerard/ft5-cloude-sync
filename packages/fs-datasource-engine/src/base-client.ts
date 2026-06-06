@@ -1,12 +1,16 @@
 // BaseDatasourceClient — the Template base for every datasource strategy.
 //
 // Every public operation on a `DatasourceClient<T>` is implemented ONCE here.
-// Concrete strategies (S3, OneDrive, Google Drive — landing in Phases 6-8)
-// extend this class and implement only the `protected abstract doX(...)`
-// primitives plus `refreshToken()` and `normalizeError()`.
+// Concrete strategies (S3, OneDrive, Google Drive) extend this class and
+// implement only the `protected abstract doX(...)` primitives plus
+// `refreshToken()` and `normalizeError()`.
 //
 // Crossing-cutting responsibilities centralised here:
-//   1. Event emission (pre-op, post-op, failure) via the injected `EventBus`.
+//   1. Event emission for `deleteFile`, `rename`, `downloadFile` (pre-op,
+//      post-op, failure) via the injected `EventBus`. `uploadFile` is
+//      EXEMPT — per migrate-upload-orchestration-out-of-engine, the engine
+//      bus does not carry upload lifecycle events; those are emitted by
+//      the fs-sync service handler on `sync:event-stream`.
 //   2. Single-flight token refresh on `auth-expired` per-instance: one refresh
 //      serves all concurrent callers; refreshed credentials are persisted via
 //      `CredentialStore.put` BEFORE the original operation is retried.
@@ -42,7 +46,6 @@ import type {
   Quota,
   StoredCredentials,
   Target,
-  UploadCancelReason,
 } from "@ft5/ipc-contracts";
 import { DatasourceError, serializeDatasourceError } from "@ft5/ipc-contracts";
 
@@ -138,33 +141,33 @@ export interface DatasourceClient<T extends DatasourceType> {
   listDirectory(target: Target): Promise<DatasourceFileEntry<T>[]>;
   search(query: string, scope?: Target): Promise<DatasourceFileEntry<T>[]>;
   getMetadata(target: Target): Promise<FileMetadata<T>>;
-  createFile(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<T>>;
+  /**
+   * Upload a local file to the parent target as a one-shot stateless
+   * primitive (per migrate-upload-orchestration-out-of-engine). The base
+   * wraps `doUploadFileImpl` with `withRefresh` and returns the strategy's
+   * resolved entry directly. The engine bus observes ZERO upload-related
+   * events from this code path — `uploading`, `file-created`,
+   * `upload-failed`, and `upload-cancelled` are emitted by the fs-sync
+   * service handler on `sync:event-stream`, not on the engine bus.
+   *
+   * Cancellation is consumer-driven via `options.signal`: the strategy
+   * forwards the signal into its underlying SDK / fetch call and runs
+   * provider-native cleanup (DELETE session URL on Drive/OneDrive,
+   * `upload.abort()` on S3) from an `'abort'` listener registered on the
+   * signal. On abort, the strategy throws
+   * `DatasourceError<T>{ tag: "cancelled", retryable: false }`.
+   *
+   * Progress is consumer-observed via `options.onProgress(loaded, total)`
+   * — the strategy invokes the callback as bytes flow.
+   */
   uploadFile(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
+    options?: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<T>>;
-  /**
-   * Cancel an in-flight upload identified by `transactionId` (the value the
-   * caller received in the first `uploading` event for the upload). Resolves
-   * silently when the transaction is unknown (never started, already terminal,
-   * or cancelled previously) — `cancelUpload` is idempotent.
-   *
-   * When the transaction is in-flight, the base triggers the strategy's
-   * provider-native cancel (S3 `Upload.abort()`, OneDrive `DELETE uploadUrl`,
-   * Drive `DELETE sessionUrl`), emits exactly one terminal `upload-cancelled`
-   * event, and causes the in-flight `uploadFile(...)` promise to reject with
-   * `DatasourceError<T>{ tag: "cancelled", retryable: false }`. No
-   * `upload-failed` event fires in that path — `upload-cancelled` is its
-   * terminal analogue.
-   */
-  cancelUpload(
-    transactionId: string,
-    reason?: UploadCancelReason,
-  ): Promise<void>;
   deleteFile(target: Target): Promise<void>;
   deleteDirectory(target: Target): Promise<never>;
   /**
@@ -172,8 +175,7 @@ export interface DatasourceClient<T extends DatasourceType> {
    * add-engine-rename-download spec). The base wraps the strategy's
    * `doRenameImpl` with the existing `withRefresh` machinery and emits
    * exactly one `entry-renamed { from, to }` event on success or one
-   * `delete-failed { tag, message, via: "rename" }` on failure
-   * (mirroring `createFile`'s `via: "createFile"` pattern).
+   * `delete-failed { tag, message, via: "rename" }` on failure.
    * Per-policy orchestration (sibling-detection, suffix-retry,
    * directory-overwrite refusal) lives inside each strategy's
    * `doRenameImpl` since the introspection is provider-specific —
@@ -225,40 +227,6 @@ export interface BaseClientInit {
 }
 
 // ---------------------------------------------------------------------------
-// Internal: in-flight upload tracker
-// ---------------------------------------------------------------------------
-
-/**
- * Per-upload state held by the base while `uploadFile` is running.
- *
- * Lifecycle, per transaction id:
- *   1. `uploadFile` inserts a tracker before invoking `doUploadFileImpl`.
- *   2. Strategy calls `register(cancel)`; base stores the closure in
- *      `cancel`. If `cancelPending` is non-null at that moment the base
- *      invokes the closure immediately (cancel-before-register race).
- *   3. Strategy's `onProgress` ticks update `bytesUploaded` / `bytesTotal`
- *      — those values are the ones emitted in `upload-cancelled` if the
- *      upload terminates by cancel.
- *   4. Either the upload completes (base removes the tracker and emits
- *      `file-created`) OR `cancelUpload` flips `cancelPending`, aborts
- *      the `AbortController`, and invokes `cancel?.()` — the strategy's
- *      loop unwinds, base's `uploadFile` catch branch emits
- *      `upload-cancelled` and removes the tracker.
- *
- * `settled` is a promise that resolves once the tracker leaves the map;
- * `cancelUpload` awaits it so the caller's await reflects actual cleanup.
- */
-interface UploadTracker {
-  bytesUploaded: number;
-  bytesTotal: number;
-  abortController: AbortController;
-  cancel: (() => Promise<void>) | null;
-  cancelPending: { reason: UploadCancelReason } | null;
-  settled: Promise<void>;
-  resolveSettled: () => void;
-}
-
-// ---------------------------------------------------------------------------
 // Template base class
 // ---------------------------------------------------------------------------
 
@@ -276,17 +244,6 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   /** Last known status value; used so `status()` can emit `status-changed`
    * only when the value actually changes between calls. */
   private lastStatus: DatasourceStatus | null = null;
-
-  /**
-   * Trackers for in-flight uploads, keyed by `transactionId`. The base
-   * creates an entry at the start of every `uploadFile` call and removes
-   * it once the call settles (success, failure, or cancel). Concurrent
-   * uploads on the same client carry distinct transaction ids.
-   *
-   * A missing key is always interpreted as "not running" — `cancelUpload`
-   * against it is a silent no-op.
-   */
-  private readonly activeUploads = new Map<string, UploadTracker>();
 
   constructor(init: BaseClientInit) {
     this.datasourceId = init.datasourceId;
@@ -315,46 +272,41 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   protected abstract doGetMetadataImpl(
     target: Target,
   ): Promise<FileMetadata<T>>;
-  protected abstract doCreateFileImpl(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<T>>;
   /**
-   * Primitive for `uploadFile()`. Base invokes this with an `onProgress`
-   * callback; strategies that support streaming progress (e.g., S3 via
-   * `@aws-sdk/lib-storage` `Upload.on("httpUploadProgress", ...)`) should
-   * call `onProgress(loaded, total)` repeatedly during the upload. The base
-   * converts those calls into `streaming: true` `uploading` events on the
-   * bus sharing the original `transactionId` so the bus coalescer can
-   * throttle them per Decision 5. Strategies without per-chunk progress
-   * signals MAY omit the callback entirely — the base's pre-op `uploading`
-   * event plus the terminal `file-created` event still fire.
+   * Primitive for `uploadFile()` (per migrate-upload-orchestration-out-of-engine).
+   * The base wraps this with `withRefresh` and returns the resolved entry
+   * unchanged — no bus emission, no tracker, no transaction id. Strategies:
    *
-   * `register(cancel)` hands the base a provider-native cancellation
-   * closure (e.g., `() => upload.abort()`, `() => fetch(sessionUrl,
-   * { method: "DELETE" })`). Strategies MUST call `register` exactly
-   * once per upload, as early as possible after provider-side upload
-   * state is created, so that a `cancelUpload(transactionId)` call can
-   * clean up on the provider side. Uploads that have NO long-running
-   * provider state (e.g., OneDrive's small-file `PUT /content` path)
-   * MAY omit the `register` call — a cancel against such an upload
-   * resolves as a no-op.
+   *   - Forward `options.signal` (when provided) into the underlying
+   *     SDK / fetch calls so consumer-aborted uploads unblock promptly.
+   *     On abort, the strategy throws
+   *     `DatasourceError<T>{ tag: "cancelled", retryable: false }`.
+   *   - Register an `'abort'` listener on `options.signal` (when present
+   *     and the upload allocates provider-side state) to issue
+   *     provider-native cleanup against a FRESH `AbortController` with a
+   *     5-second timeout — NOT the user's signal. Forwarding the user's
+   *     signal into the cleanup HTTP call would abort cleanup itself,
+   *     leaving an orphaned session URL on the provider.
+   *   - Invoke `options.onProgress(loaded, total)` (when provided) with
+   *     monotonic non-decreasing `loaded` byte counts as bytes flow.
+   *   - Populate the strategy's path-handle LRU directly inside the
+   *     success branch (`this.cachePathHandle(entry.path, entry.handle)`
+   *     or equivalent) before returning the entry — LRU population is
+   *     internal, not bus-driven.
    *
-   * `signal` is an `AbortSignal` the base aborts on cancel; strategies
-   * SHOULD pass it into fetch / SDK calls that accept one (Drive raw
-   * fetch, OneDrive raw fetch on chunk PUTs, S3's `new Upload({
-   * abortController })`) so in-flight HTTP requests unblock promptly
-   * when the base aborts. The `register` closure is an additional,
-   * strategy-specific cleanup step — the two mechanisms complement
-   * each other.
+   * Strategies whose providers do not honor `AbortSignal` cleanly (e.g.,
+   * OneDrive's small-file `PUT /content` via the Graph SDK) SHOULD
+   * branch on `options.signal?.aborted` post-resolve and reject with
+   * `tag: "cancelled"` to preserve cancellation semantics on that
+   * code path.
    */
   protected abstract doUploadFileImpl(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    register: (cancel: () => Promise<void>) => void,
-    signal: AbortSignal,
+    options: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<T>>;
   protected abstract doDeleteFileImpl(target: Target): Promise<void>;
   /**
@@ -523,186 +475,29 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     return this.runReadOp(() => this.doGetMetadataImpl(target));
   }
 
-  async createFile(
-    parent: Target,
-    name: string,
-    content: { path: string },
-  ): Promise<DatasourceFileEntry<T>> {
-    // `createFile` has no streaming pre-op but emits `file-created` on
-    // success. Failure routes through `upload-failed` with `via: "createFile"`
-    // because `CanonicalEventPayloads` does not (yet) carry a `create-failed`
-    // name. Flagged as a Phase-3 concern; see report.
-    try {
-      const entry = await this.withRefresh(() =>
-        this.doCreateFileImpl(parent, name, content),
-      );
-      this.emit("file-created", false, {
-        path: entry.path,
-        handle: entry.handle,
-        via: "createFile",
-      });
-      return entry;
-    } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag !== "unsupported") {
-        this.emit("upload-failed", false, {
-          tag: normalized.tag,
-          message: normalized.message,
-          via: "createFile",
-        });
-      }
-      throw normalized;
-    }
-  }
-
+  /**
+   * One-shot stateless upload wrapper (per migrate-upload-orchestration-out-of-engine).
+   * The base does NOT mint a transactionId, does NOT track in-flight state,
+   * and does NOT emit any of `uploading`, `file-created`, `upload-failed`,
+   * or `upload-cancelled` from this code path. Cancellation is consumer-
+   * driven via `options.signal`; progress is consumer-observed via
+   * `options.onProgress`.
+   *
+   * `withRefresh` is retained: a single auth-expired retry still applies.
+   * The follow-up `migrate-engine-retry-policy-to-consumer` covers retry-
+   * policy ownership; this change does not touch that wrapper.
+   */
   async uploadFile(
     parent: Target,
     file: { path: string; name?: string; mimeType?: string },
+    options?: {
+      signal?: AbortSignal;
+      onProgress?: (loaded: number, total: number) => void;
+    },
   ): Promise<DatasourceFileEntry<T>> {
-    const transactionId = this.newTransactionId();
-    // Build the tracker BEFORE emitting `uploading` so that a cancel call
-    // that races the caller's receipt of the first event always finds the
-    // tracker present. The tracker lives in `activeUploads` for the lifetime
-    // of the upload and is removed in the finally branch.
-    let resolveSettled!: () => void;
-    const settled = new Promise<void>((r) => {
-      resolveSettled = r;
-    });
-    const tracker: UploadTracker = {
-      bytesUploaded: 0,
-      bytesTotal: 0,
-      abortController: new AbortController(),
-      cancel: null,
-      cancelPending: null,
-      settled,
-      resolveSettled,
-    };
-    this.activeUploads.set(transactionId, tracker);
-    // Pre-op: streaming-flagged so the bus runs it through the coalescing
-    // filter. Post-op and failure are terminal.
-    this.emit("uploading", true, {
-      transactionId,
-      progress: 0,
-      path: file.path,
-    });
-    // Progress callback handed to the strategy. Strategies that support
-    // streaming progress (e.g., S3 via `@aws-sdk/lib-storage` `Upload`)
-    // invoke this with (loaded, total) on each chunk tick; the base
-    // translates it into a `streaming: true` `uploading` event carrying the
-    // same `transactionId` so the bus coalescer at Decision 5 groups ticks
-    // per-upload. `total === 0` (SDK emits progress before content-length
-    // is known) is handled defensively — progress stays at 0 for that tick.
-    //
-    // The onProgress callback also captures (loaded, total) onto the
-    // tracker so that a subsequent `cancelUpload` can emit `upload-cancelled`
-    // with the last known byte counts without needing to round-trip through
-    // the strategy.
-    const onProgress = (loaded: number, total: number): void => {
-      tracker.bytesUploaded = loaded;
-      tracker.bytesTotal = total;
-      // Skip emission once a cancel is in flight so the caller doesn't see
-      // a post-cancel `uploading` event after `upload-cancelled`. The base
-      // flips `cancelPending` synchronously in `cancelUpload`, so this gate
-      // is deterministic at the JS-turn boundary.
-      if (tracker.cancelPending !== null) return;
-      const progress =
-        total > 0 ? Math.max(0, Math.min(100, (loaded / total) * 100)) : 0;
-      this.emit("uploading", true, {
-        transactionId,
-        progress,
-        path: file.path,
-      });
-    };
-    // `register(cancel)` lets the strategy hand the base a provider-native
-    // cancel closure. If a `cancelUpload` call already arrived (race: cancel
-    // before session-init completed), invoke the closure immediately and
-    // preserve the cancelled state for the catch branch.
-    const register = (cancel: () => Promise<void>): void => {
-      tracker.cancel = cancel;
-      if (tracker.cancelPending !== null) {
-        // Fire-and-forget; errors in the cancel closure are swallowed —
-        // the abort signal already propagated, and the base's cancelled
-        // state is the authoritative signal.
-        void cancel().catch(() => {});
-      }
-    };
-    try {
-      const entry = await this.withRefresh(() =>
-        this.doUploadFileImpl(
-          parent,
-          file,
-          onProgress,
-          register,
-          tracker.abortController.signal,
-        ),
-      );
-      this.emit("file-created", false, {
-        transactionId,
-        path: entry.path,
-        handle: entry.handle,
-      });
-      return entry;
-    } catch (err) {
-      if (tracker.cancelPending !== null) {
-        // Cancelled path: emit `upload-cancelled` (NOT `upload-failed`) and
-        // throw a `cancelled`-tagged DatasourceError. The strategy's actual
-        // rejection (AbortError, HTTP 499, etc.) is discarded — the cancel
-        // is the canonical cause.
-        this.emit("upload-cancelled", false, {
-          transactionId,
-          bytesUploaded: tracker.bytesUploaded,
-          bytesTotal: tracker.bytesTotal,
-          reason: tracker.cancelPending.reason,
-        });
-        throw new DatasourceError<T>({
-          tag: "cancelled",
-          datasourceType: this.type,
-          datasourceId: this.datasourceId,
-          retryable: false,
-          message: "upload cancelled",
-        });
-      }
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag !== "unsupported") {
-        this.emit("upload-failed", false, {
-          transactionId,
-          tag: normalized.tag,
-          message: normalized.message,
-        });
-      }
-      throw normalized;
-    } finally {
-      this.activeUploads.delete(transactionId);
-      tracker.resolveSettled();
-    }
-  }
-
-  async cancelUpload(
-    transactionId: string,
-    reason: UploadCancelReason = "user",
-  ): Promise<void> {
-    const tracker = this.activeUploads.get(transactionId);
-    // Unknown tx — completed, never started, or cancelled previously.
-    // Cancel is idempotent: resolve silently.
-    if (!tracker) return;
-    // Second cancel arriving while the first is unwinding: already marked,
-    // just wait for settlement.
-    if (tracker.cancelPending !== null) {
-      await tracker.settled;
-      return;
-    }
-    tracker.cancelPending = { reason };
-    tracker.abortController.abort();
-    if (tracker.cancel !== null) {
-      // Fire-and-forget; errors in the closure are swallowed. The tracker's
-      // cancelled state is the authoritative signal — a failed DELETE /
-      // abort still lets the base emit `upload-cancelled` once the strategy
-      // loop observes the abort signal and unwinds.
-      void tracker.cancel().catch(() => {});
-    }
-    // Await the upload's cleanup so the caller's `await cancelUpload(...)`
-    // reflects actual settlement (tracker removed, event emitted).
-    await tracker.settled;
+    return this.withRefresh(() =>
+      this.doUploadFileImpl(parent, file, options ?? {}),
+    );
   }
 
   async deleteFile(target: Target): Promise<void> {
@@ -743,8 +538,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * (one-shot auth-expired retry per the engine's existing pattern),
    * emits `entry-renamed { from, to }` once on success, and routes
    * failures through the existing `delete-failed` taxonomy with
-   * `via: "rename"` (mirroring `createFile`'s use of `upload-failed
-   * { via: "createFile" }`). Unsupported errors stay silent on the bus
+   * `via: "rename"`. Unsupported errors stay silent on the bus
    * per the engine-wide convention applied to every other op.
    *
    * Per design.md Decision 1, per-policy orchestration is strategy-side
@@ -1219,12 +1013,6 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     await this.persistCredentials(result);
     this.emit("authenticated", false, {});
     return result;
-  }
-
-  private newTransactionId(): string {
-    // Sufficient for event coalescing; not a security token. Phase 6+ may
-    // swap in a crypto-grade id if any consumer treats it as one.
-    return `tx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   /**

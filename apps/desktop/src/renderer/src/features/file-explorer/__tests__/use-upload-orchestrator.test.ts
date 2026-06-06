@@ -442,6 +442,52 @@ describe("createUploadOrchestrator", () => {
     expect(message).toContain("disk full");
   });
 
+  it("surfaces a `tag: 'conflict'` upload rejection through onBatchError with the existing-upload-in-progress message; the in-flight toast is unaffected", async () => {
+    // §14.3 — when the service-side concurrent-target guard rejects a
+    // SECOND request with `tag: "conflict"`, the renderer surfaces an
+    // error toast pointing at the existing upload. The first
+    // (in-flight) upload's toast is unaffected — it's owned by the
+    // toaster's per-uploadJobId tracker, not by this dispatch path.
+    //
+    // The orchestrator routes the conflict envelope through
+    // `onBatchError(message)` rather than `onJobDispatched` (no jobId
+    // was minted). The renderer's Sonner toaster surfaces it as a
+    // standalone error toast — same path as the auth-revoked /
+    // disconnected / rate-limited preflight aborts. The full
+    // existingUploadJobId is included in `error.message` so the user
+    // can correlate to the existing toast (a future iteration could
+    // surface a cross-toast pointer; v1 is just the message).
+    const files = [makeFile("a.txt")];
+    const stat: StatFn = vi.fn(async () => statNotFound());
+    const upload: UploadFn = vi.fn(async () => ({
+      ok: false,
+      error: {
+        tag: "conflict",
+        message: "An upload to this path is already in progress",
+        retryable: false,
+        existingUploadJobId: "u-first",
+        existingPath: "/projects/2026/a.txt",
+      },
+    }));
+    const toaster = makeToaster();
+
+    const orchestrator = createUploadOrchestrator({
+      datasourceId: "ds-1",
+      targetDir: "/projects/2026",
+      files,
+      conflictResolver: makeResolver(),
+      toaster,
+      api: { stat, upload },
+    });
+    await orchestrator.start();
+
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(toaster.onJobDispatched).not.toHaveBeenCalled();
+    expect(toaster.onBatchError).toHaveBeenCalledTimes(1);
+    const message = toaster.onBatchError.mock.calls[0]?.[0] as string;
+    expect(message).toMatch(/already in progress|in progress/i);
+  });
+
   it("retry closure on onJobDispatched re-invokes upload with the same args and spawns a new toast", async () => {
     const files = [makeFile("a.txt")];
     const stat: StatFn = vi.fn(async () => statNotFound());

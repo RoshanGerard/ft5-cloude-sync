@@ -13,7 +13,10 @@
 export const SYNC_CHANNELS = {
   listJobs: "sync:list-jobs",
   getJob: "sync:get-job",
-  enqueueUpload: "sync:enqueue-upload",
+  // migrate-upload-orchestration-out-of-engine §7.4 — `enqueueUpload`
+  // (`"sync:enqueue-upload"`) REMOVED in chunk F. The renderer's upload
+  // path is now `window.api.files.upload` (see `FILES_CHANNELS.upload`
+  // in `packages/ipc-contracts/src/files-desktop.ts` or its equivalent).
   enqueueMirror: "sync:enqueue-mirror",
   cancelJob: "sync:cancel-job",
   // add-download-resilience §12.6 (Decision 16) — the desktop main↔preload
@@ -23,6 +26,21 @@ export const SYNC_CHANNELS = {
   // bridge was missing pre-iter-5, so the toaster's Cancel button hit the
   // upload-job cancel by name collision instead of routing here.
   cancelDownload: "sync:cancel-download",
+  // migrate-upload-orchestration-out-of-engine §7.3 / §7.9 — the desktop
+  // renderer-facing bridge for the `sync:cancel-upload` service command.
+  // Mirrors `cancelDownload`: idempotent, infallible at the service
+  // boundary (an unknown `uploadJobId` resolves `{ cancelled: false }`
+  // rather than erroring). `uploadJobId` here is the service-minted
+  // business-domain key on the direct-RPC `files:upload` path; the
+  // pre-migration queue-based upload-cancel route (`cancelJob({ jobId })`
+  // against a `kind: 'upload'` row) was deleted in chunk F.
+  cancelUpload: "sync:cancel-upload",
+  // migrate-upload-orchestration-out-of-engine §7.2 / §7.9 — the
+  // desktop renderer-facing bridge for the new `uploads:list-active`
+  // service command. Mirrors `downloads:list-active`: returns the live
+  // snapshot of in-flight uploads from the service's `UploadRegistry`
+  // for renderer hydrate-on-connect (Sonner toast strip).
+  uploadsListActive: "uploads:list-active",
   // The retired single-shot `sync:authenticate` channel was removed by
   // `implement-datasource-onboarding` per design.md Decision 9. The
   // three-command split below replaces it.

@@ -134,11 +134,13 @@ export interface FileExplorerProps {
   conflictResolver?: ConflictResolver;
   /**
    * Optional per-job toaster forwarded to the drop-zone's upload
-   * orchestrator. Defaults to the real Sonner-backed `createUploadJobToaster`
-   * (Task 9): each dispatched job opens its own progress toast bound to
-   * `DATASOURCES_CHANNELS.uploadProgress`, flips to success on terminal
-   * complete (auto-dismiss 4s), or to red with Retry on terminal failure.
-   * Tests inject their own toaster via this prop and bypass Sonner.
+   * orchestrator. Defaults to the real Sonner-backed `createUploadJobToaster`:
+   * each dispatched job opens its own progress toast bound to the
+   * service-minted `uploadJobId` (post migrate-upload-orchestration-out-of-engine
+   * — was `transactionId` keyed via `DATASOURCES_CHANNELS.uploadProgress`),
+   * flips to success on `file-created` (auto-dismiss 4s), or to red
+   * with Retry on `upload-failed`. Tests inject their own toaster via
+   * this prop and bypass Sonner.
    */
   toaster?: UploadToaster;
   /**
@@ -308,6 +310,63 @@ export function FileExplorer({
     [store],
   );
   const toaster = toasterProp ?? defaultToaster;
+
+  // migrate-upload-orchestration-out-of-engine §15 — upload-toaster
+  // hydrate-on-connect.
+  //
+  // Mirror of the download-toaster bootstrap below. The `defaultToaster`
+  // owns ONE global subscription to `window.api.sync.onEvent` (filtered
+  // to the four upload event kinds — see upload-job-toast.ts). Here we
+  // additionally subscribe to the `files:hydrate-active-uploads` one-
+  // way channel so any in-flight uploads from a prior app session (or
+  // from a sibling renderer mount) get a resumed Sonner toast at the
+  // seeded progress. Reconnects mid-session do NOT re-fire — the
+  // structural fire-once-per-session guarantee lives at the bootstrap
+  // call site in `apps/desktop/src/main/index.ts`.
+  //
+  // The defensive short-circuit covers test harnesses without the
+  // preload bridge: production always has `onActiveUploadsHydrate`
+  // wired (preload chunk-E surface). `defaultToaster.dispose()` runs
+  // on cleanup so the global event subscription doesn't leak across
+  // datasource-id remounts.
+  //
+  // Tests that override the `toaster` prop with a stub bypass this
+  // branch (the `defaultToaster` is still constructed but its
+  // `dispose()` is wired into cleanup regardless — the unused stub-
+  // toaster path keeps the renderer's lifecycle uniform).
+  useEffect(() => {
+    const apiBridge = (
+      globalThis as unknown as {
+        window?: {
+          api?: {
+            files?: {
+              onActiveUploadsHydrate?: (
+                callback: (jobs: readonly unknown[]) => void,
+              ) => () => void;
+            };
+          };
+        };
+      }
+    ).window?.api;
+    const hydrate = apiBridge?.files?.onActiveUploadsHydrate;
+    if (typeof hydrate !== "function") {
+      // Test harness — no hydrate channel available. Still wire the
+      // toaster's dispose() into the cleanup so node-style harness
+      // teardown doesn't leak global event-stream listeners.
+      return () => {
+        defaultToaster.dispose();
+      };
+    }
+    const unsubscribeHydrate = hydrate((jobs) => {
+      defaultToaster.hydrateActiveUploads(
+        jobs as Parameters<typeof defaultToaster.hydrateActiveUploads>[0],
+      );
+    });
+    return () => {
+      unsubscribeHydrate();
+      defaultToaster.dispose();
+    };
+  }, [defaultToaster]);
   const state = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,

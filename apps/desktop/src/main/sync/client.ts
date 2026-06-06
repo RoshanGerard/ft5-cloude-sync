@@ -269,12 +269,10 @@ export class SyncClient {
     return this.request("sync:get-job", params, opts);
   }
 
-  enqueueUpload(
-    params: CommandParams<"sync:enqueue-upload">,
-    opts?: { timeoutMs?: number },
-  ): Promise<CommandResult<"sync:enqueue-upload">> {
-    return this.request("sync:enqueue-upload", params, opts);
-  }
+  // migrate-upload-orchestration-out-of-engine §11 / §7.4 — the
+  // `enqueueUpload` typed wrapper was deleted in chunk F. Single-file
+  // uploads now use `files:upload` (see
+  // `apps/desktop/src/main/ipc/files/upload.ts`).
 
   enqueueMirror(
     params: CommandParams<"sync:enqueue-mirror">,
@@ -303,6 +301,36 @@ export class SyncClient {
     opts?: { timeoutMs?: number },
   ): Promise<CommandResult<"sync:cancel-download">> {
     return this.request("sync:cancel-download", params, opts);
+  }
+
+  /**
+   * migrate-upload-orchestration-out-of-engine §13.2 — typed wrapper for the
+   * `sync:cancel-upload` wire command added in chunk D. Idempotent at the
+   * service boundary: an unknown `uploadJobId` resolves with
+   * `{ cancelled: false }` rather than rejecting. The renderer-facing
+   * `window.api.sync.cancelUpload` proxy at the desktop main IPC layer
+   * delegates here.
+   */
+  cancelUpload(
+    params: CommandParams<"sync:cancel-upload">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"sync:cancel-upload">> {
+    return this.request("sync:cancel-upload", params, opts);
+  }
+
+  /**
+   * migrate-upload-orchestration-out-of-engine §13.3 — typed wrapper for the
+   * `uploads:list-active` wire command added in chunk D. Returns the
+   * service `UploadRegistry` snapshot projected to the wire `UploadJob[]`
+   * shape. The desktop main process invokes this once on first supervisor
+   * connect (`hydrateActiveUploadsOnce`) and forwards the snapshot to the
+   * renderer over the dedicated `files:hydrate-active-uploads` channel.
+   */
+  uploadsListActive(
+    params: CommandParams<"uploads:list-active">,
+    opts?: { timeoutMs?: number },
+  ): Promise<CommandResult<"uploads:list-active">> {
+    return this.request("uploads:list-active", params, opts);
   }
 
   authenticateStart(

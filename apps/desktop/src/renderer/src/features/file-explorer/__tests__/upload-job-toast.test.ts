@@ -1,33 +1,63 @@
-// Task 9.1 — failing tests for the per-job Sonner upload toaster
-// (`createUploadJobToaster`). Implementation lands in 9.2.
+// migrate-upload-orchestration-out-of-engine §14.5 — tests for the per-job
+// Sonner upload toaster post-migration.
 //
-// Scenarios:
-//   (a) onJobDispatched subscribes to progressApi.onUploadProgress(jobId)
-//       and opens a `loading` toast referencing the basename.
-//   (b) A `status: "uploading"` progress event with bytesUploaded=50 /
-//       bytesTotal=100 updates the SAME toast id with a 50% message.
-//   (c) Terminal `status: "completed"` calls toast.success with
-//       duration=4000 and unsubscribes from the progress feed.
-//   (d) Terminal `status: "failed"` with `error: "rate-limited"` calls
-//       toast.error with a Retry action and `duration: Infinity` (no
-//       auto-dismiss).
-//   (e) Invoking the Retry action calls the `retry()` callback, then
-//       unsubscribes the OLD progress feed and dismisses the OLD toast
-//       id so the new dispatch can install its own toast.
-//   (f) onBatchError calls toast.error with no jobId tracking.
-//   (g) Two concurrent onJobDispatched calls produce two independent
-//       toasts; an event for jobId A does not affect jobId B's toast.
+// The upload toaster now subscribes to a unified `sync:event-stream`
+// instead of the legacy `datasources:upload:progress` channel. Each
+// dispatched job opens ONE toast bound to its `uploadJobId`; the
+// event-stream listener filters to the four upload kinds — `uploading`
+// /`file-created`/`upload-failed`/`upload-cancelled` — and routes by
+// `payload.uploadJobId`.
 //
-// All collaborators (ToastApi, UploadProgressApi) are injected so the
-// helper is exercised as a plain function — no Sonner, no window.api.
+// The hydrate path (§15) is exposed as `hydrateActiveUploads(jobs)` —
+// for each in-flight upload returned by `uploads:list-active`, mount a
+// loading toast at the seeded percentage. Live events for those ids
+// then update the existing toast in place rather than spawning a
+// duplicate.
+//
+// Cancel action: Sonner's `toast.loading(...)` accepts an `action` opt;
+// the toaster wires it to `syncApi.cancelUpload({ uploadJobId })`. Per
+// the design this is fire-and-forget — the user-visible signal is the
+// subsequent `upload-cancelled` event arriving on the bus, which the
+// toaster's `upload-cancelled` handler dismisses with `toast.dismiss`.
+//
+// Scenarios covered:
+//   (a) onJobDispatched mounts a loading toast referencing the basename;
+//       no event subscription is created per-call (one global subscription
+//       lives at the toaster level). The toast is keyed on `uploadJobId`.
+//   (b) An `uploading` event with bytes/total updates the SAME toast id
+//       with a percent-based message.
+//   (c) `file-created` flips to toast.success (duration=4000) — bug 2's
+//       `onJobCompleted` callback fires.
+//   (d) `upload-failed` flips to red toast.error with Retry action and
+//       duration=Infinity.
+//   (e) Clicking Retry calls retry(), dismisses the OLD toast id, and
+//       a fresh dispatch (`onJobDispatched(newJobId)`) opens a new
+//       toast bound to the new uploadJobId.
+//   (f) onBatchError calls toast.error (no jobId tracking).
+//   (g) Two concurrent dispatches produce two independent toasts; an
+//       event for one uploadJobId does not affect the other.
+//   (h) A `tag: "conflict"` upload dispatch error surfaces a one-off
+//       error toast pointing at the existing job (handled by the
+//       orchestrator, not the toaster — kept here as a §14.3 anchor).
+//   (i) hydrateActiveUploads pre-seeds toasts for in-flight jobs; the
+//       next live `uploading` event for that id updates the existing
+//       toast instead of spawning a duplicate.
+//   (j) `upload-cancelled` event silently dismisses the toast (no
+//       success/failure state).
+//
+// All collaborators (ToastApi, UploadEventApi, SyncActionsApi) are
+// injected so the helper is exercised as a plain function — no Sonner,
+// no window.api.
 
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { DatasourcesUploadProgressEvent } from "@ft5/ipc-contracts";
 
 import {
   createUploadJobToaster,
+  type SyncActionsApi,
   type ToastApi,
-  type UploadProgressApi,
+  type UploadEvent,
+  type UploadEventApi,
+  type UploadJobSummary,
 } from "../upload-job-toast.js";
 
 // --- Mock factories --------------------------------------------------
@@ -40,155 +70,153 @@ interface MockToast extends ToastApi {
 }
 
 function makeToast(): MockToast {
-  // Default: each call returns a unique id so multi-toast tests can
-  // distinguish them. Tests that need a deterministic id override the
-  // return value via mockReturnValueOnce.
   let next = 1;
   const loading = vi.fn(
     (_msg: string, opts?: { id?: string | number }) =>
       opts?.id ?? `toast-${next++}`,
   );
   const success = vi.fn(
-    (_msg: string, opts?: { id?: string | number }) => opts?.id ?? `toast-${next++}`,
+    (_msg: string, opts?: { id?: string | number }) =>
+      opts?.id ?? `toast-${next++}`,
   );
   const error = vi.fn(
-    (_msg: string, opts?: { id?: string | number }) => opts?.id ?? `toast-${next++}`,
+    (_msg: string, opts?: { id?: string | number }) =>
+      opts?.id ?? `toast-${next++}`,
   );
   const dismiss = vi.fn();
   return { loading, success, error, dismiss };
 }
 
-interface MockProgressApi extends UploadProgressApi {
-  onUploadProgress: Mock;
-  // Test helpers: dispatch an event into the registered listener for a
-  // given jobId, and assert on the unsubscribe lifecycle.
-  emit: (jobId: string, event: DatasourcesUploadProgressEvent) => void;
-  unsubscribesFor: (jobId: string) => Mock | undefined;
+interface MockEventApi extends UploadEventApi {
+  onUploadEvent: Mock;
+  emit: (event: UploadEvent) => void;
 }
 
-function makeProgressApi(): MockProgressApi {
-  const listeners = new Map<
-    string,
-    {
-      cb: (event: DatasourcesUploadProgressEvent) => void;
-      unsubscribe: Mock;
-    }
-  >();
-  const onUploadProgress: Mock = vi.fn(
-    (
-      jobId: string,
-      cb: (event: DatasourcesUploadProgressEvent) => void,
-    ): (() => void) => {
-      const unsubscribe = vi.fn();
-      listeners.set(jobId, { cb, unsubscribe });
-      return unsubscribe;
-    },
-  );
+function makeEventApi(): MockEventApi {
+  let listener: ((event: UploadEvent) => void) | null = null;
+  const onUploadEvent: Mock = vi.fn((cb: (event: UploadEvent) => void) => {
+    listener = cb;
+    return () => {
+      listener = null;
+    };
+  });
   return {
-    onUploadProgress,
-    emit(jobId, event) {
-      const entry = listeners.get(jobId);
-      if (!entry) {
-        throw new Error(`no listener registered for jobId=${jobId}`);
-      }
-      entry.cb(event);
-    },
-    unsubscribesFor(jobId) {
-      return listeners.get(jobId)?.unsubscribe;
+    onUploadEvent,
+    emit(event) {
+      if (!listener) throw new Error("no upload-event listener registered");
+      listener(event);
     },
   };
 }
 
-function progressEvent(
-  jobId: string,
-  patch: Partial<DatasourcesUploadProgressEvent>,
-): DatasourcesUploadProgressEvent {
+interface MockSyncApi extends SyncActionsApi {
+  cancelUpload: Mock;
+}
+
+function makeSyncApi(): MockSyncApi {
   return {
-    transactionId: jobId,
-    bytesUploaded: 0,
-    bytesTotal: 100,
-    status: "uploading",
-    ...patch,
+    cancelUpload: vi.fn(async () => ({ cancelled: true })),
   };
 }
 
 // --- Tests -----------------------------------------------------------
 
-describe("createUploadJobToaster", () => {
+describe("createUploadJobToaster — sync:event-stream subscription", () => {
   let toast: MockToast;
-  let progressApi: MockProgressApi;
+  let eventApi: MockEventApi;
+  let syncApi: MockSyncApi;
 
   beforeEach(() => {
     toast = makeToast();
-    progressApi = makeProgressApi();
+    eventApi = makeEventApi();
+    syncApi = makeSyncApi();
   });
 
-  it("(a) onJobDispatched subscribes to the jobId feed and opens a loading toast referencing the basename", () => {
-    const toaster = createUploadJobToaster({ toast, progressApi });
+  it("(a) onJobDispatched mounts a loading toast referencing the basename keyed on uploadJobId; one global subscription covers all dispatches", () => {
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
 
     toaster.onJobDispatched({
-      jobId: "job-A",
+      jobId: "u-A",
       basename: "report.pdf",
       retry: vi.fn(async () => {}),
     });
+    toaster.onJobDispatched({
+      jobId: "u-B",
+      basename: "beta.png",
+      retry: vi.fn(async () => {}),
+    });
 
-    expect(progressApi.onUploadProgress).toHaveBeenCalledTimes(1);
-    expect(progressApi.onUploadProgress.mock.calls[0]?.[0]).toBe("job-A");
-    expect(toast.loading).toHaveBeenCalledTimes(1);
-    const [message, opts] = toast.loading.mock.calls[0] as [
+    // ONE event subscription, not one per dispatch.
+    expect(eventApi.onUploadEvent).toHaveBeenCalledTimes(1);
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const firstCall = toast.loading.mock.calls[0] as [
       string,
       { id?: string | number } | undefined,
     ];
-    expect(message).toContain("report.pdf");
-    expect(opts?.id).toBeDefined();
+    expect(firstCall[0]).toContain("report.pdf");
+    expect(firstCall[1]?.id).toBeDefined();
+
+    toaster.dispose();
   });
 
-  it("(b) progress event with status='uploading' 50/100 updates the SAME toast id with a 50% message", () => {
+  it("(b) an `uploading` event for the dispatched uploadJobId updates the SAME toast id with a percent-based message", () => {
     toast.loading.mockReturnValueOnce("toast-A");
-    const toaster = createUploadJobToaster({ toast, progressApi });
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
 
     toaster.onJobDispatched({
-      jobId: "job-A",
+      jobId: "u-A",
       basename: "report.pdf",
       retry: vi.fn(async () => {}),
     });
 
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
+    eventApi.emit({
+      kind: "uploading",
+      payload: {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        sourcePath: "C:/local/report.pdf",
+        targetPath: "/projects/2026/report.pdf",
         bytesUploaded: 50,
         bytesTotal: 100,
-        status: "uploading",
-      }),
-    );
+      },
+    });
 
     expect(toast.loading).toHaveBeenCalledTimes(2);
-    const secondCall = toast.loading.mock.calls[1] as [
+    const update = toast.loading.mock.calls[1] as [
       string,
       { id?: string | number } | undefined,
     ];
-    expect(secondCall[1]?.id).toBe("toast-A");
-    expect(secondCall[0]).toMatch(/50\s*%/);
+    expect(update[1]?.id).toBe("toast-A");
+    expect(update[0]).toMatch(/50\s*%/);
+
+    toaster.dispose();
   });
 
-  it("(c) terminal status='completed' fires toast.success with duration=4000 and unsubscribes from the progress feed", () => {
+  it("(c) terminal `file-created` flips to toast.success (duration=4000) and onJobCompleted fires with the uploadJobId", () => {
     toast.loading.mockReturnValueOnce("toast-A");
-    const toaster = createUploadJobToaster({ toast, progressApi });
+    const onJobCompleted = vi.fn();
+    const toaster = createUploadJobToaster({
+      toast,
+      eventApi,
+      syncApi,
+      onJobCompleted,
+    });
 
     toaster.onJobDispatched({
-      jobId: "job-A",
+      jobId: "u-A",
       basename: "report.pdf",
       retry: vi.fn(async () => {}),
     });
 
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
-        bytesUploaded: 100,
-        bytesTotal: 100,
-        status: "completed",
-      }),
-    );
+    eventApi.emit({
+      kind: "file-created",
+      payload: {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        targetPath: "/projects/2026/report.pdf",
+        handle: "drive-file-123",
+      },
+    });
 
     expect(toast.success).toHaveBeenCalledTimes(1);
     const successCall = toast.success.mock.calls[0] as [
@@ -197,31 +225,31 @@ describe("createUploadJobToaster", () => {
     ];
     expect(successCall[1]?.id).toBe("toast-A");
     expect(successCall[1]?.duration).toBe(4000);
+    expect(onJobCompleted).toHaveBeenCalledWith("u-A");
 
-    const unsubscribe = progressApi.unsubscribesFor("job-A");
-    expect(unsubscribe).toBeDefined();
-    expect(unsubscribe!).toHaveBeenCalledTimes(1);
+    toaster.dispose();
   });
 
-  it("(d) terminal status='failed' fires toast.error with a Retry action and duration=Infinity (no auto-dismiss)", () => {
+  it("(d) terminal `upload-failed` flips to red toast.error with Retry action and duration=Infinity", () => {
     toast.loading.mockReturnValueOnce("toast-A");
-    const toaster = createUploadJobToaster({ toast, progressApi });
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
 
     toaster.onJobDispatched({
-      jobId: "job-A",
+      jobId: "u-A",
       basename: "report.pdf",
       retry: vi.fn(async () => {}),
     });
 
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
-        bytesUploaded: 0,
-        bytesTotal: 100,
-        status: "failed",
-        error: "rate-limited",
-      }),
-    );
+    eventApi.emit({
+      kind: "upload-failed",
+      payload: {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        targetPath: "/projects/2026/report.pdf",
+        tag: "rate-limited",
+        message: "Slow down",
+      },
+    });
 
     expect(toast.error).toHaveBeenCalledTimes(1);
     const errorCall = toast.error.mock.calls[0] as [
@@ -234,31 +262,33 @@ describe("createUploadJobToaster", () => {
     ];
     expect(errorCall[1]?.id).toBe("toast-A");
     expect(errorCall[1]?.duration).toBe(Number.POSITIVE_INFINITY);
-    expect(errorCall[1]?.action).toBeDefined();
     expect(errorCall[1]?.action?.label).toMatch(/retry/i);
     expect(typeof errorCall[1]?.action?.onClick).toBe("function");
+
+    toaster.dispose();
   });
 
-  it("(e) clicking the Retry action calls retry(), unsubscribes the OLD feed, and dismisses the OLD toast id", () => {
+  it("(e) clicking Retry invokes retry() and dismisses the OLD toast id; a fresh dispatch opens a new toast for the new uploadJobId", () => {
     toast.loading.mockReturnValueOnce("toast-A");
-    const toaster = createUploadJobToaster({ toast, progressApi });
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
 
     const retry = vi.fn(async () => {});
     toaster.onJobDispatched({
-      jobId: "job-A",
+      jobId: "u-A",
       basename: "report.pdf",
       retry,
     });
 
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
-        bytesUploaded: 0,
-        bytesTotal: 100,
-        status: "failed",
-        error: "rate-limited",
-      }),
-    );
+    eventApi.emit({
+      kind: "upload-failed",
+      payload: {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        targetPath: "/projects/2026/report.pdf",
+        tag: "rate-limited",
+        message: "Slow down",
+      },
+    });
 
     const errorCall = toast.error.mock.calls[0] as [
       string,
@@ -269,63 +299,84 @@ describe("createUploadJobToaster", () => {
     const onClick = errorCall[1]?.action?.onClick;
     expect(onClick).toBeDefined();
     onClick!();
-
     expect(retry).toHaveBeenCalledTimes(1);
-
-    // Old subscription unsubscribed so the next onJobDispatched can
-    // bind a fresh feed without ghost listeners on the dead jobId.
-    const unsubscribeA = progressApi.unsubscribesFor("job-A");
-    expect(unsubscribeA).toBeDefined();
-    expect(unsubscribeA!).toHaveBeenCalled();
-
     expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+
+    // Re-dispatch from the orchestrator: a fresh `onJobDispatched` call
+    // for the new uploadJobId opens a NEW toast on a fresh id.
+    toast.loading.mockReturnValueOnce("toast-B");
+    toaster.onJobDispatched({
+      jobId: "u-A2",
+      basename: "report.pdf",
+      retry: vi.fn(async () => {}),
+    });
+
+    // Confirm subsequent events route to the new toast id.
+    eventApi.emit({
+      kind: "uploading",
+      payload: {
+        uploadJobId: "u-A2",
+        datasourceId: "ds-1",
+        sourcePath: "C:/local/report.pdf",
+        targetPath: "/projects/2026/report.pdf",
+        bytesUploaded: 25,
+        bytesTotal: 100,
+      },
+    });
+    const lastUpdate = toast.loading.mock.calls[
+      toast.loading.mock.calls.length - 1
+    ] as [string, { id?: string | number } | undefined];
+    expect(lastUpdate[1]?.id).toBe("toast-B");
+    expect(lastUpdate[1]?.id).not.toBe("toast-A");
+
+    toaster.dispose();
   });
 
-  it("(f) onBatchError calls toast.error with no jobId tracking", () => {
-    const toaster = createUploadJobToaster({ toast, progressApi });
+  it("(f) onBatchError fires toast.error without opening a subscription", () => {
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
 
     toaster.onBatchError("Provider rate limit reached — try again shortly");
 
     expect(toast.error).toHaveBeenCalledTimes(1);
     const [message] = toast.error.mock.calls[0] as [string, unknown];
     expect(message).toMatch(/rate limit/i);
-    // No subscription opened — onBatchError is for batch-level errors
-    // that never produced a jobId.
-    expect(progressApi.onUploadProgress).not.toHaveBeenCalled();
+    // ONE global subscription regardless of dispatch — onBatchError
+    // doesn't add another.
+    expect(eventApi.onUploadEvent).toHaveBeenCalledTimes(1);
+
+    toaster.dispose();
   });
 
-  it("(g) two concurrent onJobDispatched calls produce TWO independent toasts; events for jobId A do not affect jobId B", () => {
+  it("(g) two concurrent dispatches produce TWO independent toasts; an event for one does not affect the other", () => {
     toast.loading.mockReturnValueOnce("toast-A");
     toast.loading.mockReturnValueOnce("toast-B");
-    const toaster = createUploadJobToaster({ toast, progressApi });
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
 
     toaster.onJobDispatched({
-      jobId: "job-A",
+      jobId: "u-A",
       basename: "alpha.pdf",
       retry: vi.fn(async () => {}),
     });
     toaster.onJobDispatched({
-      jobId: "job-B",
+      jobId: "u-B",
       basename: "beta.png",
       retry: vi.fn(async () => {}),
     });
 
-    expect(progressApi.onUploadProgress).toHaveBeenCalledTimes(2);
     expect(toast.loading).toHaveBeenCalledTimes(2);
 
-    // Emit a progress event ONLY for job-A and confirm the update
-    // targets toast-A's id, not toast-B's.
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
+    // Progress for u-A only.
+    eventApi.emit({
+      kind: "uploading",
+      payload: {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        sourcePath: "C:/local/alpha.pdf",
+        targetPath: "/alpha.pdf",
         bytesUploaded: 25,
         bytesTotal: 100,
-        status: "uploading",
-      }),
-    );
-
-    // Of the loading calls after the initial two, the next is the
-    // progress update for job-A only.
+      },
+    });
     expect(toast.loading).toHaveBeenCalledTimes(3);
     const updateCall = toast.loading.mock.calls[2] as [
       string,
@@ -334,187 +385,126 @@ describe("createUploadJobToaster", () => {
     expect(updateCall[1]?.id).toBe("toast-A");
     expect(updateCall[1]?.id).not.toBe("toast-B");
 
-    // Complete job-B; success should target toast-B and unsubscribe
-    // ONLY job-B's listener (job-A still active).
-    progressApi.emit(
-      "job-B",
-      progressEvent("job-B", {
-        bytesUploaded: 100,
-        bytesTotal: 100,
-        status: "completed",
-      }),
-    );
+    // Complete u-B; success targets toast-B.
+    eventApi.emit({
+      kind: "file-created",
+      payload: {
+        uploadJobId: "u-B",
+        datasourceId: "ds-1",
+        targetPath: "/beta.png",
+        handle: "h-2",
+      },
+    });
     const successCall = toast.success.mock.calls[0] as [
       string,
       { id?: string | number } | undefined,
     ];
     expect(successCall[1]?.id).toBe("toast-B");
 
-    const unsubA = progressApi.unsubscribesFor("job-A");
-    const unsubB = progressApi.unsubscribesFor("job-B");
-    expect(unsubA!).not.toHaveBeenCalled();
-    expect(unsubB!).toHaveBeenCalledTimes(1);
+    toaster.dispose();
   });
 
-  it("(h) retry → orchestrator re-dispatch → onJobDispatched(new jobId) opens a NEW toast bound to a fresh progress subscription", () => {
-    // Task 9.3 round-trip: this proves that after the Retry action fires,
-    // a fresh `onJobDispatched` for a new jobId opens a brand-new toast
-    // and a brand-new progress subscription — no leakage from the
-    // dismissed toast or the unsubscribed feed of the original jobId.
-    toast.loading.mockReturnValueOnce("toast-A");
-    const toaster = createUploadJobToaster({ toast, progressApi });
+  it("(i) hydrateActiveUploads pre-seeds toasts; subsequent live `uploading` events update the seeded toast in place", () => {
+    toast.loading.mockReturnValueOnce("toast-hydrated-A");
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
 
-    // First dispatch: simulate the orchestrator's initial response.
-    // `retry` is what `dispatchOne(plan)` would be — the test stubs it
-    // out and asserts later that the toaster invokes it once.
-    const retry = vi.fn(async () => {});
+    const hydrated: readonly UploadJobSummary[] = [
+      {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        sourcePath: "C:/local/report.pdf",
+        targetPath: "/projects/2026/report.pdf",
+        bytesUploaded: 30_000,
+        contentLength: 100_000,
+        startedAt: 1_700_000_000_000,
+      },
+    ];
+    toaster.hydrateActiveUploads(hydrated);
+
+    expect(toast.loading).toHaveBeenCalledTimes(1);
+    const seedCall = toast.loading.mock.calls[0] as [
+      string,
+      { id?: string | number } | undefined,
+    ];
+    expect(seedCall[0]).toContain("report.pdf");
+
+    // Live event for the seeded id targets the SAME toast id, no new
+    // toast spawn.
+    eventApi.emit({
+      kind: "uploading",
+      payload: {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        sourcePath: "C:/local/report.pdf",
+        targetPath: "/projects/2026/report.pdf",
+        bytesUploaded: 60_000,
+        bytesTotal: 100_000,
+      },
+    });
+    expect(toast.loading).toHaveBeenCalledTimes(2);
+    const updateCall = toast.loading.mock.calls[1] as [
+      string,
+      { id?: string | number } | undefined,
+    ];
+    expect(updateCall[1]?.id).toBe("toast-hydrated-A");
+
+    toaster.dispose();
+  });
+
+  it("(j) `upload-cancelled` silently dismisses the toast (no success / no failure render)", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
+
     toaster.onJobDispatched({
-      jobId: "job-A",
+      jobId: "u-A",
       basename: "report.pdf",
-      retry,
+      retry: vi.fn(async () => {}),
     });
 
-    // Drive the failure path so the error toast is created with the
-    // Retry action attached.
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
-        bytesUploaded: 0,
+    eventApi.emit({
+      kind: "upload-cancelled",
+      payload: {
+        uploadJobId: "u-A",
+        datasourceId: "ds-1",
+        sourcePath: "C:/local/report.pdf",
+        targetPath: "/projects/2026/report.pdf",
+        bytesUploaded: 10,
         bytesTotal: 100,
-        status: "failed",
-        error: "rate-limited",
-      }),
-    );
+        reason: "user",
+      },
+    });
 
-    const errorCall = toast.error.mock.calls[0] as [
+    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+
+    toaster.dispose();
+  });
+
+  it("Cancel action on a loading toast invokes syncApi.cancelUpload({ uploadJobId }) without awaiting", () => {
+    toast.loading.mockReturnValueOnce("toast-A");
+    const toaster = createUploadJobToaster({ toast, eventApi, syncApi });
+
+    toaster.onJobDispatched({
+      jobId: "u-A",
+      basename: "report.pdf",
+      retry: vi.fn(async () => {}),
+    });
+
+    const initialCall = toast.loading.mock.calls[0] as [
       string,
       {
+        id?: string | number;
         action?: { label: string; onClick: () => void };
       } | undefined,
     ];
-    const onClick = errorCall[1]?.action?.onClick;
-    expect(onClick).toBeDefined();
+    const cancelAction = initialCall[1]?.action;
+    expect(cancelAction).toBeDefined();
+    expect(cancelAction?.label).toMatch(/cancel/i);
 
-    // Click Retry. This should call `retry()`, unsubscribe job-A's feed,
-    // and dismiss `toast-A` (covered by test (e)). We then simulate the
-    // orchestrator's response by calling `onJobDispatched` for the new
-    // jobId — exactly what the orchestrator's `dispatchOne(plan)` does
-    // when its re-dispatched `files.upload` returns `{ ok: true,
-    // value: { jobId } }`.
-    onClick!();
-    expect(retry).toHaveBeenCalledTimes(1);
-    expect(toast.dismiss).toHaveBeenCalledWith("toast-A");
-    const unsubA = progressApi.unsubscribesFor("job-A");
-    expect(unsubA!).toHaveBeenCalled();
+    cancelAction!.onClick();
+    expect(syncApi.cancelUpload).toHaveBeenCalledWith({ uploadJobId: "u-A" });
 
-    // Reset the retry handler so the new dispatch carries a fresh
-    // closure (mirrors the orchestrator: each `dispatchOne` invocation
-    // captures its own `plan` and creates a new `retry`).
-    const retry2 = vi.fn(async () => {});
-    toast.loading.mockReturnValueOnce("toast-B");
-    toaster.onJobDispatched({
-      jobId: "job-A2",
-      basename: "report.pdf",
-      retry: retry2,
-    });
-
-    // A NEW progress subscription was opened for the new jobId.
-    expect(progressApi.onUploadProgress).toHaveBeenCalledTimes(2);
-    const secondSubCall = progressApi.onUploadProgress.mock.calls[1] as [
-      string,
-      unknown,
-    ];
-    expect(secondSubCall[0]).toBe("job-A2");
-
-    // A NEW loading toast was opened. Per test (a), the helper passes
-    // an explicit `{ id }` to the initial `toast.loading` call (so
-    // Sonner uses it as the toast key); the mock's
-    // `mockReturnValueOnce("toast-B")` then overrides the return so
-    // the helper captures `"toast-B"` as the canonical id for
-    // subsequent updates. The load-bearing assertion is that the
-    // captured id is DIFFERENT from the dismissed `"toast-A"` — we
-    // verify that by emitting a progress event for `job-A2` and
-    // asserting the update targets `"toast-B"`, not `"toast-A"`.
-
-    // Confirm the new subscription routes updates to the new toast id.
-    progressApi.emit(
-      "job-A2",
-      progressEvent("job-A2", {
-        bytesUploaded: 25,
-        bytesTotal: 100,
-        status: "uploading",
-      }),
-    );
-    const updateCall = toast.loading.mock.calls[
-      toast.loading.mock.calls.length - 1
-    ] as [string, { id?: string | number } | undefined];
-    expect(updateCall[1]?.id).toBe("toast-B");
-    expect(updateCall[1]?.id).not.toBe("toast-A");
-  });
-
-  it("(i) onJobCompleted is called with the jobId on terminal status='completed' and NOT for uploading or failed events", () => {
-    // Bug 2 fix: the file-explorer wires `onJobCompleted` to
-    // `store.retryLoad()` so the entries list refreshes once the
-    // provider has acknowledged the new file. The callback must fire
-    // ONLY on `completed` — uploading progress events and terminal
-    // failures should not trigger a refetch (failed uploads leave the
-    // file absent on the provider; refetching would surface nothing
-    // new and would mask the real failure with churn).
-    toast.loading.mockReturnValueOnce("toast-A");
-    toast.loading.mockReturnValueOnce("toast-B");
-    const onJobCompleted = vi.fn();
-    const toaster = createUploadJobToaster({
-      toast,
-      progressApi,
-      onJobCompleted,
-    });
-
-    // Dispatch job-A and emit an `uploading` event — must NOT call
-    // onJobCompleted.
-    toaster.onJobDispatched({
-      jobId: "job-A",
-      basename: "report.pdf",
-      retry: vi.fn(async () => {}),
-    });
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
-        bytesUploaded: 50,
-        bytesTotal: 100,
-        status: "uploading",
-      }),
-    );
-    expect(onJobCompleted).not.toHaveBeenCalled();
-
-    // Drive job-A to terminal `completed` — onJobCompleted fires once
-    // with the jobId.
-    progressApi.emit(
-      "job-A",
-      progressEvent("job-A", {
-        bytesUploaded: 100,
-        bytesTotal: 100,
-        status: "completed",
-      }),
-    );
-    expect(onJobCompleted).toHaveBeenCalledTimes(1);
-    expect(onJobCompleted).toHaveBeenCalledWith("job-A");
-
-    // Dispatch job-B and drive it to terminal `failed` — must NOT call
-    // onJobCompleted again (still 1 invocation total).
-    toaster.onJobDispatched({
-      jobId: "job-B",
-      basename: "beta.png",
-      retry: vi.fn(async () => {}),
-    });
-    progressApi.emit(
-      "job-B",
-      progressEvent("job-B", {
-        bytesUploaded: 0,
-        bytesTotal: 100,
-        status: "failed",
-        error: "rate-limited",
-      }),
-    );
-    expect(onJobCompleted).toHaveBeenCalledTimes(1);
+    toaster.dispose();
   });
 });

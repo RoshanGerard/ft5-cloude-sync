@@ -1646,7 +1646,7 @@ describe("GoogleDriveClient — getQuota", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createFile / uploadFile (resumable)
+// uploadFile (resumable)
 // ---------------------------------------------------------------------------
 
 describe("GoogleDriveClient — upload (resumable, small file)", () => {
@@ -1684,10 +1684,12 @@ describe("GoogleDriveClient — upload (resumable, small file)", () => {
       },
     ) as unknown as typeof fetch;
 
+    const onProgress = vi.fn<(loaded: number, total: number) => void>();
     const h = makeHarness({ drive: client, fetchImpl });
     const entry = await h.client.uploadFile(
       { kind: "handle", handle: "root" },
       { path: smallFile, name: "small.bin" },
+      { onProgress },
     );
     expect(entry.handle).toBe("UP-ID");
     // Two fetches: session init (POST) + chunk PUT.
@@ -1698,9 +1700,29 @@ describe("GoogleDriveClient — upload (resumable, small file)", () => {
     expect(methods).toContain("POST");
     expect(methods).toContain("PUT");
 
+    // Engine bus is silent for upload events post-migrate-upload-
+    // orchestration-out-of-engine.
     const names = h.events.map((e) => e.event);
-    expect(names).toContain("uploading");
-    expect(names).toContain("file-created");
+    expect(names).not.toContain("uploading");
+    expect(names).not.toContain("file-created");
+    expect(names).not.toContain("upload-failed");
+    expect(names).not.toContain("upload-cancelled");
+
+    // The consumer's onProgress was invoked with monotonic loaded values.
+    expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const loaded = onProgress.mock.calls.map((c) => c[0]);
+    for (let i = 1; i < loaded.length; i += 1) {
+      expect(loaded[i]).toBeGreaterThanOrEqual(loaded[i - 1]!);
+    }
+
+    // LRU population is exercised behaviorally by the dedicated
+    // "path↔fileId LRU invalidation" describe block below — that block
+    // primes a list response and observes whether a subsequent path-keyed
+    // call still walks the path or short-circuits. Here we verify the
+    // primary migration contract (no bus emission) plus the entry shape
+    // the strategy hands the consumer.
+    expect(entry.path).toBeDefined();
+    expect(entry.handle).toBe("UP-ID");
   });
 });
 
@@ -1836,11 +1858,12 @@ describe("GoogleDriveClient — resumable upload multi-chunk (Content-Range + is
 });
 
 // ---------------------------------------------------------------------------
-// cancelUpload — mid-resumable DELETE with Content-Range: bytes */<total>
+// AbortSignal-driven cancel — mid-resumable DELETE with Content-Range:
+// bytes */<total>, issued against a FRESH AbortController (5s timeout)
 // ---------------------------------------------------------------------------
 
-describe("GoogleDriveClient — cancelUpload (resumable session)", () => {
-  it("mid-chunk cancel DELETEs session URL with Content-Range bytes */<total>; emits upload-cancelled", async () => {
+describe("GoogleDriveClient — signal-driven cancel (resumable session)", () => {
+  it("mid-chunk abort DELETEs session URL with Content-Range bytes */<total>; the cleanup uses a fresh AbortController, not the user's signal", async () => {
     const total = 25 * 1024 * 1024;
     const dir = mkdtempSync(join(tmpdir(), "gd-cancel-"));
     const file = join(dir, "huge.bin");
@@ -1852,8 +1875,8 @@ describe("GoogleDriveClient — cancelUpload (resumable session)", () => {
       url: string;
       method: string;
       contentRange: string;
+      signal?: AbortSignal | null;
     }> = [];
-    let releasePut!: (resp: Response) => void;
 
     const fetchImpl = vi.fn(
       async (url: string | URL | Request, init?: RequestInit) => {
@@ -1870,16 +1893,16 @@ describe("GoogleDriveClient — cancelUpload (resumable session)", () => {
             url: String(url),
             method,
             contentRange: hdrs["Content-Range"] ?? "",
+            signal: init?.signal ?? null,
           });
-          return new Response("", { status: 204 });
+          return new Response(null, { status: 204 });
         }
         if (method === "PUT") {
           const signal = init?.signal;
           if (signal?.aborted) {
             throw Object.assign(new Error("aborted"), { name: "AbortError" });
           }
-          return await new Promise<Response>((resolve, reject) => {
-            releasePut = resolve;
+          return await new Promise<Response>((_resolve, reject) => {
             signal?.addEventListener("abort", () =>
               reject(
                 Object.assign(new Error("aborted"), { name: "AbortError" }),
@@ -1893,25 +1916,24 @@ describe("GoogleDriveClient — cancelUpload (resumable session)", () => {
 
     try {
       const h = makeHarness({ drive: client, fetchImpl });
+      const controller = new AbortController();
       const uploadPromise = h.client.uploadFile(
         { kind: "handle", handle: "root" },
         { path: file, name: "huge.bin" },
+        { signal: controller.signal },
       );
+      // Wait until the session-init POST has resolved and the strategy
+      // has registered its abort listener (i.e., once the chunk-PUT
+      // fetch has been issued).
       await vi.waitFor(() => {
-        expect(
-          (h.events as Array<{ event: string }>).map((e) => e.event),
-        ).toContain("uploading");
+        const methods = fetchImpl.mock.calls.map((c) => {
+          const init = c[1] as RequestInit | undefined;
+          return (init?.method ?? "").toUpperCase();
+        });
+        expect(methods).toContain("PUT");
       });
-      const tx = (
-        (h.events as Array<{ payload: { transactionId: string } }>)[0] ?? {
-          payload: { transactionId: "" },
-        }
-      ).payload.transactionId;
 
-      await h.client.cancelUpload(tx);
-      if (typeof releasePut === "function") {
-        releasePut(new Response("", { status: 308 }));
-      }
+      controller.abort();
 
       await expect(uploadPromise).rejects.toSatisfy(
         (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
@@ -1920,14 +1942,20 @@ describe("GoogleDriveClient — cancelUpload (resumable session)", () => {
       expect(deleteCalls).toHaveLength(1);
       expect(deleteCalls[0]!.url).toBe(sessionUrl);
       expect(deleteCalls[0]!.method).toBe("DELETE");
-      // The proposal and Drive docs both specify `bytes */<total>` on
-      // cancel-DELETEs. Exact header match verifies we didn't silently drop
-      // it or emit the unknown-total sentinel (`bytes */0`) here.
+      // Drive docs specify `bytes */<total>` on cancel-DELETEs.
       expect(deleteCalls[0]!.contentRange).toBe(`bytes */${total}`);
+      // CRITICAL: the cleanup DELETE must NOT carry the user's signal —
+      // doing so would cause it to be aborted along with the upload,
+      // leaving the session orphaned on Drive. The strategy uses a
+      // fresh AbortController.timeout(5000) for cleanup.
+      expect(deleteCalls[0]!.signal).not.toBe(controller.signal);
 
+      // Engine bus is silent for upload events.
       const names = (h.events as Array<{ event: string }>).map((e) => e.event);
-      expect(names).toContain("upload-cancelled");
+      expect(names).not.toContain("uploading");
+      expect(names).not.toContain("file-created");
       expect(names).not.toContain("upload-failed");
+      expect(names).not.toContain("upload-cancelled");
     } finally {
       unlinkSync(file);
     }
@@ -1935,7 +1963,9 @@ describe("GoogleDriveClient — cancelUpload (resumable session)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// LRU cache invalidation on `deleted` / `file-created`
+// LRU cache invalidation on `deleted` (post-migrate-upload-orchestration-out-
+// of-engine: the `file-created` arm was removed; upload-success population
+// happens internally in `doUploadFileImpl`'s success branch).
 // ---------------------------------------------------------------------------
 
 describe("GoogleDriveClient — path↔fileId LRU invalidation", () => {

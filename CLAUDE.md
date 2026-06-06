@@ -11,21 +11,24 @@
 Forward changes (intent → propose → ship). For bug fixes / improvements / patches, see `## Reactive workflow` below.
 
 1. **Entry point:**
-   - **Brainstorm-first** — Stub or unresolved architectural ambiguity (a change in `openspec/changes/` whose `proposal.md` is incomplete — open questions, TBDs, missing `## What Changes` body, no spec delta yet, no `tasks.md`, OR open architectural questions in the request) → brainstorming first.
-   - **Propose-first-with-UI** — Clear requirements; only visual decisions remain → `/opsx:propose` first, then brainstorming as refinement.
-   - **Propose-direct** — Everything else (clear requirements, no UI, no architectural ambiguity) → `/opsx:propose` directly.
+  - **Brainstorm-first** — Stub or unresolved architectural ambiguity (a change in `openspec/changes/` whose `proposal.md` is incomplete — open questions, TBDs, missing `## What Changes` body, no spec delta yet, no `tasks.md`, OR open architectural questions in the request) → resolve via `superpowers:brainstorming` first, then `/opsx:propose`.
+  - **Propose-direct** — Everything else → `/opsx:propose` directly. Visible-UI changes still get visual refinement via `superpowers:brainstorming` AFTER propose (step 4); that does not change the entry point.
 
-2. **Brainstorming (conditional).** Run `superpowers:brainstorming` if step 1 picked brainstorm-first OR the change involves visible UI. Brainstorm-first: before step 3. Propose-first-with-UI: after step 3, before step 4. Visual Companion engages inside the session per the skill protocol. Output flows per the handoff list below.
+2. **Brainstorming — architectural resolution (conditional).** Only when step 1 picked brainstorm-first. `superpowers:brainstorming` converges the architectural / conceptual / scope / error-vocabulary ambiguity into decisions (probing questions, approaches with tradeoffs, a recommendation), then runs `/opsx:propose`. Conceptual only — no Visual Companion yet (no artifacts to refine); that is step 4. Output flows per the handoff list in `## Brainstorming` below.
 
 3. **`/opsx:propose <description>`** — generates `proposal.md`, `design.md`, `specs/<cap>/spec.md` deltas, `tasks.md`. Pass `<change-id>` (kebab-case) instead when the name is already settled — e.g. reactive back-fills.
 
-4. **Human review.** Wait for explicit approval before `/opsx:apply`.
+4. **Brainstorming — visual refinement (conditional).** Run `superpowers:brainstorming` when the change involves visible UI — here its load-bearing contribution is the Visual Companion (browser mockups / layouts / comparisons). Runs AFTER `/opsx:propose`, before human review. Visual Companion engages inside the session per the skill protocol; decisions populate `design.md` `## Visual direction` (handoff list below). Non-UI changes skip this step entirely.
 
-5. **Pre-apply staleness check.** Spot-check `design.md` file paths, function names, architectural assumptions still match the codebase. If shifted, invoke `brainstorming` for parts needing re-resolution OR edit `design.md` directly for purely-stale references.
+5. **Human review.** Wait for explicit approval before `/opsx:apply`.
 
-6. **`/opsx:apply`.** "Coding discipline" rules below are MANDATORY.
+6. **Pre-apply staleness check.** Spot-check `design.md` file paths, function names, architectural assumptions still match the codebase. If shifted, re-resolve via `superpowers:brainstorming` for parts needing it, OR edit `design.md` directly for purely-stale references.
 
-7. **Pre-archive.** Every `tasks.md` checkbox checked, full test suite passes, feature exercised against a running system, `openspec validate <change>` green. If validate fails: fix in the worktree branch and re-run — never skip validation, never edit `openspec/specs/` directly. Archive in the worktree branch *before* merging.
+7. **`/opsx:apply`.** "Coding discipline" rules below are MANDATORY.
+
+8. **Pre-archive + archive.** Every `tasks.md` checkbox checked, full test suite passes, feature exercised against a running system, `openspec validate <change>` green. If validate fails: fix in the worktree branch and re-run — never skip validation, never edit `openspec/specs/` directly. Then archive via `/opsx:archive` in the worktree branch *before* merging.
+
+9. **Finish the branch.** AFTER archive, hand off via `finishing-a-development-branch` — the mandatory entry point that re-verifies tests, runs the pre-handoff backstop over the whole branch (`git log <base>..HEAD`), then performs the merge/PR itself. Never merge-to-base or `gh pr create` outside it. `/opsx:archive` closes the OpenSpec lifecycle; it is NOT the branch finish line — this step is.
 
 ## Reactive workflow (bugs, fixes, improvements)
 
@@ -37,9 +40,9 @@ Forward changes (intent → propose → ship). For bug fixes / improvements / pa
 2. **Implement** the fix on a branch. Reactive TDD: write a failing test that reproduces the bug, then make it green. Skip TDD only for mechanical fixes.
 3. **Audit gate (mandatory).** Classify into ONE of three outcomes below. Run the gate before declaring done, before committing, before handoff.
 4. **Act:**
-   - Outcome 1 → plain commit.
-   - Outcome 2 → plain commit + spec citation in commit body (Hard rule).
-   - Outcome 3 → back-fill chain (Pattern A / B / C).
+  - Outcome 1 → plain commit.
+  - Outcome 2 → plain commit + spec citation in commit body (Hard rule).
+  - Outcome 3 → back-fill chain (Pattern A / B / C).
 5. **Pre-handoff backstop** — see end of section.
 
 ### Audit gate — three outcomes
@@ -80,13 +83,16 @@ If you can't classify confidently, escalate to advisor before deciding.
 
 ### Pre-handoff backstop (extends `finishing-a-development-branch`)
 
-PR opening is the user's call by default; Claude only runs `gh pr create` when explicitly asked. Either way, before declaring the branch PR-ready: run `git log <base>..HEAD --no-merges`, audit each commit against the trigger checklist, cross-check against `openspec/changes/` (active) and `openspec/changes/archive/` (recent on this branch). Any uncovered Outcome 3 commit blocks the handoff.
+PR opening is the user's call by default; Claude only runs `gh pr create` when explicitly asked — and when asked, it runs *inside* `finishing-a-development-branch` (which performs this backstop first), never as a bare command. The backstop covers the WHOLE branch, not just this session's commits: before any merge or PR, run `git log <base>..HEAD --no-merges` and audit EVERY commit in that range against the trigger checklist (the branch may carry sibling sub-task commits you didn't author this session — they ride into the PR too), cross-check against `openspec/changes/` (active) and `openspec/changes/archive/` (recent on this branch). Any uncovered Outcome 3 commit blocks the handoff.
 
-## Brainstorming (architectural OR visual ambiguity)
+## Brainstorming — the design-resolution skill
 
-Brainstorming covers any unresolved design question — architecture, error vocabulary, scope, AND visual direction.
+`superpowers:brainstorming` resolves any unresolved design question — architectural, conceptual, scope, error-vocabulary, AND visual. It converges: probing questions one at a time, approaches with tradeoffs, a recommendation. Used at up to two moments; decisions from either flow to OpenSpec artifacts (never `docs/plans/...` or chat-only).
 
-- **MANDATORY visual-refinement trigger:** Visible UI (component, layout, color, motion, copy, accessibility-affecting markup) AND `/opsx:propose` ran first → MUST invoke `superpowers:brainstorming` before `/opsx:apply`. Brainstorm-first path: Visual Companion engages automatically per the skill's protocol. Both paths populate `## Visual direction` in `design.md`.
+- **Architectural resolution** — BEFORE `/opsx:propose` (Workflow step 2, brainstorm-first). Terminal / conceptual questions; no Visual Companion yet (no artifacts to refine).
+- **Visual refinement** — AFTER `/opsx:propose` (Workflow step 4, visible UI). The Visual Companion (browser mockups / layouts / comparisons) populates `## Visual direction`.
+
+- **MANDATORY visual-refinement trigger:** Visible UI (component, layout, color, motion, copy, accessibility-affecting markup) AND `/opsx:propose` ran first → MUST invoke `superpowers:brainstorming` before `/opsx:apply`. Visual Companion engages automatically per the skill's protocol and populates `## Visual direction` in `design.md`.
 - Per question: terminal (conceptual / tradeoff / scope) vs Visual Companion browser (mockups / layouts / comparisons). Visual Companion offered ONCE as its own message; not standalone-invocable.
 - **Output handoff** (always OpenSpec artifacts, never `docs/plans/...` or chat-only):
   - architectural decisions → `design.md` `## Decisions`
@@ -100,7 +106,7 @@ Brainstorming covers any unresolved design question — architecture, error voca
   - new risks → `design.md` `## Risks / Trade-offs`
 - Do NOT chain into `superpowers:writing-plans` — `tasks.md` is the deliverable.
 - Do NOT proceed to `/opsx:apply` until every touched artifact is updated AND `openspec validate <change>` is green.
-- During `/opsx:apply`, deviation from `design.md` decisions → back to brainstorming, not forward.
+- During `/opsx:apply`, deviation from `design.md` decisions → back to `superpowers:brainstorming`, not forward.
 
 ### Visual-specific
 
@@ -111,7 +117,7 @@ Brainstorming covers any unresolved design question — architecture, error voca
 
 - **TDD** (`test-driven-development`). Failing test → watch it fail → minimum code to pass. Production code without a prior failing test must be deleted and rewritten. Throwaway API-exploration code permitted (≤50 lines, never committed, deleted before TDD pass).
 - **Worktree** (`using-git-worktrees`). Every `/opsx:apply`. ASK where: (a) **in-place** — current checkout, blocks main; (b) **sibling** at `../<project>-<change-id>/` or `../.worktrees/<change-id>/` — parallel-friendly. Default sibling.
-- **Subagent per task** (`subagent-driven-development`), two-stage review. Use `executing-plans` only when I explicitly ask for human checkpoints.
+- **Subagent per task** (`subagent-driven-development`), two-stage review. Use `executing-plans` only when I explicitly ask for human checkpoints. **Subagents do NOT auto-load `CLAUDE.md` or project memory — they start from a fresh system prompt with only what you put in their dispatch prompt.** Every subagent dispatch (including `Task`/`Agent`/`general-purpose` invocations, `requesting-code-review` reviewers, `dispatching-parallel-agents` workers) MUST include this preamble verbatim or equivalent: `Read CLAUDE.md at the repository root before starting any work. Follow all "Hard rules" (commit format via /git-spec, exclusion list, OpenSpec lifecycle, never modify openspec/specs directly, never delete change directories — always archive via /opsx:archive, never use direct git/shell ops on openspec/changes/). Apply "Reactive workflow" §3 audit gate to any changes you produce. Use the right typed commit prefix (done/fix/refactor/cleanup/in-progress/pending) per the branch's commit convention.` Without that block, the subagent's output will silently violate conventions because the main session's auto-loaded rules don't propagate to dispatched agents.
 - **Background subagents** — `run_in_background: true` for anything long-running (test suites, builds, Playwright, Docker, dev servers). On the runaway system-reminder bug (claude-code #11716 or successor): restart session, run foreground with explicit timeout (e.g. 300000) to override the 120s auto-background cutoff.
 - **Advisor** at TWO checkpoints per change:
   1. Before locking architectural approach (post-exploration, pre-artifacts).
@@ -121,35 +127,20 @@ Brainstorming covers any unresolved design question — architecture, error voca
 - **Code review** (`requesting-code-review`) between tasks. Critical issues block progress. **Critical** = security vulnerability, contract break (signature / envelope shape change not in `design.md`), test coverage regression, accessibility regression below WCAG AA, deviation from `design.md` decisions. Style nits / refactor suggestions are non-blocking. Defensible deviations (implementation surfaced a flaw in the original decision): update `design.md` `## Decisions` BEFORE continuing — never silently ship.
 - **Debugging** (`systematic-debugging`) for any failing test or unexpected behavior. No guess-and-check.
 - **Verification** (`verification-before-completion`) before claiming done. Full test suite + typecheck + lint. For reactive work, the audit gate (see `## Reactive workflow`) runs in addition — verification covers code correctness, the audit gate covers spec coverage.
-- **Finishing** (`finishing-a-development-branch`) when all tasks complete.
-
-## Context management
-
-**Compact when** (whichever first):
-
-- Every 3–5 completed tasks (checkbox flipped, code reviewed, verification passed)
-- Claude re-reading the same file 3+ times
-- A single task's tool output > 50 lines AND that output is in git / `tasks.md`
-- Never wait for auto-compact (fires at arbitrary points, may cut mid-debug)
-
-**Compact vs clear vs neither:**
-
-- `/compact`: Task 5.4 modified `bootstrap.ts`, ran a unit test producing 80 lines. Task 5.5 runs the full suite. State is in git, outcome is the checked box — compact.
-- `/clear`: Task 9 finished a renderer component. Task 10 starts dashboard banner work in a different folder, no shared identifiers — clear.
-- **Neither**: mid-debug with a failing test not root-caused. Resolve first.
-
-**Pre-compact durability check:** commit in git, `tasks.md` reflects new state, decisions worth keeping in `design.md` / `proposal.md`. If only in chat, write down first.
-
-After any compaction, restate current task from `tasks.md` + active `design.md` constraints in one short message before resuming.
+- **Finishing** (`finishing-a-development-branch`) — the MANDATORY entry point for EVERY branch handoff. Run it when all tasks complete, and ALWAYS before any merge-to-base or PR: the handoff goes *through* the skill (it re-verifies tests, runs the pre-handoff backstop over `git log <base>..HEAD`, then performs the push/PR itself). Never run a bare `gh pr create` or `git merge`-to-base outside it. Completing the OpenSpec lifecycle (`/opsx:archive`) is NOT the finish line — branch handoff is a separate, mandatory step. *"PR opening is the user's call"* governs **whether/when** to hand off, never **whether** to run this skill.
 
 ## Hard rules
 
+- All git commits must follow the format defined in the `/git-spec` skill. Read the skill before running any git commit command.
 - Never commit directly to `main`.
+- Never run `gh pr create` or merge a branch into its base without first completing `finishing-a-development-branch` (test re-verification + pre-handoff backstop over `git log <base>..HEAD`) in the same session. *"PR opening is the user's call"* decides **whether/when** to hand off — never **whether** to run the skill. Completing `/opsx:archive` is not a substitute; it is not the branch finish line.
 - Never modify `openspec/specs/` directly — only via OpenSpec lifecycle (forward change OR reactive back-fill).
+- Never use direct git or shell operations (`git mv`, `git rm`, `git checkout`, `git restore`, `git reset --hard`, `mv`, `rm`, `cp`, `mkdir`, `rmdir`) on anything under `openspec/changes/`. All directory moves go through the OpenSpec lifecycle skills (`/opsx:propose`, `/opsx:apply`, `/opsx:sync`, `/opsx:archive`). Restoring a deleted change directory is itself a protocol question — pause and ask, don't reach for git or shell.
+- Every completed change archives via `/opsx:archive`. "Delete the directory" is never an alternative, regardless of what a stub's `tasks.md §5.X` (or any other artifact) may say. If a stub's tasks.md specifies `DEFAULT: delete`, treat it as an authoring-time error — archive anyway and file a follow-up to fix the propose-time template that generated the bad default.
 - Never add a dependency without justifying it in `design.md`.
 - Never compact mid-task or while unsaved decisions live only in chat.
 - Never skip advisor checkpoints — bypass only per the narrow exceptions in "Coding discipline".
-- Never let brainstorming output land in `docs/plans/` or chat-only — every decision flows to OpenSpec artifacts before `/opsx:apply`.
+- Never let `superpowers:brainstorming` output land in `docs/plans/` or chat-only — every decision flows to OpenSpec artifacts before `/opsx:apply`.
 - Never skip the reactive audit gate, even for fixes that "feel trivial." The 30-second checklist is cheaper than a missed contract change.
 - Never ship an Outcome 2 fix without citing the restored requirement in the commit body (e.g. `Restores: openspec/specs/<cap>/spec.md → Requirement: <name>`). Without the cite, the audit isn't auditable post-hoc.
 - Never amend an archived change. A new back-fill is always a *new* change directory under `openspec/changes/`, even if the impacted requirement was originally added by an archived change.

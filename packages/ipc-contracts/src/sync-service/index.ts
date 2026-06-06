@@ -43,6 +43,9 @@ export type {
   SyncGetConfigError,
   SyncSetConfigError,
   UnknownCommandErrorShape,
+  UploadJob,
+  UploadsListActiveRequest,
+  UploadsListActiveResponse,
   ValidationErrorShape,
 } from "./commands.js";
 export { COMMAND_NAMES } from "./commands.js";
@@ -61,6 +64,7 @@ export type {
   DownloadingPayload,
   EventName,
   EventPayloadMap,
+  FileCreatedPayload,
   FileDownloadedPayload,
   JobCancelledPayload,
   JobCompletedPayload,
@@ -74,6 +78,9 @@ export type {
   ServiceEvent,
   SourceUnavailablePayload,
   SyncCompletedPayload,
+  UploadCancelledPayload,
+  UploadFailedPayload,
+  UploadingPayload,
 } from "./events.js";
 export { EVENT_NAMES } from "./events.js";
 

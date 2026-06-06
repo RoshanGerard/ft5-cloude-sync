@@ -17,7 +17,6 @@ import type {
   DatasourcesPickFilesResponse,
   DatasourcesRemoveRequest,
   DatasourcesRemoveResponse,
-  DatasourcesUploadProgressEvent,
   ErroredDatasourceSummary,
   ProviderCapabilities,
   ProviderDescriptor,
@@ -197,34 +196,25 @@ describe("ipc-contracts datasources request/response pairs", () => {
     expect(res.datasource.status).toBe("syncing");
   });
 
-  it("uploadProgress event shape survives (channel stays for per-job progress streaming)", () => {
-    // Retired by `add-file-explorer-drag-drop-upload`: the legacy upload
-    // request/response types on the datasources surface. The renderer now
-    // dispatches uploads through `files.upload` (→ sync-service
-    // `sync:enqueue-upload`). The `uploadProgress` channel, however, remains
-    // the transport for per-job progress notifications.
-    const progressUploading: DatasourcesUploadProgressEvent = {
-      transactionId: "tx-1",
-      bytesUploaded: 5,
-      bytesTotal: 10,
-      status: "uploading",
-    };
-    const progressDone: DatasourcesUploadProgressEvent = {
-      transactionId: "tx-1",
-      bytesUploaded: 10,
-      bytesTotal: 10,
-      status: "completed",
-    };
-    const progressFailed: DatasourcesUploadProgressEvent = {
-      transactionId: "tx-1",
-      bytesUploaded: 3,
-      bytesTotal: 10,
-      status: "failed",
-      error: "network error",
-    };
-    expect(progressUploading.status).toBe("uploading");
-    expect(progressDone.status).toBe("completed");
-    expect(progressFailed.error).toBe("network error");
+  it("DatasourcesUploadProgressEvent + uploadProgress channel are REMOVED (migrate-upload-orchestration-out-of-engine §7.5 / §13.4)", () => {
+    // Retired in chunk E: the renderer's upload toaster now subscribes
+    // to `sync:event-stream` (filtered to the four upload event kinds
+    // `uploading` / `file-created` / `upload-failed` /
+    // `upload-cancelled`) keyed by service-minted `uploadJobId`. The
+    // legacy per-`transactionId`-keyed translation layer in the
+    // desktop `event-bridge.ts` and the `datasources:upload:progress`
+    // channel are both gone.
+    type Channels = typeof DATASOURCES_CHANNELS;
+    type HasUploadProgress = "uploadProgress" extends keyof Channels
+      ? true
+      : never;
+    expectTypeOf<HasUploadProgress>().toEqualTypeOf<never>();
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        DATASOURCES_CHANNELS,
+        "uploadProgress",
+      ),
+    ).toBe(false);
   });
 
   it("pickFilesToUpload: empty-object request, { filePaths, canceled } response", () => {
@@ -257,28 +247,23 @@ describe("ipc-contracts datasources request/response pairs", () => {
 });
 
 describe("ipc-contracts datasources channel names", () => {
-  it("DATASOURCES_CHANNELS exposes exactly the expected channels, excludes retired consent + upload", () => {
-    // The legacy `upload` channel slot was retired by
-    // `add-file-explorer-drag-drop-upload` — the renderer now dispatches
-    // uploads through `files.upload`. `uploadProgress` stays: it's still the
-    // transport for per-job progress events. `pickFilesToUpload` takes the
-    // retired slot.
-    //
-    // The `startConsent` / `cancelConsent` slots were retired by
-    // `implement-datasource-onboarding` — the renderer's authenticate flow
-    // now goes through the service's `sync:authenticate-{start,cancel}`
-    // commands. Authentication lifecycle events flow as `auth-*` on the
-    // service's `sync:event` stream, NOT as `consent-*` on
-    // `datasources:event`.
+  it("DATASOURCES_CHANNELS exposes exactly the expected channels, excludes retired consent + upload + uploadProgress", () => {
+    // Retired channel slots (do NOT reappear):
+    //   - `upload` (`add-file-explorer-drag-drop-upload`): dispatch
+    //     moved to `files.upload`.
+    //   - `startConsent` / `cancelConsent` (`implement-datasource-onboarding`):
+    //     authenticate flow moved to `sync:authenticate-*` on the
+    //     service.
+    //   - `uploadProgress` (`migrate-upload-orchestration-out-of-engine`
+    //     §7.5 / §13.4): upload events moved to the unified
+    //     `sync:event-stream` (channel `sync:event`) keyed by
+    //     `uploadJobId`.
     expect(DATASOURCES_CHANNELS.list).toBe("datasources:list");
     expect(DATASOURCES_CHANNELS.add).toBe("datasources:add");
     expect(DATASOURCES_CHANNELS.remove).toBe("datasources:remove");
     expect(DATASOURCES_CHANNELS.action).toBe("datasources:action");
     expect(DATASOURCES_CHANNELS.pickFilesToUpload).toBe(
       "datasources:pick-files-to-upload",
-    );
-    expect(DATASOURCES_CHANNELS.uploadProgress).toBe(
-      "datasources:upload:progress",
     );
     expect(DATASOURCES_CHANNELS.event).toBe("datasources:event");
     expect(Object.keys(DATASOURCES_CHANNELS).sort()).toEqual(
@@ -289,29 +274,22 @@ describe("ipc-contracts datasources channel names", () => {
         "list",
         "pickFilesToUpload",
         "remove",
-        "uploadProgress",
       ].sort(),
     );
-    // `upload`, `startConsent`, `cancelConsent` MUST NOT be members of
-    // the channel surface.
-    expect(
-      Object.prototype.hasOwnProperty.call(DATASOURCES_CHANNELS, "upload"),
-    ).toBe(false);
-    expect(
-      Object.prototype.hasOwnProperty.call(
-        DATASOURCES_CHANNELS,
-        "startConsent",
-      ),
-    ).toBe(false);
-    expect(
-      Object.prototype.hasOwnProperty.call(
-        DATASOURCES_CHANNELS,
-        "cancelConsent",
-      ),
-    ).toBe(false);
+    // Removed members MUST NOT reappear on the channel surface.
+    for (const removed of [
+      "upload",
+      "startConsent",
+      "cancelConsent",
+      "uploadProgress",
+    ]) {
+      expect(
+        Object.prototype.hasOwnProperty.call(DATASOURCES_CHANNELS, removed),
+      ).toBe(false);
+    }
   });
 
-  it("DATASOURCES_CHANNELS key set (type-level) excludes 'upload', 'startConsent', 'cancelConsent'", () => {
+  it("DATASOURCES_CHANNELS key set (type-level) excludes 'upload', 'startConsent', 'cancelConsent', 'uploadProgress'", () => {
     // Type-level guard: removed keys must NOT be assignable to the key union.
     type HasUpload = "upload" extends keyof typeof DATASOURCES_CHANNELS
       ? true
@@ -325,6 +303,10 @@ describe("ipc-contracts datasources channel names", () => {
     type HasCancelConsent =
       "cancelConsent" extends keyof typeof DATASOURCES_CHANNELS ? true : never;
     expectTypeOf<HasCancelConsent>().toEqualTypeOf<never>();
+
+    type HasUploadProgress =
+      "uploadProgress" extends keyof typeof DATASOURCES_CHANNELS ? true : never;
+    expectTypeOf<HasUploadProgress>().toEqualTypeOf<never>();
 
     type HasPickFilesToUpload =
       "pickFilesToUpload" extends keyof typeof DATASOURCES_CHANNELS

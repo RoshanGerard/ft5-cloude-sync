@@ -116,19 +116,16 @@ export interface DatasourcesActionResponse {
   datasource: DatasourceSummary;
 }
 
-// The legacy upload request/response types on this surface were retired by
-// `add-file-explorer-drag-drop-upload`. Uploads now flow through
-// `files.upload` (→ sync-service `sync:enqueue-upload`). The progress event
-// shape below survives because the `uploadProgress` channel is still the
-// transport for per-job progress notifications keyed on `transactionId`
-// (the sync-service's job id).
-export interface DatasourcesUploadProgressEvent {
-  transactionId: string;
-  bytesUploaded: number;
-  bytesTotal: number;
-  status: "uploading" | "completed" | "failed";
-  error?: string;
-}
+// migrate-upload-orchestration-out-of-engine §7.5 — `DatasourcesUploadProgressEvent`
+// REMOVED. Upload events now flow on `sync:event-stream` keyed by
+// service-minted `uploadJobId` (see
+// `packages/ipc-contracts/src/sync-service/events.ts` —
+// `UploadingPayload` / `FileCreatedPayload` / `UploadFailedPayload` /
+// `UploadCancelledPayload`). The `datasources:upload:progress` channel
+// + the per-`transactionId`-keyed translation layer in the desktop
+// `event-bridge.ts` are both gone (chunk E §13.4). The renderer's
+// upload toaster subscribes via `window.api.sync.onEvent` filtered to
+// the four upload event kinds.
 
 // `datasources:pick-files-to-upload` is the main-process dialog handler
 // the renderer calls to open the native "Open File" multi-select dialog.
@@ -170,7 +167,9 @@ export const DATASOURCES_CHANNELS = {
   // native multi-select "Open File" dialog; the renderer then dispatches
   // each picked path through `files.upload`.
   pickFilesToUpload: "datasources:pick-files-to-upload",
-  uploadProgress: "datasources:upload:progress",
+  // migrate-upload-orchestration-out-of-engine §7.5 / §13.4 — the
+  // `uploadProgress` channel was removed. Upload events now flow on
+  // `sync:event-stream` (channel `sync:event`) keyed by `uploadJobId`.
   // One-way main → renderer stream carrying `DatasourceEvent<T, K>` envelopes
   // emitted by the FS Datasource Engine's bus. Wired up by the event bridge
   // in Phase 10 of `openspec/changes/add-fs-datasource-engine`; declared here

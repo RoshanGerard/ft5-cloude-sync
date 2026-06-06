@@ -3,6 +3,20 @@
 // carry `retryable` / `retryAfterMs` on the wire (preserved on SyncCommandError's
 // `.raw` field). Anything else (disconnects, timeouts, thrown Errors) collapses
 // into `tag: "other"` with `retryable: false`.
+//
+// Tag-set evolution. The original mapper (pre-add-engine-rename-download)
+// only forwarded `auth-revoked / disconnected / rate-limited / other`. As
+// new tags joined `FilesErrorTag` they were added here:
+//
+//   - `invalid-datasource` (add-invalid-datasource-state)
+//   - `conflict` + `existingPath` (add-engine-rename-download)
+//   - `cancelled` + `exhausted-retries` (add-download-resilience)
+//   - `existingUploadJobId` (migrate-upload-orchestration-out-of-engine
+//     §13.5 — paired with the `tag: "conflict"` reply from the
+//     `files:upload` concurrent-target guard, Decision 10)
+//
+// Unknown tags collapse to `other` so unexpected service drift doesn't
+// crash the renderer.
 
 import type { FilesErrorEnvelope, FilesErrorTag } from "@ft5/ipc-contracts";
 
@@ -13,6 +27,10 @@ const VALID_TAGS: ReadonlySet<FilesErrorTag> = new Set<FilesErrorTag>([
   "disconnected",
   "rate-limited",
   "other",
+  "invalid-datasource",
+  "conflict",
+  "cancelled",
+  "exhausted-retries",
 ]);
 
 export function toFilesErrorEnvelope(err: unknown): FilesErrorEnvelope {
@@ -22,6 +40,8 @@ export function toFilesErrorEnvelope(err: unknown): FilesErrorEnvelope {
       message?: string;
       retryable?: boolean;
       retryAfterMs?: number;
+      existingPath?: string;
+      existingUploadJobId?: string;
     };
     const tag: FilesErrorTag =
       typeof raw.tag === "string" && VALID_TAGS.has(raw.tag as FilesErrorTag)
@@ -33,7 +53,13 @@ export function toFilesErrorEnvelope(err: unknown): FilesErrorEnvelope {
       retryable: typeof raw.retryable === "boolean" ? raw.retryable : false,
     };
     if (typeof raw.retryAfterMs === "number") {
-      return { ...envelope, retryAfterMs: raw.retryAfterMs };
+      envelope.retryAfterMs = raw.retryAfterMs;
+    }
+    if (typeof raw.existingPath === "string") {
+      envelope.existingPath = raw.existingPath;
+    }
+    if (typeof raw.existingUploadJobId === "string") {
+      envelope.existingUploadJobId = raw.existingUploadJobId;
     }
     return envelope;
   }
