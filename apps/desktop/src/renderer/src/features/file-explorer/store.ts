@@ -6,7 +6,10 @@ import { toast } from "sonner";
 import type {
   FileEntry,
   FilesDownloadResponse,
+  FilesErrorEnvelope,
   FilesErrorTag,
+  FilesListResponse,
+  FilesListValue,
   FilesRemoveResponse,
   FilesRemoveTarget,
   FilesRenameResponse,
@@ -145,6 +148,34 @@ export interface ExplorerState {
   loading: boolean;
   error: string | null;
   /**
+   * Opaque continuation cursor for the CURRENT path (add-engine-
+   * listdirectory-pagination Decision 1/2). `null` means the listing is
+   * exhausted (no "Load more"); a string is the token to re-issue for the
+   * next page. Per-path: cleared by `navigate` / `back` / `forward`
+   * (Decision: cursors are per-list-call, discarded on navigation).
+   * Set by `applyInitialPage` (first page) and `loadMore` / `retryLoadMore`
+   * (subsequent pages).
+   */
+  nextCursor: string | null;
+  /**
+   * True while a `loadMore` / `retryLoadMore` IPC is in flight. Doubles as
+   * the re-entrancy guard (a second `loadMore` bails while this is true)
+   * AND the `aria-busy` signal the group-9 Load-more affordance consumes.
+   * Distinct from the full-listing `loading` flag.
+   */
+  loadingMore: boolean;
+  /**
+   * The error envelope from the most recent FAILED `loadMore` /
+   * `retryLoadMore` (fs-sync's 4-attempt env-retry already exhausted per
+   * Decision 4). DISTINCT from `error` / `errorTag`, which drive the
+   * full-screen state components in `file-explorer.tsx`; a page-load
+   * failure must NOT replace the already-rendered entries with a
+   * full-screen error. `null` when the last load-more succeeded or none
+   * has been attempted. The cursor is left UNTOUCHED on failure so a
+   * manual Retry can re-issue with it (task 8.4).
+   */
+  loadMoreError: FilesErrorEnvelope | null;
+  /**
    * Tag carried alongside `error` when the list response was a tagged
    * envelope rejection. Drives the renderer's state-component selection
    * in `file-explorer.tsx` so the renderer picks the right full-replace
@@ -213,6 +244,42 @@ export interface ExplorerStore {
   setLoading(loading: boolean): void;
   setError(error: string | null): void;
   setErrorTag(tag: FilesErrorTag | null): void;
+
+  // --- Pagination (add-engine-listdirectory-pagination §8) ---------------
+
+  /**
+   * Apply a successful FIRST-page list response: replace `entries` with
+   * `value.entries` and set `nextCursor` from `value.nextCursor`. Called by
+   * `use-explorer-data.ts` on the initial-list resolve so the renderer knows
+   * whether to show "Load more" (`nextCursor !== null`). Shares the
+   * cursor-write semantics with `loadMore` (which APPENDS instead). Also
+   * clears any stale `loadMoreError` (a fresh first page starts clean).
+   */
+  applyInitialPage(value: FilesListValue): void;
+
+  /**
+   * Load the next page: re-issue `window.api.files.list` with the stored
+   * `nextCursor` and the current `readExplorerPageSize()`. On success,
+   * APPENDS `value.entries` to the existing entries and advances
+   * `nextCursor`. On failure (fs-sync retry already exhausted), records
+   * `loadMoreError` and leaves the cursor untouched for a manual retry.
+   *
+   * Guards:
+   *   - no-op when `nextCursor === null` (nothing more to load)
+   *   - no-op when `loadingMore` is already true (re-entrancy)
+   *   - if the path changed while the call was in flight, the resolved
+   *     page is discarded (stale-response guard — cursors are per-path)
+   */
+  loadMore(): Promise<void>;
+
+  /**
+   * Manual retry after a `loadMore` failure. Re-issues with the SAME stored
+   * cursor + the current page size; clears `loadMoreError` on success
+   * (append + advance cursor as in `loadMore`). Identical mechanics to
+   * `loadMore` — the only difference is intent (user-initiated retry vs
+   * first attempt).
+   */
+  retryLoadMore(): Promise<void>;
   /**
    * Bump `refetchToken` to re-dispatch the list IPC for the current
    * folder. Used by the disconnected-state's Retry button; does NOT
@@ -308,6 +375,42 @@ export const DIRECTORY_RENAME_REFUSAL =
 export const EMPTY_NAME_REFUSAL = "Name cannot be empty";
 
 export const EXPLORER_STORAGE_KEY_PREFIX = "ft5.file-explorer.";
+
+// Pagination page-size preference (add-engine-listdirectory-pagination
+// Decision 3). Read from a single global localStorage key (NOT per-
+// datasource, mirroring the `ft5.downloads.*` flat-key pattern) on every
+// list-call origination — both the initial list (issued by
+// `use-explorer-data.ts`) and each `loadMore` / `retryLoadMore`. Default
+// is 500 when the key is absent or holds a non-positive / non-numeric
+// value. The Settings dropdown (group 12) writes one of
+// 100 / 500 / 1000 / 5000 / 10000; the strategy layer clamps to each
+// provider's cap, so the renderer does not validate the upper bound.
+export const EXPLORER_PAGE_SIZE_KEY = "ft5.explorer.pageSize";
+export const DEFAULT_EXPLORER_PAGE_SIZE = 500;
+
+/**
+ * Read the user's configured page size from localStorage, falling back to
+ * `DEFAULT_EXPLORER_PAGE_SIZE` (500) when the key is absent, malformed, or
+ * non-positive. Mirrors `downloads-store.ts`'s `getDefaultFolder` read
+ * pattern: defensive try/catch, SSR-safe, storage is the source of truth.
+ *
+ * Exported so BOTH list-origination sites share it: the initial-list hook
+ * (`use-explorer-data.ts`) and the store's `loadMore` / `retryLoadMore`.
+ */
+export function readExplorerPageSize(): number {
+  if (!isBrowser()) return DEFAULT_EXPLORER_PAGE_SIZE;
+  try {
+    const raw = window.localStorage.getItem(EXPLORER_PAGE_SIZE_KEY);
+    if (raw === null) return DEFAULT_EXPLORER_PAGE_SIZE;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return DEFAULT_EXPLORER_PAGE_SIZE;
+    }
+    return parsed;
+  } catch {
+    return DEFAULT_EXPLORER_PAGE_SIZE;
+  }
+}
 
 function storageKeyFor(datasourceId: string): string {
   return `${EXPLORER_STORAGE_KEY_PREFIX}${datasourceId}.prefs`;
@@ -433,6 +536,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     loading: false,
     error: null,
     errorTag: null,
+    nextCursor: null,
+    loadingMore: false,
+    loadMoreError: null,
     refetchToken: 0,
     selection: new Set<string>(),
     lastSelectedId: null,
@@ -505,6 +611,10 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         search: nextSearch,
         selection: nextSelection,
         lastSelectedId: nextLastSelectedId,
+        // Cursors are per-path — discard on navigation (Decision: cursors
+        // are per-list-call). Clear any page-load-failed row too.
+        nextCursor: null,
+        loadMoreError: null,
       },
       false,
     );
@@ -520,6 +630,10 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         ...state,
         currentPath: nextPath,
         history: { ...state.history, index: nextIndex },
+        // back() changes the path without going through navigate(), so it
+        // must independently discard the per-path cursor + failed-state.
+        nextCursor: null,
+        loadMoreError: null,
       },
       false,
     );
@@ -535,6 +649,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         ...state,
         currentPath: nextPath,
         history: { ...state.history, index: nextIndex },
+        // forward() also bypasses navigate() — same per-path cursor reset.
+        nextCursor: null,
+        loadMoreError: null,
       },
       false,
     );
@@ -717,6 +834,147 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
 
   function retryLoad(): void {
     set({ ...state, refetchToken: state.refetchToken + 1 }, false);
+  }
+
+  // --- Pagination (add-engine-listdirectory-pagination §8) ---------------
+
+  function applyInitialPage(value: FilesListValue): void {
+    // First page: REPLACE entries and seed the cursor together so the UI's
+    // "Load more" visibility (`nextCursor !== null`) is correct from the
+    // first paint. Clears any stale page-load-failed row.
+    //
+    // Coerce a missing `nextCursor` to `null`: the wire contract makes it
+    // required, but pre-pagination test fixtures (and any older payload)
+    // may omit it. Without this, the field would be `undefined`, and
+    // `loadMore`'s `nextCursor === null` guard would not bail correctly.
+    set(
+      {
+        ...state,
+        entries: value.entries,
+        nextCursor: value.nextCursor ?? null,
+        loadMoreError: null,
+      },
+      false,
+    );
+  }
+
+  // Defensive `window.api.files.list` accessor, mirroring the
+  // rename/remove/download pattern: tests and non-Electron environments
+  // don't always inject `window.api`.
+  function resolveListApi():
+    | ((req: {
+        datasourceId: string;
+        path: string;
+        cursor?: string;
+        pageSize?: number;
+      }) => Promise<FilesListResponse>)
+    | undefined {
+    return (
+      globalThis as unknown as {
+        window?: {
+          api?: {
+            files?: {
+              list?: (req: {
+                datasourceId: string;
+                path: string;
+                cursor?: string;
+                pageSize?: number;
+              }) => Promise<FilesListResponse>;
+            };
+          };
+        };
+      }
+    ).window?.api?.files?.list;
+  }
+
+  /**
+   * Shared next-page fetch for `loadMore` + `retryLoadMore`. Issues the IPC
+   * with the supplied cursor + the current page size, then APPENDS on
+   * success / records `loadMoreError` on failure. Captures `currentPath` at
+   * call start; if the path changed before the call resolves (the user
+   * navigated mid-flight), the result is discarded — cursors are per-path,
+   * so appending to a different folder would corrupt the listing.
+   */
+  async function runPage(cursor: string): Promise<void> {
+    const requestPath = state.currentPath;
+    set({ ...state, loadingMore: true, loadMoreError: null }, false);
+
+    // After the call resolves, bail if the user navigated away (cursors are
+    // per-path; appending to the new folder would corrupt it). The
+    // navigation already reset cursor/failed-state for the new folder, but
+    // we still flip OUR `loadingMore` flag off so the new folder's
+    // Load-more affordance isn't stuck busy.
+    const bailIfStale = (): boolean => {
+      if (state.currentPath === requestPath) return false;
+      if (state.loadingMore) {
+        set({ ...state, loadingMore: false }, false);
+      }
+      return true;
+    };
+
+    try {
+      const api = resolveListApi();
+      if (api === undefined) {
+        throw new Error("window.api.files.list is unavailable");
+      }
+      const response = await api({
+        datasourceId,
+        path: requestPath,
+        cursor,
+        pageSize: readExplorerPageSize(),
+      });
+      if (bailIfStale()) return;
+      if (response.ok) {
+        set(
+          {
+            ...state,
+            entries: [...state.entries, ...response.value.entries],
+            nextCursor: response.value.nextCursor,
+            loadingMore: false,
+            loadMoreError: null,
+          },
+          false,
+        );
+        return;
+      }
+      // fs-sync's env-retry is already exhausted by the time we see
+      // ok:false. Record the envelope; leave `nextCursor` untouched so a
+      // manual Retry re-issues with the SAME cursor (task 8.4).
+      set(
+        { ...state, loadingMore: false, loadMoreError: response.error },
+        false,
+      );
+    } catch (err) {
+      if (bailIfStale()) return;
+      const message = err instanceof Error ? err.message : String(err);
+      // A thrown error (ipcRenderer reject) carries no tag — synthesize a
+      // minimal envelope so the page-load-failed row has a `tag`/`message`
+      // to humanize. `other` is the generic wire fallback.
+      set(
+        {
+          ...state,
+          loadingMore: false,
+          loadMoreError: {
+            tag: "other",
+            message,
+            retryable: false,
+          },
+        },
+        false,
+      );
+    }
+  }
+
+  async function loadMore(): Promise<void> {
+    // Nothing more to load, or a fetch is already in flight (re-entrancy).
+    if (state.nextCursor === null || state.loadingMore) return;
+    await runPage(state.nextCursor);
+  }
+
+  async function retryLoadMore(): Promise<void> {
+    // Re-issue with the SAME stored cursor. Same guards as loadMore.
+    if (state.nextCursor === null || state.loadingMore) return;
+    await runPage(state.nextCursor);
   }
 
   // --- Details pane ------------------------------------------------------
@@ -1162,6 +1420,9 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     setError,
     setErrorTag,
     retryLoad,
+    applyInitialPage,
+    loadMore,
+    retryLoadMore,
     toggleDetailsPane,
     startPendingOp,
     clearPendingOp,
