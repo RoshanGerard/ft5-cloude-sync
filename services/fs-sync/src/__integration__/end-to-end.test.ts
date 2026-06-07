@@ -21,7 +21,6 @@ import {
   type RequestFrame,
   type ResponseFrame,
 } from "@ft5/ipc-contracts/sync-service";
-import { buildUploadExecutor } from "../executors/upload.js";
 import { buildMirrorSyncExecutor } from "../executors/mirror-sync.js";
 import { FramingDecoder } from "../ipc/framing.js";
 import { startServer, type RunningServer } from "../ipc/server.js";
@@ -107,17 +106,19 @@ async function wireService(opts: {
   const pipePath = pipeFor("svc");
   const resolveClient = opts.fakeResolveClient ?? (async () => fakeClient());
 
-  const uploadExec = buildUploadExecutor({
-    factory: {} as never,
-    resolveClient: resolveClient as never,
-  });
+  // migrate-upload-orchestration-out-of-engine deleted the queue-based
+  // UploadJobExecutor (chunk F); single-file uploads are now a direct-RPC
+  // (files:upload) and no longer flow through the scheduler. Only the
+  // mirror (sync-kind) executor remains here. ExecutorsByKind is a
+  // Partial<Record<JobKind, Executor>>, so omitting "upload" is type-safe
+  // (any stray upload-kind row routes to the scheduler's "unsupported" path).
   const mirrorExec = buildMirrorSyncExecutor({
     db,
     resolveClient: resolveClient as never,
     hashFile: async () => "fake-hash",
   });
   scheduler = new Scheduler(db, {
-    executors: { upload: uploadExec, sync: mirrorExec },
+    executors: { sync: mirrorExec },
     bus,
     pollIntervalMs: 20,
     allowParallel: opts.allowParallel ?? true,
