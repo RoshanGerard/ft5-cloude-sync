@@ -48,7 +48,15 @@ import { DatasourcesDashboard } from "../dashboard";
 let authenticateStartMock: Mock;
 let removeMock: Mock;
 let listMock: Mock;
-let syncOnEventCapture: ((event: SyncEvent) => void) | null = null;
+// Capture ALL registered window.api.sync.onEvent listeners. The store
+// subscribes one, and each card's upload-job toaster subscribes another
+// (migrate-upload §13.4 rewired the toaster onto sync.onEvent). Emitting to
+// every listener mirrors the real broadcast bridge — capturing only the last
+// one would land on the toaster's upload-only filter and drop auth events.
+let syncOnEventListeners: Array<(event: SyncEvent) => void> = [];
+function emitSyncEvent(event: SyncEvent): void {
+  for (const cb of [...syncOnEventListeners]) cb(event);
+}
 
 function installApiMock() {
   authenticateStartMock = vi.fn().mockResolvedValue({
@@ -57,7 +65,7 @@ function installApiMock() {
   });
   removeMock = vi.fn().mockResolvedValue({ ok: true });
   listMock = vi.fn().mockResolvedValue({ datasources: [] });
-  syncOnEventCapture = null;
+  syncOnEventListeners = [];
 
   (window as unknown as { api: unknown }).api = {
     ping: vi.fn().mockResolvedValue({ ok: true, ts: 1 }),
@@ -73,9 +81,9 @@ function installApiMock() {
     sync: {
       listJobs: vi.fn().mockResolvedValue({ jobs: [] }),
       onEvent: vi.fn().mockImplementation((cb: (e: SyncEvent) => void) => {
-        syncOnEventCapture = cb;
+        syncOnEventListeners.push(cb);
         return () => {
-          syncOnEventCapture = null;
+          syncOnEventListeners = syncOnEventListeners.filter((l) => l !== cb);
         };
       }),
       authenticateStart: authenticateStartMock,
@@ -222,7 +230,7 @@ describe("InvalidDatasourceBanner — renders iff errorKind is invalid-datasourc
     );
 
     act(() => {
-      syncOnEventCapture!({
+      emitSyncEvent({
         kind: "auth-completed",
         payload: {
           correlationId: "corr-reconnect",

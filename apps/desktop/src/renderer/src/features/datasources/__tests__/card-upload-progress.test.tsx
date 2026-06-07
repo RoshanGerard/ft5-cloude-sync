@@ -140,7 +140,7 @@ describe("DatasourceCard — upload-progress bar (Decision 13)", () => {
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     // Seed with no jobs.
@@ -170,7 +170,7 @@ describe("DatasourceCard — upload-progress bar (Decision 13)", () => {
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     syncHarness.emit({
@@ -209,7 +209,7 @@ describe("DatasourceCard — upload-progress bar (Decision 13)", () => {
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     syncHarness.emit({
@@ -250,7 +250,7 @@ describe("DatasourceCard — upload-progress bar (Decision 13)", () => {
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     // Helper to assert the badge stays "connected" — Decision 13 spells out
