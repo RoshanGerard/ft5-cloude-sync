@@ -110,6 +110,11 @@ The `downloadJobId` SHALL be the canonical job key for cancel and progress corre
 - **WHEN** a `files:download` GET rejects with `auth-expired`, the handler calls `client.refreshCredentials()`, and the re-issued `engine.downloadFile` GET AGAIN rejects with `auth-expired`
 - **THEN** the handler treats the refresh token as dead: it does NOT refresh a second time, emits `download-failed`, and replies `{ ok: false, error: { tag: "auth-revoked", … } }`
 
+#### Scenario: A failing `refreshCredentials()` itself surfaces auth-revoked
+
+- **WHEN** a `files:download` GET rejects with `auth-expired` and the handler's `client.refreshCredentials()` call ITSELF rejects (e.g. the refresh token is revoked, so `refreshTokenImpl` throws a typed `auth-revoked` `DatasourceError`)
+- **THEN** the handler does NOT swallow the refresh rejection and does NOT re-issue the GET; the typed error propagates to the terminal catch, `normalizeFilesError` maps it to wire `auth-revoked`, `download-failed` is emitted, and the reply is `{ ok: false, error: { tag: "auth-revoked", … } }`
+
 #### Scenario: Range-not-honored aborts with terminal error
 
 - **WHEN** during a retry iteration, `engine.downloadFile(target, { rangeStart: N, … })` resolves with `contentRange === undefined` (provider ignored the Range header and returned 200 OK)
