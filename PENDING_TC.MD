@@ -870,3 +870,44 @@ skipped on `feature/add-download-overwrite-confirm`).
 **Status:** PENDING — HUMAN smoke. Not blocking; automated coverage complete.
 **Owner:** unassigned (the original Bug 5 was raised by dev2@forti5.tech during
 the `add-download-resilience` §11.19 smoke).
+
+## FOLLOW-UP (pre-existing bug, surfaced by add-download-overwrite-confirm) — per-card upload toaster → duplicate upload toasts on multi-card dashboards
+
+**Not part of `add-download-overwrite-confirm`** — surfaced by this change's
+`card-*` test fixes during the full-suite green-up, then confirmed by the
+§9 code review. Recorded here so it isn't lost; suitable for promotion to its
+own OpenSpec stub (spawn on `master` post-merge, NOT on the overwrite-confirm
+branch — keep concerns unmixed).
+
+**Symptom:** `DatasourceCard` instantiates its own upload-job toaster per
+card (`card.tsx:150` — `useMemo(() => createUploadJobToaster(), [])`), and the
+toaster subscribes to the GLOBAL `window.api.sync.onEvent` stream filtered
+only by event **kind** (`uploading`/`file-created`/`upload-failed`/
+`upload-cancelled`), NOT by `datasourceId` (`upload-job-toast.ts:258-266`). On
+the first unseen `uploading` event it spawns `toast.loading(...)`
+(`upload-job-toast.ts:~396`). So with N connected datasource cards mounted, a
+single upload event fans out to all N toasters → potentially N user-visible
+duplicate toasts. This is ALSO the production root cause behind why the
+`card-*` tests' `toHaveBeenCalledTimes(1)` sync assertions broke (each card
+adds a 2nd `sync.onEvent` listener).
+
+**Lineage (pre-existing, NOT this change):** per-card toaster introduced in
+`670a117`; the event source was rewired from the legacy
+`datasources.onUploadProgress` channel onto `sync.onEvent` by
+`migrate-upload-orchestration-out-of-engine` §13.4.
+
+**OPEN QUESTION (resolve before sizing the fix):** does Sonner de-duplicate
+by toast id? If the toaster keys each toast deterministically on
+`uploadJobId`, the N spawns may COLLAPSE to a single toast (Sonner upserts on
+matching id), which would downgrade this from "N duplicate toasts" to "N
+redundant no-op upserts" — annoying but not user-visible duplication. NOT
+investigated yet; check `upload-job-toast.ts` toast-id construction +
+Sonner's id-upsert semantics before deciding severity.
+
+**Likely fix (if confirmed user-visible):** a single app-level upload toaster
+(mounted once at the dashboard/root, not per card), OR datasource-scoped
+filtering in the per-card subscription.
+
+**Status:** PENDING follow-up — NOT blocking the overwrite-confirm merge (this
+branch does not touch the toaster/card production code, so the merge cannot
+worsen it). **Owner:** unassigned.
