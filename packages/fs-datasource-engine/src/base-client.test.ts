@@ -630,6 +630,46 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
     }
   });
 
+  it("5 concurrent refreshCredentials() calls that ALL fail emit token-expired + authentication-failed EXACTLY ONCE (not per-caller); all reject with auth-expired; put NOT called", async () => {
+    // Regression guard (engine code-review Minor #1). The failure emission
+    // lives INSIDE the single-flight cycle (the guard sits before the
+    // try/catch split), so N concurrent failing callers observe exactly one
+    // refreshTokenImpl call and one token-expired + one authentication-failed
+    // — NOT N pairs. The single-failing-caller test above proves "one pair
+    // per cycle"; the 5-concurrent-succeeding test proves promise-sharing;
+    // this test pins the conjunction (the exact property Decision 2 relocated
+    // the emission to achieve). A future refactor moving the emit back
+    // per-caller would make this RED.
+    const { client, events, store } = makeHarness({
+      refreshToken: async () => {
+        throw new Error("refresh exploded");
+      },
+    });
+
+    const settled = await Promise.allSettled(
+      Array.from({ length: 5 }, () => client.refreshCredentials()),
+    );
+
+    // Single-flight holds on the failure path too: exactly one refresh attempt.
+    expect(client.refreshTokenSpy).toHaveBeenCalledTimes(1);
+    // No persistence on failure.
+    expect(store.putMock).not.toHaveBeenCalled();
+    // Exactly one of each failure event across all 5 concurrent callers.
+    const names = events.map((e) => e.event);
+    expect(names.filter((n) => n === "token-expired")).toHaveLength(1);
+    expect(names.filter((n) => n === "authentication-failed")).toHaveLength(1);
+    expect(names).not.toContain("token-refreshed");
+    // All 5 callers reject with the shared auth-expired error.
+    expect(settled).toHaveLength(5);
+    for (const s of settled) {
+      expect(s.status).toBe("rejected");
+      if (s.status === "rejected") {
+        expect(s.reason).toBeInstanceOf(DatasourceError);
+        expect((s.reason as DatasourceError).tag).toBe("auth-expired");
+      }
+    }
+  });
+
   it("persists refreshed credentials to the store BEFORE the promise resolves", async () => {
     const callOrder: string[] = [];
 
