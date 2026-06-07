@@ -87,20 +87,73 @@ export function deriveStatusText(state: ExplorerState): ReactNode {
   }
 
   // --- Idle branch -------------------------------------------------------
+  //
+  // Three-state pagination count (add-engine-listdirectory-pagination
+  // Visual direction V-3). The leading count + suffix is chosen by, in
+  // precedence order:
+  //   1. `loadMoreError !== null` (most recent load-more failed) →
+  //      `N items · couldn't load more`. Wins over more-available because a
+  //      failed `loadMore` leaves BOTH `loadMoreError` AND `nextCursor` set
+  //      (the cursor is retained for the manual Retry) — see the store's
+  //      `runPage`. The spec scenario "Status row indicates load-failed
+  //      after exhausted retry" requires the failed copy here.
+  //   2. `nextCursor !== null` (more pages available) →
+  //      `N+ items · N loaded`.
+  //   3. otherwise (everything loaded) → `N items` (existing no-suffix
+  //      behavior).
+  // The `· M selected` suffix is appended AFTER the pagination suffix in
+  // every state when a selection exists.
   const itemCount = entries.length;
   const selectedCount = selection.size;
+  const { loadMoreError, nextCursor, errorTag } = state;
 
-  if (selectedCount === 0) {
-    return (
+  // The pagination suffix is suppressed whenever a tagged error owns the
+  // main pane (`errorTag !== null` → a full-replace state component renders
+  // in place of the entries). `nextCursor` / `loadMoreError` survive a
+  // `retryLoad()`, so a refetch that fails (e.g. disconnected) can leave
+  // them set while entries linger — without this guard the row would claim
+  // "N+ items · N loaded" beneath a DisconnectedState. The region affordance
+  // is gated the same way in `file-explorer.tsx`; this keeps the two
+  // surfaces consistent. V-3 only governs the entries-showing states.
+  const paginationSuffix: "more-available" | "load-failed" | "none" =
+    errorTag !== null
+      ? "none"
+      : loadMoreError !== null
+        ? "load-failed"
+        : nextCursor !== null
+          ? "more-available"
+          : "none";
+
+  const countSegment: ReactNode =
+    paginationSuffix === "more-available" ? (
+      // More-available: `N+ items · N loaded`.
+      <>
+        <span className="tabular-nums">{itemCount}</span>+ items
+        {" · "}
+        <span className="tabular-nums">{itemCount}</span> loaded
+      </>
+    ) : paginationSuffix === "load-failed" ? (
+      // Most-recent load-more failed (after fs-sync's 4-attempt auto-retry
+      // exhausted): `N items · couldn't load more`.
+      <>
+        <span className="tabular-nums">{itemCount}</span> items
+        {" · "}
+        couldn&apos;t load more
+      </>
+    ) : (
+      // Exhausted / single page: `N items`.
       <>
         <span className="tabular-nums">{itemCount}</span> items
       </>
     );
+
+  if (selectedCount === 0) {
+    return countSegment;
   }
 
   return (
     <>
-      <span className="tabular-nums">{itemCount}</span> items
+      {countSegment}
       {" · "}
       <span className="tabular-nums">{selectedCount}</span> selected
     </>

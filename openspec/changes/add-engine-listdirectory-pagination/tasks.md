@@ -86,8 +86,8 @@ the reverse.
 ## 9. Renderer UI: Load-more affordance
 
 - [ ] 9.1 Implement Load-more affordance component (place under `apps/desktop/src/renderer/src/features/file-explorer/load-more.tsx`)
-- [ ] 9.2 Wire it into List + Details view modes (renders as the last row)
-- [ ] 9.3 Wire it into Small/Medium/Large Icons + Tiles modes (renders as a full-width footer below the grid)
+- [ ] 9.2 Place the affordance in its OWN shared region between the scrollable entries area and the status row (Visual direction V-1) — NOT inside any view-mode scroll container — so it renders below all six view modes at full width, always visible at the bottom regardless of scroll. (Supersedes the pre-Visual-Companion per-view-mode "last row"/"footer below the grid" wording; V-1 locked a single shared placement.)
+- [ ] 9.3 Verify the single shared placement renders + behaves correctly under each of the six view modes (List, Details, Small/Medium/Large Icons, Tiles) — same full-width component, not duplicated per mode.
 - [ ] 9.4 Implement busy state (`aria-busy="true"` + spinner + disabled)
 - [ ] 9.5 Add unit tests for each view mode's integration
 
@@ -101,7 +101,7 @@ the reverse.
 
 ## 11. Renderer UI: Status row
 
-- [ ] 11.1 Update `apps/desktop/src/renderer/src/features/file-explorer/status-row.tsx` to render "Showing N entries — more available" when the explorer store's `nextCursor !== null`, "Showing N entries" otherwise
+- [ ] 11.1 Update `apps/desktop/src/renderer/src/features/file-explorer/status-row.tsx` to the three-state count of Visual direction V-3 (supersedes the earlier "Showing N entries — more available" wording): `nextCursor !== null` → `<N>+ items · <N> loaded`; most-recent load-more failed (`loadMoreError !== null`) → `<N> items · couldn't load more`; `nextCursor === null` → `<N> items` (existing no-suffix behavior). Keep digits in `tabular-nums` and `aria-live="polite"`.
 - [ ] 11.2 Preserve the existing "· N selected" suffix when a selection exists
 - [ ] 11.3 Update `status-row.test.tsx` to cover both cases
 

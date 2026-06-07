@@ -134,6 +134,208 @@ describe("StatusRow — idle state", () => {
   });
 });
 
+describe("StatusRow — pagination three-state count (V-3)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    window.localStorage.clear();
+  });
+
+  function seedN(store: ExplorerStore, n: number): void {
+    const entries = Array.from({ length: n }, (_, i) =>
+      seedEntry({ id: `e-${i}`, name: `file-${i}.txt` }),
+    );
+    act(() => {
+      store.setEntries(entries);
+    });
+  }
+
+  it("more-available: nextCursor !== null renders 'N+ items · N loaded'", () => {
+    const store = makeStore();
+    seedN(store, 500);
+    act(() => {
+      // applyInitialPage seeds nextCursor (the more-available signal).
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: true,
+        nextCursor: "tokA",
+      });
+    });
+    render(<StatusRow store={store} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/^500\+ items · 500 loaded$/);
+  });
+
+  it("more-available with selection: appends '· N selected' AFTER the pagination suffix", () => {
+    const store = makeStore();
+    seedN(store, 500);
+    act(() => {
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: true,
+        nextCursor: "tokA",
+      });
+    });
+    act(() => {
+      store.select("e-0", "replace");
+    });
+    act(() => {
+      store.select("e-1", "toggle");
+    });
+    act(() => {
+      store.select("e-2", "toggle");
+    });
+    render(<StatusRow store={store} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(
+      /^500\+ items · 500 loaded · 3 selected$/,
+    );
+  });
+
+  it("more-available: both numerals are wrapped in tabular-nums", () => {
+    const store = makeStore();
+    seedN(store, 500);
+    act(() => {
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: true,
+        nextCursor: "tokA",
+      });
+    });
+    render(<StatusRow store={store} />);
+    const status = screen.getByRole("status");
+    const digitTexts = Array.from(
+      status.querySelectorAll<HTMLElement>(".tabular-nums"),
+    ).map((el) => el.textContent ?? "");
+    // Two distinct numerals: the "N+" count and the "N loaded" count.
+    expect(digitTexts.filter((t) => t === "500").length).toBeGreaterThanOrEqual(
+      2,
+    );
+  });
+
+  async function driveLoadMoreFailure(
+    store: ExplorerStore,
+    message: string,
+  ): Promise<void> {
+    // Simulate the post-exhaustion store state: a failed loadMore leaves
+    // BOTH nextCursor (for retry) AND loadMoreError set. The failed state
+    // must win over the more-available suffix (spec scenario lines 117-119).
+    (
+      globalThis as unknown as {
+        window: { api: { files: { list: () => Promise<unknown> } } };
+      }
+    ).window.api = {
+      files: {
+        list: () =>
+          Promise.resolve({
+            ok: false as const,
+            error: { tag: "other" as const, message, retryable: true },
+          }),
+      },
+    };
+    await act(async () => {
+      await store.loadMore();
+    });
+  }
+
+  it("load-failed: loadMoreError !== null renders 'N items · couldn't load more' (failed wins over more-available)", async () => {
+    const store = makeStore();
+    seedN(store, 500);
+    act(() => {
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: true,
+        nextCursor: "tokA",
+      });
+    });
+    await driveLoadMoreFailure(store, "connection timed out");
+    render(<StatusRow store={store} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/^500 items · couldn't load more$/);
+  });
+
+  it("load-failed with selection: appends '· N selected' after the failed suffix", async () => {
+    const store = makeStore();
+    seedN(store, 500);
+    act(() => {
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: true,
+        nextCursor: "tokA",
+      });
+    });
+    act(() => {
+      store.select("e-0", "replace");
+    });
+    await driveLoadMoreFailure(store, "boom");
+    render(<StatusRow store={store} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(
+      /^500 items · couldn't load more · 1 selected$/,
+    );
+  });
+
+  it("exhausted: nextCursor === null renders plain 'N items' (existing no-suffix behavior)", () => {
+    const store = makeStore();
+    seedN(store, 42);
+    act(() => {
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: false,
+        nextCursor: null,
+      });
+    });
+    render(<StatusRow store={store} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/^42 items$/);
+  });
+
+  it("suppresses the more-available suffix when a tagged error owns the pane (errorTag !== null)", () => {
+    // A refetch (e.g. post-upload retryLoad) fails `disconnected` while a
+    // stale `nextCursor` + entries linger. The main pane shows the
+    // full-replace DisconnectedState; the status row must NOT claim
+    // "N+ items · N loaded" — it falls back to the plain count.
+    const store = makeStore();
+    seedN(store, 500);
+    act(() => {
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: true,
+        nextCursor: "tokA",
+      });
+    });
+    act(() => {
+      store.setErrorTag("disconnected");
+      store.setError("offline");
+    });
+    render(<StatusRow store={store} />);
+    expect(screen.getByRole("status")).toHaveTextContent(/^500 items$/);
+  });
+
+  it("suppresses the load-failed suffix when a tagged error owns the pane", async () => {
+    const store = makeStore();
+    seedN(store, 500);
+    act(() => {
+      store.applyInitialPage({
+        entries: store.getSnapshot().entries,
+        truncated: true,
+        nextCursor: "tokA",
+      });
+    });
+    await driveLoadMoreFailure(store, "boom");
+    act(() => {
+      store.setErrorTag("disconnected");
+      store.setError("offline");
+    });
+    render(<StatusRow store={store} />);
+    // loadMoreError lingers, but the tagged error owns the pane → plain.
+    expect(screen.getByRole("status")).toHaveTextContent(/^500 items$/);
+  });
+});
+
 describe("StatusRow — reactivity", () => {
   beforeEach(() => {
     window.localStorage.clear();

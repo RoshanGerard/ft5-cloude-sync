@@ -36,7 +36,7 @@ When fs-sync's 4-attempt auto-retry on a paged `files:list` exhausts and returns
 
 The row SHALL be a two-line layout at approximately `h-20`, with `bg-destructive/8` background tint, `border-t border-destructive/20`, and `text-destructive`. Layout from top:
 
-1. A horizontal flex containing a leading `<AlertCircle className="size-4" />` icon and a stacked text block. The text block's first line is a bold `Couldn't load more entries` headline (`text-sm font-medium`); the second line is a smaller detail line carrying the underlying error tag (humanized) and message (`text-xs font-normal opacity-85`), e.g. `Network error: connection timed out after 4 attempts`.
+1. A horizontal flex containing a leading `<AlertCircle className="size-4" />` icon and a stacked text block. The text block's first line is a bold `Couldn't load more entries` headline (`text-sm font-medium`); the second line is a smaller detail line carrying the humanized WIRE error tag and message (`text-xs font-normal opacity-85`), e.g. `Disconnected: connection timed out after 4 attempts` (the renderer only ever sees the wire `FilesErrorTag` vocabulary — `normalizeFilesError` surfaces an engine `network-error` as wire `disconnected`, and a generic engine `provider-error` as wire `other` → "Error").
 2. Below the text block, a full-width `<Button variant="outline">` with the visible label `Retry`, bordered in the destructive palette.
 
 The row SHALL announce via `aria-live="assertive"` and SHALL NOT steal focus from the entries area when it appears.
@@ -47,8 +47,8 @@ Retry SHALL re-issue the same request that failed (same `cursor`, same `pageSize
 
 #### Scenario: Network failure surfaces inline retry row
 
-- **WHEN** fs-sync's `files:list` retry exhausts on a `tag: "network-error"` failure for a Load-more click that requested `cursor: "tokA", pageSize: 500`
-- **THEN** the entries already loaded remain visible; the Load-more button is replaced by a two-line row in the same region; the row's first line reads `Couldn't load more entries`; the second line reads `Network error: <message>`; a full-width outline Retry button appears below; the row uses `bg-destructive/8` + `border-t border-destructive/20` + `text-destructive`; `aria-live="assertive"` is set; focus is not stolen from the entries area; the status row updates from `500+ items · 500 loaded` to `500 items · couldn't load more`
+- **WHEN** fs-sync's `files:list` retry exhausts on a network failure (engine `network-error`, surfaced to the renderer as wire `tag: "disconnected"` per `normalizeFilesError`) for a Load-more click that requested `cursor: "tokA", pageSize: 500`
+- **THEN** the entries already loaded remain visible; the Load-more button is replaced by a two-line row in the same region; the row's first line reads `Couldn't load more entries`; the second line reads `Disconnected: <message> after 4 attempts` (the humanized wire `disconnected` tag); a full-width outline Retry button appears below; the row uses `bg-destructive/8` + `border-t border-destructive/20` + `text-destructive`; `aria-live="assertive"` is set; focus is not stolen from the entries area; the status row updates from `500+ items · 500 loaded` to `500 items · couldn't load more`
 
 #### Scenario: Retry click re-issues the same cursor with a fresh budget
 
