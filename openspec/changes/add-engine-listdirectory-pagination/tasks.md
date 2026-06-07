@@ -1,17 +1,18 @@
 # Tasks: `add-engine-listdirectory-pagination`
 
-## 0. Prerequisites — `/opsx:apply` is BLOCKED until these complete
+## 0. Prerequisites — assessed; `/opsx:apply` is UNBLOCKED (2026-06-07)
 
-**This change MUST NOT be applied** until the following changes have
-been merged to `master` (per `proposal.md` Status block and
-`design.md` Risks/Trade-offs > Migrate-chain ordering):
+The BLOCKING prerequisite is merged. The two SOFT prerequisites were
+assessed non-blocking for pagination (rationale inline) — they relocate
+sites pagination merely *uses*, so they adapt to pagination later, not
+the reverse.
 
-- [ ] 0.1 `migrate-engine-retry-policy-to-consumer` is merged to master (BLOCKING — pagination's auto-retry wrapper coordinates with retry ownership decided in this migration)
-- [ ] 0.2 `migrate-engine-events-to-consumer` is merged to master (SOFT — affects whether listDirectory should emit a per-page event)
-- [ ] 0.3 `migrate-engine-cache-invalidation` is merged to master (SOFT — affects Drive's per-page cache-write call site)
+- [x] 0.1 `migrate-engine-retry-policy-to-consumer` (BLOCKING — auto-retry coordinates with retry ownership) — **MERGED** 2026-06-07 (`d26f26d`). fs-sync owns auth-expired refresh via `withAuthRefresh`; `files-list.ts` is already wrapped, and pagination's env-retry composes as the outer ring around it.
+- [x] 0.2 `migrate-engine-events-to-consumer` (SOFT — per-page event emission) — **ASSESSED NON-BLOCKING** (not merged). `listDirectory` emits no success event today (`runReadOp` in `base-client.ts` emits only on failure: `rate-limited` / `status-changed`), and pagination adds none. No read-op emission exists for the events migration to coordinate with; if it later adds a `directory-listed` event, first-page-only emission is its concern. No double-rewrite.
+- [x] 0.3 `migrate-engine-cache-invalidation` (SOFT — Drive per-page cache-write site) — **ASSESSED NON-BLOCKING** (not merged). Drive's `doListDirectoryImpl` populates the path cache at the existing call site; pagination keeps that site (populating incrementally per page — task 2.5 verifies). The cache migration relocates invalidation *ownership*, which pagination does not touch. No double-rewrite.
 - [x] 0.4 ~~Re-run `superpowers:brainstorming` Visual Companion to fill `design.md` `## Visual direction` TODOs~~ — Resolved 2026-05-05 in Visual Companion session (mockups archived in `.superpowers/brainstorm/2462-1777928142/content/`); decisions V-1 through V-4 locked into `design.md` `## Visual direction` and `specs/file-explorer/spec.md` scenarios
-- [ ] 0.5 Confirm `design.md` Decision 4 auto-retry interpretation with the user (4 attempts vs 3 attempts at 2s/5s/7s back-offs)
-- [ ] 0.6 Re-run pre-apply staleness check on `design.md` file paths and function names per CLAUDE.md `## Workflow` step 5
+- [x] 0.5 Confirm `design.md` Decision 4 auto-retry interpretation — **CONFIRMED 4 attempts** (initial + 3 retries at 2s/5s/7s) per the user's "proceed" on the design's recommended reading. The count is a single constant, adjustable if support feedback warrants.
+- [x] 0.6 Re-run pre-apply staleness check per CLAUDE.md `## Workflow` step 6 — **DONE** 2026-06-07. Verified `runReadOp` / `listDirectory` wrapper / `doListDirectoryImpl` shapes against current `base-client.ts`; corrected 3 stale `withRefresh` refs in `design.md` (Decision 4, Decision 7 item 5, Risks Migrate-chain) to the as-merged `withAuthRefresh` model. Flagged tasks-vs-design conflict at 12.2 (shadcn `Select` vs `DropdownMenu`) to resolve at apply.
 
 ## 1. Engine port + base wrapper
 

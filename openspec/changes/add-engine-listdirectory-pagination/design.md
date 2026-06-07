@@ -144,9 +144,13 @@ interpreted as three *retry waits* after the initial attempt,
 producing four total attempts. Confirm or adjust during human review;
 the count is a single constant.
 
-Other tags pass through immediately:
-- `auth-expired` — engine's `withRefresh` already retries once;
-  fs-sync sees only the post-refresh outcome.
+Other tags are NOT retried by the 4-attempt env-retry loop:
+- `auth-expired` — handled by the inner `withAuthRefresh` wrap (per
+  `migrate-engine-retry-policy-to-consumer`, merged 2026-06-07): the
+  handler refreshes once via `client.refreshCredentials()` and retries
+  the call once, inside the env-retry's attempt. The engine no longer
+  auto-refreshes. A still-`auth-expired` outcome after one refresh is
+  terminal (not in the env-retry set) → renderer surfaces reconnect.
 - `auth-revoked` — terminal; renderer surfaces reconnect.
 - `cancelled` — terminal; renderer surfaces nothing.
 - `invalid-datasource` — terminal; renderer surfaces invalid-state.
@@ -204,8 +208,10 @@ aren't first-party requirements. Initial entries:
 4. Page-size choices above provider caps (5000, 10000) over-resolve
    to multiple engine calls per "page" from the renderer's
    perspective.
-5. Auto-retry policy (4 attempts / 14s) is a fs-sync-side decision;
-   the engine's `withRefresh` retry is one-shot and orthogonal.
+5. Auto-retry policy (4 attempts / 14s) is a fs-sync-side decision
+   layered as the OUTER ring around fs-sync's `withAuthRefresh` auth
+   refresh (per `migrate-engine-retry-policy-to-consumer` — the engine
+   no longer auto-refreshes; auth refresh is the one-shot inner ring).
 
 This doc is referenced (but not normatively constrained) by the
 modified `fs-datasource-engine` spec.
@@ -350,14 +356,17 @@ Values ≥ 1000 render with comma separators. Digits use
 
 ## Risks / Trade-offs
 
-**[Migrate-chain ordering]** → Wait until the relevant `migrate-*`
-changes land before `/opsx:apply`.
-- `migrate-engine-retry-policy-to-consumer` (blocking): pagination's
-  4-attempt auto-retry lives in fs-sync today. If retry ownership
-  moves to the consumer (per the migrate-* design), the wrapper
-  relocates accordingly and the engine's `runReadOp` may stop being
-  the right wrap point. Holding pagination behind this avoids a
-  double-rewrite.
+**[Migrate-chain ordering]** → Blocking prereq resolved (merged
+2026-06-07); the two soft prereqs were assessed non-blocking. Per-prereq
+status:
+- `migrate-engine-retry-policy-to-consumer` (RESOLVED — merged
+  2026-06-07, master `d26f26d`): retry ownership moved to fs-sync.
+  `files-list.ts` is already `withAuthRefresh`-wrapped; pagination's
+  4-attempt env-retry composes as the OUTER ring around that inner
+  auth wrap. `runReadOp` (base-client.ts) was unchanged by the
+  migration — still error-normalization + `rate-limited` /
+  `status-changed` emission, no refresh — so task 1.2's "preserve
+  `runReadOp` wrap unchanged" still holds.
 - `migrate-engine-events-to-consumer` (soft-blocking): listDirectory
   emits no events today. If the migration introduces a `directory-listed`
   event (or similar), pagination should follow suit on first-page-only
