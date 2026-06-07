@@ -45,6 +45,13 @@ export type {
   DownloadResult,
 } from "./base-client.js";
 
+// migrate-engine-retry-policy-to-consumer Decision 3: the default,
+// replaceable one-shot refresh-then-retry policy. Callers wrap a single
+// engine op in `withAuthRefresh(client, () => client.op(...))` to reproduce
+// the auth-expired refresh-and-retry the base used to bake in via the
+// removed `withRefresh`.
+export { withAuthRefresh } from "./with-auth-refresh.js";
+
 // Phase 4: CredentialStore port. The concrete implementation
 // (SqliteCredentialStore + safeStorage) lives in `apps/desktop` because it
 // depends on Electron; the engine package stays framework-agnostic.

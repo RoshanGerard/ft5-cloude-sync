@@ -490,38 +490,13 @@ describe("BaseDatasourceClient — uploadFile options forwarding", () => {
     expect(names).not.toContain("upload-cancelled");
   });
 
-  it("withRefresh still applies to uploadFile — auth-expired refreshes once and retries", async () => {
-    let attempt = 0;
-    const onProgress = vi.fn<(loaded: number, total: number) => void>();
-    const { client, events } = makeHarness({
-      doUploadFile: async (_parent, _file, options) => {
-        attempt += 1;
-        if (attempt === 1) {
-          throw { __tag: "auth-expired" };
-        }
-        // Second attempt fires the consumer's onProgress as normal.
-        options.onProgress?.(0, 100);
-        options.onProgress?.(100, 100);
-        return makeEntry("/post-refresh.txt");
-      },
-      refreshToken: async () => ({ accessToken: "fresh" }),
-    });
-
-    const result = await client.uploadFile(
-      { kind: "path", path: "/" },
-      { path: "C:/tmp/x.txt" },
-      { onProgress },
-    );
-    expect(result.path).toBe("/post-refresh.txt");
-    // Single retry; onProgress fires only on the successful attempt.
-    expect(attempt).toBe(2);
-    expect(onProgress).toHaveBeenCalledTimes(2);
-    // Bus carries the refresh event only — no upload events.
-    const names = events.map((e) => e.event);
-    expect(names).toContain("token-refreshed");
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-  });
+  // The former "withRefresh still applies to uploadFile — auth-expired
+  // refreshes once and retries" case was retired by
+  // migrate-engine-retry-policy-to-consumer (Decision 1): the engine no longer
+  // auto-refreshes on `auth-expired`. uploadFile now surfaces a normalized
+  // `auth-expired` raw (see the inversion guard below), and the
+  // refresh-once-then-retry behaviour is owned by the consumer via the
+  // exported `withAuthRefresh` helper — exercised in `with-auth-refresh.test.ts`.
 });
 
 // Note: the legacy "transactionId / progress percentage" assertions and
@@ -617,63 +592,46 @@ describe("BaseDatasourceClient — Unsupported errors are silent on the bus", ()
 });
 
 // ---------------------------------------------------------------------------
-// Single-flight refresh on 5 concurrent auth-expired
+// Public refreshCredentials() — single-flight credential refresh
 // ---------------------------------------------------------------------------
+//
+// migrate-engine-retry-policy-to-consumer Decisions 2 + 7: the base no longer
+// auto-refreshes around operations (see the inversion guard below). Instead it
+// exposes a PUBLIC single-flight `refreshCredentials()` that callers invoke
+// explicitly (typically via the exported `withAuthRefresh` helper) after
+// observing an `auth-expired` error. These cases were transformed from the
+// former engine-owned `withRefresh` single-flight / persist / failure-events
+// tests — their intent now belongs to the public method, exercised directly
+// here rather than through an op that throws `auth-expired`. The one-shot
+// refresh-then-retry behaviour those op-driven tests used to cover now lives
+// in `with-auth-refresh.test.ts`.
 
-describe("BaseDatasourceClient — single-flight token refresh", () => {
-  it("5 concurrent auth-expired failures trigger exactly one refreshToken call", async () => {
-    const retryReturn = [makeEntry("/a.txt")];
-
-    // First 5 calls reject with auth-expired (one per concurrent op); calls
-    // 6..10 (the retries) resolve. This mirrors "each op fails once, retries
-    // succeed" since the base only retries once per op.
-    let callCount = 0;
-    const doListDirectory = vi.fn(async (target: Target) => {
-      void target;
-      callCount++;
-      if (callCount <= 5) throw { __tag: "auth-expired" };
-      return retryReturn;
-    });
-
+describe("BaseDatasourceClient — public refreshCredentials() single-flight", () => {
+  it("5 concurrent refreshCredentials() calls trigger exactly one refreshTokenImpl + one token-refreshed; all resolve with the same AuthResult", async () => {
+    const refreshed: AuthResult = { accessToken: "new-token" };
     const { client, events, store } = makeHarness({
-      doListDirectory: doListDirectory as unknown as (
-        target: Target,
-      ) => Promise<DatasourceFileEntry<FakeType>[]>,
-      refreshToken: async () => ({ accessToken: "new-token" }),
+      refreshToken: async () => refreshed,
     });
 
     const results = await Promise.all(
-      Array.from({ length: 5 }, () =>
-        client.listDirectory({ kind: "path", path: "/root" }),
-      ),
+      Array.from({ length: 5 }, () => client.refreshCredentials()),
     );
 
-    // refreshToken was called exactly once
+    // refreshTokenImpl was called exactly once across the 5 concurrent callers.
     expect(client.refreshTokenSpy).toHaveBeenCalledTimes(1);
-    // credentialStore.put was called exactly once
+    // credentialStore.put was called exactly once.
     expect(store.putMock).toHaveBeenCalledTimes(1);
-    // exactly one token-refreshed event
-    const refreshed = events.filter((e) => e.event === "token-refreshed");
-    expect(refreshed).toHaveLength(1);
-    // all 5 calls resolved with the retry's result
+    // exactly one token-refreshed event.
+    const refreshedEvents = events.filter((e) => e.event === "token-refreshed");
+    expect(refreshedEvents).toHaveLength(1);
+    // all 5 callers resolved with the same refreshed AuthResult.
     for (const r of results) {
-      expect(r).toEqual(retryReturn);
+      expect(r).toEqual(refreshed);
     }
-    // every call's `doListDirectory` was invoked twice (fail + retry), so total 10
-    expect(doListDirectory).toHaveBeenCalledTimes(10);
   });
 
-  it("persists refreshed credentials to the store BEFORE retry runs", async () => {
+  it("persists refreshed credentials to the store BEFORE the promise resolves", async () => {
     const callOrder: string[] = [];
-
-    const doListDirectory = vi.fn(async (target: Target) => {
-      void target;
-      callOrder.push("doListDirectory");
-      if (callOrder.filter((s) => s === "doListDirectory").length === 1) {
-        throw { __tag: "auth-expired" };
-      }
-      return [makeEntry("/a.txt")];
-    });
 
     const store = makeStore();
     store.putMock.mockImplementation(async () => {
@@ -688,9 +646,6 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
         ctx: { bus, credentialStore: store, providerDescriptor: descriptor },
       },
       {
-        doListDirectory: doListDirectory as unknown as (
-          target: Target,
-        ) => Promise<DatasourceFileEntry<FakeType>[]>,
         refreshToken: async () => {
           callOrder.push("refreshToken");
           return { accessToken: "new-token" };
@@ -698,26 +653,19 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
       },
     );
 
-    await client.listDirectory({ kind: "path", path: "/root" });
+    await client.refreshCredentials();
+    // `put` is recorded only after it is awaited; the resolve below sees it.
+    callOrder.push("resolved");
 
     // Expected ordering:
-    //   doListDirectory (fails auth-expired)
-    //   refreshToken
-    //   put
-    //   doListDirectory (retry)
-    expect(callOrder).toEqual([
-      "doListDirectory",
-      "refreshToken",
-      "put",
-      "doListDirectory",
-    ]);
+    //   refreshToken (the strategy primitive)
+    //   put (persisted BEFORE the promise resolves)
+    //   resolved (the awaited refreshCredentials() returned)
+    expect(callOrder).toEqual(["refreshToken", "put", "resolved"]);
   });
 
-  it("refresh failure emits token-expired + authentication-failed and throws AuthExpired", async () => {
+  it("refresh failure (refreshTokenImpl throws) emits token-expired + authentication-failed and rejects with AuthExpired; put NOT called", async () => {
     const { client, events, store } = makeHarness({
-      doListDirectory: async () => {
-        throw { __tag: "auth-expired" };
-      },
       refreshToken: async () => {
         throw new Error("refresh exploded");
       },
@@ -725,7 +673,7 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
 
     let caught: unknown;
     try {
-      await client.listDirectory({ kind: "path", path: "/root" });
+      await client.refreshCredentials();
     } catch (e) {
       caught = e;
     }
@@ -736,12 +684,16 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
     const names = events.map((e) => e.event);
     expect(names).toContain("token-expired");
     expect(names).toContain("authentication-failed");
+    expect(names).not.toContain("token-refreshed");
+    // Exactly one of each failure event (single-flight cycle emits once).
+    expect(names.filter((n) => n === "token-expired")).toHaveLength(1);
+    expect(names.filter((n) => n === "authentication-failed")).toHaveLength(1);
 
     // Decision 12.4: `authentication-failed` payload is the full
-    // SerializedDatasourceError shape (not a reason string). The single-
-    // flight refresh-failure path wraps the raw refresh exception into a
-    // `DatasourceError` with tag `auth-expired` before serializing —
-    // consumers receive retry affordances plus the raw cause.
+    // SerializedDatasourceError shape (not a reason string). The refresh-
+    // failure path wraps the raw refresh exception into a `DatasourceError`
+    // tagged `auth-expired` before serializing — consumers receive retry
+    // affordances plus the raw cause.
     const authFailed = events.find((e) => e.event === "authentication-failed");
     expect(authFailed?.payload).toMatchObject({
       tag: "auth-expired",
@@ -753,11 +705,11 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
     // `raw` preserves the original refresh exception for diagnostics.
     expect((authFailed?.payload as { raw?: unknown }).raw).toBeDefined();
 
-    // Store was NOT updated with new credentials
+    // Store was NOT updated with new credentials.
     expect(store.putMock).not.toHaveBeenCalled();
   });
 
-  it("refresh succeeds but credentialStore.put rejects → routed through refresh-failed path", async () => {
+  it("refresh succeeds but credentialStore.put rejects → routed through the refresh-failed path", async () => {
     // Documented behaviour: a storage failure inside the refresh cycle
     // reframes as auth-expired. Host implementations must surface storage
     // failures via their own logging. See class docstring.
@@ -774,9 +726,6 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
         ctx: { bus, credentialStore: store, providerDescriptor: descriptor },
       },
       {
-        doUploadFile: async () => {
-          throw { __tag: "auth-expired" };
-        },
         // refreshTokenImpl resolves with a valid AuthResult — the failure
         // is entirely in the credential-store `put`.
         refreshToken: async () => ({ accessToken: "freshly-minted" }),
@@ -785,10 +734,7 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
 
     let caught: unknown;
     try {
-      await client.uploadFile(
-        { kind: "path", path: "/parent" },
-        { path: "C:/tmp/demo.txt" },
-      );
+      await client.refreshCredentials();
     } catch (e) {
       caught = e;
     }
@@ -799,12 +745,14 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
     const names = events.map((e) => e.event);
     expect(names).toContain("token-expired");
     expect(names).toContain("authentication-failed");
+    // token-refreshed is NOT emitted — the put rejection skips it (it lives
+    // after `persistCredentials` inside the single-flight cycle's try).
     expect(names).not.toContain("token-refreshed");
 
     // Decision 12.4: `authentication-failed` payload is the full
-    // SerializedDatasourceError shape — the refresh-failure path
-    // serializes a synthesized `auth-expired` DatasourceError carrying
-    // the credential-store exception as `raw`.
+    // SerializedDatasourceError shape — the refresh-failure path serializes a
+    // synthesized `auth-expired` DatasourceError carrying the credential-store
+    // exception as `raw`.
     const authFailed = events.find((e) => e.event === "authentication-failed");
     expect(authFailed?.payload).toMatchObject({
       tag: "auth-expired",
@@ -815,23 +763,74 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
     });
     expect((authFailed?.payload as { raw?: unknown }).raw).toBeDefined();
 
-    // The store.put error is only visible via the spy's rejection — it is
-    // NOT re-surfaced to the caller as a distinct error.
+    // put was attempted exactly once; its error is NOT re-surfaced as a
+    // distinct error to the caller.
     expect(store.putMock).toHaveBeenCalledTimes(1);
   });
 
-  it("retry auth-expired is NOT re-refreshed (one refresh max per auth-expired burst)", async () => {
+  it("reuses a typed DatasourceError when refreshTokenImpl throws one (does not re-synthesize)", async () => {
+    // When refreshTokenImpl rejects with a typed DatasourceError, the failure
+    // path surfaces THAT error unchanged rather than wrapping it in a fresh
+    // synthesized `auth-expired` (per the spec: synthesis happens only when the
+    // underlying refresh did not itself produce a typed DatasourceError).
+    const typed = new DatasourceError<FakeType>({
+      tag: "auth-revoked",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: "refresh token revoked by provider",
+    });
+    const { client, events } = makeHarness({
+      refreshToken: async () => {
+        throw typed;
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await client.refreshCredentials();
+    } catch (e) {
+      caught = e;
+    }
+
+    // The exact typed instance propagates.
+    expect(caught).toBe(typed);
+
+    // The failure events still fire, carrying the typed error's tag.
+    const authFailed = events.find((e) => e.event === "authentication-failed");
+    expect(authFailed?.payload).toMatchObject({ tag: "auth-revoked" });
+    expect(events.some((e) => e.event === "token-expired")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inversion guard — operations surface auth-expired RAW (no engine refresh)
+// ---------------------------------------------------------------------------
+//
+// migrate-engine-retry-policy-to-consumer Decision 1: the base no longer
+// wraps operations in `withRefresh`. An operation whose `doXImpl` throws an
+// `auth-expired`-tagged error surfaces it to the caller UNCHANGED —
+// `refreshTokenImpl` is NOT called and the operation is NOT retried. The
+// caller decides whether to call `refreshCredentials()` and retry (typically
+// via `withAuthRefresh`). This guard PROVES the old auto-refresh is gone.
+
+describe("BaseDatasourceClient — operations surface auth-expired without auto-retry", () => {
+  it("listDirectory: a doListDirectoryImpl auth-expired surfaces raw — refreshTokenImpl NOT called, NO retry", async () => {
     const doListDirectory = vi.fn(async (target: Target) => {
-      // Always fail with auth-expired, both first call and retry.
       void target;
-      throw { __tag: "auth-expired" };
+      throw new DatasourceError<FakeType>({
+        tag: "auth-expired",
+        datasourceType: "amazon-s3",
+        datasourceId: "ds-1",
+        retryable: false,
+        message: "token expired",
+      });
     });
 
     const { client } = makeHarness({
       doListDirectory: doListDirectory as unknown as (
         target: Target,
       ) => Promise<DatasourceFileEntry<FakeType>[]>,
-      refreshToken: async () => ({ accessToken: "new-token" }),
     });
 
     let caught: unknown;
@@ -841,12 +840,44 @@ describe("BaseDatasourceClient — single-flight token refresh", () => {
       caught = e;
     }
 
+    // The auth-expired DatasourceError propagated unchanged.
     expect(caught).toBeInstanceOf(DatasourceError);
     expect((caught as DatasourceError).tag).toBe("auth-expired");
-    // refreshToken called ONCE — the retry's auth-expired does NOT trigger a 2nd refresh.
-    expect(client.refreshTokenSpy).toHaveBeenCalledTimes(1);
-    // doListDirectory called TWICE (initial + single retry).
-    expect(doListDirectory).toHaveBeenCalledTimes(2);
+    // The engine did NOT refresh.
+    expect(client.refreshTokenSpy).not.toHaveBeenCalled();
+    // The op was invoked exactly once — no retry.
+    expect(doListDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploadFile: a doUploadFileImpl auth-expired surfaces a normalized DatasourceError — refreshTokenImpl NOT called, NO retry", async () => {
+    let attempts = 0;
+    const { client } = makeHarness({
+      doUploadFile: async () => {
+        attempts += 1;
+        // Throw a RAW (un-normalized) auth-expired marker — the wrapper's
+        // normalize-only catch must still turn it into a DatasourceError.
+        throw { __tag: "auth-expired" };
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await client.uploadFile(
+        { kind: "path", path: "/parent" },
+        { path: "C:/tmp/x.txt" },
+      );
+    } catch (e) {
+      caught = e;
+    }
+
+    // uploadFile is bus-exempt but still normalizes — the caller (and the
+    // downstream withAuthRefresh) sees a DatasourceError tagged auth-expired.
+    expect(caught).toBeInstanceOf(DatasourceError);
+    expect((caught as DatasourceError).tag).toBe("auth-expired");
+    // The engine did NOT refresh.
+    expect(client.refreshTokenSpy).not.toHaveBeenCalled();
+    // The op was invoked exactly once — no retry.
+    expect(attempts).toBe(1);
   });
 });
 
@@ -1090,9 +1121,10 @@ describe("BaseDatasourceClient — dispose()", () => {
 // rename — base-class primitive (add-engine-rename-download §4)
 // ---------------------------------------------------------------------------
 //
-// The base class wraps the strategy's `doRenameImpl` with the existing
-// `withRefresh` machinery and emits exactly one `entry-renamed` event on
-// success or one `delete-failed { via: "rename" }` event on failure.
+// The base class calls the strategy's `doRenameImpl` directly (per
+// migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh) and
+// emits exactly one `entry-renamed` event on success or one
+// `delete-failed { via: "rename" }` event on failure.
 // Per design.md Decision 1 + spec.md "Directory rename with conflictPolicy
 // 'overwrite' is refused", per-policy orchestration (sibling-detection,
 // suffix-retry, kind-based refusal) lives in each strategy — Section 4
@@ -1353,8 +1385,9 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
 // downloadFile — base-class primitive (add-engine-rename-download §5)
 // ---------------------------------------------------------------------------
 //
-// The base wraps the strategy's `doDownloadFileImpl` with `withRefresh`
-// (one-shot auth-expired retry on the initial HTTP call) and emits the
+// The base calls the strategy's `doDownloadFileImpl` directly (per
+// migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh on
+// `auth-expired`) and emits the
 // engine bus's four download lifecycle events: `downloading` (per chunk),
 // `file-downloaded` (on stream end), `download-failed` (on stream error),
 // `download-cancelled` (on AbortSignal). Per design.md Decision 3, the
@@ -1370,7 +1403,7 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
 // cancel-path event can populate `bytesDownloaded` / `bytesTotal`.
 
 describe("BaseDatasourceClient — downloadFile success path", () => {
-  it("returns the strategy's shape unchanged via withRefresh; emits one or more `downloading` then exactly one `file-downloaded` on clean stream end; no `download-failed` or `download-cancelled`", async () => {
+  it("returns the strategy's shape unchanged; emits one or more `downloading` then exactly one `file-downloaded` on clean stream end; no `download-failed` or `download-cancelled`", async () => {
     const target: Target = { kind: "path", path: "/folder/big.bin" };
     const stream = new Readable({ read() {} });
     const { client, events } = makeHarness({
