@@ -159,6 +159,8 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingSize?: number;
+            existingModifiedAt?: string;
             existingUploadJobId?: string;
           };
         }
@@ -191,6 +193,8 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingSize?: number;
+            existingModifiedAt?: string;
             existingUploadJobId?: string;
           };
         }
@@ -251,6 +255,8 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingSize?: number;
+            existingModifiedAt?: string;
             existingUploadJobId?: string;
           };
         }
@@ -346,6 +352,8 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingSize?: number;
+            existingModifiedAt?: string;
             existingUploadJobId?: string;
           };
         }
@@ -423,6 +431,8 @@ describe("ipc-contracts files request/response pairs", () => {
             retryable: boolean;
             retryAfterMs?: number;
             existingPath?: string;
+            existingSize?: number;
+            existingModifiedAt?: string;
             existingUploadJobId?: string;
           };
         }
@@ -588,6 +598,10 @@ describe("ipc-contracts files request/response pairs", () => {
     // dispatch. The mock-fs era allowed `toPath?` so the main process
     // could fall back to a "saved-to-mock-path" stub; that fallback no
     // longer exists.
+    //
+    // `conflictPolicy` was added by `add-download-overwrite-confirm`
+    // (Decision 1). Optional with default-to-`"fail"` semantics enforced
+    // at the service handler.
     const req: FilesDownloadRequest = {
       datasourceId: "ds-1",
       path: "/welcome.pdf",
@@ -599,6 +613,150 @@ describe("ipc-contracts files request/response pairs", () => {
       datasourceId: string;
       path: string;
       toPath: string;
+      conflictPolicy?: "fail" | "overwrite" | "keep-both";
+    }>();
+  });
+
+  // ---- add-download-overwrite-confirm additions -------------------------
+  // Phase A type-level pins for the conflict-resolution flow. The behavior
+  // (handler gate, suffix loop, dialog hint metadata) is wired in later
+  // phases; this block locks the wire-shape contract.
+
+  it("FilesDownloadRequest accepts each conflictPolicy literal and rejects others", () => {
+    // Per add-download-overwrite-confirm design.md Decision 1: the download
+    // request reuses the rename `conflictPolicy` enum verbatim
+    // ("fail" | "overwrite" | "keep-both"). Distinct from upload's
+    // ("overwrite" | "duplicate" | "skip"). Optional on the wire — the
+    // handler treats absence as `"fail"`.
+    const failReq: FilesDownloadRequest = {
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
+      conflictPolicy: "fail",
+    };
+    const overwriteReq: FilesDownloadRequest = {
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
+      conflictPolicy: "overwrite",
+    };
+    const keepBothReq: FilesDownloadRequest = {
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
+      conflictPolicy: "keep-both",
+    };
+    const omittedReq: FilesDownloadRequest = {
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
+    };
+    expect(failReq.conflictPolicy).toBe("fail");
+    expect(overwriteReq.conflictPolicy).toBe("overwrite");
+    expect(keepBothReq.conflictPolicy).toBe("keep-both");
+    expect(omittedReq.conflictPolicy).toBeUndefined();
+
+    // Reject upload-flavored / arbitrary literals — the rename enum is
+    // intentionally distinct from the upload one. The `@ts-expect-error`
+    // directive must sit on the line immediately preceding the offending
+    // assignment, hence the per-property placement here.
+    const wrongUploadLiteral: FilesDownloadRequest = {
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
+      // @ts-expect-error — "skip" is an upload conflictPolicy literal, not a download one
+      conflictPolicy: "skip",
+    };
+    const wrongUploadLiteral2: FilesDownloadRequest = {
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
+      // @ts-expect-error — "duplicate" is an upload conflictPolicy literal, not a download one
+      conflictPolicy: "duplicate",
+    };
+    const wrongArbitrary: FilesDownloadRequest = {
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "C:/Users/me/Downloads/welcome.pdf",
+      // @ts-expect-error — arbitrary string is rejected by the literal union
+      conflictPolicy: "yolo",
+    };
+    void wrongUploadLiteral;
+    void wrongUploadLiteral2;
+    void wrongArbitrary;
+
+    expectTypeOf<FilesDownloadRequest["conflictPolicy"]>().toEqualTypeOf<
+      "fail" | "overwrite" | "keep-both" | undefined
+    >();
+  });
+
+  it("FilesErrorEnvelope optionally carries existingSize + existingModifiedAt for download conflict gate", () => {
+    // Per add-download-overwrite-confirm Decision 3: the download conflict
+    // gate populates both fields from `fs.stat(toPath)` (`stats.size`,
+    // `stats.mtime.toISOString()`). Both are flat-optional — rename
+    // callers MAY populate them but are not required to. The dialog
+    // renders the hint block only when at least one is present.
+    const conflictWithHints: FilesErrorEnvelope = {
+      tag: "conflict",
+      message: "destination already exists at /home/alice/Downloads/welcome.pdf",
+      retryable: false,
+      existingPath: "/home/alice/Downloads/welcome.pdf",
+      existingSize: 4194304,
+      existingModifiedAt: "2026-05-05T12:30:00.000Z",
+    };
+    expect(conflictWithHints.existingSize).toBe(4194304);
+    expect(conflictWithHints.existingModifiedAt).toBe(
+      "2026-05-05T12:30:00.000Z",
+    );
+
+    // Both fields are structurally optional — assertions about other
+    // tags (or rename-flavored conflicts) work without specifying
+    // either.
+    const otherErr: FilesErrorEnvelope = {
+      tag: "other",
+      message: "boom",
+      retryable: false,
+    };
+    expect(otherErr.existingSize).toBeUndefined();
+    expect(otherErr.existingModifiedAt).toBeUndefined();
+
+    const renameConflictPathOnly: FilesErrorEnvelope = {
+      tag: "conflict",
+      message: "name collision at /parent/bar.pdf",
+      retryable: false,
+      existingPath: "/parent/bar.pdf",
+    };
+    expect(renameConflictPathOnly.existingSize).toBeUndefined();
+    expect(renameConflictPathOnly.existingModifiedAt).toBeUndefined();
+
+    // Either hint field can be present alone — the dialog renders what
+    // it has.
+    const sizeOnly: FilesErrorEnvelope = {
+      tag: "conflict",
+      message: "destination exists",
+      retryable: false,
+      existingPath: "/x",
+      existingSize: 1024,
+    };
+    const modifiedAtOnly: FilesErrorEnvelope = {
+      tag: "conflict",
+      message: "destination exists",
+      retryable: false,
+      existingPath: "/x",
+      existingModifiedAt: "2026-05-05T12:30:00.000Z",
+    };
+    expect(sizeOnly.existingSize).toBe(1024);
+    expect(modifiedAtOnly.existingModifiedAt).toBe("2026-05-05T12:30:00.000Z");
+
+    expectTypeOf<FilesErrorEnvelope["existingSize"]>().toEqualTypeOf<
+      number | undefined
+    >();
+    expectTypeOf<FilesErrorEnvelope["existingModifiedAt"]>().toEqualTypeOf<
+      string | undefined
+    >();
+    expectTypeOf<FilesErrorEnvelope>().toMatchTypeOf<{
+      existingSize?: number;
+      existingModifiedAt?: string;
     }>();
   });
 });

@@ -40,6 +40,11 @@ import {
   getAlwaysAsk,
   getDefaultFolder,
 } from "../settings/downloads-store";
+import type {
+  DownloadConflictChoice,
+  DownloadConflictPolicy,
+  DownloadConflictPrompt,
+} from "./store";
 
 export interface SaveDialogResult {
   readonly canceled: boolean;
@@ -72,6 +77,24 @@ export interface UseDownloadOrchestratorOptions {
    * the preload bridge.
    */
   readonly api?: DownloadOrchestratorApi;
+  /**
+   * Optional download-conflict prompt port (add-download-overwrite-confirm
+   * §5). When supplied, the orchestrator's dispatch loop intercepts a
+   * `tag: "conflict"` envelope from the service-side gate and invokes
+   * the prompt with `(existingPath, existingSize, existingModifiedAt)`.
+   * The user's choice (`"overwrite" | "keep-both"`) drives a re-dispatch
+   * with the matching `conflictPolicy`; `"cancel"` aborts cleanly and
+   * `dispatchDownload` resolves to `null` (so the caller's catch chain
+   * doesn't fire).
+   *
+   * When omitted, conflict envelopes pass straight through to the
+   * caller — preserves the pre-§5 behaviour for tests / harnesses that
+   * don't wire a dialog. `<FileExplorer>` reads the registered prompt
+   * off the explorer store (via `getDownloadConflictPrompt()`) and
+   * passes it here on every render so the orchestrator stays decoupled
+   * from the store.
+   */
+  readonly downloadConflictPrompt?: DownloadConflictPrompt | null;
 }
 
 interface PendingDownload {
@@ -297,6 +320,17 @@ export function useDownloadOrchestrator(
   const pendingRef = useRef<PendingDownload | null>(null);
   const [modalOpen, setModalOpen] = useState<boolean>(false);
 
+  // Pin the latest conflict-prompt option in a ref so the dispatch
+  // closure (memoised on `api`) always reads the current registration
+  // without forcing a `useCallback` rebuild on every prompt swap.
+  // `<FileExplorer>` may pass a fresh closure on every render via the
+  // store's `getDownloadConflictPrompt()` lookup; pinning prevents
+  // dispatch identity from churning unnecessarily.
+  const conflictPromptRef = useRef<DownloadConflictPrompt | null>(
+    options?.downloadConflictPrompt ?? null,
+  );
+  conflictPromptRef.current = options?.downloadConflictPrompt ?? null;
+
   const dispatchAgainstFolder = useCallback(
     async (
       entry: FileEntry,
@@ -320,11 +354,54 @@ export function useDownloadOrchestrator(
         toPath = joinFolderAndName(defaultFolder, entry.name);
       }
 
-      return api.download({
-        datasourceId,
-        path: entry.path,
-        toPath,
-      });
+      // add-download-overwrite-confirm §5 — conflict re-prompt loop.
+      //
+      // Initial dispatch always carries `conflictPolicy: "fail"` so the
+      // service-side gate surfaces a `tag: "conflict"` envelope when
+      // the destination already exists (§5.1, spec scenario "Initial
+      // download dispatch carries `conflictPolicy: 'fail'` by default").
+      // On conflict + a registered prompt, invoke the prompt with the
+      // envelope's hint metadata and re-dispatch with the user's choice;
+      // `"cancel"` resolves to `null` (no second dispatch, no caller
+      // catch chain — symmetric with the save-dialog cancel sentinel).
+      //
+      // The loop is bounded at 5 attempts (matches `store.rename`'s
+      // defensive bound) so a misbehaving prompt that never returns
+      // `"cancel"` and a backend that always returns `tag: "conflict"`
+      // can't spin forever. In practice the backend either truncates
+      // (overwrite) or finds a free suffix (keep-both) on the second
+      // attempt; one extra slot is paranoia.
+      let policy: DownloadConflictPolicy = "fail";
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const response = await api.download({
+          datasourceId,
+          path: entry.path,
+          toPath,
+          conflictPolicy: policy,
+        });
+        if (response.ok) return response;
+        if (response.error.tag !== "conflict") return response;
+        const prompt = conflictPromptRef.current;
+        if (prompt === null) return response;
+        const choice: DownloadConflictChoice = await prompt(
+          response.error.existingPath ?? toPath,
+          response.error.existingSize,
+          response.error.existingModifiedAt,
+        );
+        if (choice === "cancel") return null;
+        policy = choice;
+      }
+      // Loop bound exhausted (extraordinary). Surface as a synthetic
+      // failure envelope so the caller's existing catch / error toast
+      // chain has something diagnostic to render.
+      return {
+        ok: false,
+        error: {
+          tag: "other",
+          message: "download conflict retry limit exceeded",
+          retryable: false,
+        },
+      };
     },
     [api],
   );

@@ -130,7 +130,7 @@ describe("DatasourceCard — multiple in-flight uploads (Decision 13 tiebreak)",
     renderWithProvider(<DatasourceCard summary={buildSummary()} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     const seed: SyncStateSeedPayload = { jobs: [] };
@@ -178,7 +178,7 @@ describe("DatasourceCard — multiple in-flight uploads (Decision 13 tiebreak)",
     renderWithProvider(<DatasourceCard summary={buildSummary()} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     syncHarness.emit({ kind: "sync-state-seed", payload: { jobs: [] } });
@@ -244,7 +244,7 @@ describe("DatasourceCard — multiple in-flight uploads (Decision 13 tiebreak)",
     renderWithProvider(<DatasourceCard summary={buildSummary()} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     syncHarness.emit({ kind: "sync-state-seed", payload: { jobs: [] } });
@@ -305,7 +305,7 @@ describe("DatasourceCard — multiple in-flight uploads (Decision 13 tiebreak)",
     renderWithProvider(<DatasourceCard summary={buildSummary()} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     syncHarness.emit({ kind: "sync-state-seed", payload: { jobs: [] } });

@@ -108,9 +108,12 @@ describe("DatasourceCard — sync-event state derivation (Decision 13)", () => {
     const summary = buildSummary({ id: "ds-1", status: "connected" });
     renderWithProvider(<DatasourceCard summary={summary} />);
 
-    // The store must have registered exactly one onEvent listener on mount.
+    // The store (plus the card's upload-job toaster, which also subscribes
+    // to window.api.sync.onEvent per migrate-upload §13.4) must have
+    // registered their onEvent listeners on mount before we synthesise
+    // events — assert at-least-once rather than an exact count.
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     // Fire the seed.
@@ -142,7 +145,7 @@ describe("DatasourceCard — sync-event state derivation (Decision 13)", () => {
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     const jobId = "job-sync-ds1";
@@ -198,7 +201,7 @@ describe("DatasourceCard — sync-event state derivation (Decision 13)", () => {
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     // Emit a seed with NO sync-kind job for ds-1 (an unrelated upload-kind

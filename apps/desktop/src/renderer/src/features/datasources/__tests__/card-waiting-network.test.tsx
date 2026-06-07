@@ -142,7 +142,7 @@ describe("DatasourceCard — waiting-network visual variant (Decision 13)", () =
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     seedWaitingNetwork(syncHarness, "job-sync-ds1", "ds-1");
@@ -165,7 +165,7 @@ describe("DatasourceCard — waiting-network visual variant (Decision 13)", () =
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     seedWaitingNetwork(syncHarness, "job-sync-ds1", "ds-1");
@@ -185,7 +185,7 @@ describe("DatasourceCard — waiting-network visual variant (Decision 13)", () =
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     seedWaitingNetwork(syncHarness, "job-sync-ds1", "ds-1");
@@ -208,7 +208,7 @@ describe("DatasourceCard — waiting-network visual variant (Decision 13)", () =
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     const jobId = "job-sync-ds1";
@@ -273,7 +273,7 @@ describe("DatasourceCard — waiting-network visual variant (Decision 13)", () =
     renderWithProvider(<DatasourceCard summary={summary} />);
 
     await waitFor(() => {
-      expect(syncHarness.onEvent).toHaveBeenCalledTimes(1);
+      expect(syncHarness.onEvent).toHaveBeenCalled();
     });
 
     syncHarness.emit({

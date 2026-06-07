@@ -220,12 +220,25 @@ function makeFakeFs(opts: { writableParents?: string[] } = {}): FakeFs {
       }
     },
     statSize: async (path) => files.get(path)?.length ?? 0,
+    // `stat` is unreachable in this suite — the §14 list-active handler
+    // never opens a download. The stub satisfies the FsBoundary type.
+    stat: async () => null,
     createWriteStream: () => {
       // Never reached in this test — the gated `downloadFile` never returns.
       throw new Error("createWriteStream should not be called in §14.3");
     },
     pipeline: async () => {
       throw new Error("pipeline should not be called in §14.3");
+    },
+    // `unlink` and `open` are also unreachable here (no download ever
+    // completes / fails / picks `"keep-both"`); stub-only to satisfy
+    // the `FsBoundary` interface (added by add-download-resilience and
+    // add-download-overwrite-confirm respectively).
+    unlink: async () => {
+      throw new Error("unlink should not be called in §14.3");
+    },
+    open: async () => {
+      throw new Error("open should not be called in §14.3");
     },
   };
 }

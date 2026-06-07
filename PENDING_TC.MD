@@ -837,3 +837,77 @@ post-cleanup should be tombstone comments (zero callers).
 
 **Owner:** unassigned. Suitable for a follow-up cleanup PR; safe to
 do mechanically (the lines are dead code).
+
+## add-download-overwrite-confirm — §8.5 manual smoke (deferred)
+
+The §8.5 manual smoke is a HUMAN-only end-to-end flow against the dev build:
+download a file, re-download the SAME file to an existing destination, and
+exercise the conflict dialog's three outcomes. It can't run in the headless
+worktree; per CLAUDE.md it's recorded here with pointers to the unit /
+integration tests that prove each branch in isolation. The change's
+automated surface is fully green (full suite 301 files / 2692 passed / 9
+skipped on `feature/add-download-overwrite-confirm`).
+
+- **§8.5a** Re-download a file to the same destination → conflict dialog
+  appears with the size + "modified \<absolute-date\>" hint line. **Covered
+  by:** `files-download.test.ts` §2.1 (fail-policy conflict envelope w/
+  `existingSize`/`existingModifiedAt`) + `__integration__/download-conflict.test.ts`
+  §7.1 (gate through `buildCommandHandlers` + real fs) +
+  `rename-conflict-dialog.test.tsx` (download-mode hint render) +
+  `use-download-orchestrator.test.ts` §5.1 (prompt invoked with hint metadata).
+- **§8.5b** Choose Overwrite → existing file replaced. **Covered by:**
+  `files-download.test.ts` §2.5 (overwrite truncates) +
+  `use-download-orchestrator.test.ts` §5 (re-dispatch `conflictPolicy:"overwrite"`) +
+  `ipc-round-trip.test.ts` §7.3 (overwrite re-dispatch succeeds).
+- **§8.5c** Choose Keep both → `name (1).ext` lands alongside the original.
+  **Covered by:** `keep-both-suffix.test.ts` + `files-download.test.ts`
+  §3–§4 (suffix loop + suffixed `savedPath`) + `download-conflict.test.ts`
+  §7.2 (real-fs `O_CREAT|O_EXCL` writes `welcome (1).pdf`, original untouched).
+- **§8.5d** Choose Cancel → no toast, no file change, idempotent. **Covered
+  by:** `use-download-orchestrator.test.ts` §5 (cancel → no re-dispatch,
+  resolves null, no `download-failed` toast).
+
+**Status:** PENDING — HUMAN smoke. Not blocking; automated coverage complete.
+**Owner:** unassigned (the original Bug 5 was raised by dev2@forti5.tech during
+the `add-download-resilience` §11.19 smoke).
+
+## FOLLOW-UP (pre-existing bug, surfaced by add-download-overwrite-confirm) — per-card upload toaster → duplicate upload toasts on multi-card dashboards
+
+**Not part of `add-download-overwrite-confirm`** — surfaced by this change's
+`card-*` test fixes during the full-suite green-up, then confirmed by the
+§9 code review. Recorded here so it isn't lost; suitable for promotion to its
+own OpenSpec stub (spawn on `master` post-merge, NOT on the overwrite-confirm
+branch — keep concerns unmixed).
+
+**Symptom:** `DatasourceCard` instantiates its own upload-job toaster per
+card (`card.tsx:150` — `useMemo(() => createUploadJobToaster(), [])`), and the
+toaster subscribes to the GLOBAL `window.api.sync.onEvent` stream filtered
+only by event **kind** (`uploading`/`file-created`/`upload-failed`/
+`upload-cancelled`), NOT by `datasourceId` (`upload-job-toast.ts:258-266`). On
+the first unseen `uploading` event it spawns `toast.loading(...)`
+(`upload-job-toast.ts:~396`). So with N connected datasource cards mounted, a
+single upload event fans out to all N toasters → potentially N user-visible
+duplicate toasts. This is ALSO the production root cause behind why the
+`card-*` tests' `toHaveBeenCalledTimes(1)` sync assertions broke (each card
+adds a 2nd `sync.onEvent` listener).
+
+**Lineage (pre-existing, NOT this change):** per-card toaster introduced in
+`670a117`; the event source was rewired from the legacy
+`datasources.onUploadProgress` channel onto `sync.onEvent` by
+`migrate-upload-orchestration-out-of-engine` §13.4.
+
+**OPEN QUESTION (resolve before sizing the fix):** does Sonner de-duplicate
+by toast id? If the toaster keys each toast deterministically on
+`uploadJobId`, the N spawns may COLLAPSE to a single toast (Sonner upserts on
+matching id), which would downgrade this from "N duplicate toasts" to "N
+redundant no-op upserts" — annoying but not user-visible duplication. NOT
+investigated yet; check `upload-job-toast.ts` toast-id construction +
+Sonner's id-upsert semantics before deciding severity.
+
+**Likely fix (if confirmed user-visible):** a single app-level upload toaster
+(mounted once at the dashboard/root, not per card), OR datasource-scoped
+filtering in the per-card subscription.
+
+**Status:** PENDING follow-up — NOT blocking the overwrite-confirm merge (this
+branch does not touch the toaster/card production code, so the merge cannot
+worsen it). **Owner:** unassigned.

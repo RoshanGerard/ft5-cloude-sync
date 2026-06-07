@@ -206,11 +206,15 @@ describe("sync-service files:* command contract", () => {
 
   // -- files:download (add-engine-rename-download §13) ---------------------
 
-  it("files:download params carry datasourceId / path / required toPath", () => {
+  it("files:download params carry datasourceId / path / required toPath / optional conflictPolicy", () => {
+    // `conflictPolicy` was added by `add-download-overwrite-confirm`
+    // (design.md Decision 1). Optional with default-to-`"fail"` semantics
+    // enforced by the service handler.
     expectTypeOf<CommandParams<"files:download">>().toEqualTypeOf<{
       readonly datasourceId: string;
       readonly path: string;
       readonly toPath: string;
+      readonly conflictPolicy?: "fail" | "overwrite" | "keep-both";
     }>();
   });
 

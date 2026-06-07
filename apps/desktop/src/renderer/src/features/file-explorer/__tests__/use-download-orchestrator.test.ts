@@ -46,6 +46,10 @@ import {
   useDownloadOrchestrator,
   type DownloadOrchestratorApi,
 } from "../use-download-orchestrator.js";
+import type {
+  DownloadConflictChoice,
+  DownloadConflictPrompt,
+} from "../store.js";
 
 // --- Helpers ---------------------------------------------------------
 
@@ -132,6 +136,11 @@ describe("useDownloadOrchestrator — toPath resolution (§23.1)", () => {
       datasourceId: "ds-1",
       path: "/welcome.pdf",
       toPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+      // add-download-overwrite-confirm §5: every initial dispatch carries
+      // `conflictPolicy: "fail"` explicitly so the service-side gate
+      // surfaces a `tag: "conflict"` envelope when the destination
+      // already exists.
+      conflictPolicy: "fail",
     });
     expect(response).toEqual({
       ok: true,
@@ -170,6 +179,7 @@ describe("useDownloadOrchestrator — toPath resolution (§23.1)", () => {
       datasourceId: "ds-1",
       path: "/welcome.pdf",
       toPath: "/tmp/welcome.pdf",
+      conflictPolicy: "fail",
     });
   });
 
@@ -225,6 +235,7 @@ describe("useDownloadOrchestrator — toPath resolution (§23.1)", () => {
       datasourceId: "ds-1",
       path: "/welcome.pdf",
       toPath: "/tmp/picked.pdf",
+      conflictPolicy: "fail",
     });
   });
 });
@@ -288,9 +299,324 @@ describe("useDownloadOrchestrator — first-run modal queueing (§23.3)", () => 
       datasourceId: "ds-1",
       path: "/welcome.pdf",
       toPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+      conflictPolicy: "fail",
     });
     // Modal closes after commit.
     expect(result.current.modalOpen).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add-download-overwrite-confirm §5 — conflict-prompt loop
+//
+// `useDownloadOrchestrator` accepts an optional
+// `downloadConflictPrompt` option (mirrors the rename re-prompt port
+// shape). On a `tag: "conflict"` envelope from the service-side gate,
+// the orchestrator's `dispatchAgainstFolder` invokes the prompt with
+// `(existingPath, existingSize, existingModifiedAt)` and re-dispatches
+// `window.api.files.download` with the user's chosen policy
+// (`"overwrite"` / `"keep-both"`); on `"cancel"` the loop exits and
+// resolves to `null` (no toast, no second dispatch).
+//
+// Note: per advisor / Phase E re-anchor, the production conflict loop
+// lives here in the orchestrator (NOT in the deprecated `store.download`).
+// The store still owns the prompt-port slot for symmetry with the rename
+// pattern; `<FileExplorer>` registers the prompt via
+// `setDownloadConflictPrompt` AND passes it into the hook's options on
+// every render.
+// ---------------------------------------------------------------------------
+
+function makeApiWithConflict(opts: {
+  // First-call envelope. Subsequent calls fall through to the default
+  // success envelope unless `successResult` is overridden.
+  conflictEnvelope: FilesDownloadResponse;
+  successResult?: FilesDownloadResponse;
+}): MockApi {
+  let call = 0;
+  const successResult: FilesDownloadResponse = opts.successResult ?? {
+    ok: true,
+    value: {
+      savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+      bytes: 4096,
+    },
+  };
+  const download = vi.fn(async () => {
+    call += 1;
+    if (call === 1) return opts.conflictEnvelope;
+    return successResult;
+  });
+  const showSaveDialog = vi.fn(async () => ({
+    canceled: false,
+    filePath: "/tmp/picked.pdf",
+  }));
+  return { download, showSaveDialog };
+}
+
+function conflictEnvelope(opts?: {
+  existingPath?: string;
+  existingSize?: number;
+  existingModifiedAt?: string;
+}): FilesDownloadResponse {
+  return {
+    ok: false,
+    error: {
+      tag: "conflict",
+      message: `destination already exists at ${opts?.existingPath ?? "/Users/alice/Downloads/ft5/welcome.pdf"}`,
+      retryable: false,
+      existingPath:
+        opts?.existingPath ?? "/Users/alice/Downloads/ft5/welcome.pdf",
+      ...(opts?.existingSize !== undefined
+        ? { existingSize: opts.existingSize }
+        : {}),
+      ...(opts?.existingModifiedAt !== undefined
+        ? { existingModifiedAt: opts.existingModifiedAt }
+        : {}),
+    },
+  };
+}
+
+describe("useDownloadOrchestrator — conflict-prompt loop (add-download-overwrite-confirm §5)", () => {
+  beforeEach(() => {
+    localStorage.setItem(
+      DOWNLOADS_DEFAULT_FOLDER_KEY,
+      "/Users/alice/Downloads/ft5",
+    );
+  });
+
+  it("(§5.1) on conflict envelope, invokes the prompt with (existingPath, existingSize, existingModifiedAt) and re-dispatches with the user's choice on 'overwrite'", async () => {
+    const api = makeApiWithConflict({
+      conflictEnvelope: conflictEnvelope({
+        existingPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        existingSize: 4_400_000,
+        existingModifiedAt: "2026-04-18T12:30:00.000Z",
+      }),
+    });
+    const promptCalls: Array<{
+      existingPath: string;
+      existingSize: number | undefined;
+      existingModifiedAt: string | undefined;
+    }> = [];
+    const downloadConflictPrompt: DownloadConflictPrompt = vi.fn(
+      async (existingPath, existingSize, existingModifiedAt) => {
+        promptCalls.push({ existingPath, existingSize, existingModifiedAt });
+        return "overwrite" as DownloadConflictChoice;
+      },
+    );
+    const { result } = renderHook(() =>
+      useDownloadOrchestrator({ api, downloadConflictPrompt }),
+    );
+
+    let response: FilesDownloadResponse | null = null;
+    await act(async () => {
+      response = await result.current.dispatchDownload(
+        makeFileEntry("welcome.pdf"),
+        { shiftKey: false },
+        "ds-1",
+      );
+    });
+
+    expect(downloadConflictPrompt).toHaveBeenCalledTimes(1);
+    expect(promptCalls).toEqual([
+      {
+        existingPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        existingSize: 4_400_000,
+        existingModifiedAt: "2026-04-18T12:30:00.000Z",
+      },
+    ]);
+    // Two dispatches: initial 'fail' + re-dispatch with the chosen policy.
+    expect(api.download).toHaveBeenCalledTimes(2);
+    expect(api.download.mock.calls[0]?.[0]).toMatchObject({
+      conflictPolicy: "fail",
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+    });
+    expect(api.download.mock.calls[1]?.[0]).toMatchObject({
+      conflictPolicy: "overwrite",
+      datasourceId: "ds-1",
+      path: "/welcome.pdf",
+      toPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+    });
+    expect(response).toEqual({
+      ok: true,
+      value: {
+        savedPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        bytes: 4096,
+      },
+    });
+  });
+
+  it("(§5.1) re-dispatches with 'keep-both' on the matching choice", async () => {
+    const api = makeApiWithConflict({
+      conflictEnvelope: conflictEnvelope(),
+      successResult: {
+        ok: true,
+        // Service may return a suffixed savedPath for keep-both.
+        value: {
+          savedPath: "/Users/alice/Downloads/ft5/welcome (1).pdf",
+          bytes: 4096,
+        },
+      },
+    });
+    const downloadConflictPrompt: DownloadConflictPrompt = vi.fn(
+      async () => "keep-both" as DownloadConflictChoice,
+    );
+    const { result } = renderHook(() =>
+      useDownloadOrchestrator({ api, downloadConflictPrompt }),
+    );
+
+    let response: FilesDownloadResponse | null = null;
+    await act(async () => {
+      response = await result.current.dispatchDownload(
+        makeFileEntry("welcome.pdf"),
+        { shiftKey: false },
+        "ds-1",
+      );
+    });
+
+    expect(api.download).toHaveBeenCalledTimes(2);
+    expect(api.download.mock.calls[1]?.[0]).toMatchObject({
+      conflictPolicy: "keep-both",
+    });
+    // Per Phase C+D — savedPath may differ from toPath; the orchestrator
+    // surfaces the response's savedPath so downstream consumers
+    // (success-toast / Show-in-folder) use the suffixed path.
+    expect(response).toEqual({
+      ok: true,
+      value: {
+        savedPath: "/Users/alice/Downloads/ft5/welcome (1).pdf",
+        bytes: 4096,
+      },
+    });
+  });
+
+  it("(§5.1) on 'cancel' choice, no re-dispatch and resolves to null (no error toast surface)", async () => {
+    const api = makeApiWithConflict({
+      conflictEnvelope: conflictEnvelope(),
+    });
+    const downloadConflictPrompt: DownloadConflictPrompt = vi.fn(
+      async () => "cancel" as DownloadConflictChoice,
+    );
+    const { result } = renderHook(() =>
+      useDownloadOrchestrator({ api, downloadConflictPrompt }),
+    );
+
+    let response: FilesDownloadResponse | null = null;
+    await act(async () => {
+      response = await result.current.dispatchDownload(
+        makeFileEntry("welcome.pdf"),
+        { shiftKey: false },
+        "ds-1",
+      );
+    });
+
+    expect(downloadConflictPrompt).toHaveBeenCalledTimes(1);
+    expect(api.download).toHaveBeenCalledTimes(1); // only the initial 'fail'
+    // Resolves to null so the caller's `.catch(toast.error)` chain
+    // doesn't fire and the orchestrator's downstream wiring (success
+    // toast) sees the same "queued/cancelled" sentinel as save-dialog
+    // cancellation.
+    expect(response).toBeNull();
+  });
+
+  it("(§5.4) re-dispatch maintains the same (datasourceId, path, toPath) triple", async () => {
+    const api = makeApiWithConflict({
+      conflictEnvelope: conflictEnvelope(),
+    });
+    const downloadConflictPrompt: DownloadConflictPrompt = vi.fn(
+      async () => "overwrite" as DownloadConflictChoice,
+    );
+    const { result } = renderHook(() =>
+      useDownloadOrchestrator({ api, downloadConflictPrompt }),
+    );
+
+    await act(async () => {
+      await result.current.dispatchDownload(
+        makeFileEntry("welcome.pdf"),
+        { shiftKey: false },
+        "ds-1",
+      );
+    });
+
+    const first = api.download.mock.calls[0]?.[0] as {
+      datasourceId: string;
+      path: string;
+      toPath: string;
+      conflictPolicy: string;
+    };
+    const second = api.download.mock.calls[1]?.[0] as {
+      datasourceId: string;
+      path: string;
+      toPath: string;
+      conflictPolicy: string;
+    };
+    expect(second.datasourceId).toBe(first.datasourceId);
+    expect(second.path).toBe(first.path);
+    expect(second.toPath).toBe(first.toPath);
+    expect(first.conflictPolicy).toBe("fail");
+    expect(second.conflictPolicy).toBe("overwrite");
+  });
+
+  it("(§5.4) conflict envelope without hint fields → prompt invoked with size/modifiedAt = undefined", async () => {
+    const api = makeApiWithConflict({
+      conflictEnvelope: conflictEnvelope({
+        existingPath: "/Users/alice/Downloads/ft5/welcome.pdf",
+        // No existingSize, no existingModifiedAt — service may omit either
+        // (rename callers, for example). Renderer must tolerate undefined
+        // for both.
+      }),
+    });
+    let captured: {
+      existingPath?: string;
+      existingSize?: number;
+      existingModifiedAt?: string;
+    } = {};
+    const downloadConflictPrompt: DownloadConflictPrompt = vi.fn(
+      async (existingPath, existingSize, existingModifiedAt) => {
+        captured = { existingPath, existingSize, existingModifiedAt };
+        return "overwrite" as DownloadConflictChoice;
+      },
+    );
+    const { result } = renderHook(() =>
+      useDownloadOrchestrator({ api, downloadConflictPrompt }),
+    );
+    await act(async () => {
+      await result.current.dispatchDownload(
+        makeFileEntry("welcome.pdf"),
+        { shiftKey: false },
+        "ds-1",
+      );
+    });
+    expect(captured.existingPath).toBe(
+      "/Users/alice/Downloads/ft5/welcome.pdf",
+    );
+    expect(captured.existingSize).toBeUndefined();
+    expect(captured.existingModifiedAt).toBeUndefined();
+  });
+
+  it("(§5.4) without a registered prompt, conflict envelope falls through to the caller (no infinite loop, no second dispatch)", async () => {
+    const api = makeApiWithConflict({
+      conflictEnvelope: conflictEnvelope(),
+    });
+    // No downloadConflictPrompt option — pre-§5 behaviour: orchestrator
+    // simply returns the conflict envelope to the caller. The caller's
+    // existing `.catch` chain or downstream surface (download toast event
+    // bus) handles it.
+    const { result } = renderHook(() => useDownloadOrchestrator({ api }));
+    let response: FilesDownloadResponse | null = null;
+    await act(async () => {
+      response = await result.current.dispatchDownload(
+        makeFileEntry("welcome.pdf"),
+        { shiftKey: false },
+        "ds-1",
+      );
+    });
+    expect(api.download).toHaveBeenCalledTimes(1);
+    expect(response).not.toBeNull();
+    expect(response).toMatchObject({ ok: false });
+    expect(
+      (response as Extract<FilesDownloadResponse, { ok: false }>).error.tag,
+    ).toBe("conflict");
   });
 });
 

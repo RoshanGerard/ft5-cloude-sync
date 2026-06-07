@@ -60,6 +60,44 @@ export type RenameConflictChoice = "overwrite" | "keep-both" | "cancel";
 export type RenameConflictPrompt = (
   existingPath: string,
 ) => Promise<RenameConflictChoice>;
+
+// ---------------------------------------------------------------------------
+// Download conflict — types + prompt port
+// (add-download-overwrite-confirm §5.2 / design.md Decision 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire-level conflict policy on `FilesDownloadRequest`. Mirrors the
+ * rename `RenameConflictPolicy` enum verbatim — both surfaces share the
+ * same three-option matrix per add-download-overwrite-confirm/design.md
+ * Decision 1 ("Reuse the rename `conflictPolicy` enum verbatim — distinct
+ * from upload's").
+ */
+export type DownloadConflictPolicy = "fail" | "overwrite" | "keep-both";
+
+/**
+ * Choice surface for the download-conflict prompt. `"cancel"` is the
+ * dismissal sentinel (Escape / overlay-click / Cancel button); the other
+ * two values drive a re-dispatch with the matching `conflictPolicy`. See
+ * `useDownloadConflictDialog()` in `rename-conflict-dialog.tsx` for the
+ * production wiring and the orchestrator's loop in `use-download-orchestrator.ts`
+ * for the consumer side.
+ */
+export type DownloadConflictChoice = "overwrite" | "keep-both" | "cancel";
+
+/**
+ * Prompt port for resolving a single download-destination conflict. The
+ * orchestrator's loop invokes this with the envelope's `existingPath`
+ * plus the optional `existingSize` / `existingModifiedAt` hint metadata
+ * the service-side gate populates. Both hint fields may be absent in
+ * principle (the contract is flat-optional); the dialog's hint block
+ * renders conditionally on either being present.
+ */
+export type DownloadConflictPrompt = (
+  existingPath: string,
+  existingSize: number | undefined,
+  existingModifiedAt: string | undefined,
+) => Promise<DownloadConflictChoice>;
 // "replace" and "clear-add" currently collapse to the same branch (both
 // produce a fresh single-element selection). Kept as distinct modes to
 // name the user-intent difference surfaced by the action's caller: a
@@ -215,6 +253,39 @@ export interface ExplorerStore {
    */
   setRenameConflictPrompt(prompt: RenameConflictPrompt | null): void;
 
+  /**
+   * Register / unregister the download-conflict prompt port
+   * (add-download-overwrite-confirm §5.2). Mirrors
+   * `setRenameConflictPrompt` in shape so the file-explorer mount-effect
+   * symmetry-pair (`setRenameConflictPrompt` + `setDownloadConflictPrompt`)
+   * is one read.
+   *
+   * The store stashes the registered prompt on a per-instance slot;
+   * `getDownloadConflictPrompt()` returns the latest registration. The
+   * actual conflict re-prompt loop lives in `useDownloadOrchestrator`,
+   * NOT in `store.download` (which is deprecated and unreachable from
+   * production — see the store-level JSDoc on the deprecated
+   * `download(entryId)` method). `<FileExplorer>` passes the registered
+   * prompt to the orchestrator via the hook's options on every render,
+   * and also calls this setter so the rename mount-effect symmetry is
+   * preserved and so future consumers have a single canonical
+   * registration site if direct store access is ever needed.
+   *
+   * Pass `null` on unmount to detach. When unset, the orchestrator's
+   * loop falls through to the existing error-toast path (the conflict
+   * envelope's `message` becomes the toast text).
+   */
+  setDownloadConflictPrompt(prompt: DownloadConflictPrompt | null): void;
+
+  /**
+   * Read the currently-registered download-conflict prompt, or `null`
+   * when none is set. Exposed as a method (not a state field) because
+   * the prompt port is intentionally NOT part of the reactive state
+   * snapshot — re-renders triggered by every prompt swap would cause
+   * extraneous churn in `useExplorerStore` consumers.
+   */
+  getDownloadConflictPrompt(): DownloadConflictPrompt | null;
+
   // Remove (delete) — accepts one or more paths; issues a single IPC call.
   remove(targets: FilesRemoveTarget[]): Promise<void>;
 
@@ -343,6 +414,17 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
   // surfaces a conflict envelope through the existing `lastError` /
   // `toast.error` path. See ExplorerStore.setRenameConflictPrompt.
   let renameConflictPrompt: RenameConflictPrompt | null = null;
+
+  // Download-conflict prompt port (add-download-overwrite-confirm §5.2).
+  // Registered by the `<FileExplorer>`'s `useDownloadConflictDialog()`
+  // mount-effect via `setDownloadConflictPrompt`. The actual conflict
+  // re-prompt loop runs inside `useDownloadOrchestrator` — file-explorer
+  // passes this slot's value into the hook's options on each render so
+  // the orchestrator's `dispatchAgainstFolder` can invoke it on a
+  // `tag: "conflict"` envelope. Stored as a closure (not reactive state)
+  // because re-rendering on prompt swap would churn every explorer
+  // consumer for no useful UI signal.
+  let downloadConflictPrompt: DownloadConflictPrompt | null = null;
 
   let state: ExplorerState = {
     currentPath: "/",
@@ -710,6 +792,16 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     prompt: RenameConflictPrompt | null,
   ): void {
     renameConflictPrompt = prompt;
+  }
+
+  function setDownloadConflictPrompt(
+    prompt: DownloadConflictPrompt | null,
+  ): void {
+    downloadConflictPrompt = prompt;
+  }
+
+  function getDownloadConflictPrompt(): DownloadConflictPrompt | null {
+    return downloadConflictPrompt;
   }
 
   async function rename(entryId: string, newName: string): Promise<void> {
@@ -1080,6 +1172,8 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
     cancelEdit,
     rename,
     setRenameConflictPrompt,
+    setDownloadConflictPrompt,
+    getDownloadConflictPrompt,
     remove,
     download,
   };
