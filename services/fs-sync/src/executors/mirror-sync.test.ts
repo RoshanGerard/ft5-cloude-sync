@@ -5,6 +5,8 @@ import * as path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DatasourceError } from "@ft5/ipc-contracts";
+
 import { applyMigrations } from "../db/migrations.js";
 import { createEventBus, type EventBus } from "../events/event-bus.js";
 import { SnapshotRepository } from "../jobs/snapshot-repository.js";
@@ -85,7 +87,21 @@ function fakeClient() {
     kind: "file" as const,
   }));
   const deleteFile = vi.fn(async () => void 0);
-  return { client: { uploadFile, deleteFile }, uploadFile, deleteFile };
+  // refreshCredentials is required on the `DatasourceClient` interface after
+  // migrate-engine-retry-policy-to-consumer; the executor now wraps each
+  // engine call in `withAuthRefresh`, which calls `refreshCredentials()` on
+  // `auth-expired`. The `as never` cast below bypasses the compile check, so
+  // a missing impl would only fail at RUNTIME on the auth-expired path —
+  // hence it is stubbed here for every fake.
+  const refreshCredentials = vi
+    .fn()
+    .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+  return {
+    client: { uploadFile, deleteFile, refreshCredentials },
+    uploadFile,
+    deleteFile,
+    refreshCredentials,
+  };
 }
 
 describe("MirrorSyncJobExecutor — source-health precondition", () => {
@@ -216,5 +232,96 @@ describe("MirrorSyncJobExecutor — end-to-end", () => {
     expect(hashSpy).not.toHaveBeenCalled();
     const completed = emitted.find((e) => e.name === "sync-completed");
     expect(completed?.payload).toMatchObject({ skipped: 1, uploaded: 0 });
+  });
+});
+
+describe("MirrorSyncJobExecutor — auth-expired via withAuthRefresh (§3.7)", () => {
+  async function seed(rel: string, content = "x"): Promise<void> {
+    const full = path.join(root, rel);
+    await fsp.mkdir(path.dirname(full), { recursive: true });
+    await fsp.writeFile(full, content);
+  }
+
+  function authExpired(): DatasourceError<DatasourceType> {
+    return new DatasourceError({
+      tag: "auth-expired",
+      datasourceType: "amazon-s3",
+      datasourceId: "ds-1",
+      retryable: false,
+      message: "token expired",
+    });
+  }
+
+  it("(a) auth-expired once then succeed → refreshCredentials called once, uploadFile retries, job completes", async () => {
+    // migrate-engine-retry-policy-to-consumer §3.7(a) / spec "Mirror-sync
+    // refreshes once on auth-expired via withAuthRefresh". The executor wraps
+    // each engine call in `withAuthRefresh`; a stale-but-refreshable token
+    // refreshes once and the upload retries WITHIN the executor, so the
+    // scheduler observes no error. RED before the wrap (the first auth-expired
+    // escapes as a terminal failure), GREEN after (refresh + retry → completed).
+    await seed("a.txt", "hello");
+    const uploadFile = vi
+      .fn()
+      .mockRejectedValueOnce(authExpired())
+      .mockResolvedValueOnce({
+        id: "remote-a",
+        name: "x",
+        path: "",
+        size: 0,
+        kind: "file" as const,
+      });
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const client = { uploadFile, deleteFile: vi.fn(async () => void 0), refreshCredentials };
+    const exec = buildMirrorSyncExecutor({
+      db,
+      resolveClient: async () => client as never,
+      hashFile: async () => "hash-a",
+    });
+
+    const res = await exec(ctxFor(root));
+
+    expect(res.outcome).toBe("completed");
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(uploadFile).toHaveBeenCalledTimes(2);
+    expect(emitted.find((e) => e.name === "sync-completed")).toBeTruthy();
+  });
+
+  it("(b) auth-expired again after refresh (dead token) → refreshCredentials called once, escapes executor as terminal failure (outcome:'failed', errorTag:'auth-expired')", async () => {
+    // migrate-engine-retry-policy-to-consumer §3.7(b) / spec "Mirror-sync
+    // surfaces auth-revoked when refresh does not clear auth-expired". The
+    // `withAuthRefresh` helper refreshes ONCE then retries; a second
+    // auth-expired propagates (no second refresh) and escapes the executor.
+    // The executor's catch returns the RAW tag with no remap (auth-expired,
+    // NOT auth-revoked — the auth-revoked remap is the download handler's
+    // Decision 5, not mirror-sync). The scheduler then classifies
+    // auth-expired as `terminal` (system-retry.ts) → job to `failed` with no
+    // further retry; asserting the executor's terminal `failed` result is the
+    // unit-level proxy for that scheduler transition (per the task prompt).
+    // The call-count assertions are load-bearing: a tag-only check would pass
+    // even without the wrap, so they prove refresh-once + retry-once happened.
+    await seed("a.txt", "hello");
+    const uploadFile = vi.fn().mockRejectedValue(authExpired());
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const client = { uploadFile, deleteFile: vi.fn(async () => void 0), refreshCredentials };
+    const exec = buildMirrorSyncExecutor({
+      db,
+      resolveClient: async () => client as never,
+      hashFile: async () => "hash-a",
+    });
+
+    const res = await exec(ctxFor(root));
+
+    expect(res.outcome).toBe("failed");
+    if (res.outcome === "failed") {
+      expect(res.errorTag).toBe("auth-expired");
+    }
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(uploadFile).toHaveBeenCalledTimes(2);
+    // No success event on a terminal failure.
+    expect(emitted.find((e) => e.name === "sync-completed")).toBeUndefined();
   });
 });

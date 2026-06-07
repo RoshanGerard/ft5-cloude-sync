@@ -18,6 +18,7 @@
 // single entry is ambiguity-vulnerable on path-only addressing.
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
+import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type {
   DatasourceType,
   FilesRemoveEntryResult,
@@ -54,13 +55,20 @@ export function makeFilesRemoveHandler(
           // `deleteFile`, and the engine always throws `unsupported` for
           // deleteDirectory (see BaseClient.deleteDirectory); the caller
           // surfaces that as a per-target error.
+          // migrate-engine-retry-policy-to-consumer Decision 4 — engine no
+          // longer auto-refreshes on `auth-expired`; each per-target delete
+          // owns its own refresh-once/retry-once via `withAuthRefresh`.
           if (target.kind === "directory") {
-            await client.deleteDirectory({
-              kind: "handle",
-              handle: target.handle,
-            });
+            await withAuthRefresh(client, () =>
+              client.deleteDirectory({
+                kind: "handle",
+                handle: target.handle,
+              }),
+            );
           } else {
-            await client.deleteFile({ kind: "handle", handle: target.handle });
+            await withAuthRefresh(client, () =>
+              client.deleteFile({ kind: "handle", handle: target.handle }),
+            );
           }
           return { path: target.path, handle: target.handle, ok: true };
         } catch (err) {

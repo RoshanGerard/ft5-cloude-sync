@@ -24,6 +24,9 @@ function makeFakeClient(
     deleteFile: vi.fn(),
     deleteDirectory: vi.fn(),
     getQuota: vi.fn(),
+    refreshCredentials: vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" }),
     ...overrides,
   } as DatasourceClient<DatasourceType>;
 }
@@ -65,6 +68,52 @@ describe("files:search handler", () => {
       kind: "path",
       path: "/projects",
     });
+  });
+
+  it("auth-expired once then succeeds → refreshCredentials called exactly once, search returns (withAuthRefresh)", async () => {
+    // migrate-engine-retry-policy-to-consumer §3.3 — handler-owned
+    // refresh-once/retry-once. RED before the wrap, GREEN after.
+    const hit: DatasourceFileEntry<"google-drive"> = {
+      handle: "h-after",
+      kind: "file",
+      name: "after.xlsx",
+      path: "/projects/after.xlsx",
+      size: 4096,
+      mimeFamily: "document",
+      modifiedAt: Date.parse("2026-04-02T00:00:00.000Z"),
+      providerMetadata: {},
+    };
+    const search = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: false,
+          message: "token expired",
+        }),
+      )
+      .mockResolvedValueOnce([hit]);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const handler = makeFilesSearchHandler({
+      resolveClient: async () => makeFakeClient({ search, refreshCredentials }),
+    });
+
+    const result = await handler(
+      { datasourceId: "ds-1", query: "budget", path: "/projects" },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.entries).toHaveLength(1);
+      expect(result.result.entries[0]!.id).toBe("h-after");
+    }
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledTimes(2);
   });
 
   it("engine auth-revoked becomes ok:false with tag:'auth-revoked'", async () => {

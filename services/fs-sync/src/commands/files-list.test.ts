@@ -27,6 +27,9 @@ function makeFakeClient(
     deleteFile: vi.fn(),
     deleteDirectory: vi.fn(),
     getQuota: vi.fn(),
+    refreshCredentials: vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" }),
     ...overrides,
   } as DatasourceClient<DatasourceType>;
 }
@@ -84,6 +87,42 @@ describe("files:list handler", () => {
       expect(mapped.modifiedAt).toBe("2026-04-01T00:00:00.000Z");
     }
     expect(listDirectory).toHaveBeenCalledWith({ kind: "path", path: "/foo" });
+  });
+
+  it("auth-expired once then succeeds → refreshCredentials called exactly once, list returns (withAuthRefresh)", async () => {
+    // migrate-engine-retry-policy-to-consumer §3.1 — the engine no longer
+    // auto-refreshes; the handler wraps the engine call in `withAuthRefresh`
+    // so a stale-but-refreshable token refreshes once and retries before any
+    // error surfaces. RED before the wrap (the first auth-expired surfaces
+    // raw → ok:false), GREEN after (refresh + retry → ok:true).
+    const engineEntry = makeEngineEntry({ handle: "h-after", name: "after.txt" });
+    const listDirectory = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: false,
+          message: "token expired",
+        }),
+      )
+      .mockResolvedValueOnce([engineEntry]);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const client = makeFakeClient({ listDirectory, refreshCredentials });
+    const handler = makeFilesListHandler({ resolveClient: async () => client });
+
+    const result = await handler({ datasourceId: "ds-1", path: "/foo" }, ctx);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.entries).toHaveLength(1);
+      expect(result.result.entries[0]!.id).toBe("h-after");
+    }
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(listDirectory).toHaveBeenCalledTimes(2);
   });
 
   it("auth-revoked engine error returns ok:false with tag:'auth-revoked' retryable:false", async () => {

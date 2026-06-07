@@ -7,6 +7,7 @@ import type {
   DatasourceClient,
   DatasourceError,
 } from "@ft5/fs-datasource-engine";
+import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
 
 import { SnapshotRepository } from "../jobs/snapshot-repository.js";
@@ -86,10 +87,20 @@ export function buildMirrorSyncExecutor(deps: MirrorSyncDeps): Executor {
           // cancels the job; per-file progress is not surfaced to the
           // renderer (mirror-sync emits only the terminal `sync-completed`
           // event), so `onProgress` is intentionally omitted.
-          const entry = await client.uploadFile(
-            { kind: "path", path: `${job.sourcePath}/${op.relPath}` },
-            { path: abs },
-            { signal },
+          // migrate-engine-retry-policy-to-consumer Decision 4 / spec
+          // "Mirror-sync refreshes once on auth-expired via withAuthRefresh"
+          // — the engine no longer auto-refreshes; the executor wraps each
+          // engine call in `withAuthRefresh` so a stale-but-refreshable token
+          // refreshes once and retries BEFORE any error escapes to the
+          // scheduler. A second `auth-expired` (post-refresh dead token)
+          // propagates into the catch below and surfaces as a terminal
+          // failure — the scheduler does NOT intercept it.
+          const entry = await withAuthRefresh(client, () =>
+            client.uploadFile(
+              { kind: "path", path: `${job.sourcePath}/${op.relPath}` },
+              { path: abs },
+              { signal },
+            ),
           );
           const sha =
             op.kind === "upload-new"
@@ -117,8 +128,11 @@ export function buildMirrorSyncExecutor(deps: MirrorSyncDeps): Executor {
           );
           skipped++;
         } else {
-          // delete-remote
-          await client.deleteFile({ kind: "handle", handle: op.remoteHandle });
+          // delete-remote — same `withAuthRefresh` wrap as the upload path
+          // above (Decision 4).
+          await withAuthRefresh(client, () =>
+            client.deleteFile({ kind: "handle", handle: op.remoteHandle }),
+          );
           snapshots.delete(job.datasourceId, op.relPath);
           deleted++;
         }

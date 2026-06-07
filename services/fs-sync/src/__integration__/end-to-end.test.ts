@@ -96,6 +96,12 @@ function fakeClient() {
       kind: "file" as const,
     })),
     deleteFile: vi.fn(async () => void 0),
+    // Required on DatasourceClient after migrate-engine-retry-policy-to-consumer;
+    // the mirror executor wraps engine calls in `withAuthRefresh`, which calls
+    // this only on `auth-expired` (no such path here) — stubbed for runtime-safety.
+    refreshCredentials: vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" }),
   };
 }
 

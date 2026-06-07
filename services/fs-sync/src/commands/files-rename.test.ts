@@ -26,6 +26,9 @@ function makeFakeClient(
     rename: vi.fn(),
     downloadFile: vi.fn(),
     getQuota: vi.fn(),
+    refreshCredentials: vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" }),
     ...overrides,
   } as unknown as DatasourceClient<DatasourceType>;
 }
@@ -197,7 +200,56 @@ describe("files:rename handler", () => {
     }
   });
 
-  it("auth-expired collapses to tag:'auth-revoked' (single user-facing reconnect tag) — matches existing handler convention", async () => {
+  it("auth-expired once then succeeds → refreshCredentials called exactly once, rename retries and returns (withAuthRefresh)", async () => {
+    // migrate-engine-retry-policy-to-consumer §3.5 — handler-owned
+    // refresh-once/retry-once. The engine no longer auto-refreshes; the
+    // handler wraps `client.rename` in `withAuthRefresh`. RED before the wrap
+    // (raw auth-expired → ok:false), GREEN after (refresh + retry → ok:true).
+    const rename = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "onedrive",
+          datasourceId: "ds-1",
+          retryable: false,
+          message: "token expired",
+        }),
+      )
+      .mockResolvedValueOnce(renamedEngineEntry);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const client = makeFakeClient({ rename, refreshCredentials });
+    const handler = makeFilesRenameHandler({ resolveClient: async () => client });
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        path: "/parent/foo.pdf",
+        newName: "bar.pdf",
+        conflictPolicy: "fail",
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.entry.id).toBe("h-bar");
+    }
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledTimes(2);
+  });
+
+  it("auth-expired AGAIN after refresh (dead token) → refreshCredentials called once, rename called twice, collapses to tag:'auth-revoked'", async () => {
+    // Dead-token guard. `withAuthRefresh` refreshes ONCE then retries; a
+    // second auth-expired propagates (no second refresh) and the handler's
+    // catch normalizes it to the single user-facing reconnect tag
+    // `auth-revoked`. The call-count assertions are load-bearing: without
+    // them a tag-only check would pass even if the `withAuthRefresh` wrap
+    // were absent (the engine surfaces auth-expired raw → also auth-revoked),
+    // producing a false green. (Replaces the former always-reject
+    // auth-expired→auth-revoked case, which had exactly that blind spot.)
     const rename = vi.fn().mockRejectedValue(
       new DatasourceError({
         tag: "auth-expired",
@@ -207,7 +259,10 @@ describe("files:rename handler", () => {
         message: "token expired",
       }),
     );
-    const client = makeFakeClient({ rename });
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const client = makeFakeClient({ rename, refreshCredentials });
     const handler = makeFilesRenameHandler({ resolveClient: async () => client });
 
     const result = await handler(
@@ -224,6 +279,8 @@ describe("files:rename handler", () => {
     if (!result.ok) {
       expect(result.error.tag).toBe("auth-revoked");
     }
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledTimes(2);
   });
 
   it("rate-limited preserves retryAfterMs and retryable:true", async () => {

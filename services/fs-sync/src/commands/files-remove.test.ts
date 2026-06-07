@@ -24,6 +24,9 @@ function makeFakeClient(
     deleteFile: vi.fn(),
     deleteDirectory: vi.fn(),
     getQuota: vi.fn(),
+    refreshCredentials: vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" }),
     ...overrides,
   } as DatasourceClient<DatasourceType>;
 }
@@ -135,6 +138,47 @@ describe("files:remove handler", () => {
         { path: "/acme.txt", handle: "h-acme-2", ok: true },
       ]);
     }
+  });
+
+  it("file delete: auth-expired once then succeeds → refreshCredentials called exactly once, deleteFile retries and target succeeds (withAuthRefresh)", async () => {
+    // migrate-engine-retry-policy-to-consumer §3.4 — each per-target delete
+    // owns its own refresh-once/retry-once. RED before the wrap (the first
+    // auth-expired surfaces raw → per-target error), GREEN after (refresh +
+    // retry → results[0].ok:true).
+    const deleteFile = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: false,
+          message: "token expired",
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const client = makeFakeClient({ deleteFile, refreshCredentials });
+    const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        targets: [{ path: "/a.txt", handle: "h-a", kind: "file" }],
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result.results).toEqual([
+        { path: "/a.txt", handle: "h-a", ok: true },
+      ]);
+    }
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(deleteFile).toHaveBeenCalledTimes(2);
   });
 
   it("single-target failure (engine throws rate-limited) returns per-target error", async () => {

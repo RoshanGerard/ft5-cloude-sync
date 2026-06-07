@@ -19,6 +19,7 @@
 // with the colliding sibling path.
 
 import type { DatasourceClient, Target } from "@ft5/fs-datasource-engine";
+import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
 
 import type { CommandHandler } from "../ipc/server.js";
@@ -51,10 +52,12 @@ export function makeFilesRenameHandler(
         ? { kind: "handle", handle: params.handle }
         : { kind: "path", path: params.path };
     try {
-      const engineEntry = await client.rename(
-        target,
-        params.newName,
-        params.conflictPolicy,
+      // migrate-engine-retry-policy-to-consumer Decision 4 — engine no longer
+      // auto-refreshes on `auth-expired`; handler owns refresh-once/retry-once
+      // via `withAuthRefresh` (spec: `files:rename` "wrapped in the engine's
+      // withAuthRefresh helper").
+      const engineEntry = await withAuthRefresh(client, () =>
+        client.rename(target, params.newName, params.conflictPolicy),
       );
       return {
         ok: true,

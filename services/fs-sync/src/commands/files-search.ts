@@ -7,6 +7,7 @@
 // `add-engine-listdirectory-pagination`, this handler forwards the signal.
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
+import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
 
 import type { CommandHandler } from "../ipc/server.js";
@@ -31,10 +32,15 @@ export function makeFilesSearchHandler(
       return { ok: false, error: normalizeFilesError(err) };
     }
     try {
-      const engineEntries = await client.search(params.query, {
-        kind: "path",
-        path: params.path,
-      });
+      // migrate-engine-retry-policy-to-consumer Decision 4 — engine no longer
+      // auto-refreshes on `auth-expired`; handler owns refresh-once/retry-once
+      // via `withAuthRefresh`.
+      const engineEntries = await withAuthRefresh(client, () =>
+        client.search(params.query, {
+          kind: "path",
+          path: params.path,
+        }),
+      );
       const entries = engineEntries.map(mapEngineEntryToFileEntry);
       return { ok: true, result: { entries, truncated: false } };
     } catch (err) {

@@ -43,6 +43,12 @@ function makeFakeClient(): DatasourceClient<DatasourceType> {
     deleteFile: vi.fn(),
     deleteDirectory: vi.fn(),
     getQuota: vi.fn(),
+    // Required on DatasourceClient after migrate-engine-retry-policy-to-consumer;
+    // the wrapped handlers call it only on an `auth-expired` path (none here),
+    // but it is stubbed for runtime-safety since the casts bypass the compile check.
+    refreshCredentials: vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" }),
   } as DatasourceClient<DatasourceType>;
 }
 
