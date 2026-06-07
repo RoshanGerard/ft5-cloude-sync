@@ -104,7 +104,9 @@ The download conflict gate populates both from `fs.stat(toPath)` (`stats.size`, 
 
 **Choice:** Extract `title` and `description` as fields on `RenameConflictDialogProps` in `apps/desktop/src/renderer/src/features/file-explorer/rename-conflict-dialog.tsx`. Default values match the current rename copy ("File already exists" / "A file at this path already exists. Choose what to do for this rename."). The download flow passes its own copy ("Download destination already exists" / "A file already exists at the download destination. Choose how to proceed.").
 
-Render the new envelope hint metadata (`existingSize`, `existingModifiedAt`) when at least one is present — formatted size (e.g., "4.2 MB") and relative time (e.g., "2 minutes ago") above the existing path block. When neither is present, the hint block is omitted (rename callers continue to render path-only).
+Render the new envelope hint metadata (`existingSize`, `existingModifiedAt`) when at least one is present — formatted size (e.g., "4.2 MB") and the modified timestamp above the existing path block. When neither is present, the hint block is omitted (rename callers continue to render path-only).
+
+**As-shipped deviation (Phase E/F).** The "relative time (e.g., '2 minutes ago')" example above was aspirational. The renderer has no relative-time formatter, and the existing file-list "modified" column formatter this decision points to is `formatDate` from `view-modes/details-format.ts`, which renders an **absolute** en-US date ("Apr 18, 2026"). Per the design's own "no new dep" rule, the hint reuses that existing `formatDate` (paired with `formatSize` — the same pair the upload conflict-resolution-dialog uses at lines 108–110), so the hint reads e.g. "4.2 MB · modified Apr 18, 2026" rather than a relative string. No relative-time dependency was introduced.
 
 **Rationale:** The dialog matrix is already `"overwrite" | "keep-both" | "cancel"` verbatim. The decision matrix matches; only the surrounding copy and the optional hint render differ. Extracting two props is the minimal change. A sister-component approach (separate `DownloadConflictDialog` reusing internals) would double the test surface for no behavioral gain.
 
@@ -123,7 +125,7 @@ No new visual design. The dialog reuse path keeps the existing chrome:
 - Single-column footer-button layout, full-width buttons, max-w-md container.
 - Visual Companion is *not* engaged for this change — the component is reused as-is. If a future round of UX feedback wants to refresh the dialog (e.g., add a thumbnail preview, change button order, introduce a "remember my choice" checkbox), brainstorming + Visual Companion engages at that point per the visual-refinement trigger.
 
-The new hint-metadata block is utilitarian: a small `text-muted-foreground text-xs` line above the `data-testid="rename-conflict-existing-path"` block reading "4.2 MB • modified 2 minutes ago" or similar. Format size with the renderer's existing byte-formatting utility (already used for the download toast); format relative time with the existing time-formatter (already used for the file list "modified" column). Both utilities are renderer-local, no new dep.
+The new hint-metadata block is utilitarian: a small `text-muted-foreground text-xs` line above the `data-testid="rename-conflict-existing-path"` block reading e.g. "4.2 MB · modified Apr 18, 2026". Format size with the renderer's existing byte-formatting utility and the modified timestamp with the existing file-list "modified" column formatter (`formatSize` + `formatDate` from `view-modes/details-format.ts`). Both are renderer-local, no new dep. (As-shipped the timestamp is **absolute**, not the relative "2 minutes ago" the earlier draft imagined — see the **As-shipped deviation** under Decision 5.)
 
 ## Risks / Trade-offs
 
