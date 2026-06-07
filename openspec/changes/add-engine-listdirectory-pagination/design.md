@@ -353,7 +353,7 @@ Downloads' "Default folder" row.
     </Button>
   </DropdownMenuTrigger>
   <DropdownMenuContent align="end">
-    <DropdownMenuLabel className="text-xs uppercase tracking-wider">
+    <DropdownMenuLabel className="text-muted-foreground text-xs uppercase tracking-wider">
       Page size
     </DropdownMenuLabel>
     <DropdownMenuRadioGroup value={String(value)} onValueChange={onChange}>

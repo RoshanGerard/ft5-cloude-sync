@@ -108,7 +108,7 @@ the reverse.
 ## 12. Renderer UI: Settings dialog Explorer section
 
 - [ ] 12.1 Add an EXPLORER section to `apps/desktop/src/renderer/src/features/settings/settings-dialog.tsx` as a sibling of the existing DOWNLOADS section
-- [ ] 12.2 Implement the Page-size row using shadcn `Select` bound to `ft5.explorer.pageSize`
+- [ ] 12.2 Implement the Page-size row using a `DropdownMenu` + `DropdownMenuRadioGroup` (Visual direction V-4 — mirror the toolbar View-mode menu), bound to the store's exported `EXPLORER_PAGE_SIZE_KEY` (`ft5.explorer.pageSize`). (Supersedes the earlier "shadcn `Select`" wording: the spec mandates NO net-new `Select` primitive.)
 - [ ] 12.3 Default to 500 on first read; persist on change
 - [ ] 12.4 Verify keyboard reachability + focus ring + accessible label
 - [ ] 12.5 Update settings-dialog tests covering default, persistence, all five options
