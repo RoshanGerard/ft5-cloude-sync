@@ -24,8 +24,8 @@ and S3 strategy require NO code change.
 
 ## 4. Verification, spec validation, advisor checkpoint
 
-- [ ] 4.1 Engine package: `tsc -b` clean, `@ft5/fs-datasource-engine` tests green, eslint clean.
-- [ ] 4.2 Full-repo suite green (env setup: `pnpm abi:node` + `pnpm --filter @ft5/desktop build` → `pnpm test`); typecheck + lint clean.
+- [x] 4.1 Engine package: `tsc -b` clean, `@ft5/fs-datasource-engine` tests green, eslint clean. (351/351; tsc + eslint clean.)
+- [x] 4.2 Full-repo suite green (env setup: `pnpm abi:node` + `pnpm --filter @ft5/desktop build` → `pnpm test`); typecheck + lint clean. (2818 passed / 9 skipped, 0 type errors. The lone failure — `services/fs-sync/.../authenticate-flow.integration.test.ts` S3 credentials-form — is the documented main-checkout env flake [`vi.mock @aws-sdk/client-s3` fails to apply]; fails in isolation too, branch touches NO fs-sync/auth-flow/s3-client/aws-sdk files → not a regression of this engine-only change.)
 - [ ] 4.3 `openspec validate migrate-engine-cache-invalidation --strict`; after archive-sync, `openspec validate fs-datasource-engine --type spec`.
-- [ ] 4.4 DRY decision: evaluate extracting `evictPathSubtree(map, path)` to de-dup the Drive/OneDrive prefix scan; lean YAGNI for two strategies — update `design.md` only if the decision changes.
+- [x] 4.4 DRY decision: evaluate extracting `evictPathSubtree(map, path)` to de-dup the Drive/OneDrive prefix scan; lean YAGNI for two strategies — update `design.md` only if the decision changes. (Evaluated: still only two cached strategies; value types differ — Drive `{fileId,ambiguousSiblings?}` vs OneDrive `string`. Decision UNCHANGED — keep deferred per design.md Risks; no design edit.)
 - [ ] 4.5 Advisor checkpoint #2 (before `/opsx:archive`): verify the implementation matches the design decisions; make the deliverable durable first.
