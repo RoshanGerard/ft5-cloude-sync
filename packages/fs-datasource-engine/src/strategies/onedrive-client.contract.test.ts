@@ -507,6 +507,56 @@ const fixture: StrategyContractFixture = {
       });
     });
   },
+
+  // -------------------------------------------------------------------------
+  // migrate-engine-cache-invalidation §3 — cache-eviction contract hooks
+  // -------------------------------------------------------------------------
+
+  primeDeleteOfListedFile() {
+    // After `listDirectory("/")` the cache holds `/file-a.txt →
+    // contract-file-id`, so `deleteFile("/file-a.txt")` resolves via a cache
+    // HIT (`resolveTargetUrl` → `/me/drive/items/contract-file-id`) and issues
+    // `DELETE /me/drive/items/contract-file-id`.
+    responders.push({
+      match: "/me/drive/items/contract-file-id",
+      verbs: { delete: () => undefined },
+    });
+  },
+
+  primeRenameOfListedFile(opts) {
+    // Cache-hit rename of the listed file. `resolveRenameTarget` GETs
+    // `/me/drive/items/contract-file-id`; its `parentReference.id` is
+    // `OD-ROOT` (distinct, so the sibling-check URL cannot startsWith-collide
+    // with the item URL). The "fail" sibling pre-check lists
+    // `/me/drive/items/OD-ROOT/children?$filter=...` → empty; the rename then
+    // PATCHes `/me/drive/items/contract-file-id` (file facet → single old
+    // path evicted).
+    responders.push({
+      match: "/me/drive/items/contract-file-id",
+      verbs: {
+        get: () => ({
+          id: "contract-file-id",
+          name: "file-a.txt",
+          file: { mimeType: "text/plain" },
+          size: 10,
+          lastModifiedDateTime: "2024-06-01T00:00:00Z",
+          parentReference: { path: "/drive/root:", id: "OD-ROOT" },
+        }),
+        patch: () => ({
+          id: "contract-file-id",
+          name: opts.newName,
+          file: { mimeType: "text/plain" },
+          size: 10,
+          lastModifiedDateTime: "2024-06-02T00:00:00Z",
+          parentReference: { path: "/drive/root:", id: "OD-ROOT" },
+        }),
+      },
+    });
+    responders.push({
+      match: "/me/drive/items/OD-ROOT/children",
+      verbs: { get: () => ({ value: [] }) },
+    });
+  },
 };
 
 // ---------------------------------------------------------------------------
