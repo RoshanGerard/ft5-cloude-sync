@@ -287,4 +287,69 @@ describe("window.api.files round-trip", () => {
     }
     assertStructuredCloneSafe(res2);
   });
+
+  it("download(req) surfaces a tag:'conflict' envelope with size/modifiedAt hint metadata that round-trips cleanly, and a re-dispatch with conflictPolicy:'overwrite' succeeds (add-download-overwrite-confirm §7.3)", async () => {
+    // First dispatch with the default "fail" policy: the service-side gate
+    // returns a conflict envelope carrying the existing destination's
+    // metadata. The renderer's prompt + re-dispatch LOOP is exercised in
+    // use-download-orchestrator.test.ts §5; this test pins the IPC contract
+    // for the conflict case — the new optional hint fields on the error
+    // envelope must round-trip structuredClone-safe across the boundary.
+    const conflictResponse: FilesDownloadResponse = {
+      ok: false,
+      error: {
+        tag: "conflict",
+        message: "destination already exists at /Users/me/Downloads/report.pdf",
+        retryable: false,
+        existingPath: "/Users/me/Downloads/report.pdf",
+        existingSize: 4_194_304,
+        existingModifiedAt: "2026-04-18T09:30:00.000Z",
+      },
+    };
+    vi.mocked(filesApi.download).mockResolvedValueOnce(conflictResponse);
+
+    const failReq: FilesDownloadRequest = {
+      datasourceId: "ds-s3-archive",
+      path: "/projects/report.pdf",
+      toPath: "/Users/me/Downloads/report.pdf",
+      conflictPolicy: "fail",
+    };
+    const conflict = await filesApi.download(failReq);
+    expect(conflict.ok).toBe(false);
+    if (!conflict.ok) {
+      expect(conflict.error.tag).toBe("conflict");
+      expect(conflict.error.existingPath).toBe(
+        "/Users/me/Downloads/report.pdf",
+      );
+      expect(conflict.error.existingSize).toBe(4_194_304);
+      expect(conflict.error.existingModifiedAt).toBe(
+        "2026-04-18T09:30:00.000Z",
+      );
+    }
+    assertStructuredCloneSafe(conflict);
+    expect(vi.mocked(filesApi.download).mock.calls[0]).toEqual([failReq]);
+
+    // User picks "Overwrite": the renderer re-dispatches the SAME
+    // (datasourceId, path, toPath) triple with the chosen policy; the
+    // service truncates and succeeds.
+    const successResponse: FilesDownloadResponse = {
+      ok: true,
+      value: { savedPath: "/Users/me/Downloads/report.pdf", bytes: 4_194_304 },
+    };
+    vi.mocked(filesApi.download).mockResolvedValueOnce(successResponse);
+
+    const overwriteReq: FilesDownloadRequest = {
+      datasourceId: "ds-s3-archive",
+      path: "/projects/report.pdf",
+      toPath: "/Users/me/Downloads/report.pdf",
+      conflictPolicy: "overwrite",
+    };
+    const success = await filesApi.download(overwriteReq);
+    expect(success.ok).toBe(true);
+    if (success.ok) {
+      expect(success.value.savedPath).toBe("/Users/me/Downloads/report.pdf");
+    }
+    assertStructuredCloneSafe(success);
+    expect(vi.mocked(filesApi.download).mock.calls[1]).toEqual([overwriteReq]);
+  });
 });
