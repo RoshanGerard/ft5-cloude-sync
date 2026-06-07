@@ -386,6 +386,96 @@ describe("LoadMoreRegion behavior through the composite (spec scenarios)", () =>
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
+  // -------------------------------------------------------------------------
+  // §13.1 — the headline "3-page paginated folder" composite.
+  //
+  // The proposal's acceptance criterion: first page renders 500 entries with
+  // the Load-more affordance VISIBLE; clicking Load-more appends 500 more
+  // (1000 total, affordance STILL visible); clicking again appends the final
+  // 200 (1200 total) and the affordance is now HIDDEN (`nextCursor === null`).
+  //
+  // What makes this distinct from the 2-page "appends + hides" test above is
+  // the MIDDLE state: after the first Load-more the cursor is non-null
+  // (`tokB`), so the button MUST remain and the status row MUST read
+  // `1000+ items · 1000 loaded`. The 2-page test exhausts on the first click
+  // and never exercises a still-more-available intermediate page.
+  //
+  // Entry counts are asserted via the store snapshot (not DOM row count): the
+  // LoadMoreRegion + status row render OUTSIDE the entries scroll container
+  // (V-1), so the affordance + status assertions are virtualization-
+  // independent, and the count of truth is the store's appended `entries`.
+  // Distinct id prefixes per page (p1/p2/p3) keep React keys unique across the
+  // three appended pages — `runPage` appends without dedupe.
+  it("3-page folder: 500 → click → 1000 (still more) → click → 1200 (done, affordance hidden) (§13.1)", async () => {
+    installApiMock({
+      byPath: new Map([["/", { entries: pageOf(500, "p1"), nextCursor: "tokA" }]]),
+      byCursor: new Map([
+        ["tokA", { entries: pageOf(500, "p2"), nextCursor: "tokB" }],
+        ["tokB", { entries: pageOf(200, "p3"), nextCursor: null }],
+      ]),
+    });
+    render(<FileExplorer datasourceId="ds-page" />);
+
+    const store = getOrCreateExplorerStore("ds-page");
+
+    // --- Page 1: 500 entries, affordance visible, "500+ items · 500 loaded".
+    const firstButton = await screen.findByRole("button", { name: "Load more" });
+    expect(store.getSnapshot().entries.length).toBe(500);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^500\+ items · 500 loaded$/,
+    );
+
+    // --- Click 1 → page 2 appends: 1000 total, STILL more available. The
+    //     intermediate `await waitFor` proves the first load-more settled
+    //     before the second click (the store's `loadingMore` guard makes a
+    //     click during an in-flight page a no-op).
+    await act(async () => {
+      firstButton.click();
+    });
+    await waitFor(() => {
+      expect(store.getSnapshot().entries.length).toBe(1000);
+    });
+    // The affordance is STILL present (cursor advanced to tokB, not null) —
+    // the novel middle state of the 3-page flow.
+    const secondButton = screen.getByRole("button", { name: "Load more" });
+    expect(secondButton).toBeInTheDocument();
+    expect(store.getSnapshot().nextCursor).toBe("tokB");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^1000\+ items · 1000 loaded$/,
+    );
+
+    // --- Click 2 → page 3 appends: 1200 total, cursor exhausted → affordance
+    //     HIDDEN, status collapses to the plain "1200 items".
+    await act(async () => {
+      secondButton.click();
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Load more" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(store.getSnapshot().entries.length).toBe(1200);
+    expect(store.getSnapshot().nextCursor).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(/^1200 items$/);
+
+    // Three list calls total: the initial first-page fetch + two load-mores.
+    expect(filesListMock).toHaveBeenCalledTimes(3);
+    // First call is the first page (no cursor); the two load-mores carry the
+    // advancing cursors.
+    expect(filesListMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ datasourceId: "ds-page", path: "/" }),
+    );
+    expect(filesListMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ cursor: "tokA" }),
+    );
+    expect(filesListMock).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ cursor: "tokB" }),
+    );
+  });
+
   it("Retry on the failed row swaps to the busy button, then appends + hides on success (spec lines 53-56)", async () => {
     // Stateful mock: the FIRST load-more (cursor: tokA) fails; the retry of
     // the SAME cursor succeeds with a final page (nextCursor: null).
