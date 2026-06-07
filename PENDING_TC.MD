@@ -911,3 +911,39 @@ filtering in the per-card subscription.
 **Status:** PENDING follow-up — NOT blocking the overwrite-confirm merge (this
 branch does not touch the toaster/card production code, so the merge cannot
 worsen it). **Owner:** unassigned.
+
+## DEFERRED SMOKE (migrate-engine-retry-policy-to-consumer) — real provider token-lifecycle re-auth against a running system
+
+**Not blocking archive/merge** — automated coverage is complete (engine 320 +
+fs-sync 529 + full-repo 2711 pass; both independent code reviews clean).
+Deferred per CLAUDE.md `## Workflow` step 8 ("feature exercised against a
+running system"): this change moves auth-expired refresh ownership from the
+engine (`withRefresh`, removed) to fs-sync (`withAuthRefresh` → the new public
+single-flight `refreshCredentials()`). Every automated test drives
+`auth-expired` through FAKE `DatasourceClient`s — NONE exercise an ACTUAL
+provider access-token lifecycle.
+
+**Verify against a live datasource (Drive / OneDrive / S3-STS):**
+1. **Read/mutate ops across a real token expiry** — let the access token
+   expire, then invoke list / stat / search / rename / remove / upload. Expect:
+   fs-sync's `withAuthRefresh` calls `refreshCredentials()` once, the op
+   succeeds transparently, and the desktop EventBridge relays `token-refreshed`
+   to the renderer.
+2. **Download across a mid-stream token expiry** — start a large download,
+   force expiry mid-stream. Expect: ONE handler-driven `refreshCredentials()`
+   + resume from bytes-on-disk (206 Partial Content), completes + integrity
+   passes. Bound: at most ONE mid-stream re-auth per download — a SECOND expiry
+   surfaces `auth-revoked` (pre-existing limit, design.md Risks "[One auth
+   refresh per download cycle]").
+3. **Dead refresh token → `auth-revoked`** — revoke the refresh token, invoke
+   any op. Expect: `refreshCredentials()` (or the re-issued GET) fails and the
+   op surfaces wire `tag: "auth-revoked"` (not a silent hang, not
+   `auth-expired`); renderer prompts reconnect.
+4. **Mirror-sync (background) across a token expiry** — a scheduled mirror job
+   whose token expires mid-run refreshes via the executor's `withAuthRefresh`
+   and completes; a dead token lands the job `failed` (scheduler terminal, no
+   intercept).
+
+**Owner:** unassigned. (Optional follow-up stub for genuinely unbounded
+hour-spanning re-auth — design.md Risks — only if smoke #2's one-per-download
+bound proves insufficient in practice.)
