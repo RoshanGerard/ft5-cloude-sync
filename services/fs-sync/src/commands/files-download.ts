@@ -38,15 +38,35 @@
 //     integrity-failed → tag: "other" with descriptive message (spec
 //     lines 73, 115, design.md collapse-to-other rule).
 //
-// Retry-loop contract (per design.md Decision 3):
-//   - `MAX_AUTH_RETRIES = 1` per cycle (one cycle = one underlying HTTP
-//     call). Consecutive auth-expired in the same cycle = dead refresh
-//     token; surface as `auth-revoked`. Distinct cycles each carry
-//     their own retry budget — multi-cycle long downloads are
-//     unbounded.
-//   - On auth-expired, read `fs.stat(toPath).size` to determine
-//     `rangeStart`; the next `engine.downloadFile` call's withRefresh
-//     wrapper refreshes the credential before issuing the new GET.
+// Retry-loop contract (per design.md Decision 3 + Decision 5):
+//   - `MAX_AUTH_RETRIES_PER_CYCLE = 1` per cycle (one cycle = one
+//     underlying HTTP call). The engine NO LONGER auto-refreshes on
+//     `auth-expired` (its `withRefresh` was removed by
+//     migrate-engine-retry-policy-to-consumer); the HANDLER now owns the
+//     refresh. On a FIRST `auth-expired` within a cycle's budget — at
+//     either the pre-stream GET catch or the mid-stream pipeline catch —
+//     the handler reads `fs.stat(toPath).size` to determine `rangeStart`,
+//     calls `client.refreshCredentials()` explicitly, and re-issues
+//     `engine.downloadFile` from that byte. A SECOND `auth-expired`
+//     immediately after that refresh (budget exhausted) is the dead-token
+//     signal: it falls through to the terminal catch, where
+//     `normalizeFilesError` collapses it onto wire `auth-revoked`. A typed
+//     error thrown by `refreshCredentials()` itself (e.g. a revoked
+//     refresh token) is NOT swallowed — it propagates to the same
+//     terminal catch and also surfaces as `auth-revoked`.
+//   - As-built note (pre-existing, unchanged by this migration): the
+//     outer `while (true)` cycle loop runs exactly ONCE in practice —
+//     reaching `cycleSucceeded` requires `bytesWritten ===
+//     finalContentLength`, otherwise `ByteCountMismatchError` throws, so
+//     the loop always `break`s after a single cycle. The `attemptInCycle`
+//     budget therefore allows AT MOST ONE handler refresh per entire
+//     download: a token that expires a second time surfaces `auth-revoked`
+//     rather than a second refresh. The design's "multi-cycle long
+//     download" scenario is covered BY-MECHANIC (one refresh-and-resume
+//     per cycle); the literal repeated-expiry case is bounded by this
+//     single-cycle structure, which predates this change and is left
+//     intact per its scope (auth refresh moves layers; the env-retry /
+//     cycle-budget structure does not).
 //
 // Subscription scope. The reconciliation: tasks.md §13.22 says
 // "service-bootstrap level"; user brief says "handler-local". The
@@ -1013,10 +1033,12 @@ export function makeFilesDownloadHandler(
               clearTimeout(attemptTimeoutHandle);
             }
           } catch (err) {
-            // Pre-stream failure (the GET itself rejected, after
-            // withRefresh's one-shot retry inside the engine).
+            // Pre-stream failure: the GET itself rejected before any
+            // bytes streamed. The engine no longer retries internally —
+            // its `withRefresh` was removed (Decision 1), so a FIRST
+            // `auth-expired` here means no refresh has happened yet.
             //
-            // §11.3 — distinguish three cases:
+            // §11.3 + Decision 5 — distinguish four cases (in order):
             //   1. User-cancel — `abortController.signal.aborted` is
             //      checked FIRST so it always wins over a coincident
             //      timeout. Existing CancelledError → terminal cancel.
@@ -1025,9 +1047,15 @@ export function makeFilesDownloadHandler(
             //      DatasourceError({ tag: "network-error", retryable:
             //      true }) and route into Layer 3 env-retry below — a
             //      hung GET IS an environmental failure (Decision 12).
-            //   3. Otherwise — re-throw untouched (auth-expired /
-            //      auth-revoked / strategy-mapped tags propagate to the
-            //      outer terminal catch via normalizeFilesError).
+            //   3. Pre-stream auth-expired (within budget) — the handler
+            //      refreshes the credential explicitly and re-issues the
+            //      GET (Decision 5 branch below). `auth-expired` is not
+            //      environmentally retryable, so case 2's env branch never
+            //      claims it.
+            //   4. Otherwise — re-throw untouched (auth-revoked / a second
+            //      auth-expired after a refresh / strategy-mapped tags
+            //      propagate to the outer terminal catch via
+            //      normalizeFilesError).
             if (
               abortController.signal.aborted ||
               (err instanceof DatasourceError && err.tag === "cancelled")
@@ -1098,13 +1126,41 @@ export function makeFilesDownloadHandler(
                 .catch(() => bytesWritten);
               continue;
             }
-            // Anything else (auth-expired / auth-revoked / non-retryable
-            // strategy-mapped tags) propagates to the outer catch;
-            // `normalizeFilesError` collapses both auth tags onto wire
-            // `tag: "auth-revoked"` (see files-error-mapping.ts).
-            // Auth-expired here means the engine's withRefresh tried
-            // and the post-refresh GET still came back auth-expired —
-            // the refresh token is dead.
+            // PRE-stream auth-expired (Decision 5 — handler-owned refresh).
+            // The engine no longer auto-refreshes; a FIRST `auth-expired`
+            // means no refresh has happened yet. Within the per-cycle
+            // budget, the handler refreshes the credential explicitly and
+            // re-issues the GET. Resume from bytes-on-disk (0 if nothing
+            // has been written yet, e.g. the initial GET failed before any
+            // stream). `auth-expired` is not environmentally retryable, so
+            // it is never swallowed by the Layer 3 branch above; the
+            // user-cancel check above still wins over a coincident cancel.
+            // A second `auth-expired` (budget exhausted) falls through to
+            // `throw routedErr` below → terminal catch → `auth-revoked`.
+            if (
+              err instanceof DatasourceError &&
+              err.tag === "auth-expired" &&
+              attemptInCycle < MAX_AUTH_RETRIES_PER_CYCLE
+            ) {
+              attemptInCycle++;
+              // The handler owns the refresh now. A typed dead-token error
+              // thrown HERE (e.g. `auth-revoked`) is NOT swallowed — it
+              // propagates to the outer terminal catch, which
+              // `normalizeFilesError` maps to wire `auth-revoked`.
+              await client.refreshCredentials();
+              bytesWritten = await deps.fs
+                .statSize(effectiveTargetPath)
+                .catch(() => 0);
+              continue;
+            }
+            // Anything else (auth-revoked / a second auth-expired after a
+            // refresh / non-retryable strategy-mapped tags) propagates to
+            // the outer catch; `normalizeFilesError` collapses both auth
+            // tags onto wire `tag: "auth-revoked"` (see
+            // files-error-mapping.ts). A recurring `auth-expired` here means
+            // the handler already refreshed once this cycle and the
+            // post-refresh GET still came back auth-expired — the refresh
+            // token is dead.
             throw routedErr;
           }
 
@@ -1207,7 +1263,14 @@ export function makeFilesDownloadHandler(
               attemptInCycle < MAX_AUTH_RETRIES_PER_CYCLE
             ) {
               attemptInCycle++;
-              // Update bytesWritten from disk before the retry.
+              // Decision 5 — handler-owned refresh. The engine no longer
+              // auto-refreshes; the handler refreshes the credential
+              // explicitly before re-issuing the GET. A typed dead-token
+              // error thrown here propagates to the outer terminal catch
+              // (→ wire `auth-revoked`); it is NOT swallowed.
+              await client.refreshCredentials();
+              // Update bytesWritten from disk before the retry so the
+              // re-issued GET resumes from the partial already on disk.
               bytesWritten = await deps.fs.statSize(effectiveTargetPath);
               // Stay inside the inner loop — issue a fresh
               // engine.downloadFile with rangeStart = bytesWritten.
