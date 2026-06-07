@@ -545,9 +545,6 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     { fileId: string; ambiguousSiblings?: string[] }
   >();
 
-  /** Unsubscribe handle for the bus subscription driving cache invalidation. */
-  private readonly unsubscribe: () => void;
-
   /** Idempotency guard for `dispose()`. */
   private disposed = false;
 
@@ -570,29 +567,18 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     this.codeVerifierFactory =
       options.codeVerifierFactory ??
       (() => randomBytes(48).toString("base64url"));
-
-    this.unsubscribe = this.ctx.bus.subscribe((e) => {
-      if (e.datasourceId !== this.datasourceId) return;
-      if (e.event === "deleted") {
-        const payload = e.payload as { target?: Target };
-        if (payload.target?.kind === "path") {
-          this.evictPath(payload.target.path);
-        } else if (payload.target?.kind === "handle") {
-          this.evictHandle(payload.target.handle);
-        }
-      }
-      // Note: the `file-created` arm was removed by
-      // migrate-upload-orchestration-out-of-engine. LRU population on
-      // upload completion is now performed inside `doUploadFileImpl`'s
-      // success branch directly (see `cachePathHandle` below).
-    });
+    // No engine-bus subscription: cache eviction is performed inline by the
+    // mutating ops (doDeleteFileImpl / doRenameImpl) — see
+    // migrate-engine-cache-invalidation. Upload-success population stays
+    // inline in doUploadFileImpl (per migrate-upload-orchestration-out-of-engine).
   }
 
-  /** Tear down the bus subscription. Idempotent. */
+  /** No-op retained for `DatasourceClient` contract stability. The bus
+   * self-subscription was removed — cache eviction is now inline in the
+   * mutating ops (migrate-engine-cache-invalidation). Idempotent. */
   override dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.unsubscribe();
   }
 
   // -------------------------------------------------------------------------
@@ -630,6 +616,16 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         this.pathHandleCache.delete(k);
         break;
       }
+    }
+  }
+
+  /** Evict a path AND every cached descendant under `<path>/` (directory
+   * rename — migrate-engine-cache-invalidation Decision 3). */
+  private evictPathAndDescendants(path: string): void {
+    this.pathHandleCache.delete(path);
+    const prefix = `${path}/`;
+    for (const k of this.pathHandleCache.keys()) {
+      if (k.startsWith(prefix)) this.pathHandleCache.delete(k);
     }
   }
 
@@ -1543,6 +1539,13 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     } catch (err) {
       throw this.normalizeErrorImpl(err);
     }
+    // Inline path-cache eviction (migrate-engine-cache-invalidation
+    // Decisions 1/3) — replaces the former `deleted`-event bus subscription.
+    if (target.kind === "path") {
+      this.evictPath(target.path);
+    } else {
+      this.evictHandle(target.handle);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1656,6 +1659,9 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         } catch (err) {
           throw this.normalizeErrorImpl(err);
         }
+        // Evict the displaced sibling's cached path — no `deleted` event fires
+        // for this internal deletion (migrate-engine-cache-invalidation Dec. 3).
+        this.evictHandle(sibling.id);
       }
     }
 
@@ -1755,8 +1761,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     // compute it from the original path's parent + the new name; for
     // handle-form we synthesize `/<newName>` (same convention as search /
     // handle-form listDirectory, see the class header's "Synthesized paths"
-    // note). Cache invalidation on rename is a follow-up concern (the
-    // bus subscription does not currently observe `entry-renamed`).
+    // note).
     let entryPath: string;
     if (target.kind === "path") {
       const segs = pathSegments(target.path);
@@ -1766,6 +1771,17 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         parent === "" ? `/${effectiveName}` : `${parent}/${effectiveName}`;
     } else {
       entryPath = `/${effectiveName}`;
+    }
+    // Inline path-cache eviction on rename (migrate-engine-cache-invalidation
+    // Decisions 1/3) — evict the OLD path; for a directory rename evict its
+    // cached descendants too. Evict-only (the new path resolves fresh).
+    // Handle-form has no old path → evict by the stable fileId.
+    const renamedToDir = updated.mimeType === DRIVE_FOLDER_MIME;
+    if (target.kind === "path") {
+      if (renamedToDir) this.evictPathAndDescendants(target.path);
+      else this.evictPath(target.path);
+    } else {
+      this.evictHandle(fileId);
     }
     return this.buildFileEntry(updated, { path: entryPath });
   }

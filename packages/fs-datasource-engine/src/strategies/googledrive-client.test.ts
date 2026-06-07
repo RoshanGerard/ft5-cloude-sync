@@ -2168,11 +2168,224 @@ describe("GoogleDriveClient — path↔fileId LRU invalidation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// rename cache invalidation (migrate-engine-cache-invalidation Decisions 1/3)
+// ---------------------------------------------------------------------------
+
+describe("GoogleDriveClient — rename cache invalidation", () => {
+  it("rename evicts the OLD cached path (file)", async () => {
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='old.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "FILE-X",
+                name: "old.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        { qMatch: "name='new.txt'", handler: () => ({ files: [] }) },
+      ],
+      gets: [
+        {
+          fileId: "FILE-X",
+          handler: () => ({
+            id: "FILE-X",
+            name: "old.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+      updates: [
+        {
+          fileId: "FILE-X",
+          handler: () => ({
+            id: "FILE-X",
+            name: "new.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            size: "12",
+            modifiedTime: "2024-06-02T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.getMetadata({ kind: "path", path: "/old.txt" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<
+      string,
+      { fileId: string }
+    >;
+    expect(cache.get("/old.txt")?.fileId).toBe("FILE-X");
+    await h.client.rename({ kind: "path", path: "/old.txt" }, "new.txt", "fail");
+    expect(cache.get("/old.txt")).toBeUndefined();
+  });
+
+  it("directory rename evicts the old path AND its cached descendants", async () => {
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='foo'",
+          handler: () => ({
+            files: [
+              {
+                id: "FOO-ID",
+                name: "foo",
+                mimeType: "application/vnd.google-apps.folder",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        {
+          qMatch: "'FOO-ID' in parents",
+          handler: () => ({
+            files: [
+              {
+                id: "A-ID",
+                name: "a.txt",
+                mimeType: "text/plain",
+                parents: ["FOO-ID"],
+                createdTime: "2024-01-02T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        { qMatch: "name='bar'", handler: () => ({ files: [] }) },
+      ],
+      updates: [
+        {
+          fileId: "FOO-ID",
+          handler: () => ({
+            id: "FOO-ID",
+            name: "bar",
+            mimeType: "application/vnd.google-apps.folder",
+            parents: ["root"],
+            modifiedTime: "2024-06-02T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.listDirectory({ kind: "path", path: "/foo" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<
+      string,
+      { fileId: string }
+    >;
+    expect(cache.get("/foo/a.txt")?.fileId).toBe("A-ID");
+    await h.client.rename({ kind: "path", path: "/foo" }, "bar", "fail");
+    expect(cache.get("/foo")).toBeUndefined();
+    expect(cache.get("/foo/a.txt")).toBeUndefined();
+  });
+
+  it("overwrite rename evicts the displaced sibling's cached path", async () => {
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "name='old.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "SRC-ID",
+                name: "old.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+          }),
+        },
+        {
+          qMatch: "name='target.txt'",
+          handler: () => ({
+            files: [
+              {
+                id: "SIB-ID",
+                name: "target.txt",
+                mimeType: "text/plain",
+                parents: ["root"],
+                createdTime: "2024-01-03T00:00:00Z",
+              },
+            ],
+          }),
+        },
+      ],
+      gets: [
+        {
+          fileId: "SRC-ID",
+          handler: () => ({
+            id: "SRC-ID",
+            name: "old.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+        {
+          fileId: "SIB-ID",
+          handler: () => ({
+            id: "SIB-ID",
+            name: "target.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            modifiedTime: "2024-06-01T00:00:00Z",
+            createdTime: "2024-01-03T00:00:00Z",
+          }),
+        },
+      ],
+      deletes: [{ fileId: "SIB-ID", handler: () => ({}) }],
+      updates: [
+        {
+          fileId: "SRC-ID",
+          handler: () => ({
+            id: "SRC-ID",
+            name: "target.txt",
+            mimeType: "text/plain",
+            parents: ["root"],
+            size: "5",
+            modifiedTime: "2024-06-02T00:00:00Z",
+            createdTime: "2024-01-01T00:00:00Z",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.getMetadata({ kind: "path", path: "/target.txt" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<
+      string,
+      { fileId: string }
+    >;
+    expect(cache.get("/target.txt")?.fileId).toBe("SIB-ID");
+    await h.client.rename(
+      { kind: "path", path: "/old.txt" },
+      "target.txt",
+      "overwrite",
+    );
+    expect(cache.get("/target.txt")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // dispose()
 // ---------------------------------------------------------------------------
 
-describe("GoogleDriveClient — dispose()", () => {
-  it("overrides the base no-op — calling dispose() detaches the bus subscription", async () => {
+describe("GoogleDriveClient — bus decoupling + dispose()", () => {
+  it("a `deleted` bus event does NOT evict the cache — eviction is inline, not bus-driven (migrate-engine-cache-invalidation)", async () => {
     const { client } = makeFakeDrive({
       lists: [
         {
@@ -2213,8 +2426,9 @@ describe("GoogleDriveClient — dispose()", () => {
     >;
     expect(cache.get("/a.txt")?.fileId).toBe("A");
 
-    h.client.dispose();
-
+    // No constructor bus-subscription drives eviction anymore — emitting a
+    // `deleted` event must NOT touch the strategy's cache (the old
+    // self-subscription was removed; eviction is inline in the mutating ops).
     h.bus.emit({
       event: "deleted",
       datasourceType: "google-drive",
