@@ -27,7 +27,7 @@ import type { CommandHandler } from "../ipc/server.js";
 
 import { mapEngineEntryToFileEntry } from "./files-entry-mapping.js";
 import { normalizeFilesError } from "./files-error-mapping.js";
-import { isEnvironmentallyRetryable } from "./files-download.js";
+import { isEnvironmentallyRetryable } from "../util/retry-classification.js";
 
 // Fixed back-off schedule for the env-retry loop: the wait BEFORE attempt
 // `n+1` (1-indexed by attempt boundary). 2000ms before attempt 2, 5000ms

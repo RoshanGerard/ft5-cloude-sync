@@ -329,16 +329,6 @@ describe("files:list handler", () => {
 
   it("exhausted retries surface the last error (engine network-error → wire disconnected); 4 calls; no exhausted-retries tag", async () => {
     // Spec scenario "Exhausted retries surface the last error".
-    //
-    // SPEC SLIP NOTE: the spec scenario asserts the surfaced envelope tag is
-    // `network-error`, but that is the PRE-normalization engine tag.
-    // `normalizeFilesError` (unchanged, per task) maps engine `network-error`
-    // → wire `disconnected` (files-error-mapping.ts) — the same mapping the
-    // existing "network-error → disconnected" test pins. The post-normalized
-    // wire tag is `disconnected` (retryable preserved). The sibling
-    // provider-error / auth-revoked scenarios correctly use post-normalization
-    // wire tags; only the network-error exhaustion scenario wrote the engine
-    // tag. Asserting the real wire output here; flagged in the slice report.
     vi.useFakeTimers();
     const listDirectory = vi.fn().mockRejectedValue(
       new DatasourceError({

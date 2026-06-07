@@ -112,6 +112,7 @@ import {
   type PathValidatorDeps,
 } from "../util/path-validator.js";
 import { resolveKeepBothSuffix } from "../util/keep-both-suffix.js";
+import { isEnvironmentallyRetryable } from "../util/retry-classification.js";
 
 // ---------------------------------------------------------------------------
 // Engine bus — minimal interface fs-sync subscribes to. The real engine
@@ -438,36 +439,6 @@ const PER_ATTEMPT_TIMEOUT_MS = 60_000;
 // ---------------------------------------------------------------------------
 // Retry-loop helpers (add-download-resilience §2)
 // ---------------------------------------------------------------------------
-
-/**
- * Predicate gating the environmental retry layer (Layer 3 per design.md
- * Decision 8). Returns true iff the error is a `DatasourceError` whose
- * tag is in the strict allowlist `{network-error, rate-limited,
- * provider-error}`, the strategy marked it `retryable: true`, AND the
- * tag is not `auth-expired` (Layer 2's slot — never folded in).
- *
- * The four-clause AND is intentional. The `tag !== "auth-expired"` clause
- * is structurally redundant against the allowlist today, but it is a
- * defensive double-guard against future taxonomy expansion: if a strategy
- * ever marked an `auth-expired` instance retryable=true and a future
- * mapping accidentally added it to the allowlist, this guard still
- * routes it to Layer 2. See design.md Decision 2.
- *
- * Strategy bugs (a non-retryable tag marked retryable=true) flow through
- * to terminal because the allowlist excludes them. No extra logging in §2.
- */
-export function isEnvironmentallyRetryable(
-  err: unknown,
-): err is DatasourceError {
-  return (
-    err instanceof DatasourceError &&
-    err.tag !== "auth-expired" &&
-    err.retryable === true &&
-    (err.tag === "network-error" ||
-      err.tag === "rate-limited" ||
-      err.tag === "provider-error")
-  );
-}
 
 /**
  * Exponential backoff schedule capped at 30 seconds. `attempt` is
