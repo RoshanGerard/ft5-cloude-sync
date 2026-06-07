@@ -80,7 +80,6 @@ export function makeFilesListHandler(
         withAuthRefresh(client, () => client.listDirectory(target, options));
 
       let attempt = 0;
-      // eslint-disable-next-line no-constant-condition
       for (;;) {
         try {
           const { entries: engineEntries, nextCursor } = await callEngine();

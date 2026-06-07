@@ -8,7 +8,7 @@ The file-explorer SHALL render an inline "Load more" affordance whenever the mos
 
 The affordance's button SHALL carry the visible label `Load more` preceded by a leading `<ChevronDown className="size-4" />` icon. The button SHALL apply `border-t border-border` to delineate from the entries area, `h-10` height, and `rounded-none` (the dedicated region edges to the explorer chrome on both sides).
 
-Activating the affordance SHALL re-issue `window.api.files.list({ datasourceId, path, cursor: nextCursor, pageSize })` and append the response's entries to the existing list. While the request is in flight, the button SHALL set `aria-busy="true"`, swap the chevron for a spinner, and SHALL be disabled. On success, the affordance SHALL re-render with the new `nextCursor` (or hide itself when `nextCursor === null`). On failure (after fs-sync's 4-attempt auto-retry has exhausted), the affordance SHALL be replaced by the page-load-failed retry row described below.
+Activating the affordance SHALL re-issue `window.api.files.list({ datasourceId, path, cursor: nextCursor, pageSize })` and append the response's entries to the existing list. While the request is in flight, the button SHALL set `aria-busy="true"`, be disabled, and change its visible label from `Load more` to `Loading…`. The busy cue is MOTION-FREE — the motion budget (Decision 10) bans spinner animations in feature code, so the V-1 mockup's spinner is realized as the label swap + the disabled-dim, NOT an animated glyph. On success, the affordance SHALL re-render with the new `nextCursor` (or hide itself when `nextCursor === null`). On failure (after fs-sync's 4-attempt auto-retry has exhausted), the affordance SHALL be replaced by the page-load-failed retry row described below.
 
 #### Scenario: Load-more appears when nextCursor is non-null
 
@@ -28,7 +28,7 @@ Activating the affordance SHALL re-issue `window.api.files.list({ datasourceId, 
 #### Scenario: Busy state during in-flight load-more
 
 - **WHEN** the user clicks Load more and the response has not yet returned
-- **THEN** the button sets `aria-busy="true"` and is disabled; the chevron icon is replaced by a spinner; the entries already rendered remain visible; selection state is preserved; ghost-variant hover styles are suppressed while busy
+- **THEN** the button sets `aria-busy="true"` and is disabled; the visible label changes from `Load more` to `Loading…` (a motion-free busy cue — no spinner / `animate-*` class, per the motion budget); the chevron stays; the entries already rendered remain visible; selection state is preserved; ghost-variant hover styles are suppressed while busy
 
 ### Requirement: Page-load-failed inline retry row
 

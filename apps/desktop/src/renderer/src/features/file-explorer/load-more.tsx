@@ -82,12 +82,17 @@ export function LoadMoreRegion({ store }: LoadMoreRegionProps) {
 }
 
 /**
- * V-1 ghost "Load more" button. Locked component contract from design.md:
- * full-width shadcn `Button variant="ghost"`, `rounded-none border-t
- * border-border h-10 font-medium`, a leading `ChevronDown` glyph, and the
- * visible label "Load more". While busy it sets `aria-busy`, is `disabled`,
- * and the chevron is SWAPPED for a spinner (per spec scenario "Busy state
- * during in-flight load-more" — the chevron is replaced, not joined).
+ * V-1 ghost "Load more" button. Full-width shadcn `Button variant="ghost"`,
+ * `rounded-none border-t border-border h-10 font-medium`, a leading
+ * `ChevronDown` glyph, and the visible label "Load more". While busy it sets
+ * `aria-busy` + `disabled` and the label changes to "Loading…".
+ *
+ * The busy cue is MOTION-FREE: the motion budget (design.md Decision 10 / the
+ * `scripts/motion-budget` guard) bans spinner / spin animation classes in
+ * feature code (only the shimmer + sync-pulse utilities are whitelisted), so
+ * the V-1 mockup's `<Spinner>` is realized as the label change + the
+ * disabled-dim, not an animated glyph. (NB: the guard scans raw text, so this
+ * comment deliberately avoids the literal forbidden class token.)
  */
 function LoadMoreButton({
   isBusy,
@@ -105,20 +110,8 @@ function LoadMoreButton({
       disabled={isBusy}
       onClick={onClick}
     >
-      {isBusy ? (
-        // Spinner reuses the registered `refresh-cw` glyph with `animate-spin`
-        // (the adapter is the one place lucide is imported; there is no
-        // standalone Spinner primitive — sonner's loading template uses the
-        // same animate-spin idiom).
-        <Icon
-          name="refresh-cw"
-          className="size-4 animate-spin"
-          aria-hidden="true"
-        />
-      ) : (
-        <Icon name="chevron-down" className="size-4" aria-hidden="true" />
-      )}
-      Load more
+      <Icon name="chevron-down" className="size-4" aria-hidden="true" />
+      {isBusy ? "Loading…" : "Load more"}
     </Button>
   );
 }

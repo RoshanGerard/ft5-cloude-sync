@@ -172,7 +172,7 @@ describe("LoadMoreRegion — busy state (V-1 / spec line 31)", () => {
     window.localStorage.clear();
   });
 
-  it("during in-flight loadMore: aria-busy=true, disabled, chevron swapped for spinner", async () => {
+  it("during in-flight loadMore: aria-busy=true, disabled, motion-free 'Loading…' label (no spinner — motion budget)", async () => {
     const store = makeStore();
     seedPage(store, 500, "tokA");
     // A never-resolving list keeps loadingMore=true so we can observe busy.
@@ -187,13 +187,16 @@ describe("LoadMoreRegion — busy state (V-1 / spec line 31)", () => {
     act(() => {
       void store.loadMore();
     });
-    const button = screen.getByRole("button", { name: "Load more" });
+    // The accessible name changes to "Loading…" while busy, so query the sole
+    // region button by role without a name filter.
+    const button = screen.getByRole("button");
     expect(button).toHaveAttribute("aria-busy", "true");
     expect(button).toBeDisabled();
-    // Spinner present (animate-spin); chevron-down is swapped out.
-    expect(button.querySelector(".animate-spin")).toBeInTheDocument();
-    // Entries remain present in state (selection-preservation is the store's
-    // job; here we just confirm busy doesn't blow away the count).
+    expect(button).toHaveTextContent(/loading/i);
+    // Motion budget (design.md Decision 10) bans animate-spin in feature code:
+    // the busy cue is the label change + disabled-dim, NOT a spinner.
+    expect(button.querySelector(".animate-spin")).toBeNull();
+    // Entries remain present in state (busy doesn't blow away the count).
     expect(store.getSnapshot().entries.length).toBe(500);
   });
 });

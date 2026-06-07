@@ -280,10 +280,17 @@ at full width.
   disabled={isBusy}
 >
   <ChevronDown className="size-4" />
-  {isBusy ? <Spinner className="size-4" /> : null}
-  Load more
+  {isBusy ? "Loading…" : "Load more"}
 </Button>
 ```
+
+**Busy state is motion-free (revised 2026-06-07):** the original mockup
+showed a `<Spinner>`, but the motion budget (Decision 10 / the
+`scripts/motion-budget` guard) bans spinner animations in feature code —
+only the shimmer + sync-pulse utilities are whitelisted. The busy cue is
+realized as the label swap (`Load more` → `Loading…`) plus the `disabled`
+dim + `aria-busy`, not an animated glyph (mirrors the drop-overlay's
+sync-pulse-not-spin precedent).
 
 The shadcn ghost variant resolves to `bg-transparent` with
 `hover:bg-accent hover:text-accent-foreground` (and
