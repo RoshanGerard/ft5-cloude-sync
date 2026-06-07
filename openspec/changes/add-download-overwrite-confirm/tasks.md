@@ -53,11 +53,11 @@
 
 ## 8. Verification + spec validation
 
-- [ ] 8.1 Run `pnpm typecheck` across the workspace. Expect zero new errors.
-- [ ] 8.2 Run `pnpm lint` across the workspace. Expect zero new errors / warnings.
-- [ ] 8.3 Run the full test suite. Expect all touched packages green; document any pre-existing flakes in the implementation commit body.
-- [ ] 8.4 Run `openspec validate add-download-overwrite-confirm --strict`. Expect `change is valid`.
-- [ ] 8.5 Manual smoke (PENDING_TC.MD-eligible): start desktop dev shell, download a file, re-download the same file → confirm dialog appears with hint metadata; choose Overwrite → confirm file is replaced; choose Keep both → confirm `name (1).ext` lands alongside; choose Cancel → confirm no toast, no file change. Document the smoke result in this tasks file.
+- [x] 8.1 Run `pnpm typecheck` across the workspace. Expect zero new errors. *(Clean — `tsc -b` exit 0.)*
+- [x] 8.2 Run `pnpm lint` across the workspace. Expect zero new errors / warnings. *(Clean — `eslint .` exit 0.)*
+- [x] 8.3 Run the full test suite. Expect all touched packages green; document any pre-existing flakes in the implementation commit body. *(301 files / 2692 passed / 9 skipped / 0 failed; no type errors. The branch was merged up to current master first; that surfaced 8 PRE-EXISTING master failures migrate-upload shipped undetected (6 `card-*` tests, `end-to-end.test.ts` dangling `upload.js` import, a stale preload bundle artifact) — all repaired this session, see commits `4d98151` / `c783e7d` + the preload rebuild. No remaining flakes.)*
+- [x] 8.4 Run `openspec validate add-download-overwrite-confirm --strict`. Expect `change is valid`. *(change is valid.)*
+- [x] 8.5 Manual smoke (PENDING_TC.MD-eligible): start desktop dev shell, download a file, re-download the same file → confirm dialog appears with hint metadata; choose Overwrite → confirm file is replaced; choose Keep both → confirm `name (1).ext` lands alongside; choose Cancel → confirm no toast, no file change. Document the smoke result in this tasks file. *(DEFERRED to PENDING_TC.MD — no live desktop in this headless worktree. The four outcomes are covered in isolation by `files-download.test.ts` §2–§4 + `download-conflict.test.ts` §7.1/§7.2 + `rename-conflict-dialog.test.tsx` + `use-download-orchestrator.test.ts` §5.)*
 
 ## 9. Code review + advisor checkpoint #2
 

@@ -837,3 +837,36 @@ post-cleanup should be tombstone comments (zero callers).
 
 **Owner:** unassigned. Suitable for a follow-up cleanup PR; safe to
 do mechanically (the lines are dead code).
+
+## add-download-overwrite-confirm — §8.5 manual smoke (deferred)
+
+The §8.5 manual smoke is a HUMAN-only end-to-end flow against the dev build:
+download a file, re-download the SAME file to an existing destination, and
+exercise the conflict dialog's three outcomes. It can't run in the headless
+worktree; per CLAUDE.md it's recorded here with pointers to the unit /
+integration tests that prove each branch in isolation. The change's
+automated surface is fully green (full suite 301 files / 2692 passed / 9
+skipped on `feature/add-download-overwrite-confirm`).
+
+- **§8.5a** Re-download a file to the same destination → conflict dialog
+  appears with the size + "modified \<absolute-date\>" hint line. **Covered
+  by:** `files-download.test.ts` §2.1 (fail-policy conflict envelope w/
+  `existingSize`/`existingModifiedAt`) + `__integration__/download-conflict.test.ts`
+  §7.1 (gate through `buildCommandHandlers` + real fs) +
+  `rename-conflict-dialog.test.tsx` (download-mode hint render) +
+  `use-download-orchestrator.test.ts` §5.1 (prompt invoked with hint metadata).
+- **§8.5b** Choose Overwrite → existing file replaced. **Covered by:**
+  `files-download.test.ts` §2.5 (overwrite truncates) +
+  `use-download-orchestrator.test.ts` §5 (re-dispatch `conflictPolicy:"overwrite"`) +
+  `ipc-round-trip.test.ts` §7.3 (overwrite re-dispatch succeeds).
+- **§8.5c** Choose Keep both → `name (1).ext` lands alongside the original.
+  **Covered by:** `keep-both-suffix.test.ts` + `files-download.test.ts`
+  §3–§4 (suffix loop + suffixed `savedPath`) + `download-conflict.test.ts`
+  §7.2 (real-fs `O_CREAT|O_EXCL` writes `welcome (1).pdf`, original untouched).
+- **§8.5d** Choose Cancel → no toast, no file change, idempotent. **Covered
+  by:** `use-download-orchestrator.test.ts` §5 (cancel → no re-dispatch,
+  resolves null, no `download-failed` toast).
+
+**Status:** PENDING — HUMAN smoke. Not blocking; automated coverage complete.
+**Owner:** unassigned (the original Bug 5 was raised by dev2@forti5.tech during
+the `add-download-resilience` §11.19 smoke).
