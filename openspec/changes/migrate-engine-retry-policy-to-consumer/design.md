@@ -214,9 +214,15 @@ today.
   reproducing the fail-fast before the fix).
 - **[A migrated call site silently degrades]** → If a site is missed, its
   op now fails on the first `auth-expired` instead of refreshing.
-  *Mitigation:* the 8-site list is enumerated and exhaustive (verified by
-  exploration); each gets a refresh-once test; the engine inversion guard
-  proves `withRefresh` is gone.
+  *Mitigation:* the completeness guard is a comprehensive grep sweep over
+  `services/fs-sync/src` for every engine method — NOT the initial
+  exploration enumeration, which proved incomplete (it surfaced the 7
+  handler/executor sites but MISSED two internal `getMetadata` calls in the
+  download handler: the pre-cycle prefetch and the post-download integrity
+  check). The sweep confirms every engine call is inside `withAuthRefresh`
+  / an explicit `refreshCredentials` path or intentionally excluded with a
+  stated reason; each migrated site gets a refresh-once test; the engine
+  inversion guard proves `withRefresh` is gone.
 - **[Test surface drift]** → The 6 engine tests assert engine-owned
   retry. *Mitigation:* transform in place — one-shot-retry +
   not-re-refreshed become `withAuthRefresh` tests; single-flight +
@@ -234,6 +240,21 @@ today.
   the scheduler, so the scheduler contract ("don't intercept; a surfacing
   `auth-expired` is terminal") stays valid — the surfacing error is now a
   post-refresh dead token.
+- **[One auth refresh per download cycle — pre-existing bound]** → The
+  download handler permits at most ONE auth-expired refresh-and-retry per
+  download (the per-cycle `MAX_AUTH_RETRIES` budget is 1 and the cycle loop
+  runs once for current strategies). A download whose token expires more
+  than once mid-stream surfaces `auth-revoked` after the first re-auth.
+  *Mitigation / scope:* this bound is PRE-EXISTING and unchanged — the old
+  engine-`withRefresh` + handler structure had the same limit (mid-stream
+  expiry #1 handled via re-issue; expiry #2 → `auth-revoked`). Wrapping the
+  prefetch `getMetadata` in `withAuthRefresh` (alongside the integrity-check
+  `getMetadata`) restores the common "expired-at-start + one mid-stream
+  expiry" double-refresh the engine wrapper used to provide transparently.
+  Genuinely unbounded hour-spanning re-auth — the original canonical spec
+  scenario's aspirational "N expiries → N refreshes", which the as-built
+  loop never actually delivered — is a separate download-resilience concern;
+  a follow-up stub may address it if product-relevant.
 
 ## Migration Plan
 
