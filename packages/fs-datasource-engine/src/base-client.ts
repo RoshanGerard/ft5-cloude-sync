@@ -145,7 +145,28 @@ export interface DatasourceClient<T extends DatasourceType> {
   status(): Promise<DatasourceStatus>;
   testConnection(): Promise<void>;
   authenticate(): Promise<AuthIntent>;
-  listDirectory(target: Target): Promise<DatasourceFileEntry<T>[]>;
+  /**
+   * List one provider page of `target`'s children (per
+   * add-engine-listdirectory-pagination Decisions 1, 2, 3). The engine returns
+   * exactly ONE provider page plus an opaque `nextCursor` continuation token;
+   * consumers ask for the next page on demand by re-issuing with
+   * `options.cursor` set to the prior call's `nextCursor`.
+   *
+   * - `options.cursor` (opaque `string`): the prior page's `nextCursor`. The
+   *   base treats it as opaque (Decision 2) — it never inspects or normalizes
+   *   it; each strategy maps it to/from its provider-native token
+   *   (`pageToken` on Drive, `@odata.nextLink` on OneDrive,
+   *   `ContinuationToken` on S3).
+   * - `options.pageSize` (optional): the desired entries-per-page. Each
+   *   strategy clamps to its provider min/max and applies its own default when
+   *   omitted (Decision 3). The base does NOT inject a default.
+   * - `nextCursor`: the next page's opaque cursor, or `null` when the listing
+   *   is exhausted.
+   */
+  listDirectory(
+    target: Target,
+    options?: { cursor?: string; pageSize?: number },
+  ): Promise<{ entries: DatasourceFileEntry<T>[]; nextCursor: string | null }>;
   search(query: string, scope?: Target): Promise<DatasourceFileEntry<T>[]>;
   getMetadata(target: Target): Promise<FileMetadata<T>>;
   /**
@@ -291,9 +312,22 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * decorates the intent's `completeWith`/`submit` to persist credentials
    * and emit the success/failure events. */
   protected abstract doAuthenticateImpl(): Promise<AuthIntent>;
+  /**
+   * Primitive for `listDirectory()` (per
+   * add-engine-listdirectory-pagination). Returns exactly ONE provider page
+   * plus an opaque `nextCursor`. Strategies:
+   *   - Map `options.cursor` (when set) to their provider-native continuation
+   *     token and read the provider's response token back into `nextCursor`
+   *     (`null` when the listing is exhausted). The base passes the cursor
+   *     through opaque (Decision 2).
+   *   - Clamp `options.pageSize` to their provider min/max and apply their own
+   *     default when it is omitted (Decision 3) — the base injects no default
+   *     (it forwards an empty `{}` when the caller omits `options`).
+   */
   protected abstract doListDirectoryImpl(
     target: Target,
-  ): Promise<DatasourceFileEntry<T>[]>;
+    options: { cursor?: string; pageSize?: number },
+  ): Promise<{ entries: DatasourceFileEntry<T>[]; nextCursor: string | null }>;
   protected abstract doSearchImpl(
     query: string,
     scope?: Target,
@@ -499,8 +533,11 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     return this.decorateIntent(intent);
   }
 
-  async listDirectory(target: Target): Promise<DatasourceFileEntry<T>[]> {
-    return this.runReadOp(() => this.doListDirectoryImpl(target));
+  async listDirectory(
+    target: Target,
+    options?: { cursor?: string; pageSize?: number },
+  ): Promise<{ entries: DatasourceFileEntry<T>[]; nextCursor: string | null }> {
+    return this.runReadOp(() => this.doListDirectoryImpl(target, options ?? {}));
   }
 
   async search(query: string, scope?: Target): Promise<DatasourceFileEntry<T>[]> {

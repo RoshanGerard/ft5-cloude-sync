@@ -16,6 +16,7 @@ import {
   type Mock,
 } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -30,6 +31,7 @@ import {
   DOWNLOADS_ALWAYS_ASK_KEY,
   DOWNLOADS_DEFAULT_FOLDER_KEY,
 } from "../downloads-store";
+import { EXPLORER_PAGE_SIZE_KEY } from "../../file-explorer/store";
 
 // Radix DropdownMenu / Dialog rely on ResizeObserver at mount. Mirror the
 // polyfill used in card.test / add-dialog.test.
@@ -386,5 +388,187 @@ describe("SettingsDialog — Downloads section", () => {
     expect(openIdx).toBeGreaterThan(motionIdx);
     expect(changeIdx).toBeGreaterThan(openIdx);
     expect(alwaysAskIdx).toBeGreaterThan(changeIdx);
+  });
+});
+
+// add-engine-listdirectory-pagination §12 — Explorer section RED tests.
+//
+// Visual direction V-4 + spec "Settings dialog includes an Explorer section
+// with a Page-size dropdown". The section sits BETWEEN Motion and Downloads.
+// One row: "Items loaded per page" label + a DropdownMenu/RadioGroup of five
+// page-size options (100 / 500 / 1,000 / 5,000 / 10,000). The selected value
+// persists to the store's `EXPLORER_PAGE_SIZE_KEY` (un-formatted integer
+// string) and defaults to 500 on first read.
+//
+// Radix DropdownMenu opens on `pointerDown` (not `click`) in jsdom and mounts
+// its items in a portal — mirror the proven recipe from
+// features/file-explorer/__tests__/toolbar.test.tsx (ViewMenu).
+const PAGE_SIZE_TRIGGER_NAME = /items loaded per page/i;
+
+function getPageSizeTrigger(): HTMLElement {
+  return screen.getByRole("button", { name: PAGE_SIZE_TRIGGER_NAME });
+}
+
+function openPageSizeMenu(): void {
+  // Radix DropdownMenu responds to pointerDown(button:0), not synthetic click.
+  fireEvent.pointerDown(getPageSizeTrigger(), { button: 0 });
+}
+
+describe("SettingsDialog — Explorer section (page size)", () => {
+  it("renders an 'Explorer' heading positioned between Motion and Downloads", () => {
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+
+    const motion = screen.getByRole("heading", { name: /motion/i });
+    const explorer = screen.getByRole("heading", { name: /explorer/i });
+    const downloads = screen.getByRole("heading", { name: /downloads/i });
+
+    // Heading siblings appear in DOM order top-down: General → Browsing →
+    // File-handling (Motion → Explorer → Downloads per V-4).
+    const headings = Array.from(
+      document.querySelectorAll("h3"),
+    ) as HTMLHeadingElement[];
+    const motionIdx = headings.indexOf(motion as HTMLHeadingElement);
+    const explorerIdx = headings.indexOf(explorer as HTMLHeadingElement);
+    const downloadsIdx = headings.indexOf(downloads as HTMLHeadingElement);
+
+    expect(motionIdx).toBeGreaterThanOrEqual(0);
+    expect(explorerIdx).toBeGreaterThan(motionIdx);
+    expect(downloadsIdx).toBeGreaterThan(explorerIdx);
+  });
+
+  it("renders the 'Items loaded per page' label and the description copy", () => {
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+
+    expect(screen.getByText("Items loaded per page")).toBeInTheDocument();
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(
+      /Larger values fetch more per click; smaller values paint faster on first load\./,
+    );
+  });
+
+  it("default page size is 500 on first read — trigger shows '500'", () => {
+    // No localStorage seeding → readExplorerPageSize() returns the default.
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+
+    const trigger = getPageSizeTrigger();
+    expect(trigger).toBeInTheDocument();
+    expect((trigger.textContent ?? "").trim()).toBe("500");
+  });
+
+  it("reflects a persisted value on mount with comma formatting (1000 → '1,000')", () => {
+    localStorage.setItem(EXPLORER_PAGE_SIZE_KEY, "1000");
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+
+    expect((getPageSizeTrigger().textContent ?? "").trim()).toBe("1,000");
+  });
+
+  it("trigger is a native <button type='button'> carrying the aria-label", () => {
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    const trigger = getPageSizeTrigger();
+    expect(trigger.tagName).toBe("BUTTON");
+    expect(trigger).toHaveAttribute("type", "button");
+    expect(trigger).toHaveAttribute("aria-label", "Items loaded per page");
+  });
+
+  it("opening the menu shows five radio items with comma-formatted labels and a 'Page size' label", async () => {
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    openPageSizeMenu();
+
+    const items = await screen.findAllByRole("menuitemradio");
+    expect(items).toHaveLength(5);
+    const labels = items.map((el) => (el.textContent ?? "").trim());
+    expect(labels).toEqual(["100", "500", "1,000", "5,000", "10,000"]);
+
+    // The leading DropdownMenuLabel reads "Page size".
+    expect(screen.getByText("Page size")).toBeInTheDocument();
+  });
+
+  it("marks the active value (default 500) as the checked radio item", async () => {
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    openPageSizeMenu();
+
+    const items = await screen.findAllByRole("menuitemradio");
+    const checked = items.map((el) => el.getAttribute("aria-checked"));
+    // Order: 100, 500, 1,000, 5,000, 10,000 → index 1 is "500".
+    expect(checked).toEqual(["false", "true", "false", "false", "false"]);
+  });
+
+  it("selecting '1,000' persists the un-formatted integer string and updates the trigger", async () => {
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    openPageSizeMenu();
+
+    const item = (await screen.findAllByRole("menuitemradio")).find(
+      (el) => (el.textContent ?? "").trim() === "1,000",
+    );
+    expect(item).toBeDefined();
+
+    act(() => {
+      fireEvent.click(item!);
+    });
+
+    // Persisted value carries NO comma (the raw integer string).
+    expect(localStorage.getItem(EXPLORER_PAGE_SIZE_KEY)).toBe("1000");
+    // Trigger reflects the new value (comma-formatted display).
+    expect((getPageSizeTrigger().textContent ?? "").trim()).toBe("1,000");
+    // Menu closed after selection.
+    expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0);
+  });
+
+  it("every one of the five options is selectable and persists its raw value", async () => {
+    const cases: ReadonlyArray<{ label: string; stored: string }> = [
+      { label: "100", stored: "100" },
+      { label: "500", stored: "500" },
+      { label: "1,000", stored: "1000" },
+      { label: "5,000", stored: "5000" },
+      { label: "10,000", stored: "10000" },
+    ];
+
+    for (const { label, stored } of cases) {
+      localStorage.clear();
+      const { unmount } = render(
+        <SettingsDialog open={true} onOpenChange={() => {}} />,
+      );
+      openPageSizeMenu();
+      const item = (await screen.findAllByRole("menuitemradio")).find(
+        (el) => (el.textContent ?? "").trim() === label,
+      );
+      expect(item, `option ${label} should render`).toBeDefined();
+      act(() => {
+        fireEvent.click(item!);
+      });
+      expect(
+        localStorage.getItem(EXPLORER_PAGE_SIZE_KEY),
+        `selecting ${label} persists ${stored}`,
+      ).toBe(stored);
+      unmount();
+      cleanup();
+    }
+  });
+
+  it("Tab order reaches the Page-size trigger between the Motion switch and the Downloads Open button", () => {
+    installDownloadsApiMock();
+    localStorage.setItem(
+      DOWNLOADS_DEFAULT_FOLDER_KEY,
+      "/Users/alice/Downloads/ft5",
+    );
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+
+    const motionSwitch = screen.getByRole("switch", { name: /motion safe/i });
+    const pageSizeTrigger = getPageSizeTrigger();
+    const openButton = screen.getByRole("button", { name: /^open$/i });
+
+    const all = Array.from(
+      document.querySelectorAll(
+        'button, [role="switch"], input, [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((el) => !(el as HTMLButtonElement).disabled);
+
+    const motionIdx = all.indexOf(motionSwitch);
+    const pageSizeIdx = all.indexOf(pageSizeTrigger);
+    const openIdx = all.indexOf(openButton);
+
+    expect(motionIdx).toBeGreaterThanOrEqual(0);
+    expect(pageSizeIdx).toBeGreaterThan(motionIdx);
+    expect(openIdx).toBeGreaterThan(pageSizeIdx);
   });
 });

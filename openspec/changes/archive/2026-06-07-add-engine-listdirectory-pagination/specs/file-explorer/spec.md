@@ -8,7 +8,7 @@ The file-explorer SHALL render an inline "Load more" affordance whenever the mos
 
 The affordance's button SHALL carry the visible label `Load more` preceded by a leading `<ChevronDown className="size-4" />` icon. The button SHALL apply `border-t border-border` to delineate from the entries area, `h-10` height, and `rounded-none` (the dedicated region edges to the explorer chrome on both sides).
 
-Activating the affordance SHALL re-issue `window.api.files.list({ datasourceId, path, cursor: nextCursor, pageSize })` and append the response's entries to the existing list. While the request is in flight, the button SHALL set `aria-busy="true"`, swap the chevron for a spinner, and SHALL be disabled. On success, the affordance SHALL re-render with the new `nextCursor` (or hide itself when `nextCursor === null`). On failure (after fs-sync's 4-attempt auto-retry has exhausted), the affordance SHALL be replaced by the page-load-failed retry row described below.
+Activating the affordance SHALL re-issue `window.api.files.list({ datasourceId, path, cursor: nextCursor, pageSize })` and append the response's entries to the existing list. While the request is in flight, the button SHALL set `aria-busy="true"`, be disabled, and change its visible label from `Load more` to `Loading…`. The busy cue is MOTION-FREE — the motion budget (Decision 10) bans spinner animations in feature code, so the V-1 mockup's spinner is realized as the label swap + the disabled-dim, NOT an animated glyph. On success, the affordance SHALL re-render with the new `nextCursor` (or hide itself when `nextCursor === null`). On failure (after fs-sync's 4-attempt auto-retry has exhausted), the affordance SHALL be replaced by the page-load-failed retry row described below.
 
 #### Scenario: Load-more appears when nextCursor is non-null
 
@@ -28,7 +28,7 @@ Activating the affordance SHALL re-issue `window.api.files.list({ datasourceId, 
 #### Scenario: Busy state during in-flight load-more
 
 - **WHEN** the user clicks Load more and the response has not yet returned
-- **THEN** the button sets `aria-busy="true"` and is disabled; the chevron icon is replaced by a spinner; the entries already rendered remain visible; selection state is preserved; ghost-variant hover styles are suppressed while busy
+- **THEN** the button sets `aria-busy="true"` and is disabled; the visible label changes from `Load more` to `Loading…` (a motion-free busy cue — no spinner / `animate-*` class, per the motion budget); the chevron stays; the entries already rendered remain visible; selection state is preserved; ghost-variant hover styles are suppressed while busy
 
 ### Requirement: Page-load-failed inline retry row
 
@@ -36,7 +36,7 @@ When fs-sync's 4-attempt auto-retry on a paged `files:list` exhausts and returns
 
 The row SHALL be a two-line layout at approximately `h-20`, with `bg-destructive/8` background tint, `border-t border-destructive/20`, and `text-destructive`. Layout from top:
 
-1. A horizontal flex containing a leading `<AlertCircle className="size-4" />` icon and a stacked text block. The text block's first line is a bold `Couldn't load more entries` headline (`text-sm font-medium`); the second line is a smaller detail line carrying the underlying error tag (humanized) and message (`text-xs font-normal opacity-85`), e.g. `Network error: connection timed out after 4 attempts`.
+1. A horizontal flex containing a leading `<AlertCircle className="size-4" />` icon and a stacked text block. The text block's first line is a bold `Couldn't load more entries` headline (`text-sm font-medium`); the second line is a smaller detail line carrying the humanized WIRE error tag and message (`text-xs font-normal opacity-85`), e.g. `Disconnected: connection timed out after 4 attempts` (the renderer only ever sees the wire `FilesErrorTag` vocabulary — `normalizeFilesError` surfaces an engine `network-error` as wire `disconnected`, and a generic engine `provider-error` as wire `other` → "Error").
 2. Below the text block, a full-width `<Button variant="outline">` with the visible label `Retry`, bordered in the destructive palette.
 
 The row SHALL announce via `aria-live="assertive"` and SHALL NOT steal focus from the entries area when it appears.
@@ -47,8 +47,8 @@ Retry SHALL re-issue the same request that failed (same `cursor`, same `pageSize
 
 #### Scenario: Network failure surfaces inline retry row
 
-- **WHEN** fs-sync's `files:list` retry exhausts on a `tag: "network-error"` failure for a Load-more click that requested `cursor: "tokA", pageSize: 500`
-- **THEN** the entries already loaded remain visible; the Load-more button is replaced by a two-line row in the same region; the row's first line reads `Couldn't load more entries`; the second line reads `Network error: <message>`; a full-width outline Retry button appears below; the row uses `bg-destructive/8` + `border-t border-destructive/20` + `text-destructive`; `aria-live="assertive"` is set; focus is not stolen from the entries area; the status row updates from `500+ items · 500 loaded` to `500 items · couldn't load more`
+- **WHEN** fs-sync's `files:list` retry exhausts on a network failure (engine `network-error`, surfaced to the renderer as wire `tag: "disconnected"` per `normalizeFilesError`) for a Load-more click that requested `cursor: "tokA", pageSize: 500`
+- **THEN** the entries already loaded remain visible; the Load-more button is replaced by a two-line row in the same region; the row's first line reads `Couldn't load more entries`; the second line reads `Disconnected: <message> after 4 attempts` (the humanized wire `disconnected` tag); a full-width outline Retry button appears below; the row uses `bg-destructive/8` + `border-t border-destructive/20` + `text-destructive`; `aria-live="assertive"` is set; focus is not stolen from the entries area; the status row updates from `500+ items · 500 loaded` to `500 items · couldn't load more`
 
 #### Scenario: Retry click re-issues the same cursor with a fresh budget
 
@@ -61,7 +61,7 @@ The `SettingsDialog` SHALL gain an "Explorer" section sitting between the existi
 
 The section SHALL contain one row: a left-side stack with a `text-xs font-medium` label `Items loaded per page` and a `text-muted-foreground text-xs` description `Larger values fetch more per click; smaller values paint faster on first load.`, plus a right-side dropdown control. The control SHALL be a `<DropdownMenu>` whose `<DropdownMenuTrigger>` is a `<Button variant="outline" size="sm">` showing the current value (with comma separators on values ≥ 1000) and a trailing `<ChevronDown className="size-3" />`. The button SHALL carry `aria-label="Items loaded per page"` so the trigger is announced even before the menu opens.
 
-The `<DropdownMenuContent>` SHALL render with `align="end"`, lead with a `<DropdownMenuLabel className="text-xs uppercase tracking-wider">Page size</DropdownMenuLabel>`, and contain a `<DropdownMenuRadioGroup>` with five `<DropdownMenuRadioItem>` entries: `100`, `500`, `1,000`, `5,000`, `10,000` (display text uses comma separators for values ≥ 1000; the underlying string value is the un-formatted integer). All digit displays SHALL use `tabular-nums`.
+The `<DropdownMenuContent>` SHALL render with `align="end"`, lead with a `<DropdownMenuLabel className="text-muted-foreground text-xs uppercase tracking-wider">Page size</DropdownMenuLabel>`, and contain a `<DropdownMenuRadioGroup>` with five `<DropdownMenuRadioItem>` entries: `100`, `500`, `1,000`, `5,000`, `10,000` (display text uses comma separators for values ≥ 1000; the underlying string value is the un-formatted integer). All digit displays SHALL use `tabular-nums`.
 
 The selected value SHALL be persisted to the localStorage key `ft5.explorer.pageSize` (mirroring the `ft5.downloads.*` pattern) and SHALL default to `500` on first read. The selected value SHALL be passed as `pageSize` on every `files:list` call originating from the file-explorer (initial page-load and Load-more alike). Changing the setting SHALL NOT auto-refresh the current view; the new value applies to the next list call.
 

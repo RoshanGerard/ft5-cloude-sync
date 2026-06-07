@@ -20,13 +20,13 @@ The `cursor` and `pageSize` fields SHALL be optional on the request — a reques
 
 ### Requirement: `files:list` auto-retries paged failures with a fixed back-off schedule
 
-The `files:list` handler SHALL wrap its call to `client.listDirectory` in a back-off retry loop. On rejection with `tag` ∈ `{ "network-error", "rate-limited", "provider-error" }`, the handler SHALL re-attempt up to **3 additional times** (4 total attempts), waiting **2 seconds before attempt 2, 5 seconds before attempt 3, and 7 seconds before attempt 4**.
+The `files:list` handler SHALL wrap its call to `client.listDirectory` in a back-off retry loop. On rejection with `tag` ∈ `{ "network-error", "rate-limited", "provider-error" }` AND `retryable === true`, the handler SHALL re-attempt up to **3 additional times** (4 total attempts), waiting **2 seconds before attempt 2, 5 seconds before attempt 3, and 7 seconds before attempt 4**. A rejection with `retryable === false` (e.g. a deterministic client-side malformed-cursor `provider-error`) SHALL surface immediately, never consuming the retry budget.
 
 For `tag: "rate-limited"` rejections that carry `retryAfterMs`, the handler SHALL use `max(retryAfterMs, scheduledBackoff)` as the wait for that attempt.
 
 After exhaustion (the final attempt also rejects), the handler SHALL return the last attempt's normalized error envelope unchanged. The original request's `cursor` SHALL be preserved on the renderer side (separately tracked) so the user-visible Retry button can re-issue with the same cursor.
 
-For `tag` values not in the retry set (`auth-expired` is engine-handled before the handler sees it; `auth-revoked`, `cancelled`, `invalid-datasource`, `unsupported`, `other`, `conflict`, `exhausted-retries` are all terminal at the handler layer), the handler SHALL return the first failure envelope without retry.
+For `tag` values not in the retry set (`auth-expired` is handled by the inner `withAuthRefresh` wrap BEFORE the env-retry loop — per `migrate-engine-retry-policy-to-consumer` — so a post-refresh `auth-expired` reaching the loop is terminal; `auth-revoked`, `cancelled`, `invalid-datasource`, `unsupported`, `other`, `conflict`, `exhausted-retries` are all terminal at the handler layer), the handler SHALL return the first failure envelope without retry.
 
 #### Scenario: Transient network failure retries up to 4 attempts
 
@@ -36,7 +36,7 @@ For `tag` values not in the retry set (`auth-expired` is engine-handled before t
 #### Scenario: Exhausted retries surface the last error
 
 - **WHEN** a unit test wires `client.listDirectory` to reject with `tag: "network-error"` on all 4 attempts
-- **THEN** the handler's response is `{ ok: false, error: { tag: "network-error", message, retryable: true } }`; `client.listDirectory` was invoked exactly 4 times; no `exhausted-retries` tag is introduced
+- **THEN** the handler's response is `{ ok: false, error: { tag: "disconnected", message, retryable: true } }` (the handler's `catch` runs `normalizeFilesError`, which collapses the engine `network-error` tag to the wire `disconnected` tag); `client.listDirectory` was invoked exactly 4 times; no `exhausted-retries` tag is introduced
 
 #### Scenario: Rate-limited honors `retryAfterMs` when greater than scheduled back-off
 
@@ -47,3 +47,8 @@ For `tag` values not in the retry set (`auth-expired` is engine-handled before t
 
 - **WHEN** a unit test wires `client.listDirectory` to reject with `tag: "auth-revoked"` on attempt 1
 - **THEN** the handler's response is `{ ok: false, error: { tag: "auth-revoked", ... } }`; `client.listDirectory` was invoked exactly once; no back-off occurred
+
+#### Scenario: Non-retryable `provider-error` (malformed cursor) returns immediately
+
+- **WHEN** a unit test wires `client.listDirectory` to reject with `{ tag: "provider-error", retryable: false }` on attempt 1 (e.g. OneDrive's deterministic malformed-cursor guard, which fails before any network call)
+- **THEN** the handler's response is `{ ok: false, error: { tag: "other", ... } }` (engine `provider-error` collapsed by `normalizeFilesError`); `client.listDirectory` was invoked exactly once; no back-off occurred — even though `provider-error` is in the retry-tag set, `retryable: false` short-circuits the loop

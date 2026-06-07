@@ -128,11 +128,16 @@ describe("files:* dispatcher integration", () => {
     expect(noEngineHandlers["files:remove"]).toBeUndefined();
   });
 
-  it("files:list end-to-end: dispatcher → engine.listDirectory → envelope with mapped UI entries", async () => {
+  it("files:list end-to-end: dispatcher → engine.listDirectory → envelope with mapped UI entries + nextCursor", async () => {
+    // Post add-engine-listdirectory-pagination the engine resolves
+    // `{ entries, nextCursor }` and the handler forwards a cursor/pageSize
+    // options object (both undefined on a first-page request) + derives
+    // `truncated = nextCursor !== null`.
     const engineEntry = makeEngineEntry({ handle: "h-a", path: "/notes.txt" });
-    (fakeClient.listDirectory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      engineEntry,
-    ]);
+    (fakeClient.listDirectory as ReturnType<typeof vi.fn>).mockResolvedValue({
+      entries: [engineEntry],
+      nextCursor: null,
+    });
 
     const h = handlers["files:list"]!;
     const result = await h({ datasourceId: "ds-1", path: "/" }, ctx);
@@ -140,14 +145,15 @@ describe("files:* dispatcher integration", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.result.truncated).toBe(false);
+      expect(result.result.nextCursor).toBeNull();
       expect(result.result.entries).toHaveLength(1);
       expect(result.result.entries[0]!.id).toBe("h-a");
       expect(result.result.entries[0]!.path).toBe("/notes.txt");
     }
-    expect(fakeClient.listDirectory).toHaveBeenCalledWith({
-      kind: "path",
-      path: "/",
-    });
+    expect(fakeClient.listDirectory).toHaveBeenCalledWith(
+      { kind: "path", path: "/" },
+      { cursor: undefined, pageSize: undefined },
+    );
   });
 
   it("files:stat end-to-end: dispatcher → engine.getMetadata → envelope with mapped UI entry", async () => {

@@ -123,14 +123,28 @@ export interface FileEntry {
 export interface FilesListRequest {
   datasourceId: string;
   path: string;
+  // Per add-engine-listdirectory-pagination Decisions 1-3. Opaque
+  // continuation cursor from the prior page's `nextCursor`; omitted on the
+  // first page. The engine never inspects it — each strategy maps it to its
+  // provider-native token. `pageSize` is the desired entries-per-page;
+  // strategies clamp to their provider min/max and apply their own default
+  // when omitted. Both optional — a request omitting them lists the first
+  // page at the provider default.
+  cursor?: string;
+  pageSize?: number;
 }
-// Successful list payload. `truncated` replaces the legacy `nextCursor` —
-// the sync-service's engine returns one page per call and signals whether
-// the provider had more results than fit. Paging cursors are no longer part
-// of the renderer-facing contract.
+// Successful list payload. Per add-engine-listdirectory-pagination
+// (Decisions 1 + 6) the engine returns exactly ONE provider page per call
+// plus an opaque `nextCursor` continuation token (`null` when the listing is
+// exhausted); the renderer holds the cursor and re-issues with it to load the
+// next page. `truncated` is RETAINED but DERIVED — the sync-service handler
+// sets `truncated = nextCursor !== null` (it is no longer hard-coded). A
+// future cleanup change may remove `truncated` once the renderer reads
+// `nextCursor` directly.
 export interface FilesListValue {
   entries: FileEntry[];
   truncated: boolean;
+  nextCursor: string | null;
 }
 export type FilesListResponse = FilesEnvelope<FilesListValue>;
 

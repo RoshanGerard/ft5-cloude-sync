@@ -84,17 +84,24 @@ describe("sync-service files:* command contract", () => {
 
   // -- files:list -----------------------------------------------------------
 
-  it("files:list params are { datasourceId, path }", () => {
+  it("files:list params are { datasourceId, path, cursor?, pageSize? }", () => {
+    // Per add-engine-listdirectory-pagination §5.2: cursor + pageSize are
+    // optional additions to the request.
     expectTypeOf<CommandParams<"files:list">>().toEqualTypeOf<{
       readonly datasourceId: string;
       readonly path: string;
+      readonly cursor?: string;
+      readonly pageSize?: number;
     }>();
   });
 
-  it("files:list result is { entries: FileEntry[]; truncated: boolean }", () => {
+  it("files:list result is { entries: FileEntry[]; truncated: boolean; nextCursor: string | null }", () => {
+    // Per add-engine-listdirectory-pagination §5.2: nextCursor is a REQUIRED
+    // addition to the result; truncated is now derived (nextCursor !== null).
     expectTypeOf<CommandResult<"files:list">>().toEqualTypeOf<{
       readonly entries: readonly FileEntry[];
       readonly truncated: boolean;
+      readonly nextCursor: string | null;
     }>();
   });
 

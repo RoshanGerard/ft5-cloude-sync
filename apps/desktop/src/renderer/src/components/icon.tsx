@@ -17,6 +17,7 @@
  */
 
 import {
+  AlertCircleIcon,
   ArrowUpIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -113,6 +114,11 @@ export type IconName =
   | "copy"
   // ui-file-explorer Phase 6.11 — error-pin glyph on rows whose last op failed.
   | "alert-triangle"
+  // add-engine-listdirectory-pagination Visual direction V-2 — leading glyph
+  // on the page-load-failed retry row in the file-explorer's load-more
+  // region. The locked V-2 mockup specifies AlertCircle (distinct from the
+  // AlertTriangle error-pin); lucide 1.8.0 exports it as `AlertCircleIcon`.
+  | "alert-circle"
   // ui-file-explorer Phase 7.2 — toolbar Search trigger glyph.
   | "search"
   // wire-fs-sync-service Phase 10.8 — waiting-network badge variant uses
@@ -159,6 +165,7 @@ const REGISTRY: Record<IconName, ComponentType<LucideProps>> = {
   "file-code": FileCodeIcon,
   copy: CopyIcon,
   "alert-triangle": AlertTriangleIcon,
+  "alert-circle": AlertCircleIcon,
   search: SearchIcon,
   "wifi-off": WifiOffIcon,
   "cloud-off": CloudOffIcon,

@@ -1,12 +1,14 @@
 # Proposal: Add pagination to engine `listDirectory`
 
-**Status:** Drafted; **blocked-on** the engine `migrate-*` chain (see
-Risks/Trade-offs in `design.md`). **Do NOT `/opsx:apply`** until the
-prerequisites listed in `tasks.md` `## 0. Prerequisites` are merged
-to `master` — pagination's auto-retry policy and event semantics
-must coordinate with the migrated retry/event surface, and the
-cursor-handling code lives in the same wrapper layer those changes
-restructure.
+**Status:** Ready to apply (2026-06-07). The BLOCKING prerequisite
+`migrate-engine-retry-policy-to-consumer` merged to `master`
+(`d26f26d`); fs-sync now owns auth-expired refresh via `withAuthRefresh`
+and pagination's auto-retry composes as the outer ring around it. The
+two SOFT prerequisites (`migrate-engine-events-to-consumer`,
+`migrate-engine-cache-invalidation`) were assessed non-blocking for
+pagination — `listDirectory` adds no event emission and keeps the
+existing Drive cache-write call site; see `tasks.md`
+`## 0. Prerequisites` for the per-prereq rationale.
 
 ## Why
 

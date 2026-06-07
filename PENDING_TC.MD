@@ -947,3 +947,43 @@ provider access-token lifecycle.
 **Owner:** unassigned. (Optional follow-up stub for genuinely unbounded
 hour-spanning re-auth — design.md Risks — only if smoke #2's one-per-download
 bound proves insufficient in practice.)
+
+---
+
+## add-engine-listdirectory-pagination — deferred packaged-build smokes (2026-06-07)
+
+The pagination flow (engine opaque-cursor `listDirectory` → fs-sync `files:list`
+4-attempt env-retry → renderer store `loadMore`/`retryLoadMore` → the shared
+Load-more region + Settings page-size) is fully implemented and the FULL repo
+suite (304 files / 2809 tests) is green. BUT it has NEVER run against a real
+provider or a packaged build. Every automated test mocks `window.api.files.list`
+(renderer) or the `syncClient` (main); nothing exercises the live preload IPC
+bridge or a real provider page-token round-trip. The preload binding was VERIFIED
+a generic typed passthrough (`list: (req: FilesListRequest) => invoke(channel,
+req)`, `preload/index.ts:171`) that forwards `cursor`/`pageSize` unchanged — so
+the preload read is the only end-to-end evidence the wire fields reach the
+engine; the smokes below are the real confirmation.
+
+1. **>1000-item Drive folder Load-more flow (15.6)** — packaged build, open a
+   Drive folder of >1000 entries. Expect: the initial page (default 500) renders
+   with the Load-more affordance; each click appends the next provider page and
+   advances the cursor; the affordance hides when `nextCursor === null`; the
+   status row tracks `N+ items · N loaded` → `N items`. Then change Settings →
+   Explorer → "Items loaded per page" and confirm the NEXT list call uses the new
+   size (the current view does NOT auto-refresh). Confirm the busy state is the
+   motion-free "Loading…" label (NOT a spinner — motion budget).
+2. **Constrained-network retry surfaces (15.7)** — open the same folder on a
+   throttled / flaky connection. Expect: a transient Load-more failure triggers
+   fs-sync's 4-attempt env-retry (2s/5s/7s) transparently; on exhaustion the V-2
+   page-load-failed row renders ("Couldn't load more entries" + the humanized
+   WIRE tag + Retry); clicking Retry re-issues the SAME cursor with a fresh
+   budget; already-loaded entries stay visible.
+3. **Per-provider cursor round-trip** — confirm the opaque cursor round-trips on
+   each provider: Drive `pageToken`, OneDrive `@odata.nextLink` (prefix-validated
+   before re-issue), S3 `ContinuationToken` (single page per call — the internal
+   auto-loop was removed). A stale/malformed cursor surfaces wire `tag: "other"`
+   (engine `provider-error`), not a hang.
+
+**Owner:** unassigned. Blocked on a packaged build + real datasource credentials
+(same gate as add-drive-oauth-browser-consent §1 setup). Until run, treat the
+pagination flow as automated-green but NOT yet provider-verified.

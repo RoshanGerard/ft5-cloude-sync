@@ -55,6 +55,7 @@ import { DetailsPane } from "./details-pane";
 import { DropZone, type DropZoneStatus } from "./drop-zone";
 import { FirstDownloadModal } from "./first-download-modal";
 import { HistoryButtons } from "./history-buttons";
+import { LoadMoreRegion } from "./load-more";
 import { PropertiesModal } from "./properties-modal";
 import { ProviderKindContext } from "./provider-kind-context";
 import type {
@@ -769,6 +770,24 @@ export function FileExplorer({
     }
   }, [dropZoneStatus]);
 
+  // add-engine-listdirectory-pagination groups 9/10 — gate the shared
+  // load-more region on "entries are showing". The region's OWN state
+  // machine decides button vs failed-row vs nothing, but it must only mount
+  // when the main pane is actually rendering entries — never under a search
+  // surface, skeleton, empty, or full-replace error state. Mirrors the
+  // entries-branch conditions in the main-pane IIFE below.
+  //
+  // Critical: gate on `loading` (the full-listing flag), NOT `loadingMore`
+  // (the page-fetch flag). `loadMore` sets only `loadingMore`, so the busy
+  // ghost button must stay mounted across a page fetch; `nextCursor` /
+  // `loadMoreError` (also untouched by `loading`) keep the region's own
+  // machine driving the button ↔ failed-row swap.
+  const showLoadMoreRegion =
+    !state.search.active &&
+    state.errorTag === null &&
+    !state.loading &&
+    state.entries.length > 0;
+
   return (
     <ProviderKindContext.Provider value={providerKind}>
     <DropZone
@@ -903,6 +922,15 @@ export function FileExplorer({
         </div>
         <DetailsPane store={store} />
       </div>
+
+      {/* Shared load-more region (Visual direction V-1 + V-2). A single
+          full-width placement BETWEEN the scrollable entries area (the
+          overflow-auto column above) and the status row — never inside a
+          view-mode's scroll container, so it stays visible at the bottom
+          regardless of scroll and renders identically below all six view
+          modes. The region owns its button ↔ failed-row ↔ nothing state
+          machine; the composite only gates whether it mounts at all. */}
+      {showLoadMoreRegion ? <LoadMoreRegion store={store} /> : null}
 
       {/* Status row pinned to bottom. */}
       <StatusRow store={store} />

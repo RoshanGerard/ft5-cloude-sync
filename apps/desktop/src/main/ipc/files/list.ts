@@ -17,12 +17,18 @@ export async function handleFilesList(
     const result = await deps.syncClient.request("files:list", {
       datasourceId: req.datasourceId,
       path: req.path,
+      // Forward pagination params per-key: under exactOptionalPropertyTypes the
+      // command's bare-optional `cursor?`/`pageSize?` reject an explicit
+      // `undefined`, so only include each key when the renderer supplied it.
+      ...(req.cursor !== undefined ? { cursor: req.cursor } : {}),
+      ...(req.pageSize !== undefined ? { pageSize: req.pageSize } : {}),
     });
     return {
       ok: true,
       value: {
         entries: [...result.entries],
         truncated: result.truncated,
+        nextCursor: result.nextCursor,
       },
     };
   } catch (err) {

@@ -243,10 +243,15 @@ describe("Breadcrumb a11y (task 9.2)", () => {
       store.navigate("/charlie");
     });
     await waitFor(() => {
-      expect(filesListMock).toHaveBeenCalledWith({
-        datasourceId: DATASOURCE_ID,
-        path: "/charlie",
-      });
+      // `objectContaining` — the request now also carries `pageSize` per
+      // add-engine-listdirectory-pagination §8.7; this case only cares that
+      // the list was dispatched for `/charlie`.
+      expect(filesListMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          datasourceId: DATASOURCE_ID,
+          path: "/charlie",
+        }),
+      );
     });
 
     const nav = screen.getByRole("navigation", { name: /folder path/i });

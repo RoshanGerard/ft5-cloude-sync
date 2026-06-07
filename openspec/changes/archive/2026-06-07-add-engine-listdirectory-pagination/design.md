@@ -135,18 +135,26 @@ folders are <500.
 
 `fs-sync`'s `files:list` handler wraps `client.listDirectory` with a
 fixed-schedule retry on `network-error` / `rate-limited` /
-`provider-error` failures. Total of **4 attempts** (initial + 3
-retries), back-offs **2s, 5s, 7s** between them, ~14s wall-time
-budget.
+`provider-error` failures THAT ARE `retryable === true`. Total of
+**4 attempts** (initial + 3 retries), back-offs **2s, 5s, 7s** between
+them, ~14s wall-time budget. A non-retryable error (`retryable: false`)
+surfaces immediately — notably OneDrive's deterministic malformed-cursor
+guard (§3.3) throws `provider-error { retryable: false }` before any
+network call, so the loop MUST NOT burn its budget on it (reconciled
+2026-06-07 from the engine-slice code review).
 
 The user's spec — "automatic 3 attempts 2sec 5sec, 7sec" — is
 interpreted as three *retry waits* after the initial attempt,
 producing four total attempts. Confirm or adjust during human review;
 the count is a single constant.
 
-Other tags pass through immediately:
-- `auth-expired` — engine's `withRefresh` already retries once;
-  fs-sync sees only the post-refresh outcome.
+Other tags are NOT retried by the 4-attempt env-retry loop:
+- `auth-expired` — handled by the inner `withAuthRefresh` wrap (per
+  `migrate-engine-retry-policy-to-consumer`, merged 2026-06-07): the
+  handler refreshes once via `client.refreshCredentials()` and retries
+  the call once, inside the env-retry's attempt. The engine no longer
+  auto-refreshes. A still-`auth-expired` outcome after one refresh is
+  terminal (not in the env-retry set) → renderer surfaces reconnect.
 - `auth-revoked` — terminal; renderer surfaces reconnect.
 - `cancelled` — terminal; renderer surfaces nothing.
 - `invalid-datasource` — terminal; renderer surfaces invalid-state.
@@ -204,19 +212,36 @@ aren't first-party requirements. Initial entries:
 4. Page-size choices above provider caps (5000, 10000) over-resolve
    to multiple engine calls per "page" from the renderer's
    perspective.
-5. Auto-retry policy (4 attempts / 14s) is a fs-sync-side decision;
-   the engine's `withRefresh` retry is one-shot and orthogonal.
+5. Auto-retry policy (4 attempts / 14s) is a fs-sync-side decision
+   layered as the OUTER ring around fs-sync's `withAuthRefresh` auth
+   refresh (per `migrate-engine-retry-policy-to-consumer` — the engine
+   no longer auto-refreshes; auth refresh is the one-shot inner ring).
 
 This doc is referenced (but not normatively constrained) by the
 modified `fs-datasource-engine` spec.
 
 ### Decision 8 — No new error tag for cursor invalidation
 
-If a provider rejects a stale cursor (Drive returns `400 Bad Request`
-on a malformed `pageToken`; S3 returns `InvalidArgument` on a
-malformed `ContinuationToken`), the strategy's `normalizeError`
-surfaces it as `tag: "other"` carrying the provider message. The
-renderer's page-load-failed row treats it identically to any other
+Cursor-invalidation failures reuse the EXISTING tag vocabulary — no
+new tag is added. Two sub-cases: (a) a provider rejects a stale cursor
+(Drive `400 Bad Request` on a malformed `pageToken`; S3
+`InvalidArgument` on a malformed `ContinuationToken`) — the strategy's
+`normalizeError` maps it to an engine `DatasourceError` (typically
+`tag: "provider-error"`); (b) OneDrive's client-side prefix guard (§3.3)
+throws `DatasourceError { tag: "provider-error" }` directly, with no
+network call.
+
+NOTE (reconciled 2026-06-07 during apply): the original draft said the
+strategy surfaces `tag: "other"`, but `"other"` is NOT a member of the
+engine's `DatasourceErrorTag` (the 10 engine tags live in
+`packages/ipc-contracts/src/fs-datasource-engine.ts`; `"other"` is a
+WIRE-level `FilesErrorTag`). The engine throws `provider-error`, and
+fs-sync's `normalizeFilesError` (`files-error-mapping.ts`) collapses
+every non-special engine tag — including `provider-error` — to the wire
+`tag: "other"`. The renderer-observable outcome is exactly what this
+decision intends.
+
+The renderer's page-load-failed row treats it identically to any other
 list failure — Retry re-issues from the SAME stale cursor (which
 will fail again), and the user's recourse is to navigate away and
 back, which discards the cursor.
@@ -255,10 +280,17 @@ at full width.
   disabled={isBusy}
 >
   <ChevronDown className="size-4" />
-  {isBusy ? <Spinner className="size-4" /> : null}
-  Load more
+  {isBusy ? "Loading…" : "Load more"}
 </Button>
 ```
+
+**Busy state is motion-free (revised 2026-06-07):** the original mockup
+showed a `<Spinner>`, but the motion budget (Decision 10 / the
+`scripts/motion-budget` guard) bans spinner animations in feature code —
+only the shimmer + sync-pulse utilities are whitelisted. The busy cue is
+realized as the label swap (`Load more` → `Loading…`) plus the `disabled`
+dim + `aria-busy`, not an animated glyph (mirrors the drop-overlay's
+sync-pulse-not-spin precedent).
 
 The shadcn ghost variant resolves to `bg-transparent` with
 `hover:bg-accent hover:text-accent-foreground` (and
@@ -328,7 +360,7 @@ Downloads' "Default folder" row.
     </Button>
   </DropdownMenuTrigger>
   <DropdownMenuContent align="end">
-    <DropdownMenuLabel className="text-xs uppercase tracking-wider">
+    <DropdownMenuLabel className="text-muted-foreground text-xs uppercase tracking-wider">
       Page size
     </DropdownMenuLabel>
     <DropdownMenuRadioGroup value={String(value)} onValueChange={onChange}>
@@ -350,14 +382,17 @@ Values ≥ 1000 render with comma separators. Digits use
 
 ## Risks / Trade-offs
 
-**[Migrate-chain ordering]** → Wait until the relevant `migrate-*`
-changes land before `/opsx:apply`.
-- `migrate-engine-retry-policy-to-consumer` (blocking): pagination's
-  4-attempt auto-retry lives in fs-sync today. If retry ownership
-  moves to the consumer (per the migrate-* design), the wrapper
-  relocates accordingly and the engine's `runReadOp` may stop being
-  the right wrap point. Holding pagination behind this avoids a
-  double-rewrite.
+**[Migrate-chain ordering]** → Blocking prereq resolved (merged
+2026-06-07); the two soft prereqs were assessed non-blocking. Per-prereq
+status:
+- `migrate-engine-retry-policy-to-consumer` (RESOLVED — merged
+  2026-06-07, master `d26f26d`): retry ownership moved to fs-sync.
+  `files-list.ts` is already `withAuthRefresh`-wrapped; pagination's
+  4-attempt env-retry composes as the OUTER ring around that inner
+  auth wrap. `runReadOp` (base-client.ts) was unchanged by the
+  migration — still error-normalization + `rate-limited` /
+  `status-changed` emission, no refresh — so task 1.2's "preserve
+  `runReadOp` wrap unchanged" still holds.
 - `migrate-engine-events-to-consumer` (soft-blocking): listDirectory
   emits no events today. If the migration introduces a `directory-listed`
   event (or similar), pagination should follow suit on first-page-only

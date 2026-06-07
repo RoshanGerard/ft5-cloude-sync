@@ -4,7 +4,11 @@ import { act, render } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { createElement, useSyncExternalStore } from "react";
 
-import type { FileEntry } from "@ft5/ipc-contracts";
+import type {
+  FileEntry,
+  FilesListResponse,
+  FilesListValue,
+} from "@ft5/ipc-contracts";
 
 // Sonner is mocked so rename's toast.error call is observable.
 vi.mock("sonner", () => ({
@@ -17,8 +21,11 @@ vi.mock("sonner", () => ({
 import { toast } from "sonner";
 
 import {
+  DEFAULT_EXPLORER_PAGE_SIZE,
+  EXPLORER_PAGE_SIZE_KEY,
   EXPLORER_STORAGE_KEY_PREFIX,
   createExplorerStore,
+  readExplorerPageSize,
   useExplorerStore,
 } from "../store.js";
 import type {
@@ -1709,6 +1716,430 @@ describe("useExplorerStore hook", () => {
       capturedStore!.setViewMode("tiles");
     });
     expect(capturedViewMode).toBe("tiles");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pagination (add-engine-listdirectory-pagination §8)
+//
+// The wire contract carries `FilesListRequest.cursor?` / `.pageSize?` and a
+// REQUIRED `FilesListValue.nextCursor: string | null`. By the time the
+// renderer sees `ok:false`, fs-sync's 4-attempt env-retry is exhausted
+// (design.md Decision 4), so the store treats it as a terminal page-load
+// failure and preserves the cursor for a manual retry.
+//
+// Public surface under test (§8.1-8.7):
+//   - state.nextCursor:   string | null   (per current path; default null)
+//   - state.loadingMore:  boolean         (re-entrancy + aria-busy signal)
+//   - state.loadMoreError: FilesErrorEnvelope | null  (distinct from the
+//       full-screen `error`/`errorTag`)
+//   - applyInitialPage(value):  sets entries + nextCursor for the first page
+//   - loadMore():               appends + advances nextCursor
+//   - retryLoadMore():          re-issues with the SAME cursor + pageSize
+//   - readExplorerPageSize():   localStorage `ft5.explorer.pageSize`, def 500
+// ---------------------------------------------------------------------------
+
+type FilesListStub = ReturnType<typeof vi.fn>;
+
+function installFilesListApi(listImpl: FilesListStub): void {
+  (window as unknown as { api: unknown }).api = {
+    files: { list: listImpl },
+  };
+}
+
+function listValue(
+  entries: FileEntry[],
+  nextCursor: string | null,
+): FilesListValue {
+  return { entries, truncated: nextCursor !== null, nextCursor };
+}
+
+function okList(
+  entries: FileEntry[],
+  nextCursor: string | null,
+): FilesListResponse {
+  return { ok: true, value: listValue(entries, nextCursor) };
+}
+
+describe("pagination — readExplorerPageSize (§8.7)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("defaults to 500 when the key is absent", () => {
+    expect(readExplorerPageSize()).toBe(DEFAULT_EXPLORER_PAGE_SIZE);
+    expect(readExplorerPageSize()).toBe(500);
+  });
+
+  it("returns the stored numeric value when present and valid", () => {
+    window.localStorage.setItem(EXPLORER_PAGE_SIZE_KEY, "1000");
+    expect(readExplorerPageSize()).toBe(1000);
+  });
+
+  it("falls back to 500 on a non-numeric / invalid stored value", () => {
+    window.localStorage.setItem(EXPLORER_PAGE_SIZE_KEY, "not-a-number");
+    expect(readExplorerPageSize()).toBe(500);
+    window.localStorage.setItem(EXPLORER_PAGE_SIZE_KEY, "0");
+    expect(readExplorerPageSize()).toBe(500);
+    window.localStorage.setItem(EXPLORER_PAGE_SIZE_KEY, "-5");
+    expect(readExplorerPageSize()).toBe(500);
+  });
+
+  it("exports the localStorage key of the expected shape", () => {
+    expect(EXPLORER_PAGE_SIZE_KEY).toBe("ft5.explorer.pageSize");
+  });
+});
+
+describe("pagination — initial page (§8.1, §8.3)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("initial state: nextCursor null, loadingMore false, loadMoreError null", () => {
+    const s = snap(makeStore("ds-1"));
+    expect(s.nextCursor).toBeNull();
+    expect(s.loadingMore).toBe(false);
+    expect(s.loadMoreError).toBeNull();
+  });
+
+  it("applyInitialPage sets entries AND nextCursor together", () => {
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a", "b"]), "cursor-1"));
+    const s = snap(store);
+    expect(s.entries.map((e) => e.id)).toEqual(["a", "b"]);
+    expect(s.nextCursor).toBe("cursor-1");
+  });
+
+  it("applyInitialPage with nextCursor null clears the cursor (last page)", () => {
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), null));
+    expect(snap(store).nextCursor).toBeNull();
+  });
+});
+
+describe("pagination — loadMore success (§8.2, §8.3)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+    clearFilesApi();
+  });
+
+  it("appends entries and updates nextCursor; does NOT replace existing entries", async () => {
+    const listFn = vi.fn(async () => okList(seed(["c", "d"]), "cursor-2"));
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a", "b"]), "cursor-1"));
+
+    await store.loadMore();
+
+    expect(listFn).toHaveBeenCalledTimes(1);
+    expect(listFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        datasourceId: "ds-1",
+        path: "/",
+        cursor: "cursor-1",
+        pageSize: 500,
+      }),
+    );
+    const after = snap(store);
+    expect(after.entries.map((e) => e.id)).toEqual(["a", "b", "c", "d"]);
+    expect(after.nextCursor).toBe("cursor-2");
+    expect(after.loadingMore).toBe(false);
+    expect(after.loadMoreError).toBeNull();
+  });
+
+  it("forwards the pageSize read from localStorage on the loadMore call", async () => {
+    window.localStorage.setItem(EXPLORER_PAGE_SIZE_KEY, "1000");
+    const listFn = vi.fn(async () => okList(seed(["c"]), null));
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+
+    await store.loadMore();
+
+    expect(listFn).toHaveBeenCalledWith(
+      expect.objectContaining({ pageSize: 1000 }),
+    );
+  });
+
+  it("loadMore on the last page (nextCursor === null after append) clears the cursor", async () => {
+    const listFn = vi.fn(async () => okList(seed(["c"]), null));
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a", "b"]), "cursor-1"));
+
+    await store.loadMore();
+
+    const after = snap(store);
+    expect(after.entries.map((e) => e.id)).toEqual(["a", "b", "c"]);
+    expect(after.nextCursor).toBeNull();
+  });
+
+  it("is a no-op when nextCursor is null (nothing more to load)", async () => {
+    const listFn = vi.fn();
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), null));
+
+    await store.loadMore();
+
+    expect(listFn).not.toHaveBeenCalled();
+  });
+
+  it("sets loadingMore=true mid-flight and clears it on resolve", async () => {
+    let resolveList: (value: FilesListResponse) => void = () => {};
+    const listFn = vi.fn(
+      () =>
+        new Promise<FilesListResponse>((res) => {
+          resolveList = res;
+        }),
+    );
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+
+    const promise = store.loadMore();
+    expect(snap(store).loadingMore).toBe(true);
+
+    resolveList(okList(seed(["b"]), null));
+    await promise;
+    expect(snap(store).loadingMore).toBe(false);
+  });
+
+  it("is re-entrancy-safe: a second loadMore while one is in flight is a no-op", async () => {
+    let resolveList: (value: FilesListResponse) => void = () => {};
+    const listFn = vi.fn(
+      () =>
+        new Promise<FilesListResponse>((res) => {
+          resolveList = res;
+        }),
+    );
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+
+    const first = store.loadMore();
+    await store.loadMore(); // should bail immediately (loadingMore guard)
+    expect(listFn).toHaveBeenCalledTimes(1);
+
+    resolveList(okList(seed(["b"]), null));
+    await first;
+  });
+});
+
+describe("pagination — loadMore failure + retryLoadMore (§8.4, §8.5)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+    clearFilesApi();
+  });
+
+  function errList(): FilesListResponse {
+    return {
+      ok: false,
+      error: {
+        tag: "network-error",
+        message: "connection timed out",
+        retryable: true,
+      },
+    };
+  }
+
+  it("records loadMoreError on ok:false and leaves the cursor + entries UNTOUCHED", async () => {
+    const listFn = vi.fn(async () => errList());
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a", "b"]), "cursor-1"));
+
+    await store.loadMore();
+
+    const after = snap(store);
+    // Cursor preserved so a manual retry can re-issue with it (§8.4).
+    expect(after.nextCursor).toBe("cursor-1");
+    // Already-loaded entries stay visible.
+    expect(after.entries.map((e) => e.id)).toEqual(["a", "b"]);
+    expect(after.loadingMore).toBe(false);
+    expect(after.loadMoreError).toEqual({
+      tag: "network-error",
+      message: "connection timed out",
+      retryable: true,
+    });
+    // The full-screen error state MUST NOT be touched — loadMoreError is
+    // distinct from error/errorTag.
+    expect(after.error).toBeNull();
+    expect(after.errorTag).toBeNull();
+  });
+
+  it("records loadMoreError when the IPC throws (rejects)", async () => {
+    const listFn = vi.fn(() => Promise.reject(new Error("ipc boom")));
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+
+    await store.loadMore();
+
+    const after = snap(store);
+    expect(after.nextCursor).toBe("cursor-1");
+    expect(after.loadMoreError?.message).toBe("ipc boom");
+    expect(after.loadingMore).toBe(false);
+  });
+
+  it("retryLoadMore re-issues with the SAME cursor + pageSize and clears loadMoreError on success", async () => {
+    let call = 0;
+    const listFn = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return errList();
+      return okList(seed(["c", "d"]), "cursor-2");
+    });
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a", "b"]), "cursor-1"));
+
+    await store.loadMore();
+    expect(snap(store).loadMoreError).not.toBeNull();
+
+    await store.retryLoadMore();
+
+    // Both calls used the SAME stored cursor (cursor-1).
+    expect(listFn).toHaveBeenCalledTimes(2);
+    expect(listFn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ cursor: "cursor-1" }),
+    );
+    expect(listFn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ cursor: "cursor-1" }),
+    );
+
+    const after = snap(store);
+    expect(after.entries.map((e) => e.id)).toEqual(["a", "b", "c", "d"]);
+    expect(after.nextCursor).toBe("cursor-2");
+    expect(after.loadMoreError).toBeNull();
+  });
+
+  it("retryLoadMore that fails again re-records loadMoreError and preserves the cursor", async () => {
+    const listFn = vi.fn(async () => errList());
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+
+    await store.loadMore();
+    await store.retryLoadMore();
+
+    const after = snap(store);
+    expect(after.nextCursor).toBe("cursor-1");
+    expect(after.loadMoreError).not.toBeNull();
+    expect(listFn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("pagination — navigation discards cursor + failed-state (§8.6)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    localStorage.clear();
+    clearFilesApi();
+  });
+
+  it("navigate() clears nextCursor and loadMoreError", async () => {
+    const listFn = vi.fn(async () => ({
+      ok: false as const,
+      error: { tag: "network-error" as const, message: "boom", retryable: true },
+    }));
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+    await store.loadMore(); // record a failed-state
+    expect(snap(store).loadMoreError).not.toBeNull();
+    expect(snap(store).nextCursor).toBe("cursor-1");
+
+    store.navigate("/projects");
+
+    const after = snap(store);
+    expect(after.nextCursor).toBeNull();
+    expect(after.loadMoreError).toBeNull();
+  });
+
+  it("back() clears nextCursor and loadMoreError", () => {
+    const store = makeStore("ds-1");
+    store.navigate("/projects");
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+
+    store.back();
+
+    const after = snap(store);
+    expect(after.currentPath).toBe("/");
+    expect(after.nextCursor).toBeNull();
+    expect(after.loadMoreError).toBeNull();
+  });
+
+  it("forward() clears nextCursor and loadMoreError", () => {
+    const store = makeStore("ds-1");
+    store.navigate("/projects");
+    store.back();
+    store.applyInitialPage(listValue(seed(["a"]), "cursor-1"));
+
+    store.forward();
+
+    const after = snap(store);
+    expect(after.currentPath).toBe("/projects");
+    expect(after.nextCursor).toBeNull();
+    expect(after.loadMoreError).toBeNull();
+  });
+
+  it("a loadMore resolving AFTER navigation does not append to the new folder", async () => {
+    let resolveList: (value: FilesListResponse) => void = () => {};
+    const listFn = vi.fn(
+      () =>
+        new Promise<FilesListResponse>((res) => {
+          resolveList = res;
+        }),
+    );
+    installFilesListApi(listFn);
+
+    const store = makeStore("ds-1");
+    store.applyInitialPage(listValue(seed(["a", "b"]), "cursor-1"));
+
+    const promise = store.loadMore();
+    // User navigates away while the page is still in flight.
+    store.navigate("/projects");
+    // Seed the new folder's first page.
+    store.applyInitialPage(listValue(seed(["x"]), null));
+
+    // The stale loadMore now resolves — it must NOT append c/d to /projects.
+    resolveList(okList(seed(["c", "d"]), "cursor-2"));
+    await promise;
+
+    const after = snap(store);
+    expect(after.currentPath).toBe("/projects");
+    expect(after.entries.map((e) => e.id)).toEqual(["x"]);
+    expect(after.nextCursor).toBeNull();
+    expect(after.loadingMore).toBe(false);
   });
 });
 

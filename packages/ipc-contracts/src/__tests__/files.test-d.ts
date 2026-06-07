@@ -103,23 +103,37 @@ describe("ipc-contracts files request/response pairs", () => {
   // recovery UX. Per-path failures on `files:remove` travel inside
   // `value.results`, not at the envelope level.
 
-  it("list: { datasourceId, path } request, ok envelope with { entries, truncated }", () => {
+  it("list: { datasourceId, path, cursor?, pageSize? } request, ok envelope with { entries, truncated, nextCursor }", () => {
+    // Per add-engine-listdirectory-pagination §5.1: cursor + pageSize are
+    // optional on the request; nextCursor is REQUIRED on the value and
+    // `truncated` is now DERIVED (`nextCursor !== null`) rather than the
+    // legacy hard-coded `false`.
     const req: FilesListRequest = { datasourceId: "ds-1", path: "/" };
+    const pagedReq: FilesListRequest = {
+      datasourceId: "ds-1",
+      path: "/",
+      cursor: "tokA",
+      pageSize: 500,
+    };
     const res: FilesListResponse = {
       ok: true,
-      value: { entries: [], truncated: false },
+      value: { entries: [], truncated: false, nextCursor: null },
     };
     expect(req.datasourceId).toBe("ds-1");
+    expect(pagedReq.cursor).toBe("tokA");
+    expect(pagedReq.pageSize).toBe(500);
     if (res.ok) {
       expect(res.value.truncated).toBe(false);
+      expect(res.value.nextCursor).toBeNull();
     }
 
     const truncated: FilesListResponse = {
       ok: true,
-      value: { entries: [], truncated: true },
+      value: { entries: [], truncated: true, nextCursor: "tokB" },
     };
     if (truncated.ok) {
       expect(truncated.value.truncated).toBe(true);
+      expect(truncated.value.nextCursor).toBe("tokB");
     }
 
     const err: FilesListResponse = {
@@ -137,11 +151,17 @@ describe("ipc-contracts files request/response pairs", () => {
     expectTypeOf<FilesListRequest>().toEqualTypeOf<{
       datasourceId: string;
       path: string;
+      cursor?: string;
+      pageSize?: number;
     }>();
     expectTypeOf<FilesListResponse>().toEqualTypeOf<
       | {
           ok: true;
-          value: { entries: FileEntry[]; truncated: boolean };
+          value: {
+            entries: FileEntry[];
+            truncated: boolean;
+            nextCursor: string | null;
+          };
         }
       | {
           ok: false;

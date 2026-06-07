@@ -51,12 +51,12 @@ continuation token (forwarded unchanged) otherwise.
 #### Scenario: OneDrive strategy validates `@odata.nextLink` URL prefix before re-issue
 
 - **WHEN** a caller invokes `client.listDirectory(target, { cursor })` against OneDrive where `cursor` does NOT start with `https://graph.microsoft.com/v1.0/`
-- **THEN** the strategy throws `DatasourceError { tag: "other", message: "invalid cursor: not a graph.microsoft.com URL" }` without issuing a network call
+- **THEN** the strategy throws `DatasourceError { tag: "provider-error" }` carrying an invalid-cursor message, without issuing a network call (the engine has no `"other"` tag — that is wire-level only; a consumer's error mapping MAY collapse `provider-error` to its own generic tag)
 
-#### Scenario: Stale cursor surfaces as `tag: "other"`
+#### Scenario: Stale cursor surfaces as `tag: "provider-error"`
 
 - **WHEN** a caller invokes `client.listDirectory(target, { cursor: staleToken })` and the provider rejects the token (Drive 400 / S3 InvalidArgument / OneDrive 400)
-- **THEN** the call rejects with `DatasourceError { tag: "other", message: <provider message> }`; no `expired-cursor` tag is introduced (per design.md Decision 8)
+- **THEN** the call rejects with `DatasourceError { tag: "provider-error", message: <provider message> }`; no `expired-cursor` tag is introduced (per design.md Decision 8). fs-sync's `normalizeFilesError` collapses this to the wire `tag: "other"` the renderer observes
 
 ## MODIFIED Requirements
 

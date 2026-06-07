@@ -185,12 +185,18 @@ describe("FileExplorer composite (Subagent P)", () => {
     // Root anchor present.
     expect(screen.getByTestId("file-explorer-root")).toBeInTheDocument();
 
-    // Called with the expected payload at least once.
+    // Called with the expected payload at least once. `objectContaining`
+    // because the request now also carries `pageSize` (add-engine-
+    // listdirectory-pagination §8.7 — page size is read from localStorage
+    // on every list origination); this assertion pins only the identity +
+    // path, which is what this case is about.
     await waitFor(() => {
-      expect(filesListMock).toHaveBeenCalledWith({
-        datasourceId: "ds-gdrive-personal",
-        path: "/",
-      });
+      expect(filesListMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          datasourceId: "ds-gdrive-personal",
+          path: "/",
+        }),
+      );
     });
 
     // After resolve: three rows rendered in Details (the default view mode).
@@ -244,10 +250,12 @@ describe("FileExplorer composite (Subagent P)", () => {
     });
 
     await waitFor(() => {
-      expect(filesListMock).toHaveBeenCalledWith({
-        datasourceId: "ds-gdrive-personal",
-        path: "/photos",
-      });
+      expect(filesListMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          datasourceId: "ds-gdrive-personal",
+          path: "/photos",
+        }),
+      );
     });
 
     await waitFor(() => {
@@ -387,10 +395,12 @@ describe("FileExplorer composite (Subagent P)", () => {
     fireEvent.doubleClick(dirRow!);
 
     await waitFor(() => {
-      expect(filesListMock).toHaveBeenCalledWith({
-        datasourceId: "ds-gdrive-personal",
-        path: "/reports",
-      });
+      expect(filesListMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          datasourceId: "ds-gdrive-personal",
+          path: "/reports",
+        }),
+      );
     });
 
     await waitFor(() => {
