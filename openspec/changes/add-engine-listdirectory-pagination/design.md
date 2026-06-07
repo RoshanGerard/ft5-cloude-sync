@@ -135,9 +135,13 @@ folders are <500.
 
 `fs-sync`'s `files:list` handler wraps `client.listDirectory` with a
 fixed-schedule retry on `network-error` / `rate-limited` /
-`provider-error` failures. Total of **4 attempts** (initial + 3
-retries), back-offs **2s, 5s, 7s** between them, ~14s wall-time
-budget.
+`provider-error` failures THAT ARE `retryable === true`. Total of
+**4 attempts** (initial + 3 retries), back-offs **2s, 5s, 7s** between
+them, ~14s wall-time budget. A non-retryable error (`retryable: false`)
+surfaces immediately — notably OneDrive's deterministic malformed-cursor
+guard (§3.3) throws `provider-error { retryable: false }` before any
+network call, so the loop MUST NOT burn its budget on it (reconciled
+2026-06-07 from the engine-slice code review).
 
 The user's spec — "automatic 3 attempts 2sec 5sec, 7sec" — is
 interpreted as three *retry waits* after the initial attempt,
@@ -218,11 +222,26 @@ modified `fs-datasource-engine` spec.
 
 ### Decision 8 — No new error tag for cursor invalidation
 
-If a provider rejects a stale cursor (Drive returns `400 Bad Request`
-on a malformed `pageToken`; S3 returns `InvalidArgument` on a
-malformed `ContinuationToken`), the strategy's `normalizeError`
-surfaces it as `tag: "other"` carrying the provider message. The
-renderer's page-load-failed row treats it identically to any other
+Cursor-invalidation failures reuse the EXISTING tag vocabulary — no
+new tag is added. Two sub-cases: (a) a provider rejects a stale cursor
+(Drive `400 Bad Request` on a malformed `pageToken`; S3
+`InvalidArgument` on a malformed `ContinuationToken`) — the strategy's
+`normalizeError` maps it to an engine `DatasourceError` (typically
+`tag: "provider-error"`); (b) OneDrive's client-side prefix guard (§3.3)
+throws `DatasourceError { tag: "provider-error" }` directly, with no
+network call.
+
+NOTE (reconciled 2026-06-07 during apply): the original draft said the
+strategy surfaces `tag: "other"`, but `"other"` is NOT a member of the
+engine's `DatasourceErrorTag` (the 10 engine tags live in
+`packages/ipc-contracts/src/fs-datasource-engine.ts`; `"other"` is a
+WIRE-level `FilesErrorTag`). The engine throws `provider-error`, and
+fs-sync's `normalizeFilesError` (`files-error-mapping.ts`) collapses
+every non-special engine tag — including `provider-error` — to the wire
+`tag: "other"`. The renderer-observable outcome is exactly what this
+decision intends.
+
+The renderer's page-load-failed row treats it identically to any other
 list failure — Retry re-issues from the SAME stale cursor (which
 will fail again), and the user's recourse is to navigate away and
 back, which discards the cursor.

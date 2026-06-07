@@ -64,8 +64,17 @@ function makeFakeGraph(
 ): {
   client: GraphClientLike;
   apiCalls: string[];
+  /**
+   * Records every `.query(values)` call as `{ path, values }` so pagination
+   * tests can assert `$top` forwarding (add-engine-listdirectory-pagination
+   * §3.2). The real `@microsoft/microsoft-graph-client` forwards query
+   * parameters via `.query()`; the previous no-op fake discarded them.
+   */
+  queryCalls: Array<{ path: string; values: Record<string, unknown> }>;
 } {
   const apiCalls: string[] = [];
+  const queryCalls: Array<{ path: string; values: Record<string, unknown> }> =
+    [];
   const client: GraphClientLike = {
     api(path: string) {
       apiCalls.push(path);
@@ -73,7 +82,10 @@ function makeFakeGraph(
       const builder: GraphRequestBuilderLike = {
         header: () => builder,
         headers: () => builder,
-        query: () => builder,
+        query: (values: Record<string, unknown>) => {
+          queryCalls.push({ path, values });
+          return builder;
+        },
         select: () => builder,
         expand: () => builder,
         async get() {
@@ -121,7 +133,7 @@ function makeFakeGraph(
       return builder;
     },
   };
-  return { client, apiCalls };
+  return { client, apiCalls, queryCalls };
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +272,7 @@ describe("OneDriveClient — listDirectory", () => {
       return { client, apiCalls };
     })();
     const h = makeHarness({ graph: client });
-    const entries = await h.client.listDirectory({ kind: "path", path: "/photos" });
+    const { entries } = await h.client.listDirectory({ kind: "path", path: "/photos" });
     expect(entries).toHaveLength(2);
     const folder = entries.find((e) => e.kind === "folder");
     expect(folder).toBeDefined();
@@ -301,6 +313,115 @@ describe("OneDriveClient — listDirectory", () => {
     const h = makeHarness({ graph: client });
     await h.client.listDirectory({ kind: "handle", handle: "ITEM-123" });
     expect(apiCalls).toEqual(["/me/drive/items/ITEM-123/children"]);
+  });
+
+  // -------------------------------------------------------------------------
+  // add-engine-listdirectory-pagination §3 — cursor pagination
+  // -------------------------------------------------------------------------
+
+  it("first page with default page size: no $top query, uses Graph default, nextCursor null when no @odata.nextLink", async () => {
+    const { client, apiCalls, queryCalls } = makeFakeGraph([
+      {
+        match: "/me/drive/root/children",
+        verbs: { get: () => ({ value: [] }) },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    const result = await h.client.listDirectory({ kind: "path", path: "/" });
+
+    expect(apiCalls[0]).toBe("/me/drive/root/children");
+    // No pageSize → no $top forwarded (Graph default paging, §3.2).
+    expect(queryCalls).toHaveLength(0);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("first page with pageSize: forwards $top via .query()", async () => {
+    const { client, queryCalls } = makeFakeGraph([
+      {
+        match: "/me/drive/root/children",
+        verbs: { get: () => ({ value: [] }) },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    await h.client.listDirectory({ kind: "path", path: "/" }, { pageSize: 200 });
+
+    expect(queryCalls).toHaveLength(1);
+    expect(queryCalls[0]!.values).toEqual({ $top: 200 });
+  });
+
+  it("clamps pageSize above the Graph $top ceiling (5000 → 999)", async () => {
+    const { client, queryCalls } = makeFakeGraph([
+      {
+        match: "/me/drive/root/children",
+        verbs: { get: () => ({ value: [] }) },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    await h.client.listDirectory({ kind: "path", path: "/" }, { pageSize: 5000 });
+
+    expect(queryCalls[0]!.values).toEqual({ $top: 999 });
+  });
+
+  it("surfaces @odata.nextLink as nextCursor when present", async () => {
+    const nextLink =
+      "https://graph.microsoft.com/v1.0/me/drive/root/children?$top=200&$skiptoken=ABC";
+    const { client } = makeFakeGraph([
+      {
+        match: "/me/drive/root/children",
+        verbs: {
+          get: () => ({ value: [], "@odata.nextLink": nextLink }),
+        },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    const result = await h.client.listDirectory({ kind: "path", path: "/" });
+    expect(result.nextCursor).toBe(nextLink);
+  });
+
+  it("next page: passes a valid @odata.nextLink directly to .api(cursor) WITHOUT re-attaching $top", async () => {
+    const cursor =
+      "https://graph.microsoft.com/v1.0/me/drive/root/children?$top=200&$skiptoken=ABC";
+    const { client, apiCalls, queryCalls } = makeFakeGraph([
+      {
+        match: "https://graph.microsoft.com/v1.0/",
+        verbs: { get: () => ({ value: [] }) },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    const result = await h.client.listDirectory(
+      { kind: "path", path: "/" },
+      { cursor, pageSize: 200 },
+    );
+
+    // The opaque nextLink is passed verbatim to .api().
+    expect(apiCalls).toEqual([cursor]);
+    // $top is already baked into the nextLink URL — do NOT re-attach it (§3.4).
+    expect(queryCalls).toHaveLength(0);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("next page with an invalid cursor prefix throws (engine 'provider-error', wire 'other') and issues NO network call (§3.3)", async () => {
+    const { client, apiCalls } = makeFakeGraph([
+      {
+        match: "/me/drive/root/children",
+        verbs: { get: () => ({ value: [] }) },
+      },
+    ]);
+    const h = makeHarness({ graph: client });
+    // Design §3.3 / Decision 8 specify the wire tag `"other"`, but `"other"`
+    // is not an engine `DatasourceErrorTag` member — the engine throws
+    // `provider-error`, which the wire layer collapses to `"other"`. We assert
+    // the engine-layer tag here.
+    await expect(
+      h.client.listDirectory(
+        { kind: "path", path: "/" },
+        { cursor: "https://evil.example.com/v1.0/me/drive/root/children" },
+      ),
+    ).rejects.toSatisfy(
+      (e: unknown) => e instanceof DatasourceError && e.tag === "provider-error",
+    );
+    // The guard fires BEFORE any Graph call.
+    expect(apiCalls).toHaveLength(0);
   });
 });
 

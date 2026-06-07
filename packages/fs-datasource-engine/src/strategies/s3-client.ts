@@ -96,6 +96,25 @@ import {
 } from "../factory.js";
 
 // ---------------------------------------------------------------------------
+// Pagination bounds
+// ---------------------------------------------------------------------------
+
+// `MaxKeys` bounds for `doListDirectoryImpl` (add-engine-listdirectory-
+// pagination Decision 3). S3's `MaxKeys` ceiling is 1000; we also use 1000 as
+// the default when the caller omits `pageSize` (the prior do/while loop
+// effectively fetched 1000 per provider page). The floor is 1 so a degenerate
+// `0` / negative request still returns at least one entry.
+const S3_LIST_MAX_KEYS_MAX = 1000;
+const S3_LIST_MAX_KEYS_DEFAULT = 1000;
+
+/** Clamp a requested page size to S3's `MaxKeys` `[1, 1000]` range, defaulting
+ * to 1000 when omitted. */
+function clampS3PageSize(requested: number | undefined): number {
+  if (requested === undefined) return S3_LIST_MAX_KEYS_DEFAULT;
+  return Math.min(Math.max(Math.trunc(requested), 1), S3_LIST_MAX_KEYS_MAX);
+}
+
+// ---------------------------------------------------------------------------
 // Path ↔ Key utilities
 // ---------------------------------------------------------------------------
 
@@ -442,47 +461,56 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
 
   protected override async doListDirectoryImpl(
     target: Target,
-  ): Promise<DatasourceFileEntry<"amazon-s3">[]> {
+    options: { cursor?: string; pageSize?: number },
+  ): Promise<{
+    entries: DatasourceFileEntry<"amazon-s3">[];
+    nextCursor: string | null;
+  }> {
     let prefix = targetToKey(target);
     // Ensure trailing slash for folder-listing semantics (unless root).
     if (prefix !== "" && !prefix.endsWith("/")) prefix = `${prefix}/`;
+    // add-engine-listdirectory-pagination §4.2: a SINGLE ListObjectsV2 call
+    // per engine call (the prior do/while auto-loop is gone — the
+    // continuation token is now surfaced to the caller as `nextCursor`
+    // instead of being consumed internally). `options.cursor` maps to
+    // `ContinuationToken`; `options.pageSize` clamps to S3's `[1, 1000]`
+    // `MaxKeys` ceiling (default 1000 when omitted).
     const out: DatasourceFileEntry<"amazon-s3">[] = [];
-    let continuationToken: string | undefined;
-    do {
-      const resp = await this.aws.send(
-        new ListObjectsV2Command({
-          Bucket: this.creds.bucket,
-          Prefix: prefix,
-          Delimiter: "/",
-          ...(continuationToken
-            ? { ContinuationToken: continuationToken }
-            : {}),
+    const resp = await this.aws.send(
+      new ListObjectsV2Command({
+        Bucket: this.creds.bucket,
+        Prefix: prefix,
+        Delimiter: "/",
+        MaxKeys: clampS3PageSize(options.pageSize),
+        ...(options.cursor !== undefined
+          ? { ContinuationToken: options.cursor }
+          : {}),
+      }),
+    );
+    for (const cp of resp.CommonPrefixes ?? []) {
+      if (cp.Prefix) {
+        out.push(buildFolderEntry(this.creds.bucket, cp.Prefix));
+      }
+    }
+    for (const obj of resp.Contents ?? []) {
+      if (!obj.Key) continue;
+      // Filter out the folder marker (prefix itself) so a listing under
+      // `/photos/` does not emit `/photos/` as a file.
+      if (obj.Key === prefix) continue;
+      out.push(
+        buildFileEntry(this.creds.bucket, obj.Key, {
+          ...(typeof obj.Size === "number" ? { size: obj.Size } : {}),
+          ...(obj.LastModified ? { lastModified: obj.LastModified } : {}),
+          ...(obj.ETag ? { etag: obj.ETag } : {}),
+          ...(obj.StorageClass ? { storageClass: obj.StorageClass } : {}),
         }),
       );
-      for (const cp of resp.CommonPrefixes ?? []) {
-        if (cp.Prefix) {
-          out.push(buildFolderEntry(this.creds.bucket, cp.Prefix));
-        }
-      }
-      for (const obj of resp.Contents ?? []) {
-        if (!obj.Key) continue;
-        // Filter out the folder marker (prefix itself) so a listing under
-        // `/photos/` does not emit `/photos/` as a file.
-        if (obj.Key === prefix) continue;
-        out.push(
-          buildFileEntry(this.creds.bucket, obj.Key, {
-            ...(typeof obj.Size === "number" ? { size: obj.Size } : {}),
-            ...(obj.LastModified ? { lastModified: obj.LastModified } : {}),
-            ...(obj.ETag ? { etag: obj.ETag } : {}),
-            ...(obj.StorageClass ? { storageClass: obj.StorageClass } : {}),
-          }),
-        );
-      }
-      continuationToken = resp.IsTruncated
+    }
+    const nextCursor =
+      resp.IsTruncated && resp.NextContinuationToken
         ? resp.NextContinuationToken
-        : undefined;
-    } while (continuationToken);
-    return out;
+        : null;
+    return { entries: out, nextCursor };
   }
 
   // -------------------------------------------------------------------------

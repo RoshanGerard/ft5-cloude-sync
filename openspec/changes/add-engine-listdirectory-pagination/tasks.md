@@ -34,10 +34,10 @@ the reverse.
 
 - [ ] 3.1 Update `OneDriveClient.doListDirectoryImpl` to accept the options parameter
 - [ ] 3.2 First-page call: forward `options.pageSize` as `$top` (clamp `[1, 999]`); when omitted, use Graph default
-- [ ] 3.3 Next-page call: validate `options.cursor` starts with `https://graph.microsoft.com/v1.0/`; throw `tag: "other"` on mismatch (no network call)
+- [ ] 3.3 Next-page call: validate `options.cursor` starts with `https://graph.microsoft.com/v1.0/`; on mismatch throw `DatasourceError { tag: "provider-error" }` with NO network call. (Reconciled 2026-06-07: the engine has no `"other"` tag — that is wire-level only; fs-sync's `normalizeFilesError` collapses engine `provider-error` → wire `"other"`, preserving Decision 8's intent.)
 - [ ] 3.4 Next-page call: pass the validated URL directly to `graph.api(cursor).get()`; do not re-attach `$top` on a `@odata.nextLink` (it is already in the URL)
 - [ ] 3.5 Read `@odata.nextLink` from the response; populate `nextCursor`
-- [ ] 3.6 Update `onedrive-client.test.ts` to cover: first-page with default, first-page with `pageSize`, next-page with valid `@odata.nextLink`, next-page with invalid URL prefix → `tag: "other"`
+- [ ] 3.6 Update `onedrive-client.test.ts` to cover: first-page with default, first-page with `pageSize`, next-page with valid `@odata.nextLink`, next-page with invalid URL prefix → engine `tag: "provider-error"` (collapses to wire `"other"`)
 
 ## 4. Strategy: S3
 
@@ -60,7 +60,7 @@ the reverse.
 - [ ] 6.1 Update `services/fs-sync/src/commands/files-list.ts` to forward `cursor` and `pageSize` to `client.listDirectory`
 - [ ] 6.2 Wrap the `listDirectory` call in a back-off retry loop: 4 attempts total with 2s / 5s / 7s waits between (NOT before attempt 1)
 - [ ] 6.3 Honor `retryAfterMs` on `tag: "rate-limited"` rejections via `max(retryAfterMs, scheduledBackoff)`
-- [ ] 6.4 Limit retry to `tag` ∈ `{ "network-error", "rate-limited", "provider-error" }`; pass other tags through immediately
+- [ ] 6.4 Limit retry to `tag` ∈ `{ "network-error", "rate-limited", "provider-error" }` AND `err.retryable === true`; pass other tags — and any non-retryable error (e.g. OneDrive's deterministic malformed-cursor `provider-error { retryable: false }`, §3.3) — through immediately so the loop never burns its ~14s budget on a guaranteed-to-fail re-attempt (reconciled 2026-06-07 from engine-slice review)
 - [ ] 6.5 Surface `nextCursor` on the response envelope; derive `truncated` as `nextCursor !== null`
 - [ ] 6.6 Update `files-list.test.ts`: cover first-page no-cursor, next-page with-cursor, retry-then-success on attempt 4, retry-exhaustion → last error returned, retryAfterMs override, non-retryable tag returns immediately
 - [ ] 6.7 Verify `files-search.ts` is NOT touched (search pagination is out of scope)

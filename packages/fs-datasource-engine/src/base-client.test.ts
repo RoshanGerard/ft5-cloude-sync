@@ -40,7 +40,10 @@ interface FakeConfig {
   doStatus?: () => Promise<DatasourceStatus>;
   doTestConnection?: () => Promise<void>;
   doAuthenticate?: () => Promise<AuthIntent>;
-  doListDirectory?: (target: Target) => Promise<DatasourceFileEntry<FakeType>[]>;
+  doListDirectory?: (
+    target: Target,
+    options: { cursor?: string; pageSize?: number },
+  ) => Promise<{ entries: DatasourceFileEntry<FakeType>[]; nextCursor: string | null }>;
   doSearch?: (query: string, scope?: Target) => Promise<DatasourceFileEntry<FakeType>[]>;
   doGetMetadata?: (target: Target) => Promise<FileMetadata<FakeType>>;
   doUploadFile?: (
@@ -104,7 +107,10 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   readonly doTestConnection = vi.fn<() => Promise<void>>();
   readonly doAuthenticate = vi.fn<() => Promise<AuthIntent>>();
   readonly doListDirectory = vi.fn<
-    (target: Target) => Promise<DatasourceFileEntry<FakeType>[]>
+    (
+      target: Target,
+      options: { cursor?: string; pageSize?: number },
+    ) => Promise<{ entries: DatasourceFileEntry<FakeType>[]; nextCursor: string | null }>
   >();
   readonly doSearch = vi.fn<
     (query: string, scope?: Target) => Promise<DatasourceFileEntry<FakeType>[]>
@@ -155,7 +161,7 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
 
     if (cfg.doListDirectory)
       this.doListDirectory.mockImplementation(cfg.doListDirectory);
-    else this.doListDirectory.mockResolvedValue([]);
+    else this.doListDirectory.mockResolvedValue({ entries: [], nextCursor: null });
 
     if (cfg.doSearch) this.doSearch.mockImplementation(cfg.doSearch);
     else this.doSearch.mockResolvedValue([]);
@@ -207,8 +213,11 @@ class FakeDatasourceClient extends BaseDatasourceClient<FakeType> {
   protected doAuthenticateImpl(): Promise<AuthIntent> {
     return this.doAuthenticate();
   }
-  protected doListDirectoryImpl(target: Target): Promise<DatasourceFileEntry<FakeType>[]> {
-    return this.doListDirectory(target);
+  protected doListDirectoryImpl(
+    target: Target,
+    options: { cursor?: string; pageSize?: number },
+  ): Promise<{ entries: DatasourceFileEntry<FakeType>[]; nextCursor: string | null }> {
+    return this.doListDirectory(target, options);
   }
   protected doSearchImpl(
     query: string,
@@ -856,21 +865,31 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
 
 describe("BaseDatasourceClient — operations surface auth-expired without auto-retry", () => {
   it("listDirectory: a doListDirectoryImpl auth-expired surfaces raw — refreshTokenImpl NOT called, NO retry", async () => {
-    const doListDirectory = vi.fn(async (target: Target) => {
-      void target;
-      throw new DatasourceError<FakeType>({
-        tag: "auth-expired",
-        datasourceType: "amazon-s3",
-        datasourceId: "ds-1",
-        retryable: false,
-        message: "token expired",
-      });
-    });
+    const doListDirectory = vi.fn(
+      async (
+        target: Target,
+        options: { cursor?: string; pageSize?: number },
+      ) => {
+        void target;
+        void options;
+        throw new DatasourceError<FakeType>({
+          tag: "auth-expired",
+          datasourceType: "amazon-s3",
+          datasourceId: "ds-1",
+          retryable: false,
+          message: "token expired",
+        });
+      },
+    );
 
     const { client } = makeHarness({
       doListDirectory: doListDirectory as unknown as (
         target: Target,
-      ) => Promise<DatasourceFileEntry<FakeType>[]>,
+        options: { cursor?: string; pageSize?: number },
+      ) => Promise<{
+        entries: DatasourceFileEntry<FakeType>[];
+        nextCursor: string | null;
+      }>,
     });
 
     let caught: unknown;
@@ -918,6 +937,128 @@ describe("BaseDatasourceClient — operations surface auth-expired without auto-
     expect(client.refreshTokenSpy).not.toHaveBeenCalled();
     // The op was invoked exactly once — no retry.
     expect(attempts).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listDirectory pagination wrapper (add-engine-listdirectory-pagination §1.4)
+// ---------------------------------------------------------------------------
+//
+// The base `listDirectory(target, options?)` wrapper threads the opaque
+// pagination options into `doListDirectoryImpl` and surfaces the strategy's
+// `{ entries, nextCursor }` shape unchanged. Decision 2: the base treats the
+// cursor as opaque — it neither inspects nor normalizes it, and it does NOT
+// inject a default pageSize (defaulting is strategy-side). When `options` is
+// omitted the base hands the primitive an empty `{}`.
+
+describe("BaseDatasourceClient — listDirectory pagination wrapper", () => {
+  it("forwards cursor + pageSize to doListDirectoryImpl unchanged", async () => {
+    const doListDirectory = vi.fn(
+      async (
+        target: Target,
+        options: { cursor?: string; pageSize?: number },
+      ) => {
+        void target;
+        void options;
+        return { entries: [], nextCursor: null as string | null };
+      },
+    );
+    const { client } = makeHarness({ doListDirectory });
+
+    await client.listDirectory(
+      { kind: "path", path: "/photos" },
+      { cursor: "opaque-token-abc", pageSize: 250 },
+    );
+
+    expect(doListDirectory).toHaveBeenCalledTimes(1);
+    expect(doListDirectory).toHaveBeenCalledWith(
+      { kind: "path", path: "/photos" },
+      { cursor: "opaque-token-abc", pageSize: 250 },
+    );
+  });
+
+  it("hands the primitive an empty options object when options is omitted (no injected default pageSize)", async () => {
+    const doListDirectory = vi.fn(
+      async (
+        target: Target,
+        options: { cursor?: string; pageSize?: number },
+      ) => {
+        void target;
+        void options;
+        return { entries: [], nextCursor: null as string | null };
+      },
+    );
+    const { client } = makeHarness({ doListDirectory });
+
+    await client.listDirectory({ kind: "path", path: "/" });
+
+    expect(doListDirectory).toHaveBeenCalledTimes(1);
+    const [, passedOptions] = doListDirectory.mock.calls[0]!;
+    // The base does NOT inspect or default the cursor/pageSize — Decision 2.
+    expect(passedOptions).toEqual({});
+  });
+
+  it("surfaces the strategy's { entries, nextCursor } shape unchanged", async () => {
+    const entry = makeEntry("/photos/a.txt");
+    const doListDirectory = vi.fn(
+      async (
+        target: Target,
+        options: { cursor?: string; pageSize?: number },
+      ) => {
+        void target;
+        void options;
+        return {
+          entries: [entry],
+          nextCursor: "next-page-token-xyz" as string | null,
+        };
+      },
+    );
+    const { client } = makeHarness({ doListDirectory });
+
+    const result = await client.listDirectory({ kind: "path", path: "/photos" });
+
+    expect(result.entries).toEqual([entry]);
+    expect(result.nextCursor).toBe("next-page-token-xyz");
+  });
+
+  it("leaves the error envelope unchanged on rejection (normalized DatasourceError rethrown)", async () => {
+    const doListDirectory = vi.fn(
+      async (
+        target: Target,
+        options: { cursor?: string; pageSize?: number },
+      ) => {
+        void target;
+        void options;
+        // Raw (un-normalized) provider marker — runReadOp normalizes it.
+        throw { __tag: "provider-error" };
+      },
+    );
+    const { client, events } = makeHarness({
+      doListDirectory: doListDirectory as unknown as (
+        target: Target,
+        options: { cursor?: string; pageSize?: number },
+      ) => Promise<{
+        entries: DatasourceFileEntry<FakeType>[];
+        nextCursor: string | null;
+      }>,
+    });
+
+    let caught: unknown;
+    try {
+      await client.listDirectory(
+        { kind: "path", path: "/photos" },
+        { cursor: "stale", pageSize: 100 },
+      );
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(DatasourceError);
+    expect((caught as DatasourceError).tag).toBe("provider-error");
+    // runReadOp's failure path emits status-changed for non-rate-limited,
+    // non-unsupported, non-auth-expired tags — unchanged by pagination.
+    const names = events.map((e) => e.event);
+    expect(names).toContain("status-changed");
   });
 });
 

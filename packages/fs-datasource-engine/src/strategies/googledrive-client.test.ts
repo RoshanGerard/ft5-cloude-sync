@@ -464,7 +464,7 @@ describe("GoogleDriveClient — listDirectory", () => {
       ],
     });
     const h = makeHarness({ drive: client });
-    const entries = await h.client.listDirectory({ kind: "path", path: "/" });
+    const { entries } = await h.client.listDirectory({ kind: "path", path: "/" });
     expect(entries).toHaveLength(2);
     const folder = entries.find((e) => e.kind === "folder");
     expect(folder).toBeDefined();
@@ -553,6 +553,152 @@ describe("GoogleDriveClient — listDirectory", () => {
     for (const c of resolveCalls) {
       expect(String(c.orderBy ?? "")).toContain("createdTime");
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // add-engine-listdirectory-pagination §2 — cursor pagination
+  // -------------------------------------------------------------------------
+
+  it("first page (no cursor): omits pageToken, sends pageSize 1000 by default, nextCursor null when no nextPageToken", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({ files: [] }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const result = await h.client.listDirectory({ kind: "path", path: "/" });
+
+    const listCall = calls.list.find((c) =>
+      String(c.q ?? "").includes("'root' in parents"),
+    )!;
+    expect(listCall.pageToken).toBeUndefined();
+    // Default page size 1000 when options.pageSize is omitted (Decision 3 —
+    // Drive's prior default).
+    expect(listCall.pageSize).toBe(1000);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("surfaces nextPageToken as nextCursor when present", async () => {
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({ files: [], nextPageToken: "DRIVE-PAGE-2" }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const result = await h.client.listDirectory({ kind: "path", path: "/" });
+    expect(result.nextCursor).toBe("DRIVE-PAGE-2");
+  });
+
+  it("next page (with cursor): forwards options.cursor as pageToken", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({ files: [] }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.listDirectory(
+      { kind: "path", path: "/" },
+      { cursor: "DRIVE-PAGE-2" },
+    );
+
+    const listCall = calls.list.find((c) =>
+      String(c.q ?? "").includes("'root' in parents"),
+    )!;
+    expect(listCall.pageToken).toBe("DRIVE-PAGE-2");
+  });
+
+  it("clamps pageSize above Drive's ceiling (5000 → 1000)", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({ files: [] }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.listDirectory(
+      { kind: "path", path: "/" },
+      { pageSize: 5000 },
+    );
+
+    const listCall = calls.list.find((c) =>
+      String(c.q ?? "").includes("'root' in parents"),
+    )!;
+    expect(listCall.pageSize).toBe(1000);
+  });
+
+  it("forwards an in-range pageSize unchanged", async () => {
+    const { client, calls } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({ files: [] }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    await h.client.listDirectory(
+      { kind: "path", path: "/" },
+      { pageSize: 250 },
+    );
+
+    const listCall = calls.list.find((c) =>
+      String(c.q ?? "").includes("'root' in parents"),
+    )!;
+    expect(listCall.pageSize).toBe(250);
+  });
+
+  it("populates the path-handle cache for every entry across pages (§2.5)", async () => {
+    const { client } = makeFakeDrive({
+      lists: [
+        {
+          qMatch: "'root' in parents",
+          handler: () => ({
+            files: [
+              {
+                id: "folder-cache-1",
+                name: "docs",
+                mimeType: "application/vnd.google-apps.folder",
+                parents: ["root"],
+                createdTime: "2024-01-01T00:00:00Z",
+              },
+            ],
+            // A subsequent page is available — proves per-page cache writes
+            // still run when nextCursor is non-null.
+            nextPageToken: "DRIVE-PAGE-2",
+          }),
+        },
+      ],
+    });
+    const h = makeHarness({ drive: client });
+    const result = await h.client.listDirectory({ kind: "path", path: "/" });
+    expect(result.nextCursor).toBe("DRIVE-PAGE-2");
+    // The cache hit lets a subsequent handle-addressed op skip path
+    // resolution. We assert the entry carries the resolvable handle that
+    // cachePathHandle was seeded with.
+    const folder = result.entries.find((e) => e.kind === "folder")!;
+    expect(folder.handle).toBe("folder-cache-1");
+    expect(folder.path).toBe("/docs");
+    // §2.5: assert cachePathHandle actually populated the path→handle cache
+    // (not just that buildFileEntry produced a handle) — deleting the
+    // per-entry cachePathHandle call would make THIS assertion fail, unlike
+    // the shape-only checks above. (Engine-slice review, 2026-06-07.)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<
+      string,
+      { fileId: string }
+    >;
+    expect(cache.get("/docs")?.fileId).toBe("folder-cache-1");
   });
 });
 
@@ -3600,7 +3746,7 @@ describe("GoogleDriveClient — listDirectory entry.name extension repair", () =
       ],
     });
     const h = makeHarness({ drive: client });
-    const entries = await h.client.listDirectory({
+    const { entries } = await h.client.listDirectory({
       kind: "path",
       path: "/",
     });
@@ -3634,7 +3780,7 @@ describe("GoogleDriveClient — listDirectory entry.name extension repair", () =
       ],
     });
     const h = makeHarness({ drive: client });
-    const entries = await h.client.listDirectory({
+    const { entries } = await h.client.listDirectory({
       kind: "path",
       path: "/",
     });

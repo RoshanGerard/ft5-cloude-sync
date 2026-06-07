@@ -491,15 +491,24 @@ export interface FilesCommandErrorShape extends ErrorShape {
 // import path; the union is declared once and shared across layers.
 export type { FilesRemoveEntryResult };
 
+// `files:list` (add-engine-listdirectory-pagination §5.2). The request gains
+// optional `cursor` (opaque continuation token from the prior page) and
+// `pageSize` (desired entries-per-page; strategies clamp + default). The
+// result gains required `nextCursor: string | null` (the next page's opaque
+// cursor, or `null` when exhausted). `truncated` is RETAINED but DERIVED by
+// the handler as `nextCursor !== null` (Decision 6 — no longer hard-coded).
 interface FilesListCommand {
   readonly command: "files:list";
   readonly params: {
     readonly datasourceId: string;
     readonly path: string;
+    readonly cursor?: string;
+    readonly pageSize?: number;
   };
   readonly result: {
     readonly entries: readonly FileEntry[];
     readonly truncated: boolean;
+    readonly nextCursor: string | null;
   };
   readonly error: FilesCommandErrorShape;
 }

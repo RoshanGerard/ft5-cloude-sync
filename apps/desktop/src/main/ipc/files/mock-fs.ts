@@ -531,7 +531,9 @@ export function list(req: FilesListRequest): FilesListResponse {
   const entries = tree.byParent.get(req.path) ?? [];
   return {
     ok: true,
-    value: { entries: entries.map(cloneEntry), truncated: false },
+    // mock-fs has no provider paging — every list is a single complete page,
+    // so nextCursor is unconditionally null (and truncated stays false).
+    value: { entries: entries.map(cloneEntry), truncated: false, nextCursor: null },
   };
 }
 

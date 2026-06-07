@@ -39,7 +39,7 @@ describe("handleFilesList — delegates to SyncClient.request('files:list')", ()
       },
     ] as const;
     const client = makeFakeClient({
-      resolve: { entries, truncated: false },
+      resolve: { entries, truncated: false, nextCursor: null },
     });
 
     const result: FilesListResponse = await handleFilesList(
@@ -47,13 +47,52 @@ describe("handleFilesList — delegates to SyncClient.request('files:list')", ()
       { syncClient: client as never },
     );
 
+    // cursor/pageSize omitted on the request → the per-key forwarding omits
+    // them from the command params (exactOptionalPropertyTypes-safe).
     expect(client.request).toHaveBeenCalledWith("files:list", {
       datasourceId: "ds-1",
       path: "/",
     });
     expect(result).toEqual({
       ok: true,
-      value: { entries, truncated: false },
+      value: { entries, truncated: false, nextCursor: null },
+    });
+  });
+
+  it("forwards cursor + pageSize and passes through nextCursor (truncated derived)", async () => {
+    const entries = [
+      {
+        id: "h-beta",
+        kind: "file",
+        name: "beta.txt",
+        path: "/beta.txt",
+        parentPath: "/",
+        size: 20,
+        mimeFamily: "text",
+        mimeType: null,
+        modifiedAt: "2026-04-02T00:00:00.000Z",
+        createdAt: null,
+        providerMetadata: {},
+      },
+    ] as const;
+    const client = makeFakeClient({
+      resolve: { entries, truncated: true, nextCursor: "tok-2" },
+    });
+
+    const result: FilesListResponse = await handleFilesList(
+      { datasourceId: "ds-1", path: "/", cursor: "tok-1", pageSize: 500 },
+      { syncClient: client as never },
+    );
+
+    expect(client.request).toHaveBeenCalledWith("files:list", {
+      datasourceId: "ds-1",
+      path: "/",
+      cursor: "tok-1",
+      pageSize: 500,
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: { entries, truncated: true, nextCursor: "tok-2" },
     });
   });
 

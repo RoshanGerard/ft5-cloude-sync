@@ -148,7 +148,7 @@ describe("S3Client — listDirectory", () => {
     });
 
     const { client } = makeHarness();
-    const entries = await client.listDirectory({ kind: "path", path: "/photos" });
+    const { entries } = await client.listDirectory({ kind: "path", path: "/photos" });
 
     expect(entries).toHaveLength(2);
     const folder = entries.find((e) => e.kind === "folder")!;
@@ -189,6 +189,96 @@ describe("S3Client — listDirectory", () => {
     await client.listDirectory({ kind: "handle", handle: "photos/" });
     const input = s3Mock.commandCalls(ListObjectsV2Command)[0]!.args[0].input;
     expect(input.Prefix).toBe("photos/");
+  });
+
+  // -------------------------------------------------------------------------
+  // add-engine-listdirectory-pagination §4 — cursor pagination
+  // -------------------------------------------------------------------------
+
+  it("first page (no cursor): issues a single ListObjectsV2 with no ContinuationToken, default MaxKeys 1000, nextCursor null when not truncated", async () => {
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [{ Key: "photos/hero.jpg", Size: 1 }],
+      CommonPrefixes: [],
+      IsTruncated: false,
+    });
+    const { client } = makeHarness();
+    const result = await client.listDirectory({ kind: "path", path: "/photos" });
+
+    const calls = s3Mock.commandCalls(ListObjectsV2Command);
+    expect(calls).toHaveLength(1);
+    const input = calls[0]!.args[0].input;
+    expect(input.ContinuationToken).toBeUndefined();
+    // Default page size 1000 when options.pageSize is omitted (Decision 3).
+    expect(input.MaxKeys).toBe(1000);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("does NOT auto-loop: a truncated first page returns ONE provider call and surfaces NextContinuationToken as nextCursor", async () => {
+    // Pre-pagination behavior auto-looped over IsTruncated until exhausted.
+    // §4.2 replaces that do/while with a single call — the continuation token
+    // is now surfaced to the caller as `nextCursor`, not consumed internally.
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [{ Key: "photos/a.jpg", Size: 1 }],
+      CommonPrefixes: [],
+      IsTruncated: true,
+      NextContinuationToken: "TOKEN-PAGE-2",
+    });
+    const { client } = makeHarness();
+    const result = await client.listDirectory({ kind: "path", path: "/photos" });
+
+    // Exactly one ListObjectsV2 call — the auto-loop is gone.
+    expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(1);
+    expect(result.entries).toHaveLength(1);
+    expect(result.nextCursor).toBe("TOKEN-PAGE-2");
+  });
+
+  it("next page (with cursor): forwards options.cursor as ContinuationToken", async () => {
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [{ Key: "photos/b.jpg", Size: 1 }],
+      CommonPrefixes: [],
+      IsTruncated: false,
+    });
+    const { client } = makeHarness();
+    const result = await client.listDirectory(
+      { kind: "path", path: "/photos" },
+      { cursor: "TOKEN-PAGE-2" },
+    );
+
+    const input = s3Mock.commandCalls(ListObjectsV2Command)[0]!.args[0].input;
+    expect(input.ContinuationToken).toBe("TOKEN-PAGE-2");
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("clamps pageSize above the S3 MaxKeys ceiling (5000 → 1000) and forwards it as MaxKeys", async () => {
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [],
+      CommonPrefixes: [],
+      IsTruncated: false,
+    });
+    const { client } = makeHarness();
+    await client.listDirectory(
+      { kind: "path", path: "/photos" },
+      { pageSize: 5000 },
+    );
+
+    const input = s3Mock.commandCalls(ListObjectsV2Command)[0]!.args[0].input;
+    expect(input.MaxKeys).toBe(1000);
+  });
+
+  it("forwards an in-range pageSize unchanged as MaxKeys", async () => {
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [],
+      CommonPrefixes: [],
+      IsTruncated: false,
+    });
+    const { client } = makeHarness();
+    await client.listDirectory(
+      { kind: "path", path: "/photos" },
+      { pageSize: 250 },
+    );
+
+    const input = s3Mock.commandCalls(ListObjectsV2Command)[0]!.args[0].input;
+    expect(input.MaxKeys).toBe(250);
   });
 });
 

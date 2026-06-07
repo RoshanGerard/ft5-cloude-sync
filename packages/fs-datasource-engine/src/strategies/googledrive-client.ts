@@ -232,6 +232,21 @@ const DEFAULT_FILE_FIELDS =
   "id, name, mimeType, parents, size, modifiedTime, createdTime";
 const DEFAULT_LIST_FIELDS = `nextPageToken, files(${DEFAULT_FILE_FIELDS})`;
 
+// Pagination bounds for `doListDirectoryImpl` (add-engine-listdirectory-
+// pagination Decision 3). Drive's `pageSize` hard ceiling is 1000; we also
+// use 1000 as the default when the caller omits `pageSize` (the prior
+// behavior). The floor is 1 so a degenerate `0` / negative request still
+// returns at least one entry.
+const DRIVE_LIST_PAGE_SIZE_MAX = 1000;
+const DRIVE_LIST_PAGE_SIZE_DEFAULT = 1000;
+
+/** Clamp a requested page size to Drive's `[1, 1000]` range, defaulting to
+ * 1000 when omitted. */
+function clampDrivePageSize(requested: number | undefined): number {
+  if (requested === undefined) return DRIVE_LIST_PAGE_SIZE_DEFAULT;
+  return Math.min(Math.max(Math.trunc(requested), 1), DRIVE_LIST_PAGE_SIZE_MAX);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers — path parsing, query encoding, response mapping
 // ---------------------------------------------------------------------------
@@ -1139,7 +1154,11 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
 
   protected override async doListDirectoryImpl(
     target: Target,
-  ): Promise<DatasourceFileEntry<"google-drive">[]> {
+    options: { cursor?: string; pageSize?: number },
+  ): Promise<{
+    entries: DatasourceFileEntry<"google-drive">[];
+    nextCursor: string | null;
+  }> {
     const { fileId } = await this.resolveTarget(target);
     // Compute the engine path we'll prefix children with. For path-targets
     // the prefix is the path itself; for handle-targets we don't have a
@@ -1154,13 +1173,19 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     const pathPrefix =
       target.kind === "path" ? (target.path === "/" ? "" : target.path) : "";
     const q = `'${fileId}' in parents and trashed=false`;
+    // Clamp pageSize to Drive's hard ceiling [1, 1000]; default 1000 when
+    // omitted (the prior behavior). The cursor maps to the SDK `pageToken`.
+    const pageSize = clampDrivePageSize(options.pageSize);
     let resp: DriveListResponse;
     try {
       const result = await this.drive().files.list({
         q,
         fields: DEFAULT_LIST_FIELDS,
         orderBy: "folder,name",
-        pageSize: 1000,
+        pageSize,
+        ...(options.cursor !== undefined
+          ? { pageToken: options.cursor }
+          : {}),
       });
       resp = result.data;
     } catch (err) {
@@ -1172,9 +1197,12 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       const childPath = `${pathPrefix}/${name}`;
       const entry = this.buildFileEntry(file, { path: childPath });
       entries.push(entry);
+      // Populate the path-handle cache for every entry on every page
+      // (add-engine-listdirectory-pagination §2.5) — incremental per-page
+      // population, not a single end-of-listing write.
       if (entry.handle) this.cachePathHandle(entry.path, entry.handle);
     }
-    return entries;
+    return { entries, nextCursor: resp.nextPageToken ?? null };
   }
 
   // -------------------------------------------------------------------------

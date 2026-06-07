@@ -303,14 +303,22 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       expect(hasCancelUpload).toBe(false);
     });
 
-    it("listDirectory(root) returns entries carrying both path AND handle with correct kind", async () => {
+    it("listDirectory(root) returns { entries, nextCursor } with entries carrying both path AND handle with correct kind", async () => {
       fixture.resetMock();
       fixture.primeListOk({ rootPath: "/" });
       const { client } = makeHarness();
-      const entries = (await client.listDirectory({
+      const result = await client.listDirectory({
         kind: "path",
         path: "/",
-      })) as DatasourceFileEntry<T>[];
+      });
+      // add-engine-listdirectory-pagination §1.5: every strategy returns the
+      // paginated shape — an `entries` array plus an opaque `nextCursor`
+      // (`string | null`), never a bare array.
+      expect(Array.isArray(result.entries)).toBe(true);
+      expect(
+        result.nextCursor === null || typeof result.nextCursor === "string",
+      ).toBe(true);
+      const entries = result.entries as DatasourceFileEntry<T>[];
       expect(entries.length).toBeGreaterThan(0);
       for (const e of entries) {
         expect(typeof e.path).toBe("string");
@@ -328,8 +336,8 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       // Get a handle from a real list first.
       fixture.resetMock();
       fixture.primeListOk({ rootPath: "/" });
-      const pathEntries = await client.listDirectory({ kind: "path", path: "/" });
-      const folder = pathEntries.find((e) => e.kind === "folder");
+      const pathResult = await client.listDirectory({ kind: "path", path: "/" });
+      const folder = pathResult.entries.find((e) => e.kind === "folder");
       if (!folder) {
         // Fixtures that seed only files fall back to asserting that a
         // handle-form call does not throw.
@@ -342,11 +350,15 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       }
       fixture.resetMock();
       fixture.primeListOk({ rootPath: folder.path });
-      const handleEntries = await client.listDirectory({
+      const handleResult = await client.listDirectory({
         kind: "handle",
         handle: folder.handle,
       });
-      expect(Array.isArray(handleEntries)).toBe(true);
+      expect(Array.isArray(handleResult.entries)).toBe(true);
+      expect(
+        handleResult.nextCursor === null ||
+          typeof handleResult.nextCursor === "string",
+      ).toBe(true);
     });
 
     it("uploadFile(parent, { path }) resolves with the entry, emits NO upload events on the engine bus, drives onProgress monotonically, and (where applicable) populates the strategy's path-handle LRU", async () => {

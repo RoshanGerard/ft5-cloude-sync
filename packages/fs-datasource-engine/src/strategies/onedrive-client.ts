@@ -127,6 +127,25 @@ const GRAPH_ROOT = "/me/drive/root";
 const GRAPH_ITEMS = "/me/drive/items";
 const GRAPH_DRIVE = "/me/drive";
 
+// Pagination bounds + cursor validation for `doListDirectoryImpl`
+// (add-engine-listdirectory-pagination Decisions 2 + 3).
+//
+// `@odata.nextLink` is a fully-qualified Graph URL, not an opaque token, so a
+// next-page cursor MUST start with this prefix. Validating it before re-issue
+// defends against an upstream cursor injection (Decision 2's OneDrive guard).
+const GRAPH_NEXTLINK_PREFIX = "https://graph.microsoft.com/v1.0/";
+// Graph's `$top` ceiling is 999; the floor is 1 so a degenerate `0` /
+// negative request still returns at least one entry. There is no first-party
+// default — when `pageSize` is omitted the strategy lets Graph apply its own
+// default paging (no `$top`).
+const ONEDRIVE_TOP_MAX = 999;
+
+/** Clamp a requested page size to Graph's `$top` `[1, 999]` range. Only called
+ * when the caller supplied a `pageSize`; omission uses the Graph default. */
+function clampOneDrivePageSize(requested: number): number {
+  return Math.min(Math.max(Math.trunc(requested), 1), ONEDRIVE_TOP_MAX);
+}
+
 // MSAL / Graph scopes for file read/write + refresh
 const OAUTH_SCOPE = "offline_access Files.ReadWrite.All User.Read";
 
@@ -730,9 +749,58 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
 
   protected override async doListDirectoryImpl(
     target: Target,
-  ): Promise<DatasourceFileEntry<"onedrive">[]> {
-    const url = this.resolveTargetUrl(target, "/children");
-    const resp = (await this.graph().api(url).get()) as { value?: DriveItem[] };
+    options: { cursor?: string; pageSize?: number },
+  ): Promise<{
+    entries: DatasourceFileEntry<"onedrive">[];
+    nextCursor: string | null;
+  }> {
+    let resp: { value?: DriveItem[]; "@odata.nextLink"?: string };
+    if (options.cursor !== undefined) {
+      // Next-page call. The cursor IS the provider's `@odata.nextLink` — a
+      // fully-qualified URL, not a token (Decision 2). Validate the prefix
+      // BEFORE any network call to defend against an upstream cursor
+      // injection (Decision 2's OneDrive guard); on mismatch throw without
+      // touching the network (§3.3).
+      //
+      // DEVIATION from design Decision 8 / task §3.3, which say `tag: "other"`:
+      // `"other"` is WIRE-level vocabulary (`FilesError`), not an engine
+      // `DatasourceErrorTag` member (the engine enum has 10 tags; `"other"` is
+      // not one). We use `provider-error`, which the wire layer collapses to
+      // `"other"` (see the `normalizeError` "wire-layer collapses
+      // provider-error → tag: other" comment below), so the renderer-observable
+      // outcome the design specifies is preserved while the engine code still
+      // type-checks. Honors Decision 8's intent of NOT adding a new engine tag.
+      if (!options.cursor.startsWith(GRAPH_NEXTLINK_PREFIX)) {
+        throw new DatasourceError<"onedrive">({
+          tag: "provider-error",
+          datasourceType: "onedrive",
+          datasourceId: this.datasourceId,
+          retryable: false,
+          raw: options.cursor,
+          message: "invalid pagination cursor: not a Graph @odata.nextLink",
+        });
+      }
+      // Pass the validated nextLink URL directly to the Graph SDK. `$top` is
+      // already baked into the nextLink — do NOT re-attach it (§3.4).
+      resp = (await this.graph().api(options.cursor).get()) as {
+        value?: DriveItem[];
+        "@odata.nextLink"?: string;
+      };
+    } else {
+      // First-page call. Address `<target>/children`; forward `$top` only when
+      // the caller supplied a pageSize (clamped to Graph's `[1, 999]`
+      // ceiling). When omitted, use the Graph default paging (no `$top`).
+      const url = this.resolveTargetUrl(target, "/children");
+      const builder = this.graph().api(url);
+      const scopedBuilder =
+        options.pageSize !== undefined
+          ? builder.query({ $top: clampOneDrivePageSize(options.pageSize) })
+          : builder;
+      resp = (await scopedBuilder.get()) as {
+        value?: DriveItem[];
+        "@odata.nextLink"?: string;
+      };
+    }
     const entries: DatasourceFileEntry<"onedrive">[] = [];
     for (const item of resp.value ?? []) {
       const entry = buildFileEntry(item);
@@ -740,7 +808,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       // Seed the cache so subsequent path-based addressing is free.
       if (entry.handle) this.cachePathHandle(entry.path, entry.handle);
     }
-    return entries;
+    return { entries, nextCursor: resp["@odata.nextLink"] ?? null };
   }
 
   // -------------------------------------------------------------------------
