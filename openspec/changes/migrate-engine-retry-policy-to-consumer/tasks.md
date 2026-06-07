@@ -33,13 +33,20 @@
 
 ## 3. fs-sync — simple call sites (7 one-line helper wraps)
 
-- [ ] 3.1 `commands/files-list.ts:36` — wrap `client.listDirectory(...)` in `withAuthRefresh(client, () => …)`; add a handler test: list throws `auth-expired` once then succeeds → `refreshCredentials()` called once, list returns
-- [ ] 3.2 `commands/files-stat.ts:30` — wrap `client.getMetadata(...)`; mirror test
-- [ ] 3.3 `commands/files-search.ts:34` — wrap `client.search(...)`; mirror test
-- [ ] 3.4 `commands/files-remove.ts:58,63` — wrap each of `client.deleteDirectory(...)` and `client.deleteFile(...)`; mirror test for the file delete path
-- [ ] 3.5 `commands/files-rename.ts:54` — wrap `client.rename(...)`; mirror test
-- [ ] 3.6 `commands/files-upload.ts:317` — wrap `client.uploadFile(...)`; test: upload throws `auth-expired` once then succeeds → `refreshCredentials()` once, whole-file re-upload, success (byte-for-byte today's behavior)
-- [ ] 3.7 `executors/mirror-sync.ts:89,121` — wrap `client.uploadFile(...)` and `client.deleteFile(...)`; tests: (a) auth-expired-once-then-succeed completes the job; (b) auth-expired again post-refresh escapes the executor to the scheduler (job → failed)
+- [x] 3.1 `commands/files-list.ts:36` — wrap `client.listDirectory(...)` in `withAuthRefresh(client, () => …)`; add a handler test: list throws `auth-expired` once then succeeds → `refreshCredentials()` called once, list returns
+  - As-implemented: `listDirectory` call wrapped in `withAuthRefresh` (import added). Added auth-expired-once-then-succeed test asserting `refreshCredentials` called once + `listDirectory` called twice + `ok:true`. Added `refreshCredentials` stub to `makeFakeClient`. Verified RED before the wrap, GREEN after. 6 tests pass.
+- [x] 3.2 `commands/files-stat.ts:30` — wrap `client.getMetadata(...)`; mirror test
+  - As-implemented: `getMetadata` wrapped; once-then-succeed test (refresh once, getMetadata twice, ok:true); `refreshCredentials` added to fake. 3 tests pass.
+- [x] 3.3 `commands/files-search.ts:34` — wrap `client.search(...)`; mirror test
+  - As-implemented: `search` wrapped; once-then-succeed test (refresh once, search twice, ok:true); `refreshCredentials` added to fake. 3 tests pass.
+- [x] 3.4 `commands/files-remove.ts:58,63` — wrap each of `client.deleteDirectory(...)` and `client.deleteFile(...)`; mirror test for the file delete path
+  - As-implemented: BOTH `deleteDirectory` and `deleteFile` wrapped per-target (each per-target delete owns its own refresh-once/retry-once). File-delete once-then-succeed test (refresh once, deleteFile twice, results[0].ok:true); `refreshCredentials` added to fake. 8 tests pass.
+- [x] 3.5 `commands/files-rename.ts:54` — wrap `client.rename(...)`; mirror test
+  - As-implemented: `rename` wrapped. The PRE-EXISTING always-reject `auth-expired→auth-revoked` test (which passed today unwrapped, a false-green risk per advisor) was repurposed into TWO tests: (1) once-then-succeed (refresh once, rename twice, ok:true) for §3.5; (2) a dead-token guard (refresh once, rename twice, → `auth-revoked`) with load-bearing call-count assertions. `refreshCredentials` added to the shared fake (REQUIRED — without it the dead-token test would have hit `refreshCredentials is not a function` at runtime). 13 tests pass.
+- [x] 3.6 `commands/files-upload.ts:317` — wrap `client.uploadFile(...)`; test: upload throws `auth-expired` once then succeeds → `refreshCredentials()` once, whole-file re-upload, success (byte-for-byte today's behavior)
+  - As-implemented: `uploadFile` wrapped (single call ⇒ retry re-uploads whole file, identical to today; a 2nd auth-expired propagates into the existing catch → `auth-revoked`). Once-then-succeed test (refresh once, uploadFile twice, one `file-created`, no `upload-failed`, registry cleared, ok:true); `refreshCredentials` added to fake. 13 tests pass.
+- [x] 3.7 `executors/mirror-sync.ts:89,121` — wrap `client.uploadFile(...)` and `client.deleteFile(...)`; tests: (a) auth-expired-once-then-succeed completes the job; (b) auth-expired again post-refresh escapes the executor to the scheduler (job → failed)
+  - As-implemented: BOTH `uploadFile` and `deleteFile` wrapped. (a) once-then-succeed → `outcome:"completed"`, refresh once, uploadFile twice, `sync-completed` emitted. (b) dead-token → `outcome:"failed"` with `errorTag:"auth-expired"` (the executor returns the RAW tag with no remap — auth-revoked is the download handler's Decision 5, not mirror-sync; the spec scenario *body* says "auth-expired escapes → job to failed", which is what's testable), refresh once, uploadFile twice, no `sync-completed`. Asserting the executor's terminal `failed` is the unit-level proxy for the scheduler's job→failed transition: `system-retry.ts` classifies `auth-expired` as `terminal` (unchanged behavior, already covered by `system-retry.test.ts`). `refreshCredentials` added to the `fakeClient()` helper. 6 tests pass.
 
 ## 4. fs-sync — download handler rework (Decision 5)
 
