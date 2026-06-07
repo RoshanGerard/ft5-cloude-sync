@@ -27,18 +27,23 @@
 //
 //   - `normalizeError`. Most auth errors (403, AccessDenied, InvalidAccessKeyId,
 //     SignatureDoesNotMatch) are tagged `auth-revoked`, NOT `auth-expired`.
-//     Static keys cannot refresh, so the base's `withRefresh` path MUST never
-//     fire for those. Routing to `auth-revoked` short-circuits the
-//     retry/refresh loop entirely — the defensive `refreshTokenImpl` throw is
-//     a safety net that will (by this design) never actually fire for the
-//     static-key case.
+//     Static keys cannot refresh, so no credential-refresh ever needs to
+//     fire for those. (Post migrate-engine-retry-policy-to-consumer the
+//     engine no longer auto-refreshes; fs-sync's `withAuthRefresh` ->
+//     `refreshCredentials()` owns refresh, and it triggers only on
+//     `auth-expired`.) Routing to `auth-revoked` short-circuits the
+//     consumer's refresh-and-retry entirely — the defensive
+//     `refreshTokenImpl` throw is a safety net that will (by this design)
+//     never actually fire for the static-key case.
 //
 //     ExpiredToken is the exception: it manifests for STS temporary
 //     credentials (which carry a `sessionToken` and have a finite TTL). The
 //     strategy itself still cannot refresh those tokens (no refresh-grant
 //     mechanism is wired here), but mid-stream the error is surfaced as
 //     `auth-expired` so fs-sync's download retry loop (add-engine-rename-
-//     download Decision 3) can drive its `withRefresh` cycle. Per
+//     download Decision 3) can drive its refresh-and-retry cycle — fs-sync
+//     calls `refreshCredentials()` then re-issues (per
+//     migrate-engine-retry-policy-to-consumer). Per
 //     `add-engine-rename-download` §9.18: `ExpiredToken` → `tag:
 //     auth-expired`. `refreshTokenImpl` still throws `auth-revoked` to halt
 //     the loop if it fires anyway.
@@ -1010,9 +1015,10 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
 
   protected override async refreshTokenImpl(): Promise<AuthResult> {
     // Safety net: normalizeError redirects all auth failures to `auth-revoked`
-    // so the base's withRefresh path never fires. If a future change ever
-    // routes an `auth-expired` tag to this strategy, this throw stops the
-    // retry loop immediately with the correct taxonomy tag.
+    // so no consumer refresh path (fs-sync's `refreshCredentials()` via
+    // `withAuthRefresh`) ever needs to fire. If a future change ever routes
+    // an `auth-expired` tag to this strategy, this throw stops the
+    // refresh-and-retry loop immediately with the correct taxonomy tag.
     throw new DatasourceError<"amazon-s3">({
       tag: "auth-revoked",
       datasourceType: "amazon-s3",

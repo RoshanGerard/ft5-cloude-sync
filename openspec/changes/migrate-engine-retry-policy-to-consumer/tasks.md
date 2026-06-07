@@ -69,8 +69,8 @@
 
 ## 5. Validation & verification
 
-- [ ] 5.1 `openspec validate migrate-engine-retry-policy-to-consumer --strict` is green
-- [ ] 5.2 Engine package: `vitest run` green (incl. 1.1 / 1.3 / 2.1 new tests); fs-sync: targeted handler + executor + integration suites green
-- [ ] 5.3 Full repo: `pnpm typecheck` (`tsc -b`) + `pnpm lint` (`eslint .`) clean; full `vitest run` green
-- [ ] 5.4 Confirm NO `withRefresh` reference remains in `packages/fs-datasource-engine/src` (grep guard); confirm `refreshCredentials` + `withAuthRefresh` are exported from `@ft5/fs-datasource-engine`
-- [ ] 5.5 Confirm the desktop EventBridge → renderer token-event contract is intact (token-refreshed / token-expired / authentication-failed still emitted by `refreshCredentials()`)
+- [x] 5.1 `openspec validate migrate-engine-retry-policy-to-consumer --strict` is green
+- [x] 5.2 Engine package: `vitest run` green — 320 tests incl. `withAuthRefresh` (4) + public `refreshCredentials()` single-flight + the inversion guard + the 5-concurrent-failing guard; fs-sync: 529 tests green (handlers + mirror-sync executor + download + integration)
+- [x] 5.3 Full repo: `tsc -b` + `eslint .` clean; full `vitest run` = 2711 passed / 9 pre-existing skips / 0 failed. The lone initial failure (`scripts/preload-bundle.test.ts`) was a stale tsc-emitted preload artifact, NOT this change — `git diff --name-only master..HEAD` shows ZERO preload/ipc-contracts/vite/desktop files; resolved by `pnpm --filter @ft5/desktop build` (correctly-bundled preload) → test passes 2/2
+- [x] 5.4 No `withRefresh` reference remains in `packages/fs-datasource-engine/src` except intentional historical "former/removed" notes (3 stale `s3-client.ts` comments aligned to the consumer-owned-refresh model); `refreshCredentials(): Promise<AuthResult>` on the exported `DatasourceClient<T>` interface + `withAuthRefresh` exported from `@ft5/fs-datasource-engine` (`index.ts:53`)
+- [x] 5.5 Desktop EventBridge → renderer token-event contract intact: `token-refreshed` (after persist) + `token-expired` / `authentication-failed` (on failure) still emitted by `refreshCredentials()` (`base-client.ts`); the 5-concurrent-failing guard pins exactly one of each per cycle
