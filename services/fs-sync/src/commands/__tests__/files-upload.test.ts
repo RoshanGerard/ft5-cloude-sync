@@ -52,6 +52,9 @@ function makeFakeClient(
     rename: vi.fn(),
     downloadFile: vi.fn(),
     getQuota: vi.fn(),
+    refreshCredentials: vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" }),
     ...overrides,
   } as unknown as DatasourceClient<DatasourceType>;
 }
@@ -189,6 +192,59 @@ describe("files:upload — happy path (§9.1, §9.6, §9.8)", () => {
     // No upload-failed / upload-cancelled.
     expect(events.filter((e) => e.name === "upload-failed")).toHaveLength(0);
     expect(events.filter((e) => e.name === "upload-cancelled")).toHaveLength(0);
+  });
+
+  it("auth-expired once then succeeds → refreshCredentials called exactly once, whole-file re-upload, replies success (withAuthRefresh, §3.6)", async () => {
+    // migrate-engine-retry-policy-to-consumer §3.6 — the engine no longer
+    // auto-refreshes on `auth-expired`; the handler wraps `client.uploadFile`
+    // in `withAuthRefresh`. Because it is a single engine call, the wrap
+    // reproduces today's behavior byte-for-byte: the retry re-uploads the
+    // whole file. RED before the wrap (raw auth-expired → upload-failed),
+    // GREEN after (refresh + retry → file-created + success).
+    const registry = createUploadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    const uploadFile = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: false,
+          message: "token expired",
+        }),
+      )
+      .mockResolvedValueOnce(sampleEntry);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
+    const client = makeFakeClient({ uploadFile, refreshCredentials });
+    const handler = makeFilesUploadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        randomUUID: () => "job-A",
+      }),
+    );
+
+    const result = await handler(
+      {
+        datasourceId: "ds-1",
+        sourcePath: SOURCE_PATH,
+        targetPath: TARGET_PATH,
+        conflictPolicy: "overwrite",
+      },
+      ctx,
+    );
+
+    expect(result).toEqual({ ok: true, result: { uploadJobId: "job-A" } });
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(uploadFile).toHaveBeenCalledTimes(2);
+    // Terminal success event fires exactly once; no failure event.
+    expect(events.filter((e) => e.name === "file-created")).toHaveLength(1);
+    expect(events.filter((e) => e.name === "upload-failed")).toHaveLength(0);
+    expect(registry.size()).toBe(0);
   });
 
   it("emits the initial 0% uploading event before the engine starts streaming", async () => {

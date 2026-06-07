@@ -3,7 +3,7 @@
 // Every public operation on a `DatasourceClient<T>` is implemented ONCE here.
 // Concrete strategies (S3, OneDrive, Google Drive) extend this class and
 // implement only the `protected abstract doX(...)` primitives plus
-// `refreshToken()` and `normalizeError()`.
+// `refreshTokenImpl()` and `normalizeError()`.
 //
 // Crossing-cutting responsibilities centralised here:
 //   1. Event emission for `deleteFile`, `rename`, `downloadFile` (pre-op,
@@ -11,25 +11,32 @@
 //      EXEMPT — per migrate-upload-orchestration-out-of-engine, the engine
 //      bus does not carry upload lifecycle events; those are emitted by
 //      the fs-sync service handler on `sync:event-stream`.
-//   2. Single-flight token refresh on `auth-expired` per-instance: one refresh
-//      serves all concurrent callers; refreshed credentials are persisted via
-//      `CredentialStore.put` BEFORE the original operation is retried.
+//   2. Public single-flight credential refresh via `refreshCredentials()`
+//      (per migrate-engine-retry-policy-to-consumer Decisions 2 + 7). The
+//      base does NOT auto-refresh around operations — a normalized
+//      `auth-expired` surfaces to the caller RAW (no refresh, no retry), and
+//      the caller invokes `refreshCredentials()` explicitly (typically via
+//      the exported `withAuthRefresh` helper) before retrying. Concurrent
+//      callers on the same instance share one refresh; refreshed credentials
+//      are persisted via `CredentialStore.put` BEFORE the refresh promise
+//      resolves.
 //   3. Error normalization: raw provider exceptions are converted into
 //      `DatasourceError<T>` by the strategy's `normalizeError` before they
 //      cross the base's boundary.
 //
 // Strategies MUST NOT emit events directly (a contract test enforces this).
-// Strategies MUST NOT re-enter the base's retry logic from `refreshToken`
-// (see Decision 7 / Risks in design.md — `refreshToken` is the critical
-// section of the mutex).
+// Strategies MUST NOT re-enter the base's refresh path (`refreshCredentials`)
+// from `refreshTokenImpl` (see Decision 7 / Risks in design.md —
+// `refreshTokenImpl` is the critical section of the single-flight mutex).
 //
 // Note: If `CredentialStore.put` rejects inside the refresh cycle (e.g., disk
 // full, keychain unavailable), the rejection is routed through the
-// refresh-failed path — callers observe `DatasourceError.AuthExpired` plus
-// `token-expired` / `authentication-failed` events, not a distinct storage
-// error. Host implementations of `CredentialStore` SHOULD surface storage
-// failures via their own logging / telemetry so the root cause is debuggable.
-// A future phase may introduce a dedicated `storage-error` tag.
+// refresh-failed path — `refreshCredentials()` rejects with
+// `DatasourceError.AuthExpired` and emits `token-expired` /
+// `authentication-failed`, not a distinct storage error. Host implementations
+// of `CredentialStore` SHOULD surface storage failures via their own logging /
+// telemetry so the root cause is debuggable. A future phase may introduce a
+// dedicated `storage-error` tag.
 
 import type {
   AuthIntent,
@@ -144,11 +151,14 @@ export interface DatasourceClient<T extends DatasourceType> {
   /**
    * Upload a local file to the parent target as a one-shot stateless
    * primitive (per migrate-upload-orchestration-out-of-engine). The base
-   * wraps `doUploadFileImpl` with `withRefresh` and returns the strategy's
-   * resolved entry directly. The engine bus observes ZERO upload-related
-   * events from this code path — `uploading`, `file-created`,
-   * `upload-failed`, and `upload-cancelled` are emitted by the fs-sync
-   * service handler on `sync:event-stream`, not on the engine bus.
+   * calls `doUploadFileImpl` directly (per
+   * migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh; a
+   * normalized `auth-expired` surfaces raw for the consumer's
+   * `withAuthRefresh` to retry), applies error normalization only, and
+   * returns the strategy's resolved entry directly. The engine bus observes
+   * ZERO upload-related events from this code path — `uploading`,
+   * `file-created`, `upload-failed`, and `upload-cancelled` are emitted by the
+   * fs-sync service handler on `sync:event-stream`, not on the engine bus.
    *
    * Cancellation is consumer-driven via `options.signal`: the strategy
    * forwards the signal into its underlying SDK / fetch call and runs
@@ -172,9 +182,10 @@ export interface DatasourceClient<T extends DatasourceType> {
   deleteDirectory(target: Target): Promise<never>;
   /**
    * Rename `target` to `newName` per `conflictPolicy` (per
-   * add-engine-rename-download spec). The base wraps the strategy's
-   * `doRenameImpl` with the existing `withRefresh` machinery and emits
-   * exactly one `entry-renamed { from, to }` event on success or one
+   * add-engine-rename-download spec). The base calls the strategy's
+   * `doRenameImpl` directly (per migrate-engine-retry-policy-to-consumer
+   * Decision 1 — no auto-refresh) and emits exactly one
+   * `entry-renamed { from, to }` event on success or one
    * `delete-failed { tag, message, via: "rename" }` on failure.
    * Per-policy orchestration (sibling-detection, suffix-retry,
    * directory-overwrite refusal) lives inside each strategy's
@@ -190,13 +201,14 @@ export interface DatasourceClient<T extends DatasourceType> {
   /**
    * Download `target`'s contents (per add-engine-rename-download
    * design.md Decision 3). The engine is a one-shot HTTP primitive —
-   * each call issues exactly ONE provider GET, wrapped in `withRefresh`
-   * for the existing one-shot auth-expired refresh-and-retry on the
-   * INITIAL request. The engine does NOT retry mid-stream, does NOT
-   * mint a transaction id, does NOT track per-download state across
-   * calls. Consumer-domain orchestration of resume (calling
-   * `downloadFile` again with `rangeStart = bytesWritten`) lives in
-   * fs-sync.
+   * each call issues exactly ONE provider GET. Per
+   * migrate-engine-retry-policy-to-consumer Decision 1 the base does NOT
+   * auto-refresh on `auth-expired`: a first `auth-expired` surfaces raw, and
+   * the consumer's download handler refreshes via `refreshCredentials()` then
+   * re-issues the GET (Decision 5). The engine does NOT retry mid-stream, does
+   * NOT mint a transaction id, does NOT track per-download state across calls.
+   * Consumer-domain orchestration of resume (calling `downloadFile` again with
+   * `rangeStart = bytesWritten`) lives in fs-sync.
    *
    * The base emits `downloading` per progress tick (driven by the
    * strategy's byte-counting hook), `file-downloaded` on the
@@ -209,6 +221,23 @@ export interface DatasourceClient<T extends DatasourceType> {
     options?: DownloadOptions,
   ): Promise<DownloadResult>;
   getQuota(): Promise<Quota>;
+  /**
+   * Refresh the datasource's credentials with the provider as a public,
+   * single-flight primitive (per migrate-engine-retry-policy-to-consumer
+   * Decisions 2 + 7). The base does NOT auto-invoke this around operations —
+   * an `auth-expired` error surfaces raw, and the caller invokes
+   * `refreshCredentials()` explicitly (typically through the exported
+   * `withAuthRefresh` helper) before retrying.
+   *
+   * Concurrent calls on the same client instance share one in-flight
+   * `refreshTokenImpl()` call; the refreshed `AuthResult` is persisted via
+   * `CredentialStore.put` BEFORE the returned promise resolves, and exactly
+   * one `token-refreshed` event is emitted on success. On failure it emits
+   * `token-expired` + `authentication-failed` and rejects with a
+   * `DatasourceError` (tagged `auth-expired` when the underlying refresh did
+   * not itself throw a typed `DatasourceError`).
+   */
+  refreshCredentials(): Promise<AuthResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +303,10 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   ): Promise<FileMetadata<T>>;
   /**
    * Primitive for `uploadFile()` (per migrate-upload-orchestration-out-of-engine).
-   * The base wraps this with `withRefresh` and returns the resolved entry
-   * unchanged — no bus emission, no tracker, no transaction id. Strategies:
+   * The base calls this directly (per migrate-engine-retry-policy-to-consumer
+   * Decision 1 — no auto-refresh), applies error normalization only, and
+   * returns the resolved entry unchanged — no bus emission, no tracker, no
+   * transaction id. Strategies:
    *
    *   - Forward `options.signal` (when provided) into the underlying
    *     SDK / fetch calls so consumer-aborted uploads unblock promptly.
@@ -342,8 +373,10 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   /**
    * Primitive for `downloadFile()`. Per add-engine-rename-download
    * design.md Decision 3, each call issues exactly ONE provider GET
-   * request — wrapped at the base layer in `withRefresh` for the
-   * existing one-shot auth-expired retry. Strategies SHALL:
+   * request. Per migrate-engine-retry-policy-to-consumer Decision 1 the base
+   * calls this directly with no auto-refresh — a normalized `auth-expired`
+   * surfaces raw to the consumer's download handler, which owns the
+   * refresh-and-re-issue (Decision 5). Strategies SHALL:
    *   - Pass `options.signal` (if any) into the underlying SDK / fetch
    *     so abort propagates to the in-flight provider request.
    *   - Attach `Range: bytes=<options.rangeStart>-` when
@@ -371,12 +404,14 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   protected abstract doGetQuotaImpl(): Promise<Quota>;
 
   /**
-   * Refresh credentials with the provider. This is the critical section of
-   * the single-flight mutex — implementers MUST NOT re-enter the base's retry
-   * logic from here (no self-calls to other `do*Impl` methods that could
-   * loop through the base's `withRefresh`). A raw exception thrown from
-   * here is caught by the base and surfaced as `token-expired` +
-   * `authentication-failed` to subscribers.
+   * Refresh credentials with the provider — the strategy primitive wrapped by
+   * the public single-flight `refreshCredentials()`. This is the critical
+   * section of the single-flight mutex — implementers MUST NOT re-enter the
+   * base's refresh path from here (no self-calls to `refreshCredentials()` or
+   * to other `do*Impl` methods, none of which auto-refresh any longer). A raw
+   * exception thrown from here is caught by `refreshCredentials()` and
+   * surfaced as `token-expired` + `authentication-failed` to subscribers, and
+   * the call rejects.
    */
   protected abstract refreshTokenImpl(): Promise<AuthResult>;
 
@@ -393,7 +428,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
 
   async status(): Promise<DatasourceStatus> {
     try {
-      const value = await this.withRefresh(() => this.doStatusImpl());
+      const value = await this.doStatusImpl();
       if (this.lastStatus !== value) {
         this.lastStatus = value;
         this.emit("status-changed", false, { status: value });
@@ -415,7 +450,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
 
   async testConnection(): Promise<void> {
     try {
-      await this.withRefresh(() => this.doTestConnectionImpl());
+      await this.doTestConnectionImpl();
     } catch (err) {
       const normalized = this.ensureNormalized(err);
       if (normalized.tag !== "unsupported") {
@@ -429,9 +464,10 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   }
 
   async authenticate(): Promise<AuthIntent> {
-    // The base does NOT wrap `doAuthenticateImpl` with `withRefresh` — there
-    // is no useful retry for "failed to build an intent". But we do normalize
-    // errors so the caller always sees a DatasourceError.
+    // `authenticate()` builds an intent — there is no useful auth-expired
+    // refresh-and-retry for "failed to build an intent" (and the base no
+    // longer auto-refreshes any operation). But we do normalize errors so the
+    // caller always sees a DatasourceError.
     let intent: AuthIntent;
     try {
       intent = await this.doAuthenticateImpl();
@@ -483,9 +519,14 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * driven via `options.signal`; progress is consumer-observed via
    * `options.onProgress`.
    *
-   * `withRefresh` is retained: a single auth-expired retry still applies.
-   * The follow-up `migrate-engine-retry-policy-to-consumer` covers retry-
-   * policy ownership; this change does not touch that wrapper.
+   * Per migrate-engine-retry-policy-to-consumer Decision 1 the base no longer
+   * auto-refreshes on `auth-expired` — `uploadFile` calls `doUploadFileImpl`
+   * directly and a normalized `auth-expired` surfaces to the caller unchanged
+   * (the caller retries via `withAuthRefresh`). uploadFile is bus-exempt, so
+   * the ONLY base-layer wrapper retained here is error normalization: a
+   * `normalizeError` pass converts any raw provider exception (or raw marker)
+   * into a `DatasourceError` before it crosses the boundary, with NO bus
+   * emission.
    */
   async uploadFile(
     parent: Target,
@@ -495,14 +536,19 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       onProgress?: (loaded: number, total: number) => void;
     },
   ): Promise<DatasourceFileEntry<T>> {
-    return this.withRefresh(() =>
-      this.doUploadFileImpl(parent, file, options ?? {}),
-    );
+    try {
+      return await this.doUploadFileImpl(parent, file, options ?? {});
+    } catch (err) {
+      // Normalize-only (no bus emission — uploadFile is bus-exempt). A
+      // normalized `auth-expired` propagates raw so the consumer's
+      // `withAuthRefresh` wrap can detect it and refresh.
+      throw this.ensureNormalized(err);
+    }
   }
 
   async deleteFile(target: Target): Promise<void> {
     try {
-      await this.withRefresh(() => this.doDeleteFileImpl(target));
+      await this.doDeleteFileImpl(target);
       this.emit("deleted", false, { target });
     } catch (err) {
       const normalized = this.ensureNormalized(err);
@@ -534,12 +580,13 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   }
 
   /**
-   * Rename wrapper. The base wraps `doRenameImpl` with `withRefresh`
-   * (one-shot auth-expired retry per the engine's existing pattern),
-   * emits `entry-renamed { from, to }` once on success, and routes
-   * failures through the existing `delete-failed` taxonomy with
-   * `via: "rename"`. Unsupported errors stay silent on the bus
-   * per the engine-wide convention applied to every other op.
+   * Rename wrapper. The base calls `doRenameImpl` directly (per
+   * migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh; a
+   * normalized `auth-expired` surfaces raw and the consumer retries via
+   * `withAuthRefresh`), emits `entry-renamed { from, to }` once on success,
+   * and routes failures through the existing `delete-failed` taxonomy with
+   * `via: "rename"`. Unsupported errors stay silent on the bus per the
+   * engine-wide convention applied to every other op.
    *
    * Per design.md Decision 1, per-policy orchestration is strategy-side
    * — the base passes `conflictPolicy` through to `doRenameImpl`
@@ -553,9 +600,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     conflictPolicy: ConflictPolicy,
   ): Promise<DatasourceFileEntry<T>> {
     try {
-      const entry = await this.withRefresh(() =>
-        this.doRenameImpl(target, newName, conflictPolicy),
-      );
+      const entry = await this.doRenameImpl(target, newName, conflictPolicy);
       // Cast note: TS does not distribute `PayloadMap[T]["entry-renamed"]`
       // to `{ from: Target; to: DatasourceFileEntry<T> }` when T is a
       // generic parameter (indexed-access-on-generic limitation, same as
@@ -638,12 +683,14 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
 
   /**
    * Download wrapper (per add-engine-rename-download design.md Decision 3).
-   * The base wraps `doDownloadFileImpl` with `withRefresh` for the
-   * existing one-shot auth-expired retry on the initial HTTP call,
-   * attaches stream-end / stream-error listeners to drive
-   * `file-downloaded` / `download-failed` / `download-cancelled`, and
-   * keeps closure-local last-byte-counts so the cancel path's payload
-   * is populated with real numbers.
+   * The base calls `doDownloadFileImpl` directly (per
+   * migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh on
+   * `auth-expired`; the consumer's download handler refreshes via
+   * `refreshCredentials()` and re-issues the GET with `rangeStart`), attaches
+   * stream-end / stream-error listeners to drive `file-downloaded` /
+   * `download-failed` / `download-cancelled`, and keeps closure-local
+   * last-byte-counts so the cancel path's payload is populated with real
+   * numbers.
    *
    * The shape returned to the consumer is the strategy's shape
    * unchanged — the base does NOT replace the stream, mutate
@@ -673,15 +720,14 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     this.activeDownloads.set(path, recordProgress);
     let result: DownloadResult;
     try {
-      result = await this.withRefresh(() =>
-        this.doDownloadFileImpl(target, options),
-      );
+      result = await this.doDownloadFileImpl(target, options);
     } catch (err) {
-      // Initial-call failure (no stream returned). The strategy's
-      // `withRefresh` already attempted the one-shot refresh; this is
-      // terminal. Cancel takes precedence over failure when the
-      // consumer's signal is already aborted (e.g., abort fired before
-      // the SDK call settled).
+      // Initial-call failure (no stream returned). The base does NOT refresh
+      // here (Decision 1) — a normalized `auth-expired` surfaces raw to the
+      // consumer's download handler, which owns the refresh-and-re-issue
+      // (migrate-engine-retry-policy-to-consumer Decision 5). Cancel takes
+      // precedence over failure when the consumer's signal is already aborted
+      // (e.g., abort fired before the SDK call settled).
       this.activeDownloads.delete(path);
       const normalized = this.ensureNormalized(err);
       if (
@@ -825,7 +871,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    */
   private async runReadOp<R>(op: () => Promise<R>): Promise<R> {
     try {
-      return await this.withRefresh(op);
+      return await op();
     } catch (err) {
       const normalized = this.ensureNormalized(err);
       if (normalized.tag === "rate-limited") {
@@ -847,37 +893,53 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   }
 
   /**
-   * Wrap an operation with single-flight token refresh. On `auth-expired`:
-   * - if no refresh in flight, start one, persist result, emit
-   *   `token-refreshed`, retry once;
-   * - if a refresh is already in flight, await it and retry once;
-   * - the retry is NOT re-refreshed — if it throws `auth-expired` again, the
-   *   error propagates as-is.
-   * On refresh failure: emit `token-expired` + `authentication-failed`,
-   * throw the original normalized `auth-expired` error.
+   * Public single-flight credential refresh (per
+   * migrate-engine-retry-policy-to-consumer Decisions 2 + 7). The base does
+   * NOT auto-invoke this around operations — callers invoke it explicitly
+   * (typically via the exported `withAuthRefresh` helper) after observing an
+   * `auth-expired` error.
+   *
+   * The shared promise covers `refreshTokenImpl()`, persistence, and the
+   * `token-refreshed` emission as a single end-to-end cycle, so concurrent
+   * callers on the same client instance share exactly one refresh (one
+   * `refreshTokenImpl` call, one `put`, one `token-refreshed` event). The
+   * refreshed `AuthResult` is persisted via `CredentialStore.put` BEFORE the
+   * returned promise resolves. The `refreshPromise` field is cleared after the
+   * cycle completes (success or failure) so a subsequent failure can re-enter
+   * with a fresh cycle.
+   *
+   * On refresh failure (the strategy's `refreshTokenImpl` rejects, OR the
+   * subsequent `put` rejects) the cycle emits `token-expired` +
+   * `authentication-failed` exactly once and rejects. When the underlying
+   * refresh itself threw a typed `DatasourceError` that error propagates
+   * unchanged; otherwise the cycle synthesizes one tagged `auth-expired`
+   * carrying the raw cause.
    */
-  private async withRefresh<R>(op: () => Promise<R>): Promise<R> {
-    try {
-      return await op();
-    } catch (firstError) {
-      const normalized = this.ensureNormalized(firstError);
-      if (normalized.tag !== "auth-expired") {
-        throw normalized;
-      }
-      // Attempt single-flight refresh. The shared promise encapsulates both
-      // the `refreshToken()` call AND the subsequent credential persistence
-      // + `token-refreshed` emission, so 5 concurrent callers see exactly one
-      // refresh, one put, and one event.
+  refreshCredentials(): Promise<AuthResult> {
+    if (this.refreshPromise !== null) return this.refreshPromise;
+    // The stored promise covers refreshTokenImpl → persist → token-refreshed
+    // emission as a single end-to-end cycle. The failure emission (relocated
+    // here from the former operation-wrapper catch) also lives INSIDE the
+    // cycle so concurrent callers observe exactly one token-expired +
+    // authentication-failed pair, mirroring the single success emission.
+    const cycle = (async (): Promise<AuthResult> => {
       try {
-        await this.singleFlightRefresh();
+        const result = await this.refreshTokenImpl();
+        // Persist BEFORE the promise resolves so a crash post-refresh does not
+        // lose the token. A put rejection routes to the catch below — the
+        // `token-refreshed` emission after it is skipped.
+        await this.persistCredentials(result);
+        // Emit exactly once per shared refresh cycle.
+        this.emit("token-refreshed", false, { accessToken: "<redacted>" });
+        return result;
       } catch (refreshErr) {
-        // Refresh failed: emit both events and throw the original.
+        // Refresh (or persistence) failed: emit both events, then reject.
         this.emit("token-expired", false, {});
         // Decision 12.4: emit the full serialized DatasourceError. The raw
         // refresh exception is preserved under `raw` so consumers can still
-        // surface the underlying cause (replacing the old `cause: string`
-        // shape). When refresh rejected with a DatasourceError we reuse it;
-        // otherwise synthesize one tagged `auth-expired` carrying the raw.
+        // surface the underlying cause. When refresh rejected with a
+        // DatasourceError we reuse it; otherwise synthesize one tagged
+        // `auth-expired` carrying the raw.
         const refreshNormalized: DatasourceError<T> =
           refreshErr instanceof DatasourceError
             ? (refreshErr as DatasourceError<T>)
@@ -902,35 +964,8 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
             refreshNormalized,
           ) as PayloadMap[T]["authentication-failed"],
         );
-        throw normalized;
+        throw refreshNormalized;
       }
-      // Retry once. Any error from the retry (including a second
-      // auth-expired) propagates as-is — the base does NOT re-refresh.
-      return await op();
-    }
-  }
-
-  /**
-   * Single-flight refresh. The shared promise covers `refreshTokenImpl()`,
-   * persistence, and the `token-refreshed` emission, so concurrent callers
-   * with auth-expired failures share one end-to-end refresh cycle (exactly
-   * one refresh call, one persist, one event). The promise is cleared BEFORE
-   * the emission so a subsequent failure can trigger a fresh cycle without
-   * being blocked on stale state.
-   */
-  private singleFlightRefresh(): Promise<AuthResult> {
-    if (this.refreshPromise !== null) return this.refreshPromise;
-    // The stored promise covers refreshTokenImpl → persist → token-refreshed
-    // emission as a single end-to-end cycle. The refreshPromise field is
-    // cleared after the closure completes (success or failure) so a
-    // subsequent failure can re-enter with a fresh cycle.
-    const cycle = (async (): Promise<AuthResult> => {
-      const result = await this.refreshTokenImpl();
-      // Persist BEFORE retry so a crash mid-retry does not lose the token.
-      await this.persistCredentials(result);
-      // Emit exactly once per shared refresh cycle.
-      this.emit("token-refreshed", false, { accessToken: "<redacted>" });
-      return result;
     })();
     // Chain a clear-out that runs regardless of outcome. The returned
     // promise preserves the original resolution / rejection.

@@ -38,6 +38,7 @@ import type {
   DatasourceClient,
   Target,
 } from "@ft5/fs-datasource-engine";
+import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
 import { DatasourceError } from "@ft5/ipc-contracts";
 
@@ -312,12 +313,22 @@ export function makeFilesUploadHandler(
     };
 
     // 9. Run the engine call + branch on outcome.
+    //
+    // migrate-engine-retry-policy-to-consumer Decision 4 — the engine no
+    // longer auto-refreshes on `auth-expired`; the handler owns the policy
+    // via `withAuthRefresh` (refresh once, retry once). Because this is a
+    // single engine call, the wrap reproduces the engine's prior
+    // refresh-and-retry byte-for-byte — the retry re-uploads the whole file,
+    // identical to today. A second `auth-expired` after the refresh
+    // propagates into the catch below and normalizes to `auth-revoked`.
     let entry: { handle: string };
     try {
-      entry = await client.uploadFile(parent, file, {
-        signal: abortController.signal,
-        onProgress,
-      });
+      entry = await withAuthRefresh(client, () =>
+        client.uploadFile(parent, file, {
+          signal: abortController.signal,
+          onProgress,
+        }),
+      );
     } catch (err) {
       // Branch on cancel vs other failure. Use the AbortController's
       // own state as the authoritative cancel signal — a `tag:

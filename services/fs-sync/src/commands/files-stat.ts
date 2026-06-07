@@ -3,6 +3,7 @@
 // `normalizeFilesError`.
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
+import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
 
 import type { CommandHandler } from "../ipc/server.js";
@@ -27,10 +28,15 @@ export function makeFilesStatHandler(
       return { ok: false, error: normalizeFilesError(err) };
     }
     try {
-      const engineEntry = await client.getMetadata({
-        kind: "path",
-        path: params.path,
-      });
+      // migrate-engine-retry-policy-to-consumer Decision 4 — engine no longer
+      // auto-refreshes on `auth-expired`; handler owns refresh-once/retry-once
+      // via `withAuthRefresh`.
+      const engineEntry = await withAuthRefresh(client, () =>
+        client.getMetadata({
+          kind: "path",
+          path: params.path,
+        }),
+      );
       return { ok: true, result: { entry: mapEngineEntryToFileEntry(engineEntry) } };
     } catch (err) {
       return { ok: false, error: normalizeFilesError(err) };

@@ -250,7 +250,7 @@ When a job execution throws a `DatasourceError` from the engine, the scheduler S
 
 - `network-error`: transition the job to `waiting-network`, increment `attempt`, and arm the network probe (see separate requirement). On `network-available`, transition back to `queued`. This loop SHALL be unlimited (no `maxAttempts` from a user retry policy applies).
 - `rate-limited`: wait for `error.retryAfterMs` (or, if absent, 5000 ms), then re-enter the queue for ONE retry attempt per rate-limit hit. A second consecutive `rate-limited` on the same attempt-count restarts the wait-and-retry.
-- `auth-expired`: DO NOT intercept — the engine's `BaseDatasourceClient` already performs single-flight refresh. Propagate whatever the engine returns.
+- `auth-expired`: the scheduler SHALL NOT intercept it with a retry. The engine no longer auto-refreshes on `auth-expired`; instead the `MirrorSyncJobExecutor` wraps each engine call (`uploadFile`, `deleteFile`) in the engine's `withAuthRefresh(client, op)` helper, which calls `client.refreshCredentials()` and retries once BEFORE any error escapes the executor. An `auth-expired` that still reaches the scheduler is therefore a post-refresh dead token; the scheduler propagates it as terminal (no scheduler-level retry), consistent with the prior contract.
 
 These behaviours SHALL NOT be modifiable by any user-supplied retry policy.
 
@@ -263,6 +263,16 @@ These behaviours SHALL NOT be modifiable by any user-supplied retry policy.
 
 - **WHEN** a fake client throws `DatasourceError { tag: 'rate-limited', retryAfterMs: 200 }` on its first call and succeeds on its second
 - **THEN** the scheduler waits at least 200 ms before the retry, exactly two executor calls are made, the job completes `completed`, and no user retry policy is consulted
+
+#### Scenario: Mirror-sync refreshes once on auth-expired via withAuthRefresh
+
+- **WHEN** a fake client's `uploadFile` inside a `MirrorSyncJobExecutor` throws `DatasourceError { tag: 'auth-expired' }` on its first call and succeeds on its second
+- **THEN** `client.refreshCredentials()` is called exactly once, the upload retries and succeeds within the executor (via `withAuthRefresh`), the job completes `completed`, and the scheduler observes no error
+
+#### Scenario: Mirror-sync surfaces auth-revoked when refresh does not clear auth-expired
+
+- **WHEN** a fake client's `uploadFile` inside a `MirrorSyncJobExecutor` throws `auth-expired` on its first call and again on its retry (after `refreshCredentials()`)
+- **THEN** `client.refreshCredentials()` is called exactly once, the `auth-expired` escapes the executor to the scheduler, and the scheduler transitions the job to `failed` with no further retry
 
 ### Requirement: User-level retry policy for provider-error
 
@@ -740,7 +750,9 @@ machinery (the same path used by `files:list`, `files:stat`,
 ```
 
 The handler forwards the call to `client.rename(target, newName,
-conflictPolicy)`. The engine's strategy determines whether the target
+conflictPolicy)`, wrapped in the engine's `withAuthRefresh(client, op)`
+helper so a stale-but-refreshable token refreshes once and retries before
+the error surfaces. The engine's strategy determines whether the target
 is a file or directory within its own provider context (Drive/OneDrive
 metadata, S3 `HeadObject` + `ListObjectsV2` introspection); the wire
 contract carries no `kind` field. Response: `{ ok: true, value: {
@@ -768,7 +780,7 @@ The handler MUST first validate `toPath` (see "toPath validation" requirement be
 4. Validates: if `rangeStart > 0` and `contentRange.start !== rangeStart`, throws a terminal `range-mismatch` error.
 5. Pipes the returned stream to `fs.createWriteStream(effectiveTargetPath, { flags: rangeStart === 0 ? "w" : "r+", start: rangeStart })`.
 6. After the pipeline resolves, reads `fs.stat(effectiveTargetPath).size` to determine `bytesWritten`. If `bytesWritten === contentLength`, breaks out of the loop (success).
-7. If the pipeline rejects with an auth-expired error mid-stream AND the loop attempt count is below `MAX_AUTH_RETRIES` (default 1), updates `rangeStart = bytesWritten` from the file size on disk and continues the loop. The next `engine.downloadFile` call goes through `withRefresh` afresh.
+7. If `engine.downloadFile` rejects with an `auth-expired` error — either the initial GET (before any bytes stream) or the pipeline mid-stream — AND the per-cycle auth-retry budget (`MAX_AUTH_RETRIES`, default 1) is not exhausted, the handler explicitly calls `client.refreshCredentials()` once, sets `rangeStart = bytesWritten` from the file size on disk (0 if nothing has been written yet), and re-issues `engine.downloadFile`. The engine NO LONGER auto-refreshes — the handler owns the refresh. If the re-issued call AGAIN returns `auth-expired` immediately after a successful `refreshCredentials()`, the refresh token is dead and the handler surfaces `auth-revoked` (no further retry).
 8. If the pipeline rejects with `abortController.signal.aborted`, emits `download-cancelled` and returns the cancel response.
 9. If the pipeline rejects with any other error, emits `download-failed` and returns the error response.
 10. After successful loop exit, performs an integrity check (compare hash of `effectiveTargetPath` against the provider's hash if available) and emits `file-downloaded { downloadJobId, savedPath: effectiveTargetPath, bytes }`. Replies `{ ok: true, value: { savedPath: effectiveTargetPath, bytes } }`. Removes the registry entry.
@@ -780,10 +792,25 @@ The `downloadJobId` SHALL be the canonical job key for cancel and progress corre
 - **WHEN** a client sends `files:download { datasourceId: "ds-1", path: "/welcome.pdf", toPath: "/Users/alice/Downloads/ft5/welcome.pdf", conflictPolicy: "fail" }` and no file exists at the destination
 - **THEN** `toPath` validation passes; the conflict gate sees no file at the destination; the handler mints `downloadJobId`, creates the registry entry with `targetPath === toPath`, calls `engine.downloadFile(target, { rangeStart: 0, signal, onProgress })`; `engine.downloadFile` resolves with `{ stream, contentLength: N }`; the handler pipes the stream to `fs.createWriteStream(toPath, { flags: "w", start: 0 })`; on stream end the handler reads `fs.stat(toPath).size === N`; integrity check passes; the handler emits `file-downloaded { downloadJobId, savedPath: toPath, bytes: N }` and replies `{ ok: true, value: { savedPath: toPath, bytes: N } }`; the registry entry is removed
 
-#### Scenario: Mid-stream auth-expired triggers handler-driven retry
+#### Scenario: Pre-stream auth-expired refreshes then retries
+
+- **WHEN** a `files:download` is dispatched; the initial `engine.downloadFile(target, { rangeStart: 0, … })` GET rejects with `tag: "auth-expired"` before any bytes stream
+- **THEN** the handler calls `client.refreshCredentials()` exactly once, then re-issues `engine.downloadFile(target, { rangeStart: 0, signal, onProgress })`; the post-refresh GET resolves with `{ stream, contentLength: N }`; the download proceeds to completion and replies `{ ok: true, value: { savedPath, bytes: N } }`
+
+#### Scenario: Mid-stream auth-expired triggers handler-driven refresh and retry
 
 - **WHEN** a `files:download` is in flight; after N bytes are written, the pipeline rejects with `tag: "auth-expired"`
-- **THEN** the handler reads `fs.stat(effectiveTargetPath).size === N`; sets `rangeStart = N`; calls `engine.downloadFile(target, { rangeStart: N, signal, onProgress })` again; the engine's `withRefresh` wrapper detects the auth-expired credential and refreshes once before issuing the new GET; the GET returns 206 Partial Content with `Content-Range: bytes N-M/T`; the handler validates `contentRange.start === N`; pipes from byte N (using `flags: "r+", start: N`); on stream end `fs.stat(effectiveTargetPath).size === contentLength`; the loop exits with success
+- **THEN** the handler reads `fs.stat(effectiveTargetPath).size === N`; calls `client.refreshCredentials()` exactly once; sets `rangeStart = N`; re-issues `engine.downloadFile(target, { rangeStart: N, signal, onProgress })`; the post-refresh GET returns 206 Partial Content with `Content-Range: bytes N-M/T`; the handler validates `contentRange.start === N`; pipes from byte N (using `flags: "r+", start: N`); on stream end `fs.stat(effectiveTargetPath).size === contentLength`; the loop exits with success
+
+#### Scenario: Refresh that does not clear auth-expired surfaces auth-revoked
+
+- **WHEN** a `files:download` GET rejects with `auth-expired`, the handler calls `client.refreshCredentials()`, and the re-issued `engine.downloadFile` GET AGAIN rejects with `auth-expired`
+- **THEN** the handler treats the refresh token as dead: it does NOT refresh a second time, emits `download-failed`, and replies `{ ok: false, error: { tag: "auth-revoked", … } }`
+
+#### Scenario: A failing `refreshCredentials()` itself surfaces auth-revoked
+
+- **WHEN** a `files:download` GET rejects with `auth-expired` and the handler's `client.refreshCredentials()` call ITSELF rejects (e.g. the refresh token is revoked, so `refreshTokenImpl` throws a typed `auth-revoked` `DatasourceError`)
+- **THEN** the handler does NOT swallow the refresh rejection and does NOT re-issue the GET; the typed error propagates to the terminal catch, `normalizeFilesError` maps it to wire `auth-revoked`, `download-failed` is emitted, and the reply is `{ ok: false, error: { tag: "auth-revoked", … } }`
 
 #### Scenario: Range-not-honored aborts with terminal error
 
@@ -795,10 +822,11 @@ The `downloadJobId` SHALL be the canonical job key for cancel and progress corre
 - **WHEN** the client invokes a cancel command (or the download orchestration emits a cancel) while the pipeline is in flight; the handler invokes `abortController.abort()`
 - **THEN** the engine's downloaded stream rejects via the AbortSignal; the pipeline rejects with AbortError; the handler emits `download-cancelled { downloadJobId, bytesDownloaded, bytesTotal, reason: "user" }` exactly once; the partial file at `effectiveTargetPath` is NOT auto-deleted; the registry entry is removed; the response is `{ ok: false, error: { tag: "cancelled", message: "download cancelled" } }`
 
-#### Scenario: Multi-cycle stable-network long download
+#### Scenario: Long download with a single mid-stream token expiry resumes after one re-auth
 
-- **WHEN** a `files:download` for a 5TB file is in flight against a provider with a 1-hour token lifetime; over 15 hours of streaming, the access token expires 15 distinct times
-- **THEN** each token expiry surfaces as a mid-stream auth-expired error to the handler; on each error the handler retries with `rangeStart = <current bytes on disk>`; each retry call to `engine.downloadFile` goes through `withRefresh` which refreshes the credential once and issues a 206 Partial Content GET; the consumer's pipe-to-disk continues from the new `rangeStart`; the `MAX_AUTH_RETRIES` budget is per-cycle (one retry per auth-expired event), reset between cycles; total bytes written equals contentLength; the integrity check passes; the loop exits with success after the final cycle
+- **WHEN** a `files:download` is in flight against a provider whose access token expires once mid-stream after N bytes
+- **THEN** the pipeline rejects `auth-expired`; the handler calls `client.refreshCredentials()` exactly once, sets `rangeStart = N`, and re-issues `engine.downloadFile`; the post-refresh GET returns 206 Partial Content; pipe-to-disk resumes from byte N; total bytes written equals `contentLength`; the integrity check passes; the download succeeds
+- **AND** the handler permits at most ONE auth-expired refresh-and-retry per download (the per-cycle `MAX_AUTH_RETRIES` budget is 1 and the cycle loop runs once for current strategies); a SECOND `auth-expired` within the same download surfaces `auth-revoked` — a pre-existing bound on long-download re-authentication, unchanged by this migration
 
 #### Scenario: Rename file via the new RPC
 

@@ -89,6 +89,17 @@ function makeFakeClient(
     rename: vi.fn(),
     downloadFile: vi.fn(),
     getQuota: vi.fn(),
+    // migrate-engine-retry-policy-to-consumer §4 (Decision 5) — the engine
+    // no longer auto-refreshes on `auth-expired`; the download handler now
+    // owns the refresh by calling `client.refreshCredentials()` explicitly
+    // at the pre-stream and mid-stream catch points. Default to a resolved
+    // AuthResult-shaped object so the refresh-then-retry path proceeds;
+    // dead-token tests override this with a rejecting mock or pair it with
+    // a downloadFile that re-throws `auth-expired`.
+    refreshCredentials: vi.fn().mockResolvedValue({
+      accessToken: "refreshed-access-token",
+      expiresAt: 9_999_999_999,
+    }),
     ...overrides,
   } as unknown as DatasourceClient<DatasourceType>;
 }
@@ -521,7 +532,10 @@ describe("files:download — mid-stream auth-expired retry loop (§13.5, §13.6)
       };
     });
     const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
-    const client = makeFakeClient({ downloadFile, getMetadata });
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+    const client = makeFakeClient({ downloadFile, getMetadata, refreshCredentials });
     const handler = makeFilesDownloadHandler(
       makeDeps({
         resolveClient: async () => client,
@@ -540,6 +554,10 @@ describe("files:download — mid-stream auth-expired retry loop (§13.5, §13.6)
     if (result.ok) {
       expect(result.result.bytes).toBe(1024);
     }
+    // Decision 5 — the HANDLER drives the refresh (the engine no longer
+    // does). LOAD-BEARING: without this assertion, the test would stay
+    // green even if the handler relied on the removed engine withRefresh.
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
     expect(downloadFile).toHaveBeenCalledTimes(2);
   });
 
@@ -561,7 +579,10 @@ describe("files:download — mid-stream auth-expired retry loop (§13.5, §13.6)
       );
       return { stream, contentLength: 1024 };
     });
-    const client = makeFakeClient({ downloadFile });
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+    const client = makeFakeClient({ downloadFile, refreshCredentials });
     const { bus, events } = captureFsSyncEvents();
     const handler = makeFilesDownloadHandler(
       makeDeps({
@@ -575,11 +596,177 @@ describe("files:download — mid-stream auth-expired retry loop (§13.5, §13.6)
       ctx,
     );
     expect(result.ok).toBe(false);
-    // Per the retry budget: cycle 1, attempt 0 fails auth-expired → retry
-    // attempt 1 also fails → exhaust → escalate. The handler emits
-    // download-failed.
+    if (!result.ok) {
+      // Decision 5 dead-token redefinition: a recurring auth-expired
+      // AFTER the handler already refreshed once this cycle → auth-revoked.
+      expect(result.error.tag).toBe("auth-revoked");
+    }
+    // Per the retry budget: cycle 1, attempt 0 fails auth-expired → the
+    // handler refreshes ONCE and re-issues → attempt 1 also fails →
+    // budget exhausted → escalate. LOAD-BEARING: refresh happens exactly
+    // once (dead-token, not a refresh loop).
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
     const terminal = events.filter((e) => e.name === "download-failed");
     expect(terminal).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrate-engine-retry-policy-to-consumer §4 (Decision 5) — handler-owned
+// auth-expired refresh INVERSION.
+//
+// The engine's `withRefresh` is removed. A FIRST `auth-expired` from
+// `engine.downloadFile` now means NO refresh has happened yet — the handler
+// MUST explicitly `await client.refreshCredentials()` then re-issue the GET.
+// "Dead token" is redefined as `auth-expired` AGAIN immediately after a
+// successful refresh (→ `auth-revoked`), or a typed error thrown by
+// `refreshCredentials()` itself (also → `auth-revoked` via the terminal
+// `normalizeFilesError`). Mirrors design.md Decision 5 + the spec scenarios
+// "Pre-stream auth-expired refreshes then retries", "Refresh that does not
+// clear auth-expired surfaces auth-revoked".
+// ---------------------------------------------------------------------------
+
+describe("files:download — handler-owned auth refresh (§4 / Decision 5)", () => {
+  it("§4.1 pre-stream auth-expired: handler calls refreshCredentials() once, re-issues downloadFile with rangeStart:0, post-refresh GET succeeds, ok:true", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const payload = Buffer.alloc(1024, 0xab);
+    let call = 0;
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      call++;
+      if (call === 1) {
+        // Initial GET rejects with auth-expired BEFORE any bytes stream —
+        // the engine no longer auto-refreshed.
+        throw new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: true,
+          message: "token expired pre-stream",
+        });
+      }
+      // Post-refresh GET: re-issued from byte 0 (nothing on disk yet).
+      expect(options?.rangeStart).toBe(0);
+      return { stream: streamFromBytes(payload), contentLength: 1024 };
+    });
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+    const client = makeFakeClient({ downloadFile, getMetadata, refreshCredentials });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "deadbeef" }),
+      }),
+    );
+
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.result).toEqual({ savedPath: TO_PATH, bytes: 1024 });
+    }
+    // The handler — not the engine — performed the refresh, exactly once.
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    // Initial GET + one post-refresh re-issue.
+    expect(downloadFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("§4.5 refresh-then-still-expired: GET auth-expired, refresh once, re-issued GET auth-expired AGAIN → refreshCredentials called exactly once, ok:false tag:auth-revoked, download-failed emitted", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    // Every GET rejects auth-expired before any bytes stream.
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
+      throw new DatasourceError({
+        tag: "auth-expired",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: true,
+        message: "token expired pre-stream",
+      });
+    });
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+    const client = makeFakeClient({ downloadFile, refreshCredentials });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+      }),
+    );
+
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("auth-revoked");
+    }
+    // LOAD-BEARING: the dead-token rule refreshes exactly ONCE (not a loop).
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    // Initial GET + one post-refresh re-issue (which also failed) = 2.
+    expect(downloadFile).toHaveBeenCalledTimes(2);
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({ tag: "auth-revoked" });
+  });
+
+  it("§4.5 refreshCredentials() itself rejects with a typed auth-revoked → terminal auth-revoked, download-failed emitted", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    // Initial GET rejects auth-expired; the refresh itself then throws a
+    // typed dead-token error (e.g. a revoked refresh token).
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
+      throw new DatasourceError({
+        tag: "auth-expired",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: true,
+        message: "token expired pre-stream",
+      });
+    });
+    const refreshCredentials = vi.fn().mockRejectedValue(
+      new DatasourceError({
+        tag: "auth-revoked",
+        datasourceType: "google-drive",
+        datasourceId: "ds-1",
+        retryable: false,
+        message: "refresh token revoked",
+      }),
+    );
+    const client = makeFakeClient({ downloadFile, refreshCredentials });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+      }),
+    );
+
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.tag).toBe("auth-revoked");
+    }
+    // The refresh was attempted once; its throw escaped to the terminal
+    // catch (no swallow). The re-issue never happened.
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    const failed = events.filter((e) => e.name === "download-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({ tag: "auth-revoked" });
   });
 });
 
@@ -2694,7 +2881,10 @@ describe("files:download — auth-expired co-exists with env retry (§6.16)", ()
         ...sampleEntry,
         providerMetadata: {},
       });
-      const client = makeFakeClient({ downloadFile, getMetadata });
+      const refreshCredentials = vi
+        .fn()
+        .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+      const client = makeFakeClient({ downloadFile, getMetadata, refreshCredentials });
       const { bus, events } = captureFsSyncEvents();
       const handler = makeFilesDownloadHandler(
         makeDeps({
@@ -2720,6 +2910,11 @@ describe("files:download — auth-expired co-exists with env retry (§6.16)", ()
         attempt: 1,
         engineCause: "network-error",
       });
+      // Decision 5 — the single mid-stream auth-expired triggers exactly
+      // one handler-owned refresh, independent of the env-retry count.
+      // LOAD-BEARING: distinguishes handler-driven refresh from the
+      // removed engine withRefresh.
+      expect(refreshCredentials).toHaveBeenCalledTimes(1);
       // 3 engine calls total: cycle1 (errored), cycle2 (auth-expired
       // mid-stream), Layer-2 retry inside cycle2 (success).
       expect(downloadFile).toHaveBeenCalledTimes(3);
@@ -3612,6 +3807,180 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     // post-pipe integrity hash check. Reusing the prefetched object
     // would result in only one call.
     expect(getMetadata).toHaveBeenCalledTimes(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // migrate-engine-retry-policy-to-consumer §4.8 (completeness sweep) —
+  // the TWO `getMetadata` call sites in this handler (the pre-cycle
+  // prefetch and the post-download integrity check) must refresh-once via
+  // `withAuthRefresh` on `auth-expired`, mirroring the §3 helper wraps. The
+  // engine no longer auto-refreshes (its `withRefresh` is removed by
+  // Decision 1), so a FIRST `auth-expired` on either call now means NO
+  // refresh has happened yet — the consumer owns it.
+  //
+  // The two getMetadata calls share the SAME `target`; each test
+  // distinguishes them by CALL SEQUENCE on the same `vi.fn` mock — the
+  // prefetch is call #1 (pre-cycle), the integrity check is call #2
+  // (post-pipe). This mirrors test (12.7.13) which pins the two-call
+  // structure.
+  // -------------------------------------------------------------------------
+
+  it("(4.8 prefetch) prefetch getMetadata auth-expired refreshes once then captures the size hint", async () => {
+    // Forks (12.7.12): deferred downloadFile + poll + mid-flight
+    // contentLength assertion (the registry entry is deleted on terminal
+    // success, so the seeded size is only observable WHILE the handler is
+    // parked inside the engine GET await).
+    //
+    // The PREFETCH getMetadata (call #1) rejects auth-expired once, then
+    // resolves with size: 380_000_000 on the refresh retry. Without the
+    // `withAuthRefresh` wrap the prefetch swallows the auth-expired (logs +
+    // continues with prefetchedSize: null) → contentLength stays null and
+    // refreshCredentials is never called: RED.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus } = captureFsSyncEvents();
+    const engineBus = makeEngineBus();
+    const payload = Buffer.alloc(1024, 0xab);
+    let resolveDownload!: (r: DownloadResult) => void;
+    const downloadFile = vi.fn(
+      () =>
+        new Promise<DownloadResult>((res) => {
+          resolveDownload = res;
+        }),
+    );
+    const prefetchedEntry = {
+      handle: "h-1",
+      kind: "file" as const,
+      name: "welcome.mp4",
+      path: "/welcome.mp4",
+      size: 380_000_000,
+      mimeFamily: "video" as const,
+      modifiedAt: 1_000_000,
+      providerMetadata: { md5Checksum: "abc" },
+    };
+    // Call #1 (prefetch) rejects auth-expired; the refresh retry (still
+    // call-target getMetadata) resolves with the sized entry. The later
+    // post-pipe integrity call also resolves with the sized entry.
+    const getMetadata = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: true,
+          message: "token expired during prefetch",
+        }),
+      )
+      .mockResolvedValue(prefetchedEntry);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+    const client = makeFakeClient({
+      downloadFile,
+      getMetadata,
+      refreshCredentials,
+    });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        engineBus,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "abc" }),
+      }),
+    );
+
+    const handlerPromise = handler(
+      { datasourceId: "ds-1", path: "/welcome.mp4", toPath: TO_PATH },
+      ctx,
+    );
+    // Poll for downloadFile being called — that proves the handler is past
+    // prefetch (registry seeded) and parked on the engine GET.
+    while (downloadFile.mock.calls.length === 0) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    const downloadJobId = registry.findByKey("ds-1", "/welcome.mp4");
+    expect(downloadJobId).toBeDefined();
+    // LOAD-BEARING: the prefetch refreshed once and then captured the size
+    // hint, so the registry's contentLength reflects the prefetched size.
+    // Before the wrap, the auth-expired was swallowed → contentLength null.
+    expect(registry.get(downloadJobId!)?.contentLength).toBe(380_000_000);
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+
+    // Resolve the engine GET so the handler runs to terminal + cleans up.
+    resolveDownload({
+      stream: streamFromBytes(payload),
+      contentLength: null,
+    });
+    const result = await handlerPromise;
+    expect(result.ok).toBe(true);
+  });
+
+  it("(4.8 integrity) post-download integrity getMetadata auth-expired refreshes once so the check RUNS", async () => {
+    // Forks (§13.13): runs straight to terminal (no deferred needed). The
+    // PREFETCH getMetadata (call #1) resolves normally; the POST-PIPE
+    // integrity getMetadata (call #2) rejects auth-expired once, then the
+    // refresh retry resolves with sampleEntry (md5Checksum: "deadbeef").
+    // The local hash is rigged to "feedface" ≠ "deadbeef", so a RUNNING
+    // integrity check yields the terminal "integrity check failed". Before
+    // the wrap, the integrity getMetadata throw is caught → providerHash
+    // null → the check is SKIPPED → the download reports ok:true: RED.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
+      stream: streamFromBytes(Buffer.alloc(1024, 0xab)),
+      contentLength: 1024,
+    }));
+    // Call #1 (prefetch) resolves with the sized entry; call #2 (integrity)
+    // rejects auth-expired; the refresh retry (call #3) resolves with the
+    // hashed sampleEntry so the check can run.
+    const getMetadata = vi
+      .fn()
+      .mockResolvedValueOnce(sampleEntry)
+      .mockRejectedValueOnce(
+        new DatasourceError({
+          tag: "auth-expired",
+          datasourceType: "google-drive",
+          datasourceId: "ds-1",
+          retryable: true,
+          message: "token expired before integrity check",
+        }),
+      )
+      .mockResolvedValue(sampleEntry);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+    const client = makeFakeClient({
+      downloadFile,
+      getMetadata,
+      refreshCredentials,
+    });
+    const { bus, events } = captureFsSyncEvents();
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        fs: fakeFs,
+        fsSyncBus: bus,
+        hash: makeHash({ [TO_PATH]: "feedface" }), // mismatches "deadbeef"
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The integrity check RAN (rather than being skipped) and detected
+      // the rigged mismatch → collapse-to-other "integrity check failed".
+      expect(result.error.tag).toBe("other");
+      expect(result.error.message).toBe("integrity check failed");
+    }
+    // LOAD-BEARING: the integrity getMetadata refreshed exactly once.
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    const terminal = events.filter((e) => e.name === "download-failed");
+    expect(terminal).toHaveLength(1);
   });
 });
 
