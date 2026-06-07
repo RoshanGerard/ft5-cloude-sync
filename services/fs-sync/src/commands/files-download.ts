@@ -92,6 +92,7 @@ import type {
   FileMetadata,
   Target,
 } from "@ft5/fs-datasource-engine";
+import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type {
   DatasourceFileEntry,
   DatasourceType,
@@ -905,8 +906,21 @@ export function makeFilesDownloadHandler(
       try {
         const prefetched = await new Promise<FileMetadata<DatasourceType>>(
           (resolve, reject) => {
-            // 1. The prefetch itself.
-            client.getMetadata(target).then(resolve, reject);
+            // 1. The prefetch itself. migrate-engine-retry-policy-to-consumer
+            //    §4.8 — wrapped in `withAuthRefresh`: the engine no longer
+            //    auto-refreshes on `auth-expired` (its `withRefresh` is
+            //    removed by Decision 1), so the consumer owns the refresh.
+            //    On a FIRST `auth-expired` it calls `refreshCredentials()`
+            //    once and retries the metadata fetch; the resolved size
+            //    seeds `prefetchedSize` as usual. The prefetch stays
+            //    best-effort: a SECOND auth-expired, a dead-token throw from
+            //    `refreshCredentials()`, or any other rejection flows to
+            //    `reject` and is swallowed by the outer try/catch below
+            //    (warn + continue with `prefetchedSize: null`).
+            withAuthRefresh(client, () => client.getMetadata(target)).then(
+              resolve,
+              reject,
+            );
             // 2. Timeout — abort if no resolution in 10s. Captured into
             //    `prefetchTimer` so the `finally` below clears it on
             //    successful resolution / non-timeout rejection.
@@ -1379,8 +1393,21 @@ export function makeFilesDownloadHandler(
       // 7. Post-download integrity check. Pull provider metadata if the
       // strategy did not include the hash on the download response. (No
       // current strategy does; metadata is the canonical source.)
+      //
+      // migrate-engine-retry-policy-to-consumer §4.8 — wrapped in
+      // `withAuthRefresh`: on a long download whose token expired by the
+      // time the integrity check runs, the engine no longer auto-refreshes
+      // (its `withRefresh` is removed by Decision 1), so the consumer owns
+      // the refresh. A FIRST `auth-expired` here triggers a single
+      // `refreshCredentials()` + retry so the integrity check RUNS instead
+      // of being silently skipped (which would let a corrupt download go
+      // unverified). A dead token (second auth-expired, or a typed throw
+      // from `refreshCredentials()`) falls into the existing catch →
+      // `providerHash = null` → check skipped, same as today's failure path.
       try {
-        finalEntryForHash = await client.getMetadata(target);
+        finalEntryForHash = await withAuthRefresh(client, () =>
+          client.getMetadata(target),
+        );
         providerHash = readProviderHash(finalEntryForHash.providerMetadata);
       } catch {
         // Metadata fetch failure post-pipe is treated as integrity-
