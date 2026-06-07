@@ -422,15 +422,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
    * as a crude LRU (delete on re-set to bump recency; drop-oldest on cap). */
   private readonly pathHandleCache = new Map<string, string>();
 
-  /** Unsubscribe handle for the bus subscription driving cache invalidation.
-   * Tied to the client lifecycle via `dispose()` — callers that discard a
-   * client MUST call `.dispose()` so the bus stops invoking a stale handler
-   * (see `ClientFactory.create` for the ownership contract). */
-  private readonly unsubscribe: () => void;
-
-  /** Idempotency guard for `dispose()`. The bus's unsubscribe closure is
-   * already expected to be idempotent, but guarding at the client layer lets
-   * us skip work (and future instrumentation) on repeat calls. */
+  /** Idempotency guard for `dispose()`. */
   private disposed = false;
 
   constructor(
@@ -447,33 +439,20 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     this.graphFactory = options.graphFactory ?? createDefaultGraphFactory();
     this.fetchImpl = options.fetchImpl ?? ((globalThis as { fetch: typeof fetch }).fetch).bind(globalThis);
     this.lruCap = options.lruCap ?? 512;
-
-    // Subscribe to bus events for cache invalidation. Narrow to this
-    // datasource, and react to terminal `deleted` events. The
-    // `file-created` arm was removed by migrate-upload-orchestration-
-    // out-of-engine; LRU population on upload completion happens
-    // internally inside `doUploadFileImpl`.
-    this.unsubscribe = this.ctx.bus.subscribe((e) => {
-      if (e.datasourceId !== this.datasourceId) return;
-      if (e.event === "deleted") {
-        const payload = e.payload as { target?: Target };
-        if (payload.target?.kind === "path") {
-          this.evictPath(payload.target.path);
-        } else if (payload.target?.kind === "handle") {
-          this.evictHandle(payload.target.handle);
-        }
-      }
-    });
+    // No engine-bus subscription: cache eviction is performed inline by the
+    // mutating ops (doDeleteFileImpl / doRenameImpl) — see
+    // migrate-engine-cache-invalidation. Upload-success population stays inline
+    // in doUploadFileImpl (per migrate-upload-orchestration-out-of-engine).
   }
 
   /**
-   * Tear down the bus subscription so a discarded client stops reacting to
-   * `deleted` events. Idempotent — calling twice is harmless.
+   * No-op retained for `DatasourceClient` contract stability. The bus
+   * self-subscription was removed — cache eviction is now inline in the
+   * mutating ops (migrate-engine-cache-invalidation). Idempotent.
    */
   override dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.unsubscribe();
   }
 
   // -------------------------------------------------------------------------
@@ -502,6 +481,16 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         this.pathHandleCache.delete(k);
         break;
       }
+    }
+  }
+
+  /** Evict a path AND every cached descendant under `<path>/` (directory
+   * rename — migrate-engine-cache-invalidation Decision 3). */
+  private evictPathAndDescendants(path: string): void {
+    this.pathHandleCache.delete(path);
+    const prefix = `${path}/`;
+    for (const k of this.pathHandleCache.keys()) {
+      if (k.startsWith(prefix)) this.pathHandleCache.delete(k);
     }
   }
 
@@ -1052,6 +1041,13 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   protected override async doDeleteFileImpl(target: Target): Promise<void> {
     const url = this.resolveTargetUrl(target, "");
     await this.graph().api(url).delete();
+    // Inline path-cache eviction (migrate-engine-cache-invalidation
+    // Decisions 1/3) — replaces the former `deleted`-event bus subscription.
+    if (target.kind === "path") {
+      this.evictPath(target.path);
+    } else {
+      this.evictHandle(target.handle);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1137,6 +1133,9 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         } catch (err) {
           throw this.normalizeErrorImpl(err);
         }
+        // Evict the displaced sibling's cached path — no `deleted` event fires
+        // for this internal deletion (migrate-engine-cache-invalidation Dec. 3).
+        this.evictHandle(sibling.id);
       }
     }
 
@@ -1256,6 +1255,16 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       mimeFamily,
       providerMetadata,
     };
+    // Inline path-cache eviction on rename (migrate-engine-cache-invalidation
+    // Decisions 1/3) — evict the OLD path; for a directory rename evict its
+    // cached descendants too. Evict-only (the new path resolves fresh).
+    // Handle-form has no old path → evict by the stable driveItemId.
+    if (target.kind === "path") {
+      if (isFolder) this.evictPathAndDescendants(target.path);
+      else this.evictPath(target.path);
+    } else {
+      this.evictHandle(itemId);
+    }
     return entry;
   }
 

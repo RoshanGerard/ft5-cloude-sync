@@ -273,6 +273,25 @@ const fixture: StrategyContractFixture = {
       ContentLength: opts.totalBytes,
     });
   },
+
+  // -------------------------------------------------------------------------
+  // migrate-engine-cache-invalidation §3 — cache-eviction contract hooks
+  // -------------------------------------------------------------------------
+  //
+  // S3 keys ARE paths; there is no path→handle cache (`hasPathHandleCache:
+  // false`), so the shared cache-eviction scenarios early-return for S3 and
+  // never call these. They exist only to satisfy the (required) fixture
+  // interface — confirming S3 was consciously considered and needs no code
+  // change. A future cached strategy, by contrast, MUST implement real
+  // priming or fail the contract.
+
+  primeDeleteOfListedFile() {
+    // No-op — S3 has no path-handle cache.
+  },
+
+  primeRenameOfListedFile() {
+    // No-op — S3 has no path-handle cache.
+  },
 };
 
 runStrategyContractSuite({

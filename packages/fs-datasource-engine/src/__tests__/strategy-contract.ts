@@ -229,6 +229,39 @@ export interface StrategyContractFixture {
     controller: AbortController;
   }): void;
 
+  // -------------------------------------------------------------------------
+  // migrate-engine-cache-invalidation §3 — cache-eviction contract (Decision 5)
+  // -------------------------------------------------------------------------
+
+  /**
+   * OCP cache-eviction contract. Prime a successful `deleteFile` of the FILE
+   * entry that `primeListOk({ rootPath: "/" })` surfaces — keyed so the
+   * delete resolves via a path-handle cache HIT on the listed handle (Drive:
+   * `files.delete` by the listed fileId; OneDrive: `DELETE
+   * /me/drive/items/<listedId>`). The shared scenario lists "/", asserts the
+   * file's path is cached, resets the SDK mock (the client's cache survives —
+   * `resetMock` only clears module-level mock state, never the client), primes
+   * via this hook, deletes the path, and asserts the cache no longer holds it.
+   *
+   * Providers WITHOUT a path-handle cache (`hasPathHandleCache: false`, e.g.
+   * S3) implement this as a no-op — the shared scenario early-returns for
+   * them. Required (not optional) so every present AND future cached strategy
+   * must consciously wire eviction priming; a new cached strategy that forgets
+   * to evict FAILS this contract — that is the cross-strategy OCP enforcement,
+   * achieved via the shared contract rather than base-class changes.
+   */
+  primeDeleteOfListedFile(): void;
+
+  /**
+   * As `primeDeleteOfListedFile`, but primes a successful FILE rename
+   * (conflictPolicy `"fail"`) of the listed file to `opts.newName`, keyed to
+   * resolve via the cache HIT (Drive: sibling-list miss + `files.update` on
+   * the listed fileId; OneDrive: `GET`+`PATCH` on `/me/drive/items/<listedId>`
+   * plus the sibling pre-check). The shared scenario asserts the OLD path is
+   * evicted post-rename. S3 → no-op.
+   */
+  primeRenameOfListedFile(opts: { newName: string }): void;
+
   /** Stored credentials to construct the client under test. */
   credentials: StoredCredentials;
 }
@@ -704,6 +737,81 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       });
       expect(events.some((e) => e.event === "download-failed")).toBe(false);
       expect(events.some((e) => e.event === "file-downloaded")).toBe(false);
+    });
+
+    // -----------------------------------------------------------------------
+    // migrate-engine-cache-invalidation §3 — cross-strategy cache-eviction
+    // invariant (OCP enforcement, Decision 5).
+    // -----------------------------------------------------------------------
+    //
+    // Gated on `hasPathHandleCache`: Drive/OneDrive (`true`) MUST evict; S3
+    // (`false`) satisfies the invariant vacuously and early-returns. Each
+    // scenario POPULATES the cache via a real `listDirectory("/")`, asserts
+    // the listed file's path is cached, then mutates that SAME entry and
+    // asserts the path is gone. The precondition assertion is load-bearing
+    // twice over: it defeats a trivial post-mutation pass (a path that was
+    // never cached is "absent" without any eviction), AND it guarantees the
+    // mutation resolves via a cache HIT — which is why, after the reset, the
+    // mutation needs no list responder for its OWN resolve (only the
+    // sibling-list for rename + the delete/update responder).
+    //
+    // The SDK mock is reset AFTER the populating list (the client's cache
+    // lives on the instance and survives `resetMock`, which clears only
+    // module-level mock state) so the mutation's priming starts collision-
+    // free — notably Drive's substring-matched list mock would otherwise let
+    // the leftover root-list responder shadow the rename's sibling-check
+    // query.
+
+    it("after deleteFile of a cached path, the strategy evicts it from its path-handle cache (OCP — cached strategies only)", async () => {
+      if (!fixture.hasPathHandleCache) return; // S3: no path cache — vacuous.
+      fixture.resetMock();
+      fixture.primeListOk({ rootPath: "/" });
+      const { client } = makeHarness();
+      const listed = await client.listDirectory({ kind: "path", path: "/" });
+      const file = listed.entries.find((e) => e.kind === "file");
+      expect(file).toBeDefined();
+      const cache = (
+        client as unknown as { pathHandleCache?: Map<string, unknown> }
+      ).pathHandleCache;
+      expect(cache).toBeDefined();
+      // Precondition: the list populated the cache for the file's path.
+      expect(cache!.has(file!.path)).toBe(true);
+
+      // Reset the SDK mock (the client cache survives) so the delete's
+      // priming is collision-free, then prime + delete the SAME listed entry.
+      fixture.resetMock();
+      fixture.primeDeleteOfListedFile();
+      await client.deleteFile({ kind: "path", path: file!.path });
+
+      // The successful delete MUST have evicted the cached path inline.
+      expect(cache!.has(file!.path)).toBe(false);
+    });
+
+    it("after rename of a cached path, the strategy evicts the old path from its path-handle cache (OCP — cached strategies only)", async () => {
+      if (!fixture.hasPathHandleCache) return; // S3: no path cache — vacuous.
+      fixture.resetMock();
+      fixture.primeListOk({ rootPath: "/" });
+      const { client } = makeHarness();
+      const listed = await client.listDirectory({ kind: "path", path: "/" });
+      const file = listed.entries.find((e) => e.kind === "file");
+      expect(file).toBeDefined();
+      const cache = (
+        client as unknown as { pathHandleCache?: Map<string, unknown> }
+      ).pathHandleCache;
+      expect(cache).toBeDefined();
+      expect(cache!.has(file!.path)).toBe(true);
+
+      fixture.resetMock();
+      fixture.primeRenameOfListedFile({ newName: "renamed-by-contract.txt" });
+      const renamed = await client.rename(
+        { kind: "path", path: file!.path },
+        "renamed-by-contract.txt",
+        "fail",
+      );
+      expect(renamed.name).toBe("renamed-by-contract.txt");
+      // Evict-only on the OLD path — the new path resolves fresh on next
+      // access (re-population is an optimization, not part of the invariant).
+      expect(cache!.has(file!.path)).toBe(false);
     });
   });
 }

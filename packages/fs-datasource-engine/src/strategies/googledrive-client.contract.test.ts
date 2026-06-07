@@ -796,6 +796,46 @@ const fixture: StrategyContractFixture = {
       },
     });
   },
+
+  // -------------------------------------------------------------------------
+  // migrate-engine-cache-invalidation §3 — cache-eviction contract hooks
+  // -------------------------------------------------------------------------
+
+  primeDeleteOfListedFile() {
+    // The file `primeListOk` surfaces has id `contract-file-id`. After a
+    // `listDirectory("/")` the cache holds `/file-a.txt → contract-file-id`,
+    // so `deleteFile("/file-a.txt")` resolves via a cache HIT (no list call)
+    // and issues `files.delete({ fileId: "contract-file-id" })`.
+    deletes.push({
+      fileId: "contract-file-id",
+      handler: () => ({}),
+    });
+  },
+
+  primeRenameOfListedFile(opts) {
+    // Cache-hit rename of the listed file (`contract-file-id`, parent root).
+    // resolveTarget cache-hits (no list); resolveRenameParent short-circuits
+    // on root (no SDK call); the "fail" sibling pre-check lists
+    // `name='<newName>'` under root → empty; the rename then PATCHes via
+    // `files.update({ fileId: "contract-file-id" })` (plain mime → file, so
+    // the strategy evicts the single old path).
+    lists.push({
+      qMatch: `name='${opts.newName}'`,
+      handler: () => ({ files: [] }),
+    });
+    updates.push({
+      fileId: "contract-file-id",
+      handler: () => ({
+        id: "contract-file-id",
+        name: opts.newName,
+        mimeType: "text/plain",
+        parents: ["root"],
+        size: "10",
+        modifiedTime: "2024-06-02T00:00:00Z",
+        createdTime: "2024-01-01T00:00:00Z",
+      }),
+    });
+  },
 };
 
 // ---------------------------------------------------------------------------

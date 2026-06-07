@@ -1325,10 +1325,62 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
     expect(cacheBefore.get("/todelete.txt")).toBeDefined();
 
     await h.client.deleteFile({ kind: "path", path: "/todelete.txt" });
-    // After the `deleted` event fires, the cache entry MUST be evicted.
+    // After deleteFile, the cached entry MUST be evicted (inline eviction —
+    // no `deleted` bus event drives it; migrate-engine-cache-invalidation).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cacheAfter = (h.client as any).pathHandleCache as Map<string, string>;
     expect(cacheAfter.get("/todelete.txt")).toBeUndefined();
+  });
+
+  it("rename evicts the OLD cached path (migrate-engine-cache-invalidation)", async () => {
+    const { client: graphClient } = makeFakeGraph([
+      {
+        match: "/me/drive/root:/old.txt:",
+        verbs: {
+          get: () => ({
+            id: "FILE-X",
+            name: "old.txt",
+            file: { mimeType: "text/plain" },
+            size: 12,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      {
+        match: "/me/drive/items/FILE-X",
+        verbs: {
+          get: () => ({
+            id: "FILE-X",
+            name: "old.txt",
+            file: { mimeType: "text/plain" },
+            size: 12,
+            lastModifiedDateTime: "2024-06-01T00:00:00Z",
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+          patch: () => ({
+            id: "FILE-X",
+            name: "new.txt",
+            file: { mimeType: "text/plain" },
+            size: 12,
+            lastModifiedDateTime: "2024-06-02T00:00:00Z",
+            parentReference: { path: "/drive/root:", id: "PARENT-ROOT" },
+          }),
+        },
+      },
+      {
+        match:
+          "/me/drive/items/PARENT-ROOT/children?$filter=name%20eq%20'new.txt'",
+        verbs: { get: () => ({ value: [] }) },
+      },
+    ]);
+    const h = makeHarness({ graph: graphClient });
+    await h.client.getMetadata({ kind: "path", path: "/old.txt" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cache = (h.client as any).pathHandleCache as Map<string, string>;
+    expect(cache.get("/old.txt")).toBe("FILE-X");
+    await h.client.rename({ kind: "path", path: "/old.txt" }, "new.txt", "fail");
+    expect(cache.get("/old.txt")).toBeUndefined();
   });
 });
 
@@ -1419,18 +1471,16 @@ describe("OneDriveClient — URL encoding", () => {
 });
 
 // ---------------------------------------------------------------------------
-// dispose() — bus subscription lifecycle
+// bus decoupling + dispose()
 // ---------------------------------------------------------------------------
 //
-// Phase 7 code-review finding: OneDriveClient subscribes to `ctx.bus` in its
-// constructor to invalidate its path↔handle LRU on `deleted` events
-// (the `file-created` arm was dropped by migrate-upload-orchestration-
-// out-of-engine; upload-success population is internal). If the client
-// is discarded without an explicit teardown, the subscription leaks for
-// the lifetime of the bus. `dispose()` unhooks it.
+// migrate-engine-cache-invalidation removed the constructor bus
+// self-subscription: cache eviction is now performed inline by the mutating
+// ops (doDeleteFileImpl / doRenameImpl), so a `deleted` event on the bus no
+// longer drives eviction. `dispose()` is a contract-stable no-op.
 
-describe("OneDriveClient — dispose()", () => {
-  it("overrides the base no-op — calling dispose() detaches the bus subscription", async () => {
+describe("OneDriveClient — bus decoupling + dispose()", () => {
+  it("a `deleted` bus event does NOT evict the cache — eviction is inline, not bus-driven (migrate-engine-cache-invalidation)", async () => {
     // Seed a cache entry via getMetadata so we can observe that a subsequent
     // `deleted` event evicts the path BEFORE dispose, but NOT after dispose.
     const { client: graphClient } = makeFakeGraph([
@@ -1455,11 +1505,9 @@ describe("OneDriveClient — dispose()", () => {
     const cache = (h.client as any).pathHandleCache as Map<string, string>;
     expect(cache.get("/a.txt")).toBe("A");
 
-    // Dispose — subsequent bus events must not touch the cache.
-    h.client.dispose();
-
-    // Emit a `deleted` event that WOULD evict "/a.txt" if the subscription
-    // were still live. Use the bus directly to bypass the client.
+    // No constructor bus-subscription drives eviction anymore — emitting a
+    // `deleted` event must NOT touch the strategy's cache (the old
+    // self-subscription was removed; eviction is inline in the mutating ops).
     h.bus.emit({
       event: "deleted",
       datasourceType: "onedrive",
@@ -1468,8 +1516,7 @@ describe("OneDriveClient — dispose()", () => {
       payload: { target: { kind: "path", path: "/a.txt" } },
     });
 
-    // Post-dispose: cache entry MUST still be there, proving the subscription
-    // was torn down.
+    // The cache entry MUST still be there — no bus subscription evicts it.
     expect(cache.get("/a.txt")).toBe("A");
   });
 
