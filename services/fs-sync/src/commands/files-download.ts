@@ -996,10 +996,10 @@ export function makeFilesDownloadHandler(
             signal: composedSignal,
             onProgress: (loaded, total) => {
               // `loaded` is WITHIN-CYCLE (relative to this request's
-              // rangeStart); `absoluteLoaded` is the full byte count on
-              // disk. Both the registry write AND the `downloading` IPC
-              // emit MUST report the absolute value so they agree with
-              // each other and with `downloads:list-active`.
+              // rangeStart). The REGISTRY tracks the ABSOLUTE byte count
+              // on disk (`effectiveRangeStart + loaded`) — unchanged from
+              // before this migration; the cancel/failure terminal
+              // payloads and `downloads:list-active` read it.
               const absoluteLoaded = effectiveRangeStart + loaded;
               // Per-tick registry write (NOT throttled — see Decision 2).
               // §12.7 (Decision 17d) — contentLength preservation rule:
@@ -1017,10 +1017,17 @@ export function makeFilesDownloadHandler(
                     : (existing?.contentLength ?? null),
               });
               // Throttled `downloading` IPC emit (1s OR 10% delta) — the
-              // handler-local coalescer governs the renderer-facing
-              // stream so it is not flooded at chunk frequency. The
-              // pending tick is flushed before each terminal emit.
-              progress.report(absoluteLoaded, total);
+              // handler-local coalescer governs the renderer-facing stream
+              // so it is not flooded at chunk frequency. It emits the
+              // engine's WITHIN-CYCLE `loaded` verbatim — EXACTLY the value
+              // the removed engine-bus path forwarded via
+              // `transformDownloadingEvent(ep)` — so the wire `downloading`
+              // payload is unchanged by this migration (non-goal: download
+              // progress wire identical). Reconciling resume-cycle progress
+              // (relative emit vs absolute registry) is a pre-existing
+              // concern, out of scope here. The pending tick is flushed
+              // before each terminal emit.
+              progress.report(loaded, total);
             },
           };
           let result: DownloadResult;

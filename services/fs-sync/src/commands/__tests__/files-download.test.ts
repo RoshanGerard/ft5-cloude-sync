@@ -1411,11 +1411,17 @@ describe("files:download — handler-owned download-progress throttle (§1, Deci
       .toEqual([10, 19]);
   });
 
-  it("(absolute bytes on resume) after a resume cycle (rangeStart>0), the `downloading` emit carries ABSOLUTE bytes (effectiveRangeStart + loaded), not the within-cycle loaded", async () => {
-    // Decision 2 + advisor item 1: the emit must agree with the per-tick
-    // registry write, which stores `effectiveRangeStart + loaded`. A resume
-    // cycle (rangeStart=512) whose onProgress reports loaded=256 must emit
-    // bytesLoaded=768 / progress=75 — NOT bytesLoaded=256 / progress=25.
+  it("(within-cycle bytes on resume) the `downloading` emit carries the engine's within-cycle `loaded` verbatim — matching the removed engine-bus path — NOT the absolute on-disk count", async () => {
+    // Non-goal: the download-progress wire payload is IDENTICAL to before
+    // this migration. The removed engine-bus path emitted
+    // `transformDownloadingEvent(ep)` with the engine's raw within-cycle
+    // `loaded`; the relocated onProgress emit preserves that EXACTLY. The
+    // registry separately tracks the ABSOLUTE on-disk count
+    // (`effectiveRangeStart + loaded`) for cancel/list-active — the two
+    // intentionally differ on a resume cycle (a pre-existing reconciliation
+    // concern, out of scope here). A resume cycle (rangeStart=512) whose
+    // onProgress reports loaded=256 MUST emit bytesLoaded=256 / progress=25
+    // — NOT the absolute bytesLoaded=768 / progress=75.
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus, events } = captureFsSyncEvents();
@@ -1475,20 +1481,21 @@ describe("files:download — handler-owned download-progress throttle (§1, Deci
     expect(result.ok).toBe(true);
 
     const downloading = events.filter((e) => e.name === "downloading");
-    // The resume-cycle tick must report ABSOLUTE bytes.
+    // The resume-cycle tick reports the engine's WITHIN-CYCLE bytes verbatim.
     const resumeEvt = downloading.find(
-      (e) => (e.payload as { bytesLoaded: number }).bytesLoaded === 768,
+      (e) => (e.payload as { bytesLoaded: number }).bytesLoaded === 256,
     );
     expect(resumeEvt).toBeDefined();
     expect(resumeEvt!.payload).toMatchObject({
-      bytesLoaded: 768,
+      bytesLoaded: 256,
       bytesTotal: 1024,
-      progress: 75,
+      progress: 25,
     });
-    // The buggy within-cycle value must NOT appear.
+    // The absolute on-disk value must NOT leak onto the wire — that would be
+    // a behavior change versus the pre-migration engine-bus path.
     expect(
       downloading.some(
-        (e) => (e.payload as { bytesLoaded: number }).bytesLoaded === 256,
+        (e) => (e.payload as { bytesLoaded: number }).bytesLoaded === 768,
       ),
     ).toBe(false);
   });
