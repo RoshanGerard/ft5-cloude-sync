@@ -8,8 +8,7 @@ import { enforceSingleInstance } from "./single-instance.js";
 import { willNavigatePolicy, windowOpenPolicy } from "./navigation-policy.js";
 import { openDatabase, runMigrations } from "./db/database.js";
 import { DEFAULT_MIGRATIONS } from "./db/migrations.js";
-import { getEngine, initEngine } from "./datasources/engine.js";
-import { createEventBridge } from "./ipc/datasources/event-bridge.js";
+import { initEngine } from "./datasources/engine.js";
 import { startSupervisor } from "./sync/supervisor.js";
 import { createSyncEventBridge } from "./sync/event-bridge.js";
 import { hydrateActiveDownloadsOnce } from "./sync/on-connect-hydrate-downloads.js";
@@ -159,7 +158,7 @@ async function bootstrap(): Promise<void> {
 
   // Open the main-process SQLite database + run migrations BEFORE handler
   // registration. `initEngine(db)` then constructs the process-wide
-  // singleton (bus + registry + factory) that every IPC handler reads via
+  // singleton (registry + factory) that every IPC handler reads via
   // `getEngine()`. Initialized once per process lifetime. Credentials are
   // the fs-sync service's concern and are NOT part of the desktop engine
   // (wire-fs-sync-service section 9).
@@ -245,19 +244,13 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  // Phase 10.3 — wire the engine's EventBus to the renderer. The bridge
-  // subscribes to `getEngine().bus` once and fans every delivered
-  // `DatasourceEvent<T, K>` out to every registered `BrowserWindow` over
-  // the one-way channel `datasources:event`. Today there's exactly one
-  // window; future multi-window work can call `eventBridge.registerWindow`
-  // on each additional window without touching this wiring.
-  const eventBridge = createEventBridge(getEngine().bus);
-  eventBridge.registerWindow(window);
-  // Register window against the sync bridge too (Decision 8 — both bridges
-  // feed the renderer; Decision 12 — sync bridge is created after supervisor).
+  // Register window against the sync bridge (Decision 12 — sync bridge is
+  // created after supervisor). The renderer's datasource-facing events all
+  // flow over `sync:event` now; the dead engine `datasources:event` bridge
+  // was removed in migrate-engine-events-to-consumer (no production emitter
+  // or consumer).
   syncEventBridge?.registerWindow(window);
   window.on("closed", () => {
-    eventBridge.dispose();
     syncEventBridge?.dispose();
   });
 

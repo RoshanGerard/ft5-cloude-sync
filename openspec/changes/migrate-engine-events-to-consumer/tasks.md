@@ -27,12 +27,12 @@
 
 ## 4. Desktop + preload + renderer: delete the dead datasources event path (Decision 4)
 
-- [ ] 4.1 Delete `apps/desktop/src/main/ipc/datasources/event-bridge.ts` and its test `__tests__/event-bridge.test.ts`.
-- [ ] 4.2 Remove the `createEventBridge` wiring in `apps/desktop/src/main/index.ts:254-262`.
-- [ ] 4.3 Remove the `bus`/`createEventBus` from the desktop `Engine` singleton (`apps/desktop/src/main/datasources/engine.ts:37,69` + the `bus` field on `Engine`); update `engine.test.ts`.
-- [ ] 4.4 Remove `window.api.datasources.onEvent` from preload `index.ts:155-168` and both type decls (`apps/desktop/src/preload/window-api.d.ts` + `apps/desktop/src/renderer/src/types/window-api.d.ts`); update `preload/__tests__/window-api.types.test-d.ts` + `exposed-api.test.ts`.
-- [ ] 4.5 Delete the renderer hook `apps/desktop/src/renderer/src/features/datasources/event-stream.ts` and its test `__tests__/event-stream.test.tsx`.
-- [ ] 4.6 `pnpm --filter @ft5/desktop test` green; renderer build clean.
+- [x] 4.1 Delete `apps/desktop/src/main/ipc/datasources/event-bridge.ts` and its test `__tests__/event-bridge.test.ts`.
+- [x] 4.2 Remove the `createEventBridge` wiring in `apps/desktop/src/main/index.ts:254-262`. (Surgical: the block was interleaved with the surviving `syncEventBridge` registerWindow/dispose lines; removed only the datasources-bridge import + comment + creation + registerWindow + its dispose line, kept the sync bridge. Also dropped the now-unused `getEngine` import + a stale "bus +" comment.)
+- [x] 4.3 Remove the `bus`/`createEventBus` from the desktop `Engine` singleton (`apps/desktop/src/main/datasources/engine.ts:37,69` + the `bus` field on `Engine`); update `engine.test.ts`. (Also updated the module header + `initEngine` doc comments that described "the shared EventBus".)
+- [x] 4.4 Remove `window.api.datasources.onEvent` from preload `index.ts:155-168` and both type decls (`apps/desktop/src/preload/window-api.d.ts` + `apps/desktop/src/renderer/src/types/window-api.d.ts`); update `preload/__tests__/window-api.types.test-d.ts` + `exposed-api.test.ts`. (Dropped the now-unused `AnyDatasourceEvent`/`DatasourceEvent` imports from preload index + both .d.ts + both tests. Replaced the removed type-d `onEvent` test with an absence assertion; added an absence assertion to `exposed-api.test.ts`. Updated three stale precedent comments that referenced `datasources.onEvent`.)
+- [x] 4.5 Delete the renderer hook `apps/desktop/src/renderer/src/features/datasources/event-stream.ts` and its test `__tests__/event-stream.test.tsx`.
+- [x] 4.6 `pnpm --filter @ft5/desktop test` green; renderer build clean. (Ran `vitest run apps/desktop/src`: 157 files / 1305 tests passed, Type Errors: no errors — vitest's typecheck pass covers the `.test-d.ts` surface tests. `tsc -b apps/desktop/tsconfig.json` clean. The full preload-bundle/render-budget gates run later per slice scope.)
 
 ## 5. Engine/strategy/factory test sweep (transform bus assertions)
 

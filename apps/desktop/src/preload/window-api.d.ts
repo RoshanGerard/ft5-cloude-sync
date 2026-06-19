@@ -1,5 +1,4 @@
 import type {
-  AnyDatasourceEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -85,7 +84,6 @@ declare global {
           req: DatasourcesActionRequest,
         ): Promise<DatasourcesActionResponse>;
         pickFilesToUpload(): Promise<DatasourcesPickFilesResponse>;
-        onEvent(callback: (event: AnyDatasourceEvent) => void): () => void;
       };
       files: {
         list(req: FilesListRequest): Promise<FilesListResponse>;

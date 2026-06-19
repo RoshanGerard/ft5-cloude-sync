@@ -1,7 +1,6 @@
 // Main-process engine singleton — Phase 9c.
 //
 // Holds the long-lived per-process state that IPC handlers need:
-//   - the shared EventBus (all strategy events flow through this bus),
 //   - the DatasourceRegistry (persistent datasource table),
 //   - the ClientFactory (provider-id → DatasourceClient constructor).
 //
@@ -20,9 +19,9 @@
 //     ipc/datasources/*.ts`); threading a DI context through every one
 //     would require touching every registration site for zero product
 //     value.
-//   * The engine's state is truly per-process (one bus, one DB). Passing it
-//     around would just be a layer of indirection over what this module
-//     already models.
+//   * The engine's state is truly per-process (one DB). Passing it around
+//     would just be a layer of indirection over what this module already
+//     models.
 //   * Tests that need isolation call `resetEngineForTests()` and then
 //     `initEngine(...)` with their own in-memory DB.
 //
@@ -34,16 +33,13 @@
 import {
   createClientFactory,
   createDefaultProviderRegistry,
-  createEventBus,
   type ClientFactory,
-  type EventBus,
 } from "@ft5/fs-datasource-engine";
 
 import type { SqliteDatabase } from "../db/database.js";
 import { DatasourceRegistry } from "./registry.js";
 
 export interface Engine {
-  readonly bus: EventBus;
   readonly registry: DatasourceRegistry;
   readonly factory: ClientFactory;
 }
@@ -53,8 +49,8 @@ let engineInstance: Engine | null = null;
 /**
  * Initialize the main-process engine with a shared DB handle. Must be
  * called exactly once per process — a second call throws. Construct an
- * `Engine` by wiring a `DatasourceRegistry` over the given DB, creating a
- * fresh `EventBus`, and constructing the default provider `ClientFactory`.
+ * `Engine` by wiring a `DatasourceRegistry` over the given DB and
+ * constructing the default provider `ClientFactory`.
  *
  * Call order at bootstrap (enforced by `main/index.ts`):
  *   openDatabase → runMigrations → initEngine → registerIpcHandlers
@@ -66,9 +62,8 @@ export function initEngine(db: SqliteDatabase): void {
     );
   }
   const registry = new DatasourceRegistry(db);
-  const bus = createEventBus();
   const factory = createClientFactory(createDefaultProviderRegistry());
-  engineInstance = { bus, registry, factory };
+  engineInstance = { registry, factory };
 }
 
 /**
