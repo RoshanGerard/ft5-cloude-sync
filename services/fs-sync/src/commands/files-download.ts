@@ -718,12 +718,19 @@ export function makeFilesDownloadHandler(
 
     // 5. Handler-local progress coalescer — governs the `downloading` IPC
     // EMIT (per migrate-engine-events-to-consumer §1, Decision 2). The
-    // engine bus (and its 1s/10pct coalescer) is gone; `onProgress` fires
-    // at raw SDK-chunk frequency, so the handler now owns the throttle. The
+    // engine bus (and its coalescer) is gone; `onProgress` fires at raw
+    // SDK-chunk frequency, so the handler now owns the throttle. NOTE: the
+    // removed engine-bus coalescer threw out the 10%-delta rule for
+    // `downloading` (its payload carried no `progress` field, so only the
+    // 1-second window ever fired); this handler honors the full documented
+    // 1s-OR-10% envelope — a benign, more-responsive improvement on fast
+    // downloads, within the throttle the spec always prescribed. The
     // coalescer is TICK-DRIVEN (no background timer): each onProgress tick
-    // calls `progress.report(absoluteLoaded, total)`, which emits NOW when
-    // ≥1000ms elapsed since the last emit OR the progress pct crossed a
-    // 10-point boundary; otherwise the tick is HELD as `pending`.
+    // calls `progress.report(loaded, total)` with the engine's WITHIN-CYCLE
+    // `loaded` (the value the old bus path forwarded — wire-identical),
+    // which emits NOW when ≥1000ms elapsed since the last emit OR the
+    // progress pct crossed a 10-point boundary; otherwise the tick is HELD
+    // as `pending`.
     // `progress.flush()` emits the pending update and is called before each
     // terminal emit so the final progress (e.g. 100%) lands BEFORE the
     // terminal `file-downloaded` / `download-failed` / `download-cancelled`
@@ -1425,7 +1432,6 @@ export function makeFilesDownloadHandler(
       // `download-retrying` emits are mid-loop (not here) and are NOT
       // flushed before.
       progress.flush();
-      // Terminal — figure out which event to emit.
       const datasourceId = params.datasourceId;
       try {
         if (err instanceof CancelledError || abortController.signal.aborted) {
