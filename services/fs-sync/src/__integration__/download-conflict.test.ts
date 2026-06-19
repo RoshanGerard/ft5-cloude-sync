@@ -31,10 +31,6 @@ import {
   createDownloadRegistry,
   type DownloadRegistry,
 } from "../downloads/registry.js";
-import type {
-  EngineBusEvent,
-  EngineBusSubscriber,
-} from "../commands/files-download.js";
 
 const ctx = {
   connection: { id: 1, closed: false, sendEvent: () => undefined },
@@ -42,16 +38,6 @@ const ctx = {
 
 const SOURCE_PATH = "/welcome.pdf";
 const DOWNLOAD_BYTES = Buffer.alloc(2048, 0xcd);
-
-function makeEngineBus(): EngineBusSubscriber {
-  const subscribers = new Set<(e: EngineBusEvent) => void>();
-  return {
-    subscribe(handler) {
-      subscribers.add(handler);
-      return () => subscribers.delete(handler);
-    },
-  };
-}
 
 function makeFakeClient(
   overrides: Partial<DatasourceClient<DatasourceType>> = {},
@@ -123,7 +109,6 @@ beforeEach(async () => {
     serviceUuid: "test-uuid",
     resolveClient: async () => client,
     downloadRegistry: registry,
-    engineBus: makeEngineBus(),
     // Force the post-download integrity hash to match the provider md5
     // ("deadbeef") regardless of the on-disk path, so the keep-both cycle
     // completes deterministically without coupling to the suffixed path.

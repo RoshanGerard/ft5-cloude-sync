@@ -336,14 +336,15 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       loopbackBroker,
       credentialStore,
       // add-engine-rename-download §13/§14 download bundle. With all
-      // four (resolveClient already above + downloadRegistry + engineBus
-      // + hashComputer), buildCommandHandlers wires files:download,
-      // sync:cancel-download, and downloads:list-active. The engine
-      // event bus is structurally a `EngineBusSubscriber` — the
-      // handler-local subscription only reads `event`, `datasourceId`,
-      // and `payload`.
+      // three (resolveClient already above + downloadRegistry +
+      // hashComputer), buildCommandHandlers wires files:download,
+      // sync:cancel-download, and downloads:list-active. The handler
+      // owns the download-progress throttle via `options.onProgress`
+      // (migrate-engine-events-to-consumer §1) — no engine-bus
+      // subscription is wired here anymore. (`engineBus` is still
+      // created above + threaded into createResolveClient / engineContext
+      // as `EngineContext.bus`; that wiring is removed in slice 2.)
       downloadRegistry,
-      engineBus,
       hashComputer,
       // migrate-upload-orchestration-out-of-engine §9/§10 upload
       // bundle. With both `resolveClient` (already above) and

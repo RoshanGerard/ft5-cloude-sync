@@ -3,9 +3,12 @@
 // task pair in `openspec/changes/add-engine-rename-download/tasks.md`.
 //
 // The handler is dependency-injected end-to-end (resolveClient, registry,
-// fsSyncBus, engineBus, fs, hash, randomUUID, now, homedir) so tests
-// drive every external boundary through fakes. No real disk / network
-// access.
+// fsSyncBus, fs, hash, randomUUID, now, homedir) so tests drive every
+// external boundary through fakes. No real disk / network access.
+//
+// Download progress is driven via the `onProgress` callback the handler
+// passes to a fake `downloadFile` (migrate-engine-events-to-consumer §1 —
+// the engine bus was removed; the handler owns the `downloading` throttle).
 
 import { describe, expect, it, vi } from "vitest";
 import { Readable, Writable } from "node:stream";
@@ -41,8 +44,6 @@ import {
   RangeMismatchError,
   IntegrityFailedError,
   ByteCountMismatchError,
-  type EngineBusEvent,
-  type EngineBusSubscriber,
   type FilesDownloadDeps,
   type FsBoundary,
   type HashComputer,
@@ -233,23 +234,6 @@ function makeFakeFs(opts: { writableParents?: string[] } = {}): FakeFs {
   return fakeFs;
 }
 
-function makeEngineBus(): EngineBusSubscriber & {
-  emit(event: EngineBusEvent): void;
-  subscribers: Set<(e: EngineBusEvent) => void>;
-} {
-  const subscribers = new Set<(e: EngineBusEvent) => void>();
-  return {
-    subscribers,
-    subscribe(handler) {
-      subscribers.add(handler);
-      return () => subscribers.delete(handler);
-    },
-    emit(event) {
-      for (const s of subscribers) s(event);
-    },
-  };
-}
-
 function makeHash(map: Record<string, string> = {}): HashComputer {
   return {
     hashFile: async (path) => map[path] ?? "deadbeef",
@@ -293,13 +277,11 @@ function makeDeps(
   const fakeFs = makeFakeFs({ writableParents: [PARENT] });
   const registry = createDownloadRegistry();
   const { bus } = captureFsSyncEvents();
-  const engineBus = makeEngineBus();
   let counter = 0;
   return {
     resolveClient: async () => makeFakeClient(),
     registry,
     fsSyncBus: bus,
-    engineBus,
     fs: fakeFs,
     hash: makeHash(),
     randomUUID: () => `job-${++counter}`,
@@ -333,7 +315,6 @@ describe("files:download — happy path (§13.1, §13.2)", () => {
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus, events } = captureFsSyncEvents();
-    const engineBus = makeEngineBus();
     const payload = Buffer.alloc(1024, 0xab);
     const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
       stream: streamFromBytes(payload),
@@ -346,7 +327,6 @@ describe("files:download — happy path (§13.1, §13.2)", () => {
         resolveClient: async () => client,
         registry,
         fsSyncBus: bus,
-        engineBus,
         fs: fakeFs,
         hash: makeHash({ [TO_PATH]: "deadbeef" }),
       }),
@@ -1119,11 +1099,17 @@ describe("files:download — cancel mid-pipe (§13.15, §13.16)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// §13.17 + §13.18 — registry update throttling (driven by engine bus)
+// §13.17 + §13.18 — registry update is per-tick (NOT throttled)
+//
+// migrate-engine-events-to-consumer §1 (Decision 2): the engine bus is
+// gone; the handler owns the `downloading` IPC throttle in a handler-local
+// coalescer (see the next describe block). The REGISTRY write stays
+// per-tick and behind NO throttle — cancel/failure payloads + the
+// downloads:list-active snapshot read the latest count.
 // ---------------------------------------------------------------------------
 
-describe("files:download — registry update throttling (§13.17, §13.18)", () => {
-  it("rapid onProgress callbacks update the registry on every tick (inline path); the engine bus's coalescer is the throttle for the IPC `downloading` event emission", async () => {
+describe("files:download — registry update is per-tick (§13.17, §13.18)", () => {
+  it("rapid onProgress callbacks update the registry on every tick (inline path); the per-tick registry write is NOT routed through the handler-local downloading-IPC throttle", async () => {
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registryStates: number[] = [];
     const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
@@ -1165,6 +1151,346 @@ describe("files:download — registry update throttling (§13.17, §13.18)", () 
     // The inline path writes every onProgress tick — 100 calls →
     // ≥100 registry updates (bytesDownloaded climbs).
     expect(registryStates.length).toBeGreaterThanOrEqual(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrate-engine-events-to-consumer §1 (Decision 2) — handler-owned
+// download-progress throttle via `onProgress`.
+//
+// The engine bus (and its 1s/10pct coalescer) is being removed. The
+// download handler now consumes `options.onProgress(loaded, total)` and
+// owns a small handler-LOCAL coalescer that governs the `downloading` IPC
+// emit: emit when ≥1000ms elapsed since the last emit OR the progress pct
+// crosses a 10-point boundary; otherwise hold the latest tick as pending.
+// `flush()` emits the pending update and is called before each terminal
+// emit so the final progress (e.g. 100%) lands BEFORE `file-downloaded` /
+// `download-failed` / `download-cancelled` and never after.
+//
+// These tests drive progress through the `onProgress` the handler passes
+// to a FAKE `downloadFile` — NOT via an engine bus. A test-controlled
+// `now` advances between ticks to exercise the 1s window.
+// ---------------------------------------------------------------------------
+
+describe("files:download — handler-owned download-progress throttle (§1, Decision 2)", () => {
+  it("(throttle) many sub-1s, sub-10% ticks produce only the FIRST `downloading` emit; a tick >=1s later OR crossing 10% produces another", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    // Test-controlled clock. The first tick always emits (sentinel
+    // lastEmitMs). Subsequent ticks within <1000ms AND <10% delta hold.
+    let nowMs = 1_000_000;
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      // total=1000 so 1 byte == 0.1%; we can move bytes without crossing
+      // the 10% boundary until we choose to.
+      // Tick 1 — first ever tick → ALWAYS emits (loaded=10 → 1%).
+      options?.onProgress?.(10, 1000);
+      // Ticks 2-5 — same instant, <10% delta from 1% → all HELD.
+      options?.onProgress?.(20, 1000); // 2%
+      options?.onProgress?.(30, 1000); // 3%
+      options?.onProgress?.(40, 1000); // 4%
+      options?.onProgress?.(95, 1000); // 9% (still <10% delta from 1%)
+      // Tick 6 — cross the 10% boundary (1% → 12%) at the SAME instant →
+      // EMITS (threshold path, not the time path).
+      options?.onProgress?.(120, 1000); // 12%
+      // Tick 7 — <10% delta from 12% (→ 13%) but advance the clock >=1s →
+      // EMITS (time path).
+      nowMs += 1000;
+      options?.onProgress?.(130, 1000); // 13%
+      return {
+        stream: streamFromBytes(Buffer.alloc(1000, 0xab)),
+        contentLength: 1000,
+      };
+    });
+    const getMetadata = vi.fn().mockResolvedValue({
+      ...sampleEntry,
+      providerMetadata: {},
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        fs: fakeFs,
+        now: () => nowMs,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+
+    // Only the `downloading` emits driven by progress ticks (exclude the
+    // terminal file-downloaded). Expected emits, in order:
+    //   - tick 1 (first tick, 1%)
+    //   - tick 6 (10%-threshold cross, 12%)
+    //   - tick 7 (1s-time window, 13%)
+    // Ticks 2-5 are coalesced (held as pending, superseded).
+    const downloading = events.filter((e) => e.name === "downloading");
+    expect(downloading.map((e) => (e.payload as { progress: number }).progress))
+      .toEqual([1, 12, 13]);
+  });
+
+  it("(flush-on-terminal) the last HELD progress is flushed as `downloading` BEFORE the terminal `file-downloaded`, and NO `downloading` is emitted after the terminal", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    let nowMs = 1_000_000;
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      // Tick 1 → emits immediately (first tick, 10%).
+      options?.onProgress?.(100, 1000); // 10%
+      // Tick 2 → 100% but within the same 1s window AND ... 10% → 100% IS
+      // a >=10% delta so it would emit on threshold. To force the
+      // flush-on-terminal path specifically, keep the LAST tick within
+      // both windows so it is HELD as pending: tick at 18% (<1s, <10%
+      // delta from 10%). The pending 18% must be flushed BEFORE the
+      // terminal.
+      options?.onProgress?.(180, 1000); // 18% — held (pending)
+      return {
+        stream: streamFromBytes(Buffer.alloc(1000, 0xab)),
+        contentLength: 1000,
+      };
+    });
+    const getMetadata = vi.fn().mockResolvedValue({
+      ...sampleEntry,
+      providerMetadata: {},
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        fs: fakeFs,
+        now: () => nowMs,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+
+    // The 18% pending tick was flushed as a `downloading` event.
+    const downloading = events.filter((e) => e.name === "downloading");
+    expect(downloading.map((e) => (e.payload as { progress: number }).progress))
+      .toEqual([10, 18]);
+
+    // Ordering: the LAST `downloading` precedes the terminal
+    // `file-downloaded`, and NO `downloading` follows the terminal.
+    const names = events.map((e) => e.name);
+    const lastDownloadingIdx = names.lastIndexOf("downloading");
+    const terminalIdx = names.indexOf("file-downloaded");
+    expect(lastDownloadingIdx).toBeGreaterThanOrEqual(0);
+    expect(terminalIdx).toBeGreaterThanOrEqual(0);
+    expect(lastDownloadingIdx).toBeLessThan(terminalIdx);
+    // No `downloading` AFTER the terminal.
+    expect(names.slice(terminalIdx + 1)).not.toContain("downloading");
+  });
+
+  it("(flush-before-failure) a HELD progress tick is flushed as `downloading` BEFORE a terminal `download-failed`, with NO `downloading` after it", async () => {
+    // The single flush at the top of the terminal `catch` must cover the
+    // FAILURE path too (not just success). Existing failure tests never
+    // drive onProgress, so `pending` is null and the flush is a no-op for
+    // them — a misplaced flush would slip through. This test holds a
+    // progress tick, then fails terminally (byte-count mismatch), and
+    // asserts the pending flush precedes `download-failed`.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    const nowMs = 1_000_000; // frozen — the second tick is held
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      // Tick 1 → emits (first tick, 10%). Tick 2 → 18% within the same
+      // instant + <10% delta → HELD as pending. Then the engine claims
+      // 1000 bytes but only streams 180 → byte-count mismatch → terminal
+      // `download-failed`. The held 18% MUST flush first.
+      options?.onProgress?.(100, 1000); // 10%
+      options?.onProgress?.(180, 1000); // 18% — held
+      return {
+        stream: streamFromBytes(Buffer.alloc(180, 0xab)),
+        contentLength: 1000,
+      };
+    });
+    const getMetadata = vi.fn().mockResolvedValue({
+      ...sampleEntry,
+      providerMetadata: {},
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        fs: fakeFs,
+        now: () => nowMs,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe("byte count mismatch");
+    }
+    // The 18% held tick was flushed.
+    const downloading = events.filter((e) => e.name === "downloading");
+    expect(downloading.map((e) => (e.payload as { progress: number }).progress))
+      .toEqual([10, 18]);
+    // Ordering: last `downloading` precedes the terminal `download-failed`,
+    // and no `downloading` follows the terminal.
+    const names = events.map((e) => e.name);
+    const lastDownloadingIdx = names.lastIndexOf("downloading");
+    const terminalIdx = names.indexOf("download-failed");
+    expect(lastDownloadingIdx).toBeGreaterThanOrEqual(0);
+    expect(terminalIdx).toBeGreaterThanOrEqual(0);
+    expect(lastDownloadingIdx).toBeLessThan(terminalIdx);
+    expect(names.slice(terminalIdx + 1)).not.toContain("downloading");
+  });
+
+  it("(per-tick registry) the registry reflects the LATEST tick's absolute bytes even while the `downloading` IPC emit is throttled", async () => {
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    const nowMs = 1_000_000; // frozen — all ticks land in the same 1s window
+    // Capture the registry's bytesDownloaded after each update.
+    const registryBytes: number[] = [];
+    const origUpdate = registry.update.bind(registry);
+    registry.update = (id, partial) => {
+      origUpdate(id, partial);
+      const e = registry.get(id);
+      if (e) registryBytes.push(e.bytesDownloaded);
+    };
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      // Five ticks, all within the same instant + <10% deltas after the
+      // first → only the first `downloading` emits; but the registry must
+      // see all five.
+      options?.onProgress?.(100, 1000); // 10%
+      options?.onProgress?.(150, 1000); // 15%
+      options?.onProgress?.(180, 1000); // 18%
+      options?.onProgress?.(185, 1000); // 18%
+      options?.onProgress?.(190, 1000); // 19%
+      return {
+        stream: streamFromBytes(Buffer.alloc(1000, 0xab)),
+        contentLength: 1000,
+      };
+    });
+    const getMetadata = vi.fn().mockResolvedValue({
+      ...sampleEntry,
+      providerMetadata: {},
+    });
+    const client = makeFakeClient({ downloadFile, getMetadata });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        fs: fakeFs,
+        now: () => nowMs,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+
+    // The registry write ran on every tick (per-tick, not throttled): the
+    // five progress ticks each pushed their bytes, climbing to 190.
+    expect(registryBytes).toContain(100);
+    expect(registryBytes).toContain(150);
+    expect(registryBytes).toContain(190);
+
+    // The `downloading` IPC emit, by contrast, is throttled — only the
+    // first tick crossed an emit gate (rest held + flushed). flush-on-
+    // terminal emits the last pending (19%), so we expect 10% then 19%.
+    const downloading = events.filter((e) => e.name === "downloading");
+    expect(downloading.map((e) => (e.payload as { progress: number }).progress))
+      .toEqual([10, 19]);
+  });
+
+  it("(absolute bytes on resume) after a resume cycle (rangeStart>0), the `downloading` emit carries ABSOLUTE bytes (effectiveRangeStart + loaded), not the within-cycle loaded", async () => {
+    // Decision 2 + advisor item 1: the emit must agree with the per-tick
+    // registry write, which stores `effectiveRangeStart + loaded`. A resume
+    // cycle (rangeStart=512) whose onProgress reports loaded=256 must emit
+    // bytesLoaded=768 / progress=75 — NOT bytesLoaded=256 / progress=25.
+    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
+    const registry = createDownloadRegistry();
+    const { bus, events } = captureFsSyncEvents();
+    let nowMs = 1_000_000;
+    let call = 0;
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      call++;
+      if (call === 1) {
+        // Cycle 1: stream 512 bytes to disk, then auth-expired mid-stream
+        // so the handler refreshes and resumes from byte 512.
+        const stream = Readable.from(
+          (async function* () {
+            fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
+            yield Buffer.alloc(512, 0xaa);
+            throw new DatasourceError({
+              tag: "auth-expired",
+              datasourceType: "google-drive",
+              datasourceId: "ds-1",
+              retryable: true,
+              message: "token expired mid-stream",
+            });
+          })(),
+        );
+        return { stream, contentLength: 1024 };
+      }
+      // Cycle 2 (post-refresh): rangeStart=512. Drive ONE onProgress with a
+      // within-cycle loaded=256 → absolute 768 → 75%. Advance the clock so
+      // this tick passes the 1s gate (the cycle-1 first tick set lastEmit).
+      expect(options?.rangeStart).toBe(512);
+      nowMs += 2000;
+      options?.onProgress?.(256, 1024); // within-cycle loaded
+      return {
+        stream: streamFromBytes(Buffer.alloc(512, 0xbb)),
+        contentLength: 1024,
+        contentRange: { start: 512, end: 1023, total: 1024 },
+      };
+    });
+    const getMetadata = vi.fn().mockResolvedValue(sampleEntry);
+    const refreshCredentials = vi
+      .fn()
+      .mockResolvedValue({ accessToken: "fresh", expiresAt: 9_999_999_999 });
+    const client = makeFakeClient({ downloadFile, getMetadata, refreshCredentials });
+    const handler = makeFilesDownloadHandler(
+      makeDeps({
+        resolveClient: async () => client,
+        registry,
+        fsSyncBus: bus,
+        fs: fakeFs,
+        hash: makeHash({ [TO_PATH]: "deadbeef" }),
+        now: () => nowMs,
+      }),
+    );
+    const result = await handler(
+      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+
+    const downloading = events.filter((e) => e.name === "downloading");
+    // The resume-cycle tick must report ABSOLUTE bytes.
+    const resumeEvt = downloading.find(
+      (e) => (e.payload as { bytesLoaded: number }).bytesLoaded === 768,
+    );
+    expect(resumeEvt).toBeDefined();
+    expect(resumeEvt!.payload).toMatchObject({
+      bytesLoaded: 768,
+      bytesTotal: 1024,
+      progress: 75,
+    });
+    // The buggy within-cycle value must NOT appear.
+    expect(
+      downloading.some(
+        (e) => (e.payload as { bytesLoaded: number }).bytesLoaded === 256,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -1236,68 +1562,28 @@ describe("files:download — registry release on terminal events (§13.19, §13.
 });
 
 // ---------------------------------------------------------------------------
-// §13.21 + §13.22 — engine-bus subscription
+// §13.21 + §13.22 — `downloading` IPC emit shape (driven via onProgress)
+//
+// migrate-engine-events-to-consumer §1 (Decision 2): the engine-bus
+// subscription was removed. The subscription-lifecycle test (it asserted
+// `engineBus.subscribers.size`) is deleted — there is no subscription to
+// observe. The "correlates (datasourceId, path) → downloadJobId and emits
+// fs-sync's downloadJobId-keyed `downloading` shape" assertion survives,
+// transformed to drive progress via the `onProgress` the handler passes to
+// the fake `downloadFile`.
 // ---------------------------------------------------------------------------
 
-describe("files:download — engine-bus subscription (§13.21, §13.22)", () => {
-  it("subscribes to the engine bus for the lifetime of the download; the subscription is released on terminal", async () => {
+describe("files:download — `downloading` IPC emit shape (§13.21, §13.22)", () => {
+  it("emits fs-sync's downloadJobId-keyed `downloading` event from an onProgress tick (NOT the engine bus's (datasourceId, path) shape)", async () => {
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
-    const engineBus = makeEngineBus();
-    let releaseGate: (() => void) | null = null;
-    const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
-      // Hold the handler open inside the engine call so we can observe
-      // the subscription before terminal cleanup runs.
-      await new Promise<void>((resolve) => {
-        releaseGate = resolve;
-      });
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      // One onProgress tick at 512/1024 → 50% — drives the throttled
+      // `downloading` emit (first tick always emits).
+      options?.onProgress?.(512, 1024);
       return {
         stream: streamFromBytes(Buffer.alloc(1024, 0xab)),
         contentLength: 1024,
       };
-    });
-    const getMetadata = vi.fn().mockResolvedValue({
-      ...sampleEntry,
-      providerMetadata: {},
-    });
-    const client = makeFakeClient({ downloadFile, getMetadata });
-    const handler = makeFilesDownloadHandler(
-      makeDeps({
-        resolveClient: async () => client,
-        fs: fakeFs,
-        engineBus,
-      }),
-    );
-    expect(engineBus.subscribers.size).toBe(0);
-    const inflight = handler(
-      { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
-      ctx,
-    );
-    // Wait for the handler to register the bus subscription. The handler
-    // synchronously subscribes BEFORE awaiting the engine call, so a
-    // single microtask flush is enough.
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(engineBus.subscribers.size).toBe(1);
-    // Release the gate so the engine call returns and the handler runs
-    // through to terminal.
-    releaseGate?.();
-    await inflight;
-    // Subscription released on terminal (success).
-    expect(engineBus.subscribers.size).toBe(0);
-  });
-
-  it("the bus subscription correlates `(datasourceId, path)` to downloadJobId via the registry's reverse index and emits fs-sync's downloadJobId-keyed `downloading` event", async () => {
-    const fakeFs = makeFakeFs({ writableParents: [PARENT] });
-    const engineBus = makeEngineBus();
-    let resolveStream: (() => void) | null = null;
-    const stream = new Readable({ read() {} });
-    const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
-      // Delay ending the stream until the test fires bus events.
-      await new Promise<void>((r) => {
-        resolveStream = r;
-      });
-      stream.push(Buffer.alloc(1024, 0xab));
-      stream.push(null);
-      return { stream, contentLength: 1024 };
     });
     const getMetadata = vi.fn().mockResolvedValue({
       ...sampleEntry,
@@ -1309,35 +1595,32 @@ describe("files:download — engine-bus subscription (§13.21, §13.22)", () => 
       makeDeps({
         resolveClient: async () => client,
         fs: fakeFs,
-        engineBus,
         fsSyncBus: bus,
       }),
     );
-    const inflight = handler(
+    await handler(
       { datasourceId: "ds-1", path: "/welcome.pdf", toPath: TO_PATH },
       ctx,
     );
-    // Wait for the registry entry to be visible.
-    await new Promise((resolve) => setImmediate(resolve));
-    // Now emit an engine bus `downloading` event.
-    engineBus.emit({
-      event: "downloading",
-      datasourceId: "ds-1",
-      streaming: true,
-      payload: { path: "/welcome.pdf", loaded: 512, total: 1024 },
-    });
-    // Resolve the in-flight stream so the handler completes.
-    resolveStream?.();
-    await inflight;
     const downloading = events.filter((e) => e.name === "downloading");
-    expect(downloading).toHaveLength(1);
-    expect(downloading[0]?.payload).toMatchObject({
+    // The 512/1024 tick emits a 50% `downloading`. (A subsequent
+    // flush-on-terminal would be a no-op here — the 50% tick already
+    // emitted, leaving no pending; the success path's 100%-on-disk count
+    // is reported by the terminal `file-downloaded`, not a `downloading`.)
+    const fiftyPct = downloading.find(
+      (e) => (e.payload as { progress: number }).progress === 50,
+    );
+    expect(fiftyPct).toBeDefined();
+    expect(fiftyPct!.payload).toMatchObject({
       datasourceId: "ds-1",
       path: "/welcome.pdf",
       progress: 50,
     });
-    // The downloadJobId is the one minted by the handler ("job-1").
-    expect((downloading[0]?.payload as { downloadJobId: string }).downloadJobId).toBe("job-1");
+    // The wire payload is fs-sync's downloadJobId-keyed shape; the
+    // downloadJobId is the one minted by the handler ("job-1").
+    expect((fiftyPct!.payload as { downloadJobId: string }).downloadJobId).toBe(
+      "job-1",
+    );
   });
 });
 
@@ -3365,25 +3648,22 @@ describe("files:download — Decision 3 rewrite-from-0 budget + sticky flag (§1
 
 describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)", () => {
   it("(12.7.6) prefetch surfaces percentage on Content-Length-missing resource", async () => {
-    // Drive's ?alt=media omits Content-Length; engine emits `total: null`.
-    // Prefetch resolves with size: 398_458_880 (380 MB). Wire emit must
-    // populate bytesTotal: 398_458_880 and progress: 42 (167MB / 380MB).
+    // Drive's ?alt=media omits Content-Length; engine reports `total: null`
+    // on the onProgress tick. Prefetch resolves with size: 398_458_880
+    // (380 MB). Wire emit must populate bytesTotal: 398_458_880 and
+    // progress: 42 (167MB / 380MB) — the coalescer's transform falls back
+    // to prefetchedSize when the tick's total is null.
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus, events } = captureFsSyncEvents();
-    const engineBus = makeEngineBus();
     const payload = Buffer.alloc(1024, 0xab);
-    // Hold downloadFile via a deferred so we can drive the engine event
-    // WHILE the handler is still inside the cycle's `await
-    // client.downloadFile(...)` await — that's the only window in which
-    // the bus subscription is active for our datasource/path.
-    let resolveDownload!: (r: DownloadResult) => void;
-    const downloadFile = vi.fn(
-      () =>
-        new Promise<DownloadResult>((res) => {
-          resolveDownload = res;
-        }),
-    );
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      // The prefetch ran before this call, so prefetchedSize is already
+      // seeded. One onProgress tick with total: null (Content-Length
+      // missing) → the coalescer falls back to prefetchedSize.
+      options?.onProgress?.(167_772_160, null);
+      return { stream: streamFromBytes(payload), contentLength: null };
+    });
     const getMetadata = vi.fn().mockResolvedValue({
       handle: "h-1",
       kind: "file" as const,
@@ -3400,46 +3680,17 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
         resolveClient: async () => client,
         registry,
         fsSyncBus: bus,
-        engineBus,
         fs: fakeFs,
         hash: makeHash({ [TO_PATH]: "abc" }),
       }),
     );
 
-    const handlerPromise = handler(
+    const result = await handler(
       { datasourceId: "ds-1", path: "/welcome.mp4", toPath: TO_PATH },
       ctx,
     );
-
-    // Poll for downloadFile being called — that means the handler is
-    // past prefetch and waiting on the engine GET.
-    while (downloadFile.mock.calls.length === 0) {
-      await new Promise((r) => setTimeout(r, 0));
-    }
-
-    // Now emit one engine `downloading` event with no Content-Length;
-    // the bus subscription's transformDownloadingEvent should fall back
-    // to prefetchedSize.
-    engineBus.emit({
-      event: "downloading",
-      datasourceId: "ds-1",
-      payload: {
-        path: "/welcome.mp4",
-        loaded: 167_772_160,
-        total: null,
-      },
-    });
-
-    // Resolve the engine GET so the rest of the flow finishes.
-    resolveDownload({
-      stream: streamFromBytes(payload),
-      contentLength: null,
-    });
-
-    const result = await handlerPromise;
     expect(result.ok).toBe(true);
 
-    // Find the downloading event emitted via the bus subscription.
     const downloadingEvents = events.filter((e) => e.name === "downloading");
     expect(downloadingEvents.length).toBeGreaterThanOrEqual(1);
     const evt = downloadingEvents.find(
@@ -3460,12 +3711,13 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus, events } = captureFsSyncEvents();
-    const engineBus = makeEngineBus();
     const payload = Buffer.alloc(2048, 0xcd);
-    const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
-      stream: streamFromBytes(payload),
-      contentLength: null,
-    }));
+    const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
+      // One onProgress tick with total: null. Prefetch failed, so
+      // prefetchedSize is null → the wire emit carries bytesTotal: null.
+      options?.onProgress?.(1024, null);
+      return { stream: streamFromBytes(payload), contentLength: null };
+    });
     const getMetadata = vi.fn(async () => {
       // First call (prefetch) rejects; second call (post-pipe) would
       // also reject under this fake. The handler swallows the post-pipe
@@ -3486,25 +3738,15 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
           resolveClient: async () => client,
           registry,
           fsSyncBus: bus,
-          engineBus,
           fs: fakeFs,
           hash: makeHash(),
         }),
       );
 
-      const handlerPromise = handler(
+      const result = await handler(
         { datasourceId: "ds-1", path: "/welcome.mp4", toPath: TO_PATH },
         ctx,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      engineBus.emit({
-        event: "downloading",
-        datasourceId: "ds-1",
-        payload: { path: "/welcome.mp4", loaded: 1024, total: null },
-      });
-
-      const result = await handlerPromise;
       expect(result.ok).toBe(true);
       // Wire emits must NOT have a non-null bytesTotal (prefetch failed,
       // fallback to bytes-only).
@@ -3534,7 +3776,6 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus, events } = captureFsSyncEvents();
-    const engineBus = makeEngineBus();
     const downloadFile = vi.fn();
     let prefetchReject!: (err: unknown) => void;
     const getMetadata = vi.fn(
@@ -3550,7 +3791,6 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
         resolveClient: async () => client,
         registry,
         fsSyncBus: bus,
-        engineBus,
         fs: fakeFs,
         hash: makeHash(),
       }),
@@ -3600,19 +3840,25 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     void prefetchReject;
   });
 
-  it("(12.7.12) registry contentLength is NOT overwritten by null-total engine downloading events (Decision 17d)", async () => {
-    // Prefetch seeds contentLength = 380_000_000. Engine emits one or
-    // more downloading events with total: null. After each event, the
-    // registry's contentLength MUST still be 380_000_000.
+  it("(12.7.12) registry contentLength is NOT overwritten by null-total onProgress ticks (Decision 17d)", async () => {
+    // Prefetch seeds contentLength = 380_000_000. The handler then drives
+    // one or more onProgress ticks with total: null. After each tick, the
+    // registry's contentLength MUST still be 380_000_000 (the preservation
+    // rule lives in the per-tick registry write, NOT the throttle).
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus } = captureFsSyncEvents();
-    const engineBus = makeEngineBus();
     const payload = Buffer.alloc(1024, 0xab);
+    // Capture the onProgress the handler passes, and park the engine GET on
+    // a deferred so we can drive the ticks WHILE the registry entry is live.
     let resolveDownload!: (r: DownloadResult) => void;
+    let capturedOnProgress:
+      | ((loaded: number, total: number | null) => void)
+      | undefined;
     const downloadFile = vi.fn(
-      () =>
+      (target, options) =>
         new Promise<DownloadResult>((res) => {
+          capturedOnProgress = options?.onProgress;
           resolveDownload = res;
         }),
     );
@@ -3632,7 +3878,6 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
         resolveClient: async () => client,
         registry,
         fsSyncBus: bus,
-        engineBus,
         fs: fakeFs,
         hash: makeHash({ [TO_PATH]: "abc" }),
       }),
@@ -3653,20 +3898,12 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     // After prefetch, contentLength should be the prefetched size.
     expect(registry.get(downloadJobId!)?.contentLength).toBe(380_000_000);
 
-    // Emit two null-total downloading events. The bus subscription's
-    // handler MUST preserve contentLength.
-    engineBus.emit({
-      event: "downloading",
-      datasourceId: "ds-1",
-      payload: { path: "/welcome.mp4", loaded: 1_000_000, total: null },
-    });
+    // Drive two null-total onProgress ticks. The per-tick registry write
+    // MUST preserve contentLength.
+    capturedOnProgress?.(1_000_000, null);
     expect(registry.get(downloadJobId!)?.contentLength).toBe(380_000_000);
 
-    engineBus.emit({
-      event: "downloading",
-      datasourceId: "ds-1",
-      payload: { path: "/welcome.mp4", loaded: 5_000_000, total: null },
-    });
+    capturedOnProgress?.(5_000_000, null);
     expect(registry.get(downloadJobId!)?.contentLength).toBe(380_000_000);
 
     // Resolve the download to clean up.
@@ -3684,7 +3921,6 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus } = captureFsSyncEvents();
-    const engineBus = makeEngineBus();
     const payload = Buffer.alloc(1024, 0xab);
     const downloadFile = vi.fn(async (): Promise<DownloadResult> => ({
       stream: streamFromBytes(payload),
@@ -3706,7 +3942,6 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
         resolveClient: async () => client,
         registry,
         fsSyncBus: bus,
-        engineBus,
         fs: fakeFs,
         hash: makeHash({ [TO_PATH]: "deadbeef" }),
       }),
@@ -3753,7 +3988,6 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus } = captureFsSyncEvents();
-    const engineBus = makeEngineBus();
     const payload = Buffer.alloc(1024, 0xab);
     let resolveDownload!: (r: DownloadResult) => void;
     const downloadFile = vi.fn(
@@ -3800,7 +4034,6 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
         resolveClient: async () => client,
         registry,
         fsSyncBus: bus,
-        engineBus,
         fs: fakeFs,
         hash: makeHash({ [TO_PATH]: "abc" }),
       }),
