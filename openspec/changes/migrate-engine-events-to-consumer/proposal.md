@@ -1,76 +1,49 @@
-# Proposal: Migrate engine-side bus event emission to consumer-side IPC events
+# Proposal: Remove the engine `EventBus`; consumers own event emission
 
-**Status**: Stub. Spawned during `add-engine-rename-download` brainstorming on 2026-04-28 alongside the broader push to keep the engine as a thin vendor-API translator.
+**Status**: Active. Promoted from stub (spawned 2026-04-28 during `add-engine-rename-download` brainstorming) on 2026-06-19. This is the culmination of the engine-decoupling sequence: `add-engine-rename-download` → `migrate-upload-orchestration-out-of-engine` → `migrate-engine-retry-policy-to-consumer` → `migrate-engine-cache-invalidation` (all merged).
 
 ## Why
 
-The engine today owns an `EventBus` that emits structured events on every operation:
+The engine still owns an `EventBus` and emits 13 lifecycle events (`status-changed`, `authenticated`, `authentication-failed`, `token-refreshed`, `token-expired`, `rate-limited`, `deleted`, `delete-failed`, `entry-renamed`, `downloading`, `download-cancelled`, `download-failed`, `file-downloaded`). These are consumer-domain events dressed up as engine concerns: the engine knows whether an SDK call succeeded; the *consumer* decides which successes/failures its domain cares about and what event shape its own consumers want.
 
-```
-- file-created       (uploadFile success, createFile success)
-- deleted             (deleteFile success)
-- entry-renamed       (rename success — added in add-engine-rename-download)
-- uploading           (streaming, during upload)
-- upload-failed       (upload terminal failure)
-- upload-cancelled    (upload terminal cancel)
-- delete-failed       (deleteFile failure; also rename failure with
-                       via: "rename")
-- status-changed      (status / testConnection / failed read ops)
-- rate-limited        (when normalized error tag is rate-limited)
-- token-refreshed     (after singleFlightRefresh succeeds)
-- token-expired       (refresh-token-itself-failed)
-- authenticated       (authenticate completion)
-- authentication-failed (authenticate or refresh failure)
-```
+After the four merged decoupling changes, that bus is **vestigial** — verified against the current code, not the 2026-04-28 stub framing:
 
-These are **consumer-domain events** dressed up as engine concerns. The engine knows whether an SDK call succeeded; the consumer is what decides "this is the kind of success/failure my domain cares about, here's the event shape my consumers want."
+- **Only one event has a live consumer.** `downloading` is consumed by the fs-sync download handler's single subscription at `services/fs-sync/src/commands/files-download.ts:753`. The repo-wide grep finds no other `engineBus.subscribe`.
+- **The desktop `datasources:event` bridge is dead end-to-end.** Desktop main never instantiates engine clients (every `getEngine()` reads `.registry`/`.factory`; tests assert `factory.create` is *not* called), so nothing emits onto its engine bus. The renderer hook `useDatasourceEvents` has **zero** production callers; the `consent-*` family that used `datasources.onEvent` was retired for `auth-*` on `sync.onEvent`. Auth/status events reach the renderer via fs-sync's *own* service bus (emitted independently of the engine bus); file-explorer state updates from RPC responses + the optimistic store.
+- **The remaining 12 events emit to no one** (auth-cycle, delete/rename/status/rate-limited, download-terminal).
 
-When the engine ships these events:
-- The engine has to model every event the consumer might want.
-- Two consumers wanting different event shapes is impossible (one consumer is hardcoded).
-- The engine carries domain-specific concerns into a shared library.
-- Tests need to assert on engine bus emission, coupling test surface to engine internals.
+The value: (a) delete vestigial infrastructure — the entire `EventBus` + its streaming coalescer + the dead desktop datasources event path; (b) finish the "engine = vendor primitives; consumers own orchestration/events" principle so the engine carries zero domain-event concerns and zero broadcast surface.
 
-`add-engine-rename-download` already moves download's events out (the service handler emits `downloading` / `file-downloaded` / `download-failed` / `download-cancelled` on the IPC stream, not on the engine bus). `migrate-upload-orchestration-out-of-engine` does the same for upload. After both, the engine bus carries only auth-cycle events: `token-refreshed`, `token-expired`, `authenticated`, `authentication-failed`.
+## What Changes
 
-Those auth-cycle events are also consumer-domain — the consumer is the one that wants to know "credentials were just refreshed; my UI should reflect that." This change finishes the job: remove the engine bus entirely; engine methods return values or throw normalized errors; consumers emit their own events on their own pub/sub mechanism (the service's IPC event stream for the sync service; `window.api.*` events for the desktop main).
+- **BREAKING** (package surface): the engine's `EventBus` is removed entirely — `createEventBus`/`EventBus`/`EventBusOptions`/`Clock`/`ClockTimer` exports drop from `@ft5/fs-datasource-engine`, and `DatasourceEvent`/`AnyDatasourceEvent`/`PayloadMap`/`CanonicalEventPayloads` drop from `@ft5/ipc-contracts`. Only the now-removed dead path imported them.
+- **BREAKING** (engine context): `EngineContext` becomes `{ credentialStore: CredentialStore }` — the `bus` field is gone. `ClientFactory.create` / `createForAuth` accept the new shape.
+- Engine methods return typed results or throw normalized `DatasourceError` — **no bus side effects**. The base class wraps operations with refresh coordination + error normalization only; strategies emit nothing.
+- `downloadFile` progress is observed **only** via `options.onProgress(loaded, total)` (already in the contract). The engine no longer emits `downloading`/`file-downloaded`/`download-failed`/`download-cancelled`.
+- The fs-sync download handler stops subscribing to the engine bus and consumes `options.onProgress`, **relocating the 1s-OR-10% throttle (with flush-before-terminal) into the handler** — the engine coalescer that previously bounded progress emissions is gone.
+- **Full cleanup** of the dead desktop datasources event path: the `datasources:event` IPC channel, `window.api.datasources.onEvent` (preload + both `window-api.d.ts`), the `useDatasourceEvents` renderer hook, and the orphaned event types.
+- The `CredentialStore` port and the `withAuthRefresh` helper are **unchanged** — credential persistence (`CredentialStore.put`) stays in the engine; only the post-persist event emission is removed.
 
-## What this change does
+## Capabilities
 
-1. Engine method semantics shift: every public method on `DatasourceClient<T>` returns a typed result or throws a typed `DatasourceError`. No bus side effects.
-2. Cross-cutting hooks the engine needs (e.g., "the credential store should be updated after a successful refresh") become explicit return values or callbacks rather than bus events.
-3. The engine's `EventBus` infrastructure is removed entirely.
-4. Each consumer (fs-sync service, desktop main) wires its own observation pattern around engine method calls — typically a thin wrapper that runs the operation and emits domain events on success/failure.
-5. Existing event subscribers migrate to subscribe at the consumer layer instead of the engine bus.
+### New Capabilities
 
-## Out of scope
+_None._
 
-- Changing wire-level event names or shapes. The renderer's view of events stays identical; only the internal source changes.
-- Removing the credential store's `put` callback (the engine still needs to persist credentials post-refresh). That's a different abstraction (port) than the bus.
-- Changing the strategy's `normalizeErrorImpl` or error taxonomy. Those are vendor-API translation concerns and stay in the engine.
+### Modified Capabilities
 
-## Open questions (resolve during `/opsx:propose`)
+- `fs-datasource-engine`: remove the `EventBus` from the public API and remove all bus side-effects from method contracts (`downloadFile`, `deleteFile`, `rename`, `authenticate`, `refreshCredentials`, `status`/`testConnection`/read-ops). Methods return values / throw normalized `DatasourceError`. (Also corrects pre-existing stale spec content that still referenced a `deleted`-event bus subscription, inconsistent with the merged `migrate-engine-cache-invalidation`.)
+- `datasources-ui`: remove the `datasources:event` IPC channel, `window.api.datasources.onEvent`, and the `useDatasourceEvents` subscription requirement; the card derives display state from the sync-event stream + seed.
+- `fs-sync-service`: the download handler owns download-progress throttling (1s OR 10% delta, flush-before-terminal) via `options.onProgress` instead of an engine-bus subscription; `DownloadRegistry` transitions are driven by `onProgress` + the `downloadFile` promise (the "Service subscribes to engine bus events" requirement is replaced, preserving the one-in-flight-per-`(datasourceId, path)` guard).
+- `fs-sync-supervisor`: the supervisor's renderer event relay no longer references the removed `datasources:event` channel, and the `DatasourceCard` live-state requirement derives display state from the sync-event stream + `sync-state-seed` only (the `datasources:event` source is dropped).
 
-1. **Authentication flow.** `authenticate()` decorates the strategy's intent (`decorateIntent`) so credentials are persisted on completion + auth events emitted. The persistence side is genuine engine concern (the credential store is a port); the event side is consumer concern. Restructuring: engine returns the raw intent + a callback for "I just succeeded with this AuthResult"; consumer wraps that callback to persist + emit. Recommend: keep the credential persistence as part of the engine's contract via the `CredentialStore` port; remove ONLY the event emission.
+## Impact
 
-2. **Status / testConnection.** The engine emits `status-changed` events for these reads. Without it, how does the consumer know the operation's outcome? Trivially: by the return value of the call. Status / testConnection both already return their result; the consumer can emit on receiving the return.
+- **Code**: `packages/fs-datasource-engine` (delete `event-bus.ts`; remove the private `emit()` + ~21 call sites in `base-client.ts`; `EngineContext`/`BaseClientContext`; `index.ts` exports); `packages/ipc-contracts` (remove the event types + `DATASOURCES_CHANNELS.event`); `apps/desktop/src/main` (delete `ipc/datasources/event-bridge.ts`; drop `bus` from the `datasources/engine.ts` singleton + the `index.ts` wiring); `apps/desktop/src/preload` (`index.ts` + `window-api.d.ts`); `apps/desktop/src/renderer` (delete `features/datasources/event-stream.ts`); `services/fs-sync/src/commands/files-download.ts` (swap bus subscription for `onProgress` + handler throttle) and `resolve-client.ts`/`bootstrap.ts`/`handlers.ts` (drop the `engineBus` wiring).
+- **Tests**: ~18 files — delete `event-bus.test.ts` + the strategy-emit guard meta-test; transform engine/strategy/factory tests to assert on return/throw; rewire fs-sync download tests onto `onProgress` + throttle/flush assertions; delete the desktop `event-bridge.test.ts` + renderer `event-stream.test.tsx`; trim unused `EngineEventBus` type imports; update `test-d` files for the removed types.
+- **Dependencies**: none added.
+- **Wire/UX**: unchanged from the renderer's perspective — surviving events (`auth-*`, download progress) still flow via `sync.onEvent`; only the internal source changes.
 
-3. **rate-limited.** The engine emits `rate-limited` events when normalizing the error tag. Same answer: the consumer reads the thrown DatasourceError's tag and emits its own event if it cares.
+## Prerequisites
 
-4. **Migration sequencing.** This change can't land before `add-engine-rename-download` (which establishes the pattern for download) and `migrate-upload-orchestration-out-of-engine` (which does the same for upload). Both must be merged first; this change finishes the cleanup.
-
-5. **Test surface impact.** Existing engine tests that assert on bus emission (~50+ test files) need migration. Strategy: a sweep PR that converts every "expect bus.emit('foo', …)" assertion to "expect the operation to return X / throw Y." Mechanical but voluminous.
-
-## Acceptance criteria (once promoted)
-
-- `EventBus` and its associated types are removed from `packages/fs-datasource-engine`.
-- Every `DatasourceClient<T>` method returns a typed result or throws `DatasourceError`. No bus side effects in the engine.
-- Each consumer owns its own event taxonomy (the fs-sync service's IPC event stream; the desktop main's `datasources:event` channel — any other consumer that arises in the future).
-- Wire-level event names + shapes are unchanged from the renderer's perspective. UX is unaffected.
-- `CredentialStore.put` continues to be called post-refresh by the engine (still a port, not a bus event).
-- All engine tests pass without bus assertions.
-
-## Provenance
-
-- Spawned during `add-engine-rename-download` brainstorming on 2026-04-28 alongside `migrate-upload-orchestration-out-of-engine`. Both addressed by the user-stated principle "engine = vendor primitives; consumer = orchestration / events."
-- Sequencing depends on the prior two changes landing first.
+`add-engine-rename-download`, `migrate-upload-orchestration-out-of-engine`, `migrate-engine-retry-policy-to-consumer`, `migrate-engine-cache-invalidation` — all merged. This change enables a bus-free engine; no follow-on depends on the bus surviving.
