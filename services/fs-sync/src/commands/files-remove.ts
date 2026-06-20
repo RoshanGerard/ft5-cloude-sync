@@ -23,6 +23,7 @@ import type {
   DatasourceType,
   FilesRemoveEntryResult,
 } from "@ft5/ipc-contracts";
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 
 import type { CommandHandler } from "../ipc/server.js";
 
@@ -85,7 +86,7 @@ export function makeFilesRemoveHandler(
             handle: params.targets[i]!.handle,
             ok: false,
             error: {
-              tag: "other",
+              tag: FilesErrorTag.Other,
               message:
                 s.reason instanceof Error ? s.reason.message : String(s.reason),
             },

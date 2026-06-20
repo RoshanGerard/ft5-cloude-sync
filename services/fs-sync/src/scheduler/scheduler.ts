@@ -11,6 +11,7 @@ import type {
   JobSummary,
   JobKind,
 } from "@ft5/ipc-contracts/sync-service";
+import { DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { EventBus } from "../events/event-bus.js";
 import { JobRepository } from "../jobs/repository.js";
@@ -160,7 +161,7 @@ export class Scheduler {
           jobId: latest.id,
           failedAt: Date.now(),
           attempt: latest.attempt + 1,
-          errorTag: "unsupported",
+          errorTag: DatasourceErrorTag.Unsupported,
           errorMessage: `no executor registered for kind=${latest.kind}`,
         });
         return;

@@ -241,6 +241,29 @@ folded into the guard:
   literal form still type-checks (the derived type is unchanged); migrating
   it would defeat the test. One `WIRE_LITERAL_ALLOWLIST` entry records it.
 
+Further apply-phase boundary findings (all recorded in the allowlist):
+
+- **`AuthFailedTag` is a FOURTH vocabulary** (the `auth-failed` event
+  payload, `packages/ipc-contracts/src/sync-service/events.ts`) — a plain
+  type union with no const object, like `ServiceErrorTag`. Its
+  `auth-revoked` / `provider-error` literals (renderer datasources tests,
+  the fs-sync loopback OAuth broker emitting `auth-failed`) share strings
+  with the in-scope enums but are a different vocabulary → stay literal.
+- **Guard false-positives on non-error enums that share a string.**
+  `case "other"` over a `DatasourceMimeFamily` (image/video/.../other) is
+  NOT an error tag; `JobStatus` carries `"cancelled"` but via `status:`
+  (never `tag:`/`case`, so inert). The MimeFamily `case "other"` is the
+  one real false-positive — allowlisted, not migrated.
+- **Field-name boundary = the guard pattern.** `errorTag` (the
+  `job-failed` event / executor-outcome / retry-input field) is typed
+  `string` but carries an engine tag and the retry logic compares it
+  against `DatasourceErrorTag.*`; the guard flags `errorTag:` so it is
+  migrated. The sibling `lastErrorTag` (job persistence/summary field,
+  also `string`, and carrying non-enum sentinels like `"service-restart"`)
+  and `engineCause` (diagnostic-only) are NOT matched by the guard pattern
+  → out of scope. This is an explicit guard-pattern boundary; widening to
+  all `*Tag` string fields is deferred to the enforcement follow-up.
+
 ## Risks / Trade-offs
 
 - **Wrong-enum substitution on the 5 shared literals — type-safe and

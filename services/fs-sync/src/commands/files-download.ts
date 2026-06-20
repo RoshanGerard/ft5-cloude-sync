@@ -99,7 +99,11 @@ import type {
   DatasourceFileEntry,
   DatasourceType,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import {
+  DatasourceError,
+  DatasourceErrorTag,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 import type { CommandHandler } from "../ipc/server.js";
 import type { EventBus } from "../events/event-bus.js";
@@ -563,7 +567,7 @@ export function makeFilesDownloadHandler(
       return {
         ok: false,
         error: {
-          tag: "other",
+          tag: FilesErrorTag.Other,
           message: `toPath validation: ${validation.reason}`,
           retryable: false,
         },
@@ -631,7 +635,7 @@ export function makeFilesDownloadHandler(
           return {
             ok: false,
             error: {
-              tag: "conflict",
+              tag: FilesErrorTag.Conflict,
               message: `destination already exists at ${params.toPath}`,
               retryable: false,
               existingPath: params.toPath,
@@ -684,7 +688,7 @@ export function makeFilesDownloadHandler(
       return {
         ok: false,
         error: {
-          tag: "other",
+          tag: FilesErrorTag.Other,
           message: "download already in progress for this entry",
           retryable: false,
         },
@@ -1071,7 +1075,8 @@ export function makeFilesDownloadHandler(
             //      normalizeFilesError).
             if (
               abortController.signal.aborted ||
-              (err instanceof DatasourceError && err.tag === "cancelled")
+              (err instanceof DatasourceError &&
+                err.tag === DatasourceErrorTag.Cancelled)
             ) {
               throw new CancelledError();
             }
@@ -1085,7 +1090,7 @@ export function makeFilesDownloadHandler(
               // timeout since something the handler owns aborted the
               // call). Synthesize so Layer 3 env-retry handles it.
               routedErr = new DatasourceError({
-                tag: "network-error",
+                tag: DatasourceErrorTag.NetworkError,
                 datasourceType: client.type,
                 datasourceId: params.datasourceId,
                 retryable: true,
@@ -1152,7 +1157,7 @@ export function makeFilesDownloadHandler(
             // `throw routedErr` below → terminal catch → `auth-revoked`.
             if (
               err instanceof DatasourceError &&
-              err.tag === "auth-expired" &&
+              err.tag === DatasourceErrorTag.AuthExpired &&
               attemptInCycle < MAX_AUTH_RETRIES_PER_CYCLE
             ) {
               attemptInCycle++;
@@ -1272,7 +1277,7 @@ export function makeFilesDownloadHandler(
             // (Layer 3), OR escalate.
             if (
               err instanceof DatasourceError &&
-              err.tag === "auth-expired" &&
+              err.tag === DatasourceErrorTag.AuthExpired &&
               attemptInCycle < MAX_AUTH_RETRIES_PER_CYCLE
             ) {
               attemptInCycle++;
@@ -1451,7 +1456,7 @@ export function makeFilesDownloadHandler(
           return {
             ok: false,
             error: {
-              tag: "cancelled",
+              tag: FilesErrorTag.Cancelled,
               message: "download cancelled",
               retryable: false,
             },
@@ -1482,13 +1487,13 @@ export function makeFilesDownloadHandler(
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
             datasourceId,
-            tag: "other",
+            tag: FilesErrorTag.Other,
             message: "range not supported on this resource",
           });
           return {
             ok: false,
             error: {
-              tag: "other",
+              tag: FilesErrorTag.Other,
               message: "range not supported on this resource",
               retryable: false,
             },
@@ -1498,13 +1503,13 @@ export function makeFilesDownloadHandler(
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
             datasourceId,
-            tag: "other",
+            tag: FilesErrorTag.Other,
             message: "range mismatch on this resource",
           });
           return {
             ok: false,
             error: {
-              tag: "other",
+              tag: FilesErrorTag.Other,
               message: "range mismatch on this resource",
               retryable: false,
             },
@@ -1514,13 +1519,13 @@ export function makeFilesDownloadHandler(
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
             datasourceId,
-            tag: "other",
+            tag: FilesErrorTag.Other,
             message: "byte count mismatch",
           });
           return {
             ok: false,
             error: {
-              tag: "other",
+              tag: FilesErrorTag.Other,
               message: "byte count mismatch",
               retryable: false,
             },
@@ -1530,13 +1535,13 @@ export function makeFilesDownloadHandler(
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
             datasourceId,
-            tag: "other",
+            tag: FilesErrorTag.Other,
             message: "integrity check failed",
           });
           return {
             ok: false,
             error: {
-              tag: "other",
+              tag: FilesErrorTag.Other,
               message: "integrity check failed",
               retryable: false,
             },
@@ -1551,13 +1556,13 @@ export function makeFilesDownloadHandler(
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
             datasourceId,
-            tag: "exhausted-retries",
+            tag: FilesErrorTag.ExhaustedRetries,
             message,
           });
           return {
             ok: false,
             error: {
-              tag: "exhausted-retries",
+              tag: FilesErrorTag.ExhaustedRetries,
               message,
               retryable: true,
             },
@@ -1568,13 +1573,13 @@ export function makeFilesDownloadHandler(
           deps.fsSyncBus.emit("download-failed", {
             downloadJobId,
             datasourceId,
-            tag: "exhausted-retries",
+            tag: FilesErrorTag.ExhaustedRetries,
             message,
           });
           return {
             ok: false,
             error: {
-              tag: "exhausted-retries",
+              tag: FilesErrorTag.ExhaustedRetries,
               message,
               retryable: true,
             },
@@ -1585,9 +1590,11 @@ export function makeFilesDownloadHandler(
         deps.fsSyncBus.emit("download-failed", {
           downloadJobId,
           datasourceId,
-          tag: norm.tag === "conflict" || norm.tag === "cancelled"
-            ? "other"
-            : norm.tag,
+          tag:
+            norm.tag === FilesErrorTag.Conflict ||
+            norm.tag === FilesErrorTag.Cancelled
+              ? "other"
+              : norm.tag,
           message: norm.message,
         });
         return { ok: false, error: norm };

@@ -40,7 +40,11 @@ import type {
 } from "@ft5/fs-datasource-engine";
 import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import {
+  DatasourceError,
+  DatasourceErrorTag,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 import type { CommandHandler } from "../ipc/server.js";
 import type { EventBus } from "../events/event-bus.js";
@@ -180,7 +184,7 @@ export function makeFilesUploadHandler(
       return {
         ok: false,
         error: {
-          tag: "other",
+          tag: FilesErrorTag.Other,
           message: `validation: ${validation.reason}`,
           retryable: false,
         },
@@ -202,7 +206,7 @@ export function makeFilesUploadHandler(
       return {
         ok: false,
         error: {
-          tag: "conflict",
+          tag: FilesErrorTag.Conflict,
           message:
             "An upload to this path is already in progress",
           retryable: false,
@@ -337,7 +341,8 @@ export function makeFilesUploadHandler(
       // synchronously upon abort.
       const isCancel =
         abortController.signal.aborted ||
-        (err instanceof DatasourceError && err.tag === "cancelled") ||
+        (err instanceof DatasourceError &&
+          err.tag === DatasourceErrorTag.Cancelled) ||
         err instanceof CancelledError;
       const last = deps.registry.get(uploadJobId);
       const bytesUploaded = last?.bytesUploaded ?? 0;
@@ -360,7 +365,7 @@ export function makeFilesUploadHandler(
         return {
           ok: false,
           error: {
-            tag: "cancelled",
+            tag: FilesErrorTag.Cancelled,
             message: "upload cancelled",
             retryable: false,
           },
@@ -376,8 +381,9 @@ export function makeFilesUploadHandler(
       // BEFORE the engine call; cancelled routes through `isCancel`).
       const eventTag: "auth-revoked" | "disconnected" | "rate-limited"
         | "other" | "invalid-datasource" =
-        norm.tag === "cancelled" || norm.tag === "conflict"
-          || norm.tag === "exhausted-retries"
+        norm.tag === FilesErrorTag.Cancelled ||
+        norm.tag === FilesErrorTag.Conflict ||
+        norm.tag === FilesErrorTag.ExhaustedRetries
           ? "other"
           : norm.tag;
       deps.fsSyncBus.emit("upload-failed", {

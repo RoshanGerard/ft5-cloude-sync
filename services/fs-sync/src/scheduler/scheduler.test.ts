@@ -9,6 +9,8 @@ import { applyMigrations } from "../db/migrations.js";
 import { createEventBus, type EventBus } from "../events/event-bus.js";
 import { JobRepository } from "../jobs/repository.js";
 
+import { DatasourceErrorTag } from "@ft5/ipc-contracts";
+
 import { Scheduler, type Executor, type ExecutorResult } from "./scheduler.js";
 
 let cleanup: string[] = [];
@@ -202,7 +204,7 @@ describe("Scheduler — failure → failed transition and job-failed event", () 
     });
     const executor: Executor = async () => ({
       outcome: "failed",
-      errorTag: "provider-error",
+      errorTag: DatasourceErrorTag.ProviderError,
       errorMessage: "nope",
     });
     const sched = new Scheduler(db, {

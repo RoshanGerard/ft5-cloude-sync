@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
 import type { DatasourceFileEntry, DatasourceType } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { makeFilesStatHandler } from "./files-stat.js";
 
@@ -78,7 +78,7 @@ describe("files:stat handler", () => {
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: false,
@@ -113,7 +113,7 @@ describe("files:stat handler", () => {
         makeFakeClient({
           getMetadata: vi.fn().mockRejectedValue(
             new DatasourceError({
-              tag: "not-found",
+              tag: DatasourceErrorTag.NotFound,
               datasourceType: "google-drive",
               datasourceId: "ds-1",
               retryable: false,

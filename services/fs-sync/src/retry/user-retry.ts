@@ -4,6 +4,7 @@
 //
 // Spec: "User-level retry policy for provider-error".
 
+import { DatasourceErrorTag } from "@ft5/ipc-contracts";
 import type { RetryPolicy } from "@ft5/ipc-contracts/sync-service";
 
 export type UserRetryDecision =
@@ -36,7 +37,7 @@ export function decideUserRetry(inputs: DecisionInputs): UserRetryDecision {
   if (TERMINAL_TAGS.has(inputs.errorTag)) {
     return { branch: "terminal", reason: "not-retryable" };
   }
-  if (inputs.errorTag !== "provider-error") {
+  if (inputs.errorTag !== DatasourceErrorTag.ProviderError) {
     // System-retry branch handles network-error / rate-limited / auth-expired.
     // Anything else is a tag we don't recognize — treat as terminal rather
     // than silently retry.

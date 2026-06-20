@@ -22,6 +22,7 @@
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
 import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
+import { DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { CommandHandler } from "../ipc/server.js";
 
@@ -102,7 +103,8 @@ export function makeFilesListHandler(
           // For rate-limited rejections carrying retryAfterMs, honor
           // max(retryAfterMs, scheduledBackoff) for this attempt.
           const wait =
-            err.tag === "rate-limited" && typeof err.retryAfterMs === "number"
+            err.tag === DatasourceErrorTag.RateLimited &&
+            typeof err.retryAfterMs === "number"
               ? Math.max(err.retryAfterMs, scheduled)
               : scheduled;
           attempt += 1;

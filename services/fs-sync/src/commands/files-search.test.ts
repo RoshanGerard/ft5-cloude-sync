@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
 import type { DatasourceFileEntry, DatasourceType } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { makeFilesSearchHandler } from "./files-search.js";
 
@@ -86,7 +86,7 @@ describe("files:search handler", () => {
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: false,
@@ -121,7 +121,7 @@ describe("files:search handler", () => {
         makeFakeClient({
           search: vi.fn().mockRejectedValue(
             new DatasourceError({
-              tag: "auth-revoked",
+              tag: DatasourceErrorTag.AuthRevoked,
               datasourceType: "onedrive",
               datasourceId: "ds-1",
               retryable: false,

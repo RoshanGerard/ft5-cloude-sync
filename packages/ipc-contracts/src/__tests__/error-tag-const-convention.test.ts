@@ -60,6 +60,42 @@ const WIRE_LITERAL_ALLOWLIST = new Set<string>([
   // the pre-refactor raw-literal form still type-checks (the derived type IS
   // the string union). Migrating it would defeat the test's purpose.
   'packages/ipc-contracts/src/__tests__/datasource-error-tag.test-d.ts|||tag: "auth-revoked",',
+  // Deliberate OFF-TAXONOMY tag on a DatasourceError: "other" is NOT a
+  // DatasourceErrorTag member (the const has no `Other`); this test feeds an
+  // arbitrary tag to verify the base re-throws a strategy's tag unchanged.
+  // Type-invalid but engine test files are excluded from `tsc -b`. Nothing
+  // to migrate to.
+  'packages/fs-datasource-engine/src/base-client.test.ts|||tag: "other",',
+  // ServiceErrorTag vocabulary (SyncCommandError / sync `ErrorShape`), which
+  // is a plain type union with no const object — out of scope, stays literal.
+  // `not-found` here is the SERVICE not-found, NOT DatasourceErrorTag.NotFound.
+  'services/fs-sync/src/commands/handlers.ts|||tag: "not-found",',
+  'services/fs-sync/src/commands/handlers.ts|||error: { tag: "not-found", message: `no job with id ${params.jobId}` },',
+  'services/fs-sync/src/ipc/server.test.ts|||error: { tag: "not-found", message: "no" },',
+  // `case "other"` is a `DatasourceMimeFamily` switch arm (image/video/.../
+  // other), NOT an error tag — a guard false-positive on the shared word
+  // "other". Different enum entirely; stays literal.
+  'services/fs-sync/src/commands/files-entry-mapping.ts|||case "other":',
+  // AuthFailedTag vocabulary: the loopback OAuth broker emits `auth-failed`
+  // events whose `tag` is AuthFailedTag (a no-const type union), not
+  // Datasource/Files. Out of scope; stays literal.
+  'services/fs-sync/src/oauth/loopback-broker.ts|||tag: "auth-revoked",',
+  'services/fs-sync/src/oauth/loopback-broker.ts|||tag: "provider-error",',
+  // ServiceErrorTag `not-found` on the desktop sync-command surface
+  // (SyncCommandError) — same out-of-scope vocabulary, stays literal.
+  'apps/desktop/src/main/ipc/sync/__tests__/cancel-job.test.ts|||tag: "not-found",',
+  'apps/desktop/src/main/ipc/sync/__tests__/get-job.test.ts|||tag: "not-found",',
+  'apps/desktop/src/main/ipc/sync/__tests__/get-retry-policy.test.ts|||tag: "not-found",',
+  'apps/desktop/src/main/ipc/sync/get-job.ts|||if (err instanceof SyncCommandError && err.tag === "not-found") {',
+  'apps/desktop/src/main/sync/client.request-response.test.ts|||error: { tag: "not-found", message: "no such job" },',
+  'apps/desktop/src/main/sync/client.request-response.test.ts|||).rejects.toMatchObject({ tag: "not-found", command: "sync:get-job" });',
+  // AuthFailedTag vocabulary (the `auth-failed` event payload) — a plain
+  // type union in sync-service/events.ts with no const object, out of
+  // scope. Its `auth-revoked` literal shares the string with the two
+  // in-scope enums but is a different vocabulary; stays literal.
+  'apps/desktop/src/renderer/src/features/datasources/__tests__/store-auth.test.tsx|||tag: "auth-revoked",',
+  'apps/desktop/src/renderer/src/features/datasources/__tests__/oauth-form.test.tsx|||tag: "auth-revoked",',
+  'apps/desktop/src/renderer/src/features/datasources/__tests__/use-auth-session.test.tsx|||tag: "auth-revoked",',
 ]);
 
 // Union of every DatasourceErrorTag + FilesErrorTag value.

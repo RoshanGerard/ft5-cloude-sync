@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { DatasourceErrorTag } from "@ft5/ipc-contracts";
+
 import { DEFAULT_POLICY } from "./policy-store.js";
 
 import { decideUserRetry } from "./user-retry.js";
@@ -7,7 +9,7 @@ import { decideUserRetry } from "./user-retry.js";
 const NOW = 1_700_000_000_000;
 
 const baseInputs = {
-  errorTag: "provider-error",
+  errorTag: DatasourceErrorTag.ProviderError,
   retryable: true,
   attempt: 1,
   createdAtMs: NOW,
@@ -83,7 +85,7 @@ describe("decideUserRetry", () => {
   });
 
   it("network-error falls through to terminal here (system-retry owns it)", () => {
-    const r = decideUserRetry({ ...baseInputs, errorTag: "network-error" });
+    const r = decideUserRetry({ ...baseInputs, errorTag: DatasourceErrorTag.NetworkError });
     expect(r.branch).toBe("terminal");
   });
 });

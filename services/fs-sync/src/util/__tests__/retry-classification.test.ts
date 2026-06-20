@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { isEnvironmentallyRetryable } from "../retry-classification.js";
 
@@ -41,7 +41,9 @@ describe("isEnvironmentallyRetryable (§6.1, Decision 2 four-clause AND)", () =>
   for (const tag of tags) {
     for (const retryable of [true, false]) {
       const expected =
-        retryable === true && tag !== "auth-expired" && allowlist.has(tag);
+        retryable === true &&
+        tag !== DatasourceErrorTag.AuthExpired &&
+        allowlist.has(tag);
       it(`returns ${expected} for DatasourceError { tag: "${tag}", retryable: ${retryable} }`, () => {
         const err = new DatasourceError({
           tag,
@@ -56,7 +58,7 @@ describe("isEnvironmentallyRetryable (§6.1, Decision 2 four-clause AND)", () =>
 
   it("explicitly: auth-expired with retryable=true returns false (excluded by clause 2 even if a future tag-mapping change put it in the allowlist)", () => {
     const err = new DatasourceError({
-      tag: "auth-expired",
+      tag: DatasourceErrorTag.AuthExpired,
       datasourceType: "google-drive",
       datasourceId: "ds-1",
       retryable: true,
@@ -83,7 +85,7 @@ describe("isEnvironmentallyRetryable (§6.1, Decision 2 four-clause AND)", () =>
   it("returns false for a plain object that mimics the shape", () => {
     expect(
       isEnvironmentallyRetryable({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         retryable: true,
       }),
     ).toBe(false);
