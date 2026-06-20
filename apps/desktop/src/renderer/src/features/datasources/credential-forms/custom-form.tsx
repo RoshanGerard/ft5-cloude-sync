@@ -23,6 +23,8 @@ import { Label } from "@/components/ui/label";
 export interface CustomFormProps {
   providerId: string;
   providerDisplayName: string;
+  /** Present on the reconnect path only — omit for add-new-datasource. */
+  datasourceId?: string;
   onSubmit: (credentials: Record<string, unknown>) => void;
   onBack: () => void;
 }
@@ -30,6 +32,7 @@ export interface CustomFormProps {
 export function CustomForm({
   providerId,
   providerDisplayName,
+  datasourceId,
   onSubmit,
   onBack,
 }: CustomFormProps) {
@@ -62,9 +65,11 @@ export function CustomForm({
       setSubmitError(null);
       setSubmitting(true);
       try {
-        const startRes = await window.api.sync.authenticateStart({
-          providerId: providerId as ProviderId,
-        });
+        const startReq =
+          datasourceId !== undefined
+            ? { providerId: providerId as ProviderId, datasourceId }
+            : { providerId: providerId as ProviderId };
+        const startRes = await window.api.sync.authenticateStart(startReq);
         if (!startRes.ok) {
           const msg =
             "message" in startRes.error && startRes.error.message
@@ -99,7 +104,7 @@ export function CustomForm({
         setSubmitting(false);
       }
     },
-    [json, providerId, onSubmit],
+    [json, providerId, datasourceId, onSubmit],
   );
 
   return (

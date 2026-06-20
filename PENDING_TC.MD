@@ -1025,3 +1025,50 @@ met by the automated suite.
 removal plus one throttle relocation, both heavily unit-tested — but treat the
 bus removal as automated-green and NOT yet exercised against a running system
 until these run.
+
+---
+
+## unify-datasource-reconnect-view — deferred reconnect-view smoke + focus follow-up (2026-06-20)
+
+The explorer's two reconnect states (`auth-revoked` + `invalid-datasource`) are
+unified into ONE shared in-place reconnect view, and Reconnect now works for
+every datasource type (OAuth opens the browser; S3/credentials providers reveal
+the keys form inline, threaded with the existing `datasourceId`). Renderer-only;
+no service/IPC change. The FULL repo suite (303 files / 2778 tests) is green and
+the parallel code review found no critical issues. BUT these are UI flows that
+have NEVER been exercised against a running Electron app (worktree, no live
+provider). CLAUDE.md step 8 ("feature exercised against a running system") is
+therefore explicitly DEFERRED here.
+
+1. **Google Drive reconnect inline (was the "nothing happens" case)** — put a
+   Drive datasource into an auth-revoked / insufficient-scope state, open it in
+   the explorer. Expect: the shared reconnect view (AlertTriangle, "This
+   datasource needs reconfiguring", Reconnect + Remove) — NOT the old amber
+   "Sign in again" view, and NOT a bounce to the dashboard. Click Reconnect →
+   the browser opens in-place; on completion the folder re-lists and the view
+   disappears.
+2. **OneDrive reconnect inline** — same as (1) for OneDrive; confirm the
+   experience is now identical to Drive (the original inconsistency is gone).
+3. **S3 reconnect inline keys form (was the silent no-op)** — put an S3
+   datasource into invalid-datasource (missing/invalid creds), open it. Click
+   Reconnect → the AwsAccessKeyForm appears INLINE below the icon + "Reconnect
+   Amazon S3" heading (keep-header, form below), with a Back control. Submit
+   valid keys → the EXISTING datasource is re-authed (no new datasource minted)
+   and the folder re-lists. Back returns to the prompt.
+4. **Failed reconnect feedback** — trigger an authenticateStart failure (e.g.
+   `service-config-missing`) on a Drive/OneDrive Reconnect. Expect: an inline
+   error line (Decision 5), and Reconnect remains usable — no silent re-enable.
+
+**Owner:** unassigned. Blocked on a real datasource + a running fs-sync service
+(same gate as add-drive-oauth-browser-consent §1). The flows are automated-green
+but NOT yet provider-verified.
+
+### Follow-up (non-blocking) — keyboard focus on the inline-form transitions
+
+The code review's accessibility reviewer flagged a MINOR, deferrable nicety:
+when the inline credentials form is revealed (Reconnect → form) and dismissed
+(form Back → prompt), keyboard focus drops to `document.body` because the
+triggering button unmounts. This is not a WCAG AA failure and not a regression
+(no prior in-page form swap existed); the approved Visual direction is silent on
+it. Follow-up: on reveal, move focus to the form's first field; on Back, return
+focus to the Reconnect button. Low priority.

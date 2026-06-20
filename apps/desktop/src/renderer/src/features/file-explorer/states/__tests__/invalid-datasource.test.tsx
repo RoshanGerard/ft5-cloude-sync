@@ -318,3 +318,175 @@ describe("InvalidDatasourceState — Remove button", () => {
     expect(authenticateStartMock).not.toHaveBeenCalled();
   });
 });
+
+describe("InvalidDatasourceState — credentials-form inline reconnect (amazon-s3)", () => {
+  it("Reconnect reveals the inline access-key form and does NOT call authenticateStart directly", async () => {
+    render(
+      <InvalidDatasourceState
+        providerId="amazon-s3"
+        datasourceId="ds-9"
+        onReconnectSucceeded={() => {}}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^reconnect$/i }));
+
+    expect(await screen.findByLabelText(/access key id/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/secret access key/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/bucket/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^back$/i })).toBeInTheDocument();
+    // The shared state does NOT call authenticateStart itself for the
+    // credentials-form arm — the inline form owns that on submit.
+    expect(authenticateStartMock).not.toHaveBeenCalled();
+  });
+
+  it("Back from the inline form returns to the reconnect prompt", async () => {
+    render(
+      <InvalidDatasourceState
+        providerId="amazon-s3"
+        datasourceId="ds-9"
+        onReconnectSucceeded={() => {}}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^reconnect$/i }));
+    expect(await screen.findByLabelText(/access key id/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+
+    expect(
+      screen.getByRole("button", { name: /^reconnect$/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/access key id/i)).not.toBeInTheDocument();
+  });
+
+  it("end-to-end: submitting the inline form threads the EXISTING datasourceId and fires onReconnectSucceeded (Risk c)", async () => {
+    // The S3 form drives authenticateStart (credentials-form) +
+    // authenticateComplete itself; extend the api mock with the complete
+    // call and make start return the credentials-form kind.
+    authenticateStartMock.mockResolvedValue({
+      ok: true,
+      result: {
+        correlationId: "corr-s3",
+        kind: "credentials-form",
+        formSchema: "aws-access-key",
+      },
+    });
+    const authenticateCompleteMock = vi.fn().mockResolvedValue({
+      ok: true,
+      result: { datasourceId: "ds-9", summary: {} },
+    });
+    (
+      window as unknown as {
+        api: { sync: Record<string, unknown> };
+      }
+    ).api.sync.authenticateComplete = authenticateCompleteMock;
+
+    const onReconnectSucceeded = vi.fn();
+    render(
+      <InvalidDatasourceState
+        providerId="amazon-s3"
+        datasourceId="ds-9"
+        onReconnectSucceeded={onReconnectSucceeded}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^reconnect$/i }));
+    fireEvent.change(await screen.findByLabelText(/access key id/i), {
+      target: { value: "AKIA" },
+    });
+    fireEvent.change(screen.getByLabelText(/secret access key/i), {
+      target: { value: "x" },
+    });
+    fireEvent.change(screen.getByLabelText(/region/i), {
+      target: { value: "us-east-1" },
+    });
+    fireEvent.change(screen.getByLabelText(/bucket/i), {
+      target: { value: "b" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
+
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+    // The EXISTING datasourceId is threaded — not a freshly minted id.
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
+      providerId: "amazon-s3",
+      datasourceId: "ds-9",
+    });
+    await waitFor(() =>
+      expect(onReconnectSucceeded).toHaveBeenCalledTimes(1),
+    );
+  });
+});
+
+describe("InvalidDatasourceState — unknown providerId does not trap the user", () => {
+  it("a defined-but-unregistered providerId falls through to authenticateStart (inline error) and keeps Reconnect + Remove reachable — no empty form arm", async () => {
+    // Registry/version skew: providerId is present on the summary but not in
+    // the frozen providers registry, so credentialsSchema is undefined. The
+    // form arm MUST NOT be revealed (it would render an escape-less empty form).
+    authenticateStartMock.mockResolvedValue({
+      ok: false,
+      error: { tag: "unknown-provider", providerId: "mystery", message: "no" },
+    });
+
+    render(
+      <InvalidDatasourceState
+        providerId="mystery-provider"
+        datasourceId="ds-1"
+        onReconnectSucceeded={() => {}}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^reconnect$/i }));
+
+    // Falls through to authenticateStart (mirrors the pre-change behaviour).
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+    // No trapped empty form: the access-key field is NOT shown…
+    expect(screen.queryByLabelText(/access key id/i)).not.toBeInTheDocument();
+    // …and both prompt actions remain reachable.
+    expect(
+      screen.getByRole("button", { name: /^reconnect$/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /remove datasource/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("InvalidDatasourceState — failed authenticateStart feedback (Decision 5)", () => {
+  it("OAuth: authenticateStart {ok:false} surfaces an inline error instead of silently re-enabling", async () => {
+    authenticateStartMock.mockResolvedValue({
+      ok: false,
+      error: {
+        tag: "service-config-missing",
+        path: "/cfg.json",
+        providerId: "google-drive",
+      },
+    });
+
+    render(
+      <InvalidDatasourceState
+        providerId="google-drive"
+        datasourceId="ds-1"
+        onReconnectSucceeded={() => {}}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^reconnect$/i }));
+
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      await screen.findByText(/service-config-missing/i),
+    ).toBeInTheDocument();
+  });
+});

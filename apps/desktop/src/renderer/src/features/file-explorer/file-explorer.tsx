@@ -67,7 +67,6 @@ import {
   isEngineBacked,
   type ProviderKind,
 } from "./search-results";
-import { AuthRevokedState } from "./states/auth-revoked";
 import { DisconnectedState } from "./states/disconnected";
 import { EmptyState } from "./states/empty";
 import { InvalidDatasourceState } from "./states/invalid-datasource";
@@ -284,7 +283,6 @@ export function FileExplorer({
     prompt: downloadConflictPrompt,
     dialogProps: downloadConflictDialogProps,
   } = useDownloadConflictDialog();
-  const router = useRouter();
   // Grab the per-datasource store directly — the module-level cache
   // ensures this is the same instance for every mount with the same id.
   // We subscribe to its state once here; child chrome components accept
@@ -619,15 +617,6 @@ export function FileExplorer({
     store.retryLoad();
   };
 
-  const handleReconnect = () => {
-    // The OAuth / reconnect flow itself is out of scope for
-    // wire-file-explorer-to-service — see proposal.md "Out of scope"
-    // and the follow-up `implement-datasource-onboarding`. Routing the
-    // user back to the dashboard puts them in front of the datasource
-    // card where the reconnect affordance will live.
-    router.push("/");
-  };
-
   const handleCancelDelete = () => {
     pendingDeleteRef.current = [];
     setConfirmOpen(false);
@@ -837,10 +826,13 @@ export function FileExplorer({
             if (state.errorTag === "disconnected") {
               return <DisconnectedState onRetry={handleRetry} />;
             }
-            if (state.errorTag === "auth-revoked") {
-              return <AuthRevokedState onReconnect={handleReconnect} />;
-            }
-            if (state.errorTag === "invalid-datasource") {
+            // unify-datasource-reconnect-view — auth-revoked and
+            // invalid-datasource both render the shared in-place reconnect
+            // view (the amber navigate-away AuthRevokedState is retired).
+            if (
+              state.errorTag === "auth-revoked" ||
+              state.errorTag === "invalid-datasource"
+            ) {
               // Pattern-A full-replace state for misconfigured datasources.
               // Reconnect lifecycle (sync.authenticateStart +
               // useAuthSession) lives inside <InvalidDatasourceState>; the
