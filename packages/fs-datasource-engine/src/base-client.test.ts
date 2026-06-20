@@ -6,7 +6,6 @@ import type {
   AuthResult,
   CredentialsFormIntent,
   DatasourceStatus,
-  DatasourceType,
   DatasourceFileEntry,
   FileMetadata,
   ProviderDescriptor,

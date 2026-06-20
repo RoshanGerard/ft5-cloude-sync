@@ -1237,7 +1237,7 @@ describe("files:download — handler-owned download-progress throttle (§1, Deci
     const fakeFs = makeFakeFs({ writableParents: [PARENT] });
     const registry = createDownloadRegistry();
     const { bus, events } = captureFsSyncEvents();
-    let nowMs = 1_000_000;
+    const nowMs = 1_000_000;
     const downloadFile = vi.fn(async (target, options): Promise<DownloadResult> => {
       // Tick 1 → emits immediately (first tick, 10%).
       options?.onProgress?.(100, 1000); // 10%

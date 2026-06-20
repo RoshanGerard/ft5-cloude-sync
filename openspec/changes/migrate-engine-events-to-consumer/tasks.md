@@ -45,8 +45,8 @@
 ## 6. Verification + spec sync (Decision 7)
 
 - [x] 6.1 Full repo suite: `pnpm abi:node` + `pnpm --filter @ft5/desktop build` + `pnpm test` — GREEN: 302 files / 2767 passed / 9 skipped, no type errors; abi:node + desktop build exit 0. (Count is below the 2818 baseline because this change deletes event-bus.test + the strategy-emit guard + desktop event-bridge/event-stream tests + the consent-DatasourceEvent test.)
-- [ ] 6.2 `pnpm -w typecheck` (tsc -b) + lint clean across touched packages.
-- [ ] 6.3 `openspec validate migrate-engine-events-to-consumer --strict` green.
+- [x] 6.2 `pnpm typecheck` (tsc -b) EXIT 0 + `pnpm lint` (eslint .) clean — fixed 2 test-file nits surfaced by lint: unused `DatasourceType` import (`base-client.test.ts`) + `let`→`const nowMs` (`files-download.test.ts` flush-on-terminal test, intentionally constant clock).
+- [x] 6.3 `openspec validate migrate-engine-events-to-consumer --strict` — VALID.
 - [ ] 6.4 Advisor checkpoint #2 (before declaring done / before archive) — verify the implementation matches the design and no observable behavior regressed.
 - [x] 6.6 Pre-archive doc cleanup — DONE (slice-3 review M1): the `DatasourceClient<T>` INTERFACE-level JSDoc in `base-client.ts` still claimed emission (method bodies were fixed, the interface declaration + abstract-slot docs were missed) — `rename` ("emits one `entry-renamed`/`delete-failed`"), `downloadFile` ("the base emits `downloading`/`file-downloaded`/…"), `refreshCredentials` ("emits `token-refreshed`/`token-expired`/`authentication-failed`"), `doAuthenticateImpl` ("emit the success/failure events"), `DownloadOptions.signal` ("routes terminal emission to `download-cancelled`"). Reword to return/throw + onProgress. Harmless-but-false prose; impl is correct.
 - [ ] 6.5 During `/opsx:sync`/archive: also correct the `fs-datasource-engine` spec `## Purpose` prose (drop "the typed event bus with its streaming-throttle semantics" and "wraps every operation with event emission"), then per-cap validate all four touched capabilities: `openspec validate fs-datasource-engine --type spec`, `datasources-ui`, `fs-sync-service`, `fs-sync-supervisor` — all green.
