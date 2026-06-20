@@ -361,6 +361,66 @@ describe("InvalidDatasourceState — credentials-form inline reconnect (amazon-s
     ).toBeInTheDocument();
     expect(screen.queryByLabelText(/access key id/i)).not.toBeInTheDocument();
   });
+
+  it("end-to-end: submitting the inline form threads the EXISTING datasourceId and fires onReconnectSucceeded (Risk c)", async () => {
+    // The S3 form drives authenticateStart (credentials-form) +
+    // authenticateComplete itself; extend the api mock with the complete
+    // call and make start return the credentials-form kind.
+    authenticateStartMock.mockResolvedValue({
+      ok: true,
+      result: {
+        correlationId: "corr-s3",
+        kind: "credentials-form",
+        formSchema: "aws-access-key",
+      },
+    });
+    const authenticateCompleteMock = vi.fn().mockResolvedValue({
+      ok: true,
+      result: { datasourceId: "ds-9", summary: {} },
+    });
+    (
+      window as unknown as {
+        api: { sync: Record<string, unknown> };
+      }
+    ).api.sync.authenticateComplete = authenticateCompleteMock;
+
+    const onReconnectSucceeded = vi.fn();
+    render(
+      <InvalidDatasourceState
+        providerId="amazon-s3"
+        datasourceId="ds-9"
+        onReconnectSucceeded={onReconnectSucceeded}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^reconnect$/i }));
+    fireEvent.change(await screen.findByLabelText(/access key id/i), {
+      target: { value: "AKIA" },
+    });
+    fireEvent.change(screen.getByLabelText(/secret access key/i), {
+      target: { value: "x" },
+    });
+    fireEvent.change(screen.getByLabelText(/region/i), {
+      target: { value: "us-east-1" },
+    });
+    fireEvent.change(screen.getByLabelText(/bucket/i), {
+      target: { value: "b" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
+
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+    // The EXISTING datasourceId is threaded — not a freshly minted id.
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
+      providerId: "amazon-s3",
+      datasourceId: "ds-9",
+    });
+    await waitFor(() =>
+      expect(onReconnectSucceeded).toHaveBeenCalledTimes(1),
+    );
+  });
 });
 
 describe("InvalidDatasourceState — failed authenticateStart feedback (Decision 5)", () => {
