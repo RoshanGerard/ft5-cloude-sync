@@ -144,6 +144,44 @@ describe("CustomForm — migrated to sync.authenticate{Start,Complete}", () => {
     });
   });
 
+  it("reconnect path: a datasourceId prop is threaded into authenticateStart", async () => {
+    renderForm({ datasourceId: "ds-9" });
+    await act(async () => {});
+
+    fireEvent.change(screen.getByLabelText(/custom credentials \(JSON\)/i), {
+      target: { value: '{"x":1}' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
+
+    await waitFor(() => {
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
+    });
+    expect(authenticateStartMock.mock.calls[0]![0]).toEqual({
+      providerId: "amazon-s3",
+      datasourceId: "ds-9",
+    });
+  });
+
+  it("add path: omits datasourceId from authenticateStart when the prop is absent", async () => {
+    renderForm();
+    await act(async () => {});
+
+    fireEvent.change(screen.getByLabelText(/custom credentials \(JSON\)/i), {
+      target: { value: '{"x":1}' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
+
+    await waitFor(() => {
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1);
+    });
+    const arg = authenticateStartMock.mock.calls[0]![0] as Record<
+      string,
+      unknown
+    >;
+    expect(arg).toEqual({ providerId: "amazon-s3" });
+    expect("datasourceId" in arg).toBe(false);
+  });
+
   it("does NOT call datasources.add at any point in the migrated flow", async () => {
     renderForm();
     await act(async () => {});

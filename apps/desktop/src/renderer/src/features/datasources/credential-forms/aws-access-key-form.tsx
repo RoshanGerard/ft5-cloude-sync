@@ -31,6 +31,8 @@ import { Label } from "@/components/ui/label";
 export interface AwsAccessKeyFormProps {
   providerId: string;
   providerDisplayName: string;
+  /** Present on the reconnect path only — omit for add-new-datasource. */
+  datasourceId?: string;
   onSubmit: (credentials: Record<string, unknown>) => void;
   onBack: () => void;
 }
@@ -38,6 +40,7 @@ export interface AwsAccessKeyFormProps {
 export function AwsAccessKeyForm({
   providerId,
   providerDisplayName,
+  datasourceId,
   onSubmit,
   onBack,
 }: AwsAccessKeyFormProps) {
@@ -68,9 +71,11 @@ export function AwsAccessKeyForm({
         bucket: bucket.trim(),
       };
       try {
-        const startRes = await window.api.sync.authenticateStart({
-          providerId: providerId as ProviderId,
-        });
+        const startReq =
+          datasourceId !== undefined
+            ? { providerId: providerId as ProviderId, datasourceId }
+            : { providerId: providerId as ProviderId };
+        const startRes = await window.api.sync.authenticateStart(startReq);
         if (!startRes.ok) {
           const msg =
             "message" in startRes.error && startRes.error.message
@@ -111,6 +116,7 @@ export function AwsAccessKeyForm({
     [
       canSubmit,
       providerId,
+      datasourceId,
       accessKeyId,
       secretAccessKey,
       region,
