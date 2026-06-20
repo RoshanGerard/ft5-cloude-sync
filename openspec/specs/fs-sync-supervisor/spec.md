@@ -3,9 +3,7 @@
 ## Purpose
 
 The `fs-sync-supervisor` capability is the desktop main process's role in connecting to (and, when absent in prod, spawning detached) the `fs-sync-service` background daemon, framing the newline-delimited JSON wire protocol, exposing a renderer-facing `window.api.sync.*` IPC surface, relaying service events into desktop IPC channels, and reconciling renderer state with in-progress service jobs on app open. The supervisor deliberately does NOT kill the service on desktop quit — the whole point of the service outliving the window is that uploads continue after the app closes. It lives at `apps/desktop/src/main/sync/`.
-
 ## Requirements
-
 ### Requirement: Desktop supervisor connects-or-spawns the sync service
 
 The desktop main process SHALL, during `bootstrap()`, start a `SyncSupervisor` that obtains a connected `SyncClient` to the fs-sync service before the renderer window loads. The supervisor SHALL:
@@ -125,7 +123,7 @@ The handler module SHALL NOT import `@ft5/fs-datasource-engine` directly — all
 
 ### Requirement: Service events are relayed to the renderer
 
-The main process SHALL, as part of supervisor startup, call `SyncClient.subscribeEvents()` once per process lifetime (singleton subscription). Every `Event` frame received SHALL be forwarded to every registered `BrowserWindow` via an IPC channel `sync:event` (distinct from the existing `datasources:event` channel). The renderer's `window.api.sync.onEvent(cb)` SHALL register a listener on that channel.
+The main process SHALL, as part of supervisor startup, call `SyncClient.subscribeEvents()` once per process lifetime (singleton subscription). Every `Event` frame received SHALL be forwarded to every registered `BrowserWindow` via an IPC channel `sync:event`. The renderer's `window.api.sync.onEvent(cb)` SHALL register a listener on that channel.
 
 In addition, `job-progress` events whose `payload.kind === 'upload'` SHALL be translated into `DatasourcesUploadProgressEvent` shapes and emitted on the existing `DATASOURCES_CHANNELS.uploadProgress` channel, preserving backward compatibility with the renderer's existing upload-progress subscribers. The translation SHALL map `jobId → transactionId` (they are the same value) and compute `percent` as `Math.floor(sentBytes / totalBytes * 100)` when both fields are present.
 
@@ -169,7 +167,7 @@ The seed event SHALL be emitted exactly once per supervisor connection. Reconnec
 
 ### Requirement: Datasource cards reflect live service job state
 
-The renderer's `DatasourceCard` SHALL compute its `status` and upload-progress display from a combination of: (a) the existing engine-event stream on `datasources:event`, and (b) the new sync-event stream including the `sync-state-seed`. Specifically:
+The renderer's `DatasourceCard` SHALL compute its `status` and upload-progress display from the new sync-event stream including the `sync-state-seed`. Specifically:
 
 - If the card's `datasourceId` appears in any job with `kind === 'sync' && status ∈ {running, queued, waiting-network}`, the card's `status` SHALL be `'syncing'`.
 - If the card's `datasourceId` has any job with `kind === 'upload' && status === 'running'`, the card SHALL render a compact progress bar showing aggregate progress (by default the progress of the single most-recently-started upload; when multiple are running, the card SHALL pick one deterministically — e.g., by `startedAt` descending).
@@ -218,3 +216,4 @@ The service's existing `dev:sync-service` script SHALL remain callable independe
 
 - **WHEN** the PR diff is inspected
 - **THEN** no `dependencies` or `devDependencies` block in the root `package.json` gains a new entry attributable to the dev orchestration (pnpm's built-in `-r --parallel` is used, not `concurrently` / `npm-run-all` / similar)
+

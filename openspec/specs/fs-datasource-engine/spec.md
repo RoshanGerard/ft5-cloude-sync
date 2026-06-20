@@ -6,7 +6,7 @@ The `fs-datasource-engine` capability is the shared, framework-agnostic main-pro
 ## Requirements
 ### Requirement: Engine is a framework-agnostic workspace package
 
-The FS Datasource Engine SHALL live at `packages/fs-datasource-engine` as a pnpm workspace package. It SHALL import types from `packages/ipc-contracts` and SHALL NOT import from `electron`, `apps/desktop/*`, or any renderer-scoped specifier. The engine SHALL expose exactly one entry point: the public `DatasourceClient<T>` interface, the `ClientFactory.create(...)` constructor, the `EventBus` subscriber surface, and port types (`CredentialStore`, `AuthIntent`). Implementations of those ports are supplied by the Electron host at wiring time.
+The FS Datasource Engine SHALL live at `packages/fs-datasource-engine` as a pnpm workspace package. It SHALL import types from `packages/ipc-contracts` and SHALL NOT import from `electron`, `apps/desktop/*`, or any renderer-scoped specifier. The engine SHALL expose exactly one entry point: the public `DatasourceClient<T>` interface, the `ClientFactory.create(...)` constructor, and port types (`CredentialStore`, `AuthIntent`). Implementations of those ports are supplied by the Electron host at wiring time.
 
 #### Scenario: No Electron imports in the engine package
 
@@ -20,7 +20,7 @@ The FS Datasource Engine SHALL live at `packages/fs-datasource-engine` as a pnpm
 
 ### Requirement: Public contract is the generic `DatasourceClient<T>` Strategy interface
 
-The engine SHALL export a public interface `DatasourceClient<T extends DatasourceType>` with the methods `status`, `testConnection`, `authenticate`, `listDirectory`, `search`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `getQuota`, `rename`, and `downloadFile`. The methods `createFile` and `cancelUpload` are NOT present (deleted by this change). The type parameter `T` SHALL flow into every generic return payload (`FileEntry<T>`, `FileMetadata<T>`, and event payloads). Concrete implementations (`S3Client`, `OneDriveClient`, `GoogleDriveClient`) SHALL conform to this interface and SHALL be constructible only via the engine's factory — not via `new` directly by consumers.
+The engine SHALL export a public interface `DatasourceClient<T extends DatasourceType>` with the methods `status`, `testConnection`, `authenticate`, `listDirectory`, `search`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `getQuota`, `rename`, and `downloadFile`. The methods `createFile` and `cancelUpload` are NOT present (deleted by this change). The type parameter `T` SHALL flow into every generic return payload (`FileEntry<T>`, `FileMetadata<T>`). Concrete implementations (`S3Client`, `OneDriveClient`, `GoogleDriveClient`) SHALL conform to this interface and SHALL be constructible only via the engine's factory — not via `new` directly by consumers.
 
 #### Scenario: Every concrete client conforms to the shared interface
 
@@ -32,46 +32,16 @@ The engine SHALL export a public interface `DatasourceClient<T extends Datasourc
 - **WHEN** a Vitest test scans `apps/desktop/src/main/ipc/` and `services/fs-sync/src/commands/` for type annotations
 - **THEN** handler call sites annotate the engine value as `DatasourceClient<DatasourceType>` (or a narrower union), not as `S3Client` / `OneDriveClient` / `GoogleDriveClient` directly
 
-### Requirement: Template base class wraps every operation with emission, refresh, and error normalization
-
-The engine SHALL provide `abstract class BaseDatasourceClient<T extends DatasourceType>` that concrete strategies extend. The base class SHALL wrap operations that emit lifecycle events (`deleteFile`, `rename`, `downloadFile`) such that it (a) emits a pre-operation event where applicable (e.g., `downloading`), (b) emits a post-operation event on success (`deleted`, `entry-renamed`, `file-downloaded`), (c) emits a `*-failed` event and throws `DatasourceError` on failure, (d) calls `normalizeError(e)` to convert any raw exception to `DatasourceError` before emitting or throwing.
-
-The base SHALL NOT auto-refresh credentials on `auth-expired`. A normalized `auth-expired` error surfaces to the caller unchanged — no refresh, no retry — for every operation. Token refresh remains a base-class responsibility but is no longer auto-wrapped around operations: it is exposed as the public single-flight `refreshCredentials()` primitive (see Requirement: Token refresh is single-flight per datasource), which callers invoke explicitly — typically through the exported `withAuthRefresh` helper (see Requirement: Engine exports a `withAuthRefresh` retry helper).
-
-The `uploadFile` method is exempt from bus emission (per ADDED Requirement: `uploadFile` is a one-shot stateless primitive); it returns the entry directly without emitting any of `uploading`, `file-created`, `upload-failed`, or `upload-cancelled` from this layer. Only the `normalizeError` wrapper applies to `uploadFile` — the base no longer auto-refreshes it.
-
-Concrete strategies SHALL implement only the `protected abstract doX(...)` methods plus `protected abstract refreshTokenImpl(): Promise<AuthResult>` and `protected abstract normalizeError(raw: unknown): DatasourceError<T>`. Strategies SHALL NOT emit events directly and SHALL NOT re-enter the base's refresh path (`refreshCredentials`) from within `refreshTokenImpl`.
-
-#### Scenario: Base does NOT emit upload events for uploadFile
-
-- **WHEN** a concrete strategy's `doUploadFileImpl` resolves successfully or throws
-- **THEN** the engine bus observes ZERO `uploading`, `file-created`, `upload-failed`, or `upload-cancelled` events for this upload (these events are emitted by the fs-sync service handler on `sync:event-stream`, not on the engine bus)
-
-#### Scenario: Base emits download lifecycle events
-
-- **WHEN** a concrete strategy's `doDownloadFileImpl` produces bytes flowing through the returned Readable
-- **THEN** the engine bus observes the `downloading` streaming event and the appropriate terminal event (`file-downloaded`, `download-failed`, or `download-cancelled`) — download is unchanged by this migration
-
-#### Scenario: Operations surface auth-expired without auto-retry
-
-- **WHEN** any operation's `doXImpl` throws an error that `normalizeError` tags `auth-expired`
-- **THEN** the base does NOT call `refreshTokenImpl`, does NOT retry the operation, and the `auth-expired` `DatasourceError` propagates to the caller unchanged (the caller decides whether to call `refreshCredentials()` and retry)
-
-#### Scenario: Strategies do not emit events directly
-
-- **WHEN** a Vitest test scans every concrete strategy class file
-- **THEN** no `.emit(` or `this.bus.` reference is present; only the base class references the event bus
-
 ### Requirement: Hybrid `Target` type supports both path and handle addressing
 
-The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: "handle"; handle: string }` in `packages/ipc-contracts`. Every method that addresses a filesystem location (`listDirectory`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `search` scope) SHALL accept `Target` as its location parameter. `FileEntry<T>` SHALL always carry both `path: string` and `handle: string` so any entry returned by a list call can be re-addressed by either mechanism. Internally, each concrete strategy SHALL maintain an LRU path↔handle cache. Cache invalidation SHALL be **internal to each mutating op** — the strategy evicts inline within the operation's success branch, before returning; NO bus event drives invalidation:
+The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: "handle"; handle: string }` in `packages/ipc-contracts`. Every method that addresses a filesystem location (`listDirectory`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `search` scope) SHALL accept `Target` as its location parameter. `FileEntry<T>` SHALL always carry both `path: string` and `handle: string` so any entry returned by a list call can be re-addressed by either mechanism. Internally, each concrete strategy SHALL maintain an LRU path↔handle cache. Cache invalidation SHALL be **internal to each mutating op** — the strategy evicts inline within the operation's success branch, before returning; invalidation is purely inline (the engine has no event bus):
 
 - On successful `uploadFile`: `doUploadFileImpl` populates the LRU directly inside its success branch.
 - On successful `deleteFile`: `doDeleteFileImpl` evicts the deleted entry's path (path-form target) or handle (handle-form target) from the LRU inside its success branch.
 - On successful `rename`: `doRenameImpl` evicts the old path from the LRU inside its success branch; for a directory rename it ALSO evicts every cached descendant under the old-path prefix. When an `overwrite` rename internally deletes a colliding sibling at the destination, that sibling's cached path is evicted too. Eviction is evict-only — the new path resolves fresh on next access.
 - The `createFile` invalidation path is not relevant: `createFile` does not exist on the engine surface.
 
-A strategy with no path cache (e.g., S3, whose keys are paths) satisfies this requirement vacuously: it has nothing to evict and a re-address always reaches the provider. Strategy constructors SHALL NOT subscribe to the engine bus to drive cache invalidation; eviction is performed inline by the mutating op, independent of the bus. The engine bus's `deleted` / `entry-renamed` emissions remain for consumer notification only.
+A strategy with no path cache (e.g., S3, whose keys are paths) satisfies this requirement vacuously: it has nothing to evict and a re-address always reaches the provider. Cache invalidation is performed inline by the mutating op; the engine has no event bus and no operation emits an event.
 
 #### Scenario: listDirectory accepts a path target
 
@@ -86,7 +56,7 @@ A strategy with no path cache (e.g., S3, whose keys are paths) satisfies this re
 #### Scenario: Handle cache is populated by upload success internally
 
 - **WHEN** a strategy's `doUploadFileImpl` resolves successfully with an entry whose `path` was not previously in the LRU
-- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; the engine bus observes ZERO `file-created` events for the upload
+- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; no event is emitted (the engine has no event bus)
 
 #### Scenario: Handle cache is invalidated by deletion
 
@@ -106,79 +76,36 @@ A strategy with no path cache (e.g., S3, whose keys are paths) satisfies this re
 #### Scenario: Overwrite rename evicts the displaced sibling's cached path
 
 - **WHEN** a strategy performs a `rename` with `conflictPolicy: "overwrite"` that internally deletes a colliding sibling at the destination path, and that sibling's path was cached
-- **THEN** the displaced sibling's cached path entry is evicted; a subsequent address of that path re-resolves (no `deleted` bus event is required to drive this eviction)
+- **THEN** the displaced sibling's cached path entry is evicted; a subsequent address of that path re-resolves (eviction is inline; the engine has no event bus)
 
-#### Scenario: Path-cache eviction is internal, not bus-driven
+#### Scenario: Path-cache eviction is internal to the mutating op
 
 - **WHEN** a strategy that maintains a path↔handle cache is constructed
-- **THEN** it does NOT register a bus subscription to invalidate that cache; a `deleted` event delivered on the engine bus from an unrelated source does not, by itself, evict the strategy's cache — eviction occurs only inline within the strategy's own successful mutating op
+- **THEN** it does NOT register any subscription to invalidate that cache (the engine has no event bus); eviction occurs only inline within the strategy's own successful mutating op
 
 #### Scenario: Every cached strategy honors the invalidation invariant (shared contract)
 
 - **WHEN** the shared strategy-contract suite runs against a concrete strategy whose fixture declares `hasPathHandleCache: true`
 - **THEN** after a successful `deleteFile` of a cached path the cache no longer holds that path, and after a successful `rename` the old path is evicted — so every present and future cached strategy is held to the invariant (a strategy whose fixture declares `hasPathHandleCache: false` satisfies it vacuously)
 
-#### Scenario: Path ambiguity surfaces via providerMetadata, not a status-changed event
+#### Scenario: Path ambiguity surfaces via providerMetadata
 
 - **WHEN** a provider permits duplicate sibling names (e.g., Google Drive) and a `{kind: "path"}` `Target` resolves to more than one provider-side item under the same (parent, name) filter
-- **THEN** the strategy selects the oldest hit (e.g., Drive orders by `createdTime asc`), populates the returned `FileEntry<T>.providerMetadata` with `ambiguous: true` and an `ambiguousSiblings` list containing the other items' handles, and emits NO `status-changed` (or any other) event for the ambiguity
-
-### Requirement: Event schema is typed per provider via `PayloadMap`
-
-The engine SHALL define event types generically: `type DatasourceEvent<T extends DatasourceType, K extends keyof PayloadMap[T]> = { event: K; datasourceType: T; datasourceId: string; ts: number; streaming?: true; payload: PayloadMap[T][K] }`. `PayloadMap` SHALL be declared in `packages/ipc-contracts` keyed by provider type → event name → payload shape. At minimum, the following event names SHALL be present for every provider: `uploading`, `upload-failed`, `file-created`, `deleted`, `delete-failed`, `authenticated`, `authentication-failed`, `token-refreshed`, `token-expired`, `status-changed`, `rate-limited`. Each payload SHALL carry provider-native fields (e.g., S3 emits `{ bucket, key, etag }` on `file-created`; Google Drive emits `{ fileId, mimeType, parents }`).
-
-#### Scenario: Consumer narrowing works via switch
-
-- **WHEN** a subscriber receives a `DatasourceEvent` and switches on `e.datasourceType`
-- **THEN** within the `case "amazon-s3":` branch the compiler narrows `e.payload` to S3's payload shape, within the `case "google-drive":` branch the compiler narrows to Drive's shape, with no manual casting
-
-#### Scenario: Adding a new provider requires only a PayloadMap entry
-
-- **WHEN** a hypothetical fourth provider is added in a test fixture by extending `PayloadMap` with a new key and registering a new strategy
-- **THEN** the engine's bus, base class, factory, and existing subscribers compile unchanged; only the new strategy and its `PayloadMap[newProvider]` entry are authored
-
-#### Scenario: `authentication-failed` payload carries the full serialized error
-
-- **WHEN** the engine emits an `authentication-failed` event (from any of: failed `authenticate()`, failed intent-completion, or failed single-flight refresh)
-- **THEN** the payload is a `SerializedDatasourceError<T>` carrying `{ tag, datasourceType, datasourceId, retryable, retryAfterMs?, raw?, message }` — not a bare reason string; subscribers reconstruct recovery affordances from the fields and do NOT rely on `instanceof DatasourceError` (structured-clone across IPC drops the class identity)
-
-### Requirement: Streaming events are throttled at 1 second OR 10% progress delta
-
-The engine bus SHALL throttle streaming events emitted from operations that produce continuous byte-flow progress. Throttle scope post-migration: the `downloading` streaming event from `downloadFile`. (The `uploading` streaming event no longer flows through the engine bus per this change; throttle for upload progress is the consumer's concern at the fs-sync handler level.)
-
-#### Scenario: Fast download emits at progress checkpoints regardless of time
-
-- **WHEN** a download streams ≥2 MB of progress in <1 second (faster than the time threshold but exceeding the 10% threshold)
-- **THEN** the engine bus emits at least one `downloading` event per 10% delta crossed; not all byte-level updates are emitted
-
-#### Scenario: Slow download emits on the 1-second cadence
-
-- **WHEN** a download streams ~10 KB/s (below the 10% threshold within 1 second)
-- **THEN** the engine bus emits exactly one `downloading` event per second of stream lifetime, even though no 10% delta was crossed
-
-#### Scenario: Terminal events bypass the throttle
-
-- **WHEN** a download completes (terminal `file-downloaded`) or aborts (terminal `download-cancelled`)
-- **THEN** the terminal event fires immediately regardless of throttle state, and any pending throttled streaming event is flushed before the terminal event
-
-#### Scenario: Throttle keys by path, not just datasource
-
-- **WHEN** two concurrent downloads on the same datasource emit `downloading` events
-- **THEN** the throttle is independent per `path` — both streams emit at their own cadences without coalescing
+- **THEN** the strategy selects the oldest hit (e.g., Drive orders by `createdTime asc`), populates the returned `FileEntry<T>.providerMetadata` with `ambiguous: true` and an `ambiguousSiblings` list containing the other items' handles, and the ambiguity is carried only on the returned entry's `providerMetadata` — the engine emits no event
 
 ### Requirement: Authentication returns an `AuthIntent`; engine never opens UI
 
-The `authenticate()` method SHALL return an `AuthIntent` discriminated union: `{ kind: "oauth"; authorizeUrl: string; completeWith(code: string): Promise<AuthResult> } | { kind: "credentials-form"; schema: CredentialsSchema; submit(values: Record<string, unknown>): Promise<AuthResult> }`. The engine SHALL NOT import `electron.shell`, SHALL NOT construct a `BrowserWindow`, and SHALL NOT open any URL or render any form. The host (Electron main) SHALL consume the intent, render the appropriate UI, and invoke `completeWith` or `submit` with the user-obtained value. On successful completion, the resolved `AuthResult` SHALL be persisted via `CredentialStore.put` before the `authenticated` event is emitted.
+The `authenticate()` method SHALL return an `AuthIntent` discriminated union: `{ kind: "oauth"; authorizeUrl: string; completeWith(code: string): Promise<AuthResult> } | { kind: "credentials-form"; schema: CredentialsSchema; submit(values: Record<string, unknown>): Promise<AuthResult> }`. The engine SHALL NOT import `electron.shell`, SHALL NOT construct a `BrowserWindow`, and SHALL NOT open any URL or render any form. The host (Electron main) SHALL consume the intent, render the appropriate UI, and invoke `completeWith` or `submit` with the user-obtained value. On successful completion, the resolved `AuthResult` SHALL be persisted via `CredentialStore.put`; the engine emits no event.
 
 #### Scenario: OAuth intent is host-completed
 
 - **WHEN** a caller invokes `client.authenticate()` on a Google Drive client and receives `{ kind: "oauth", authorizeUrl, completeWith }`, then invokes `completeWith("mock-auth-code-12345")`
-- **THEN** the promise resolves with an `AuthResult` containing access and refresh tokens, `CredentialStore.put` has been called exactly once with that result, and the `authenticated` event is emitted after the put resolves
+- **THEN** the promise resolves with an `AuthResult` containing access and refresh tokens, `CredentialStore.put` has been called exactly once with that result (the engine emits no event)
 
 #### Scenario: Credentials-form intent is host-completed
 
 - **WHEN** a caller invokes `client.authenticate()` on an S3 client and receives `{ kind: "credentials-form", schema: "aws-access-key", submit }`, then invokes `submit({ accessKeyId: "...", secretAccessKey: "..." })`
-- **THEN** the promise resolves with an `AuthResult`, `CredentialStore.put` is called once, and the `authenticated` event is emitted
+- **THEN** the promise resolves with an `AuthResult`, `CredentialStore.put` is called once (the engine emits no event)
 
 #### Scenario: Engine never imports Electron shell or BrowserWindow
 
@@ -187,22 +114,22 @@ The `authenticate()` method SHALL return an `AuthIntent` discriminated union: `{
 
 ### Requirement: Token refresh is single-flight per datasource
 
-The base SHALL expose a public `refreshCredentials(): Promise<AuthResult>` method that performs a single-flight credential refresh via the concrete strategy's `refreshTokenImpl()`. The base SHALL NOT auto-invoke `refreshCredentials()` around operations; callers invoke it explicitly (typically through the exported `withAuthRefresh` helper) after observing an `auth-expired` error. Concurrent calls to `refreshCredentials()` on the same client instance SHALL share a single refresh promise: only one `refreshTokenImpl()` call is issued, and all waiting callers resolve with the same refreshed credentials. The refreshed `AuthResult` SHALL be persisted via `CredentialStore.put` BEFORE the promise resolves. On a successful refresh, a single `token-refreshed` event SHALL be emitted. On refresh failure, `token-expired` and `authentication-failed` events SHALL be emitted and the rejection SHALL propagate to the caller (a `DatasourceError` whose `tag === "auth-expired"` when the underlying refresh did not itself produce a typed `DatasourceError`).
+The base SHALL expose a public `refreshCredentials(): Promise<AuthResult>` method that performs a single-flight credential refresh via the concrete strategy's `refreshTokenImpl()`. The base SHALL NOT auto-invoke `refreshCredentials()` around operations; callers invoke it explicitly (typically through the exported `withAuthRefresh` helper) after observing an `auth-expired` error. Concurrent calls to `refreshCredentials()` on the same client instance SHALL share a single refresh promise: only one `refreshTokenImpl()` call is issued, and all waiting callers resolve with the same refreshed credentials. The refreshed `AuthResult` SHALL be persisted via `CredentialStore.put` BEFORE the promise resolves. On a successful refresh the refreshed `AuthResult` is persisted and the promise resolves; the engine emits no event. On refresh failure the rejection SHALL propagate to the caller (a `DatasourceError` whose `tag === "auth-expired"` when the underlying refresh did not itself produce a typed `DatasourceError`); the engine emits no event.
 
 #### Scenario: Concurrent refreshCredentials calls trigger exactly one refresh
 
 - **WHEN** 5 operations on the same client concurrently fail with `auth-expired` and each calls `client.refreshCredentials()` in response
-- **THEN** `refreshTokenImpl` is invoked exactly once (observable via spy), exactly one `token-refreshed` event is emitted, and all 5 `refreshCredentials()` calls resolve with the same `AuthResult`
+- **THEN** `refreshTokenImpl` is invoked exactly once (observable via spy), and all 5 `refreshCredentials()` calls resolve with the same `AuthResult`
 
 #### Scenario: Refresh is persisted before the promise resolves
 
 - **WHEN** `refreshCredentials()` resolves successfully
 - **THEN** `CredentialStore.put` has been awaited with the new `AuthResult` before the returned promise resolves (observable via ordering spy)
 
-#### Scenario: Refresh failure emits both events and rejects
+#### Scenario: Refresh failure rejects without persisting
 
 - **WHEN** `refreshTokenImpl` throws
-- **THEN** `refreshCredentials()` rejects, exactly one `token-expired` event is emitted, exactly one `authentication-failed` event is emitted (carrying the full `SerializedDatasourceError`), and `CredentialStore.put` is NOT called with any new value
+- **THEN** `refreshCredentials()` rejects with the normalized `DatasourceError`, and `CredentialStore.put` is NOT called with any new value (the engine emits no event)
 
 ### Requirement: Normalized `DatasourceError` with 8-tag taxonomy
 
@@ -249,17 +176,17 @@ Every concrete strategy's `normalizeError(e: unknown)` SHALL return an instance 
 
 ### Requirement: `deleteDirectory` and unsupported `getQuota` throw `Unsupported`
 
-`deleteDirectory(target: Target)` SHALL throw `DatasourceError` with `tag === "unsupported"` for every provider in this change regardless of the target. `getQuota()` SHALL throw the same when called on a client whose `providerDescriptor.capabilities.quota === false`. The thrown error's `raw` field MAY carry a human-readable reason (e.g., `"disabled-for-product-stability"` vs `"not-supported-by-provider"`) but the `tag` SHALL be identical in both cases. No `*-failed` event SHALL be emitted for `Unsupported` errors (they are user-input errors, not operational failures).
+`deleteDirectory(target: Target)` SHALL throw `DatasourceError` with `tag === "unsupported"` for every provider in this change regardless of the target. `getQuota()` SHALL throw the same when called on a client whose `providerDescriptor.capabilities.quota === false`. The thrown error's `raw` field MAY carry a human-readable reason (e.g., `"disabled-for-product-stability"` vs `"not-supported-by-provider"`) but the `tag` SHALL be identical in both cases.
 
 #### Scenario: deleteDirectory always throws Unsupported
 
 - **WHEN** any concrete client's `deleteDirectory({ kind: "path", path: "/anything" })` is invoked
-- **THEN** the method throws a `DatasourceError` with `tag === "unsupported"`, and no `deleted` or `delete-failed` event is emitted
+- **THEN** the method throws a `DatasourceError` with `tag === "unsupported"` (the engine emits no event)
 
 #### Scenario: getQuota throws Unsupported on S3
 
 - **WHEN** `client.getQuota()` is invoked on an `S3Client`
-- **THEN** the method throws a `DatasourceError` with `tag === "unsupported"`, and no `status-changed` event is emitted
+- **THEN** the method throws a `DatasourceError` with `tag === "unsupported"` (the engine emits no event)
 
 #### Scenario: getQuota succeeds on providers with quota
 
@@ -268,16 +195,16 @@ Every concrete strategy's `normalizeError(e: unknown)` SHALL return an instance 
 
 ### Requirement: Factory + Registry construct clients by provider id
 
-The engine SHALL expose `ClientFactory.create(providerId: ProviderId, credentials: StoredCredentials, ctx: EngineContext): DatasourceClient<T>` where `EngineContext = { bus: EventBus; credentialStore: CredentialStore }`. A `ProviderRegistry` (internal to the engine) SHALL map each known `ProviderId` to the corresponding factory function.
+The engine SHALL expose `ClientFactory.create(providerId: ProviderId, credentials: StoredCredentials, ctx: EngineContext): DatasourceClient<T>` where `EngineContext = { credentialStore: CredentialStore }`. A `ProviderRegistry` (internal to the engine) SHALL map each known `ProviderId` to the corresponding factory function.
 
 `ClientFactory.create` SHALL throw `DatasourceError` with `tag === "invalid-datasource"` when EITHER (a) the supplied `providerId` is not present in the registry, OR (b) the supplied `credentials` value fails the per-provider shape validation declared by the registry entry (e.g., S3 credentials missing `accessKeyId`, Drive credentials missing `accessToken`). The thrown error's `retryable` SHALL be `false`; the `message` field SHALL identify which condition fired (e.g., `"unknown provider \"dropbox\""` vs `"google-drive credential is missing accessToken"`); `raw` MAY carry a structured detail object for diagnostics.
 
-Adding a new provider SHALL require exactly (a) a new concrete strategy class, (b) a new `PayloadMap[providerId]` entry in `ipc-contracts`, (c) a new registry entry, and (d) a credential-shape validator function on the registry entry — no other engine files change.
+Adding a new provider SHALL require exactly (a) a new concrete strategy class, (b) a new registry entry, and (c) a credential-shape validator function on the registry entry — no other engine files change.
 
 #### Scenario: Factory returns a configured client
 
-- **WHEN** `ClientFactory.create("amazon-s3", creds, { bus, credentialStore })` is called with valid S3 credentials
-- **THEN** the returned value is an instance of `S3Client`, assignable to `DatasourceClient<"amazon-s3">`, whose subsequent event emissions flow through the supplied bus
+- **WHEN** `ClientFactory.create("amazon-s3", creds, { credentialStore })` is called with valid S3 credentials
+- **THEN** the returned value is an instance of `S3Client`, assignable to `DatasourceClient<"amazon-s3">`
 
 #### Scenario: Unknown provider id throws InvalidDatasource
 
@@ -287,7 +214,7 @@ Adding a new provider SHALL require exactly (a) a new concrete strategy class, (
 #### Scenario: Wrong-shape credential throws InvalidDatasource
 
 - **WHEN** `ClientFactory.create("google-drive", { accessKeyId: "AKIA…", secretAccessKey: "…" } as unknown as StoredCredentials, ctx)` is called (S3 credentials supplied for a Drive datasource — type-cast to bypass the compile-time guard)
-- **THEN** the call throws a `DatasourceError` with `tag === "invalid-datasource"`, `retryable === false`, and a `message` that identifies the failing field (e.g., `"google-drive credential is missing accessToken"`); no client is constructed and no bus event is emitted
+- **THEN** the call throws a `DatasourceError` with `tag === "invalid-datasource"`, `retryable === false`, and a `message` that identifies the failing field (e.g., `"google-drive credential is missing accessToken"`); no client is constructed
 
 ### Requirement: IPC handlers call into the engine, preserving contract shapes
 
@@ -304,25 +231,6 @@ The `files:list` handler SHALL forward the request's optional `cursor` and `page
 
 - **WHEN** a grep test scans every file under `apps/desktop/src/main/ipc/`
 - **THEN** no file imports from `googleapis`, `@microsoft/microsoft-graph-client`, or `@aws-sdk/client-s3`; these specifiers only appear inside `packages/fs-datasource-engine`
-
-### Requirement: Events bridge from engine to renderer via `datasources:event`
-
-The engine's `EventBus` SHALL be bridged to the renderer by a main-process forwarder that subscribes to every event (streaming and terminal) and transmits it over a one-way IPC channel named `datasources:event`. Payloads SHALL be structured-clone-safe (no functions, no class instances beyond plain data and `DatasourceError`'s serializable fields). The preload SHALL expose `window.api.datasources.onEvent(callback): () => void` via `contextBridge`, returning an unsubscribe function. The subscribed callback SHALL receive events narrowed by the same `DatasourceEvent<T, K>` type as the engine's in-process subscribers.
-
-#### Scenario: Events flow to renderer callbacks
-
-- **WHEN** a test subscribes to `window.api.datasources.onEvent(cb)` and the engine emits a `file-created` event in the main process
-- **THEN** the callback is invoked once with an event whose `event === "file-created"` and whose `datasourceType`, `datasourceId`, and `payload` fields match the emission
-
-#### Scenario: Unsubscribe stops delivery
-
-- **WHEN** the returned unsubscribe function is called and a subsequent event is emitted in main
-- **THEN** the callback is not invoked again
-
-#### Scenario: Structured-clone safety
-
-- **WHEN** a test emits an event whose `raw` field is a plain object
-- **THEN** the renderer receives a structurally-equal plain object (not a reference); emitting a `raw` containing a function SHALL cause the forwarder to strip the function (best-effort) or refuse to forward (strict) — behaviour SHALL be documented and tested
 
 ### Requirement: Upload takes a local file path and streams from disk
 
@@ -435,11 +343,11 @@ When the check passes, behavior is unchanged: the strategy proceeds to call `abo
 - **WHEN** `status()` is called
 - **THEN** the method rejects with `tag === "auth-revoked"` and `raw.kind === "scope-insufficient"` (no narrow combination satisfies the requirement)
 
-#### Scenario: Status-changed event carries the auth-revoked tag on scope-insufficient rejection
+#### Scenario: Scope-insufficient rejection carries the auth-revoked tag on the thrown error
 
-- **GIVEN** a `GoogleDriveClient` configured for emission via the engine bus, whose `meta.scope` is `drive.file`
-- **WHEN** `status()` is called and rejects with the scope-insufficient `auth-revoked`
-- **THEN** the bus observes exactly one `status-changed` event whose payload is `{ status: "error", error: "auth-revoked" }` (the engine's existing `BaseDatasourceClient.status()` catch path emits `status-changed`, not `authentication-failed`; bus subscribers receive only the tag, while the full structured `raw: { kind: "scope-insufficient", requiredScope, actualScope }` discriminator is carried on the THROWN `DatasourceError` and is verified by the rejection scenarios above)
+- **GIVEN** a `GoogleDriveClient` whose `meta.scope` is `drive.file`
+- **WHEN** `status()` is called
+- **THEN** it rejects with a `DatasourceError` whose `tag === "auth-revoked"` and whose `raw` is `{ kind: "scope-insufficient", requiredScope: "https://www.googleapis.com/auth/drive", actualScope: <verbatim meta.scope> }`; the engine emits no event (the structured discriminator is carried on the THROWN error, verified by the rejection scenarios above)
 
 ### Requirement: Google Drive OAuth flow uses PKCE (RFC 7636, S256)
 
@@ -473,16 +381,16 @@ For OAuth-class providers (`google-drive`, `onedrive`), `oauthAppConfig` SHALL b
 
 The strategy's `doAuthenticateImpl()` SHALL be reachable from a client constructed via `createForAuth` without the existing `readCredsFromStored` empty-field rejection. For OAuth providers, `doAuthenticateImpl()` SHALL read `clientId`, `clientSecret`, and `redirectUri` from the `PreAuthConfig` slot (NOT from `StoredCredentials.meta`) when constructing the authorize URL and the token-exchange request. For credentials-form providers, `doAuthenticateImpl()` SHALL return a `CredentialsFormIntent` whose `submit(values)` validates and persists the supplied values via the engine's existing `decorateIntent` pathway.
 
-Adding a new provider type SHALL continue to require exactly the four touch points named under the existing factory requirement, with one additional concern: the registry entry SHALL declare whether the provider is OAuth-class or credentials-form-class so `createForAuth` can validate the `oauthAppConfig` argument.
+Adding a new provider type SHALL continue to require exactly the three touch points named under the existing factory requirement, with one additional concern: the registry entry SHALL declare whether the provider is OAuth-class or credentials-form-class so `createForAuth` can validate the `oauthAppConfig` argument.
 
 #### Scenario: OAuth provider built via createForAuth produces a usable OAuthIntent
 
-- **WHEN** `ClientFactory.createForAuth("google-drive", { clientId: "abc", clientSecret: "def", redirectUri: "http://127.0.0.1:55555/callback" }, { bus, credentialStore })` is called and the returned client's `authenticate()` is invoked
+- **WHEN** `ClientFactory.createForAuth("google-drive", { clientId: "abc", clientSecret: "def", redirectUri: "http://127.0.0.1:55555/callback" }, { credentialStore })` is called and the returned client's `authenticate()` is invoked
 - **THEN** the returned `AuthIntent` has `kind === "oauth"`; the `authorizeUrl` contains `client_id=abc` and `redirect_uri=http%3A%2F%2F127.0.0.1%3A55555%2Fcallback` and the PKCE `code_challenge` parameters; the `completeWith(code)` closure threads the same `code_verifier` and `clientSecret` into the token exchange; no read of `credentialStore` occurs during construction or during `authenticate()`
 
 #### Scenario: Credentials-form provider built via createForAuth produces a CredentialsFormIntent
 
-- **WHEN** `ClientFactory.createForAuth("amazon-s3", null, { bus, credentialStore })` is called and the returned client's `authenticate()` is invoked
+- **WHEN** `ClientFactory.createForAuth("amazon-s3", null, { credentialStore })` is called and the returned client's `authenticate()` is invoked
 - **THEN** the returned `AuthIntent` has `kind === "credentials-form"` and exposes a `submit(values)` closure plus the form-field schema; `submit({ accessKeyId, secretAccessKey, region })` validates the values, performs the existing `HeadBucket` connection check, and on success the engine's `decorateIntent` writes the resulting `AuthResult` via `credentialStore.put(datasourceId, …)` exactly once
 
 #### Scenario: createForAuth rejects a null oauthAppConfig for an OAuth provider
@@ -524,7 +432,7 @@ downloadFile(
 
 When `options.rangeStart` is set, the strategy SHALL attach `Range: bytes=<rangeStart>-` to the provider request. The returned `contentRange` SHALL reflect the provider's response (parsed from the `Content-Range` header or SDK equivalent); when the response is 200 OK (full content rather than 206 Partial Content), `contentRange` SHALL be omitted so consumers can detect the range-not-honored case.
 
-When `options.onProgress` is set, the strategy SHALL invoke it with `(loaded, total)` as bytes flow during the response stream's lifetime. The engine ALSO emits the four download lifecycle events on its broadcast bus (see "Engine bus emits download lifecycle events" below); the synchronous `onProgress` callback and the bus emissions fire from the same byte-flow source.
+When `options.onProgress` is set, the strategy SHALL invoke it with `(loaded, total)` as bytes flow during the response stream's lifetime. `options.onProgress` is the sole progress channel; the engine emits no event.
 
 #### Scenario: Every concrete strategy implements the new methods
 
@@ -539,44 +447,12 @@ When `options.onProgress` is set, the strategy SHALL invoke it with `(loaded, to
 #### Scenario: S3 rename of a file proceeds via copy + delete
 
 - **WHEN** an S3 client receives `rename(target, newName, "fail")` where `target` resolves to an object (`HeadObject(key)` returns 200) and the target name does not already exist (a `HeadObject` for the new key returns 404)
-- **THEN** the strategy issues `CopyObject` followed by `DeleteObject`; the bus emits exactly one `entry-renamed { from, to }`; the call resolves with the new entry
+- **THEN** the strategy issues `CopyObject` followed by `DeleteObject`; the call resolves with the new entry (the engine emits no event)
 
 #### Scenario: Directory rename with `conflictPolicy: "overwrite"` is refused
 
 - **WHEN** any client receives `rename(target, newName, "overwrite")` and the target resolves to a directory (Drive `mimeType: "application/vnd.google-apps.folder"`, OneDrive `folder` facet, or S3 virtual prefix)
 - **THEN** the call rejects with `DatasourceError { tag: "unsupported", retryable: false }` and message "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)"; no rename API call is issued
-
-### Requirement: `entry-renamed` is the single normalized rename event
-
-The engine bus SHALL emit exactly one `entry-renamed` event per successful
-`rename` call, regardless of how many provider API calls the strategy
-performed internally. The payload shape is:
-
-```typescript
-{ from: Target, to: DatasourceFileEntry<T> }
-```
-
-`from` carries the original `{datasourceId, path, handle}` so subscribers can
-identify the pre-rename entry; `to` is the full new entry including the new
-path, name, and any provider-side metadata changes. `*-failed` events on
-rename SHALL be emitted via the existing `delete-failed` taxonomy with the
-`via: "rename"` discriminator (matching `createFile`'s `via: "createFile"`
-pattern on `upload-failed`).
-
-#### Scenario: Drive rename emits `entry-renamed` once
-
-- **WHEN** a Google Drive client successfully renames `welcome.pdf` to `welcome-v2.pdf`
-- **THEN** the bus observes exactly one `entry-renamed { from: { path: "/welcome.pdf", … }, to: { path: "/welcome-v2.pdf", name: "welcome-v2.pdf", … } }`; no `file-created` or `deleted` events are emitted
-
-#### Scenario: S3 rename emits `entry-renamed` once despite copy+delete internals
-
-- **WHEN** an S3 client successfully renames `welcome.pdf` to `welcome-v2.pdf` via internal `CopyObject` + `DeleteObject`
-- **THEN** the bus observes exactly one `entry-renamed { from: …, to: … }`; the strategy's two provider API calls are not visible on the bus; subscribers cannot distinguish the rename from a Drive/OneDrive rename
-
-#### Scenario: Rename failure emits `delete-failed` with `via: "rename"`
-
-- **WHEN** a rename fails with a provider conflict, `auth-revoked`, or other normalized error
-- **THEN** the bus emits `delete-failed { tag, message, via: "rename" }` exactly once and the call rejects with the matching `DatasourceError`
 
 ### Requirement: `downloadFile` is a stateless one-shot HTTP primitive
 
@@ -609,63 +485,6 @@ Consumer-domain orchestration of resume — calling `downloadFile` again with `r
 - **WHEN** a `downloadFile` call returned a stream that successfully delivered N bytes, then the underlying provider request errored mid-stream with auth-expired (token expired during the response)
 - **THEN** the stream errors with `DatasourceError { tag: "auth-expired" }` reaching the consumer's pipe-to-disk; the engine does NOT refresh or splice internally; the consumer is responsible for deciding whether to call `downloadFile` again with `rangeStart=N` (which goes through `withRefresh` afresh and refreshes the credential)
 
-### Requirement: Engine bus emits download lifecycle events
-
-The engine bus SHALL emit four download lifecycle events during the
-lifetime of a `downloadFile` call. These events are raw vendor-API
-facts on the broadcast bus — fs-sync (the consumer that owns the
-DownloadRegistry) subscribes and applies a business-logic
-transformation before emitting its own desktop-facing events with
-different payload shapes (`downloadJobId`-keyed, business-decorated).
-The engine bus payload shapes are:
-
-```typescript
-"downloading":         { datasourceId, path, loaded: number, total: number | null };
-"file-downloaded":     { datasourceId, path, bytes: number };
-"download-failed":     SerializedDatasourceError<T>;
-"download-cancelled":  { datasourceId, path, bytesDownloaded: number, bytesTotal: number | null };
-```
-
-(`datasourceId` shown for reader clarity but lives at the `DatasourceEvent<T, K>` envelope level; the inner payload omits it.) The engine emits `file-downloaded` based on its own stream observability — when the strategy's response stream fires `end` cleanly — NOT on consumer feedback. The engine never writes to disk, so it cannot know `savedPath`; that field belongs to fs-sync's transformed desktop-facing event (see fs-sync-service spec).
-
-`download-failed`'s payload IS the `SerializedDatasourceError<T>` directly — no `{ datasourceId, path, error }` wrapper. This mirrors the existing `authentication-failed` per-provider pinning convention (`packages/ipc-contracts/src/fs-datasource-engine.ts:172`): error events on the engine bus are pinned to `SerializedDatasourceError<T>` so subscribers narrow on the envelope's `datasourceType` and read the error fields (`tag`, `retryable`, `retryAfterMs`, `raw`, `message`) directly without a wrapper unwrap. Subscribers that need to correlate a failure to a specific in-flight download key off the envelope's `datasourceId` plus their own out-of-band `(datasourceId, path) → downloadJobId` reverse index (fs-sync owns this mapping per fs-sync-service spec).
-
-The `downloading` event is streaming-tagged (subject to the same
-coalescer the engine bus already applies to `uploading`). The three
-terminal events bypass the coalescer and fire exactly once per
-`downloadFile` invocation. `path` carries the request's `Target.path`
-so subscribers can correlate against an in-flight job. The
-synchronous `options.onProgress` callback continues to fire from the
-same byte-flow source — direct caller path is unchanged; the bus is
-the broadcast path consumed by fs-sync's subscription.
-
-When `downloadFile` is invoked again with `rangeStart > 0` (handler-
-driven retry-and-resume), the new invocation produces its own fresh
-sequence of events: a new `downloading` series whose `loaded` resets
-to the provider's response (typically `rangeStart` for a 206 Partial
-Content) and its own terminal event. The bus does NOT carry an
-invocation-id; subscribers correlate by `(datasourceId, path)`.
-
-#### Scenario: Successful download emits `downloading` then `file-downloaded`
-
-- **WHEN** `engine.downloadFile(target)` resolves and the returned stream's `end` event fires cleanly after all bytes flow
-- **THEN** the bus observes one or more `downloading { datasourceId, path, loaded, total }` events as bytes flow (subject to streaming coalescing), followed by exactly one `file-downloaded { datasourceId, path, bytes }` event when the underlying stream completes successfully; no `download-failed` or `download-cancelled` event is emitted
-
-#### Scenario: Mid-stream error emits `downloading` then `download-failed`
-
-- **WHEN** `engine.downloadFile(target)` resolves and the returned stream errors mid-flight (auth-expired, network, 5xx, etc.) before the consumer reports terminal success
-- **THEN** the bus observes the `downloading` events that fired up to the failure point, followed by exactly one `download-failed` event whose payload IS the `SerializedDatasourceError<T>` for the normalized `DatasourceError` (per the `authentication-failed` precedent — payload is the error directly, no wrapper); no `file-downloaded` or `download-cancelled` event is emitted
-
-#### Scenario: AbortSignal-driven cancel emits `downloading` then `download-cancelled`
-
-- **WHEN** the consumer invokes `engine.downloadFile(target, { signal })` and aborts the signal while bytes are flowing
-- **THEN** the bus observes the `downloading` events that fired up to the abort, followed by exactly one `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }` event; no `download-failed` event is emitted (cancel is the terminal classification, not failure); `bytesDownloaded` reflects the last `loaded` value the strategy reported and `bytesTotal` reflects the response's `contentLength` (or `0` if cancelled before the response advertised one)
-
-#### Scenario: Range-resume invocation emits a fresh event sequence
-
-- **WHEN** the consumer invokes `engine.downloadFile(target, { rangeStart: N })` after a prior invocation's terminal event already fired on the bus, and the provider returns 206 Partial Content
-- **THEN** the new invocation emits its own fresh `downloading` series (with `loaded` reflecting the provider's response progression — typically starting at `N`) and its own terminal event; the bus does NOT correlate the two invocations via an invocation-id; subscribers correlate by `(datasourceId, path)` if they need to track the resume relationship
-
 ### Requirement: Rename conflict surfaces `DatasourceError { tag: "conflict" }` when policy is "fail"
 
 The `DatasourceErrorTag` taxonomy SHALL include a new member `Conflict =
@@ -677,9 +496,8 @@ parent path, the call SHALL reject with
 
 When `conflictPolicy: "overwrite"`, the engine SHALL delete the colliding
 sibling (via the existing `deleteFile` path) before performing the rename;
-the operation SHALL still emit a single `entry-renamed` (the deletion
-event SHALL NOT be emitted to the bus to keep the user-visible rename
-single-step).
+the operation SHALL resolve with the new entry; the internal delete of the
+colliding sibling is not surfaced separately (the engine emits no event).
 
 When `conflictPolicy: "keep-both"`, the engine SHALL append `-2` / `-3` /
 … suffix and retry until success or until 99 attempts (then fail with
@@ -691,38 +509,38 @@ collapses `provider-error` → `tag: "other"` before the renderer sees it.
 #### Scenario: Rename to existing sibling with policy "fail"
 
 - **WHEN** the user renames `foo.pdf` to `bar.pdf` and `bar.pdf` already exists at the same parent path, with `conflictPolicy: "fail"`
-- **THEN** the call rejects with `DatasourceError { tag: "conflict", raw: { existingPath: "/parent/bar.pdf" } }`; no provider mutation occurs; no `entry-renamed` event is emitted
+- **THEN** the call rejects with `DatasourceError { tag: "conflict", raw: { existingPath: "/parent/bar.pdf" } }`; no provider mutation occurs (the engine emits no event)
 
 #### Scenario: Rename with policy "overwrite" replaces the colliding sibling
 
 - **WHEN** the user renames `foo.pdf` to `bar.pdf`, `bar.pdf` exists, and `conflictPolicy: "overwrite"`
-- **THEN** the engine deletes the existing `bar.pdf` first, then performs the rename; the bus observes exactly one `entry-renamed { from: {…foo.pdf…}, to: {…bar.pdf…} }`; no `deleted` event is emitted
+- **THEN** the engine deletes the existing `bar.pdf` first, then performs the rename; the call resolves with the new entry; the internal delete of the colliding sibling is not separately surfaced (the engine emits no event)
 
 #### Scenario: Rename with policy "keep-both" auto-suffixes
 
 - **WHEN** the user renames `foo.pdf` to `bar.pdf` and both `bar.pdf` and `bar-2.pdf` exist, with `conflictPolicy: "keep-both"`
-- **THEN** the engine retries with `bar-2.pdf` (collides), then `bar-3.pdf` (succeeds); the bus emits one `entry-renamed { from: {…foo.pdf…}, to: {…bar-3.pdf…} }`
+- **THEN** the engine retries with `bar-2.pdf` (collides), then `bar-3.pdf` (succeeds); the call resolves with the new entry `{ path: "/parent/bar-3.pdf", … }` (the engine emits no event)
 
 ### Requirement: `uploadFile` is a one-shot stateless primitive
 
-`BaseDatasourceClient.uploadFile(parent: Target, file: { path: string; name?: string; mimeType?: string }, options?: { signal?: AbortSignal; onProgress?: (loaded: number, total: number) => void }): Promise<DatasourceFileEntry<T>>` SHALL be a one-shot wrapper around `withRefresh(() => doUploadFileImpl(parent, file, options))`. The base SHALL NOT mint a transaction-id, SHALL NOT maintain an `activeUploads` tracker map, SHALL NOT emit any of `uploading`, `file-created`, `upload-failed`, `upload-cancelled` from this code path, and SHALL NOT expose a `cancelUpload` method. Cancellation is consumer-driven via `options.signal`. Progress is consumer-observed via `options.onProgress`. The strategy returns the entry on success; rejections propagate as normalized `DatasourceError`.
+`BaseDatasourceClient.uploadFile(parent: Target, file: { path: string; name?: string; mimeType?: string }, options?: { signal?: AbortSignal; onProgress?: (loaded: number, total: number) => void }): Promise<DatasourceFileEntry<T>>` SHALL be a one-shot wrapper around `withRefresh(() => doUploadFileImpl(parent, file, options))`. The base SHALL NOT mint a transaction-id, SHALL NOT maintain an `activeUploads` tracker map, SHALL NOT emit any event (the engine has no event bus), and SHALL NOT expose a `cancelUpload` method. Cancellation is consumer-driven via `options.signal`. Progress is consumer-observed via `options.onProgress`. The strategy returns the entry on success; rejections propagate as normalized `DatasourceError`.
 
 The `withRefresh` wrapper is retained on `uploadFile` in this change. The follow-up `migrate-engine-retry-policy-to-consumer` covers retry-policy ownership; this change does not touch that wrapper.
 
-#### Scenario: uploadFile resolves with the entry on success and emits no bus events
+#### Scenario: uploadFile resolves with the entry on success
 
 - **WHEN** a caller invokes `client.uploadFile(parent, { path: "/local/x.txt" }, { onProgress })` against a strategy whose `doUploadFileImpl` resolves with a valid `DatasourceFileEntry<T>`
-- **THEN** the call resolves with that entry; the engine bus observes ZERO `uploading`, `file-created`, `upload-failed`, or `upload-cancelled` events for this upload; `onProgress` was invoked at least once during the upload with non-decreasing `loaded` values
+- **THEN** the call resolves with that entry; no event is emitted (the engine has no event bus); `onProgress` was invoked at least once during the upload with non-decreasing `loaded` values
 
-#### Scenario: uploadFile rejects with the strategy's normalized error on failure and emits no bus events
+#### Scenario: uploadFile rejects with the strategy's normalized error on failure
 
 - **WHEN** a caller invokes `client.uploadFile(...)` and the strategy's `doUploadFileImpl` throws a raw provider exception
-- **THEN** the wrapper invokes `normalizeError(raw)` and rejects with the resulting `DatasourceError<T>`; the engine bus observes ZERO upload-related events
+- **THEN** the wrapper invokes `normalizeError(raw)` and rejects with the resulting `DatasourceError<T>` (the engine emits no event)
 
 #### Scenario: uploadFile single-flight refreshes once on auth-expired
 
 - **WHEN** two concurrent `uploadFile` calls on the same datasource each receive a raw exception that `normalizeError` tags `"auth-expired"`
-- **THEN** `refreshToken` is invoked exactly once, both calls await the same refresh promise, both retry their `doUploadFileImpl` after refresh resolves, and a single `token-refreshed` event is emitted on the engine bus (`withRefresh` semantics unchanged from before this migration)
+- **THEN** `refreshToken` is invoked exactly once, both calls await the same refresh promise, both retry their `doUploadFileImpl` after refresh resolves (the engine emits no event; `refreshCredentials` persists via `CredentialStore.put`)
 
 ### Requirement: `doUploadFileImpl` signature is `(parent, file, options)` — no `register` callback
 
@@ -777,22 +595,22 @@ When a strategy's `doUploadFileImpl` allocates provider-side state that requires
 
 ### Requirement: Strategy LRU path-handle invalidation on upload completion is internal
 
-Drive and OneDrive strategies maintain a path-handle LRU cache. After this migration, LRU population on successful upload SHALL be performed internally inside `doUploadFileImpl` (calling `this.pathHandleCache.set(entry.path, entry.handle)` directly before returning), NOT via the engine bus. The strategies' constructor bus subscriptions SHALL drop the `file-created` arm. They SHALL retain the `deleted` arm — `deleteFile` continues to emit `deleted` on the engine bus (not migrated by this change).
+Drive and OneDrive strategies maintain a path-handle LRU cache. After this migration, LRU population on successful upload SHALL be performed internally inside `doUploadFileImpl` (calling `this.pathHandleCache.set(entry.path, entry.handle)` directly before returning), NOT via any event bus. Strategy constructors register NO bus subscriptions (the engine has no event bus); deletion/rename eviction is performed inline within `doDeleteFileImpl` / `doRenameImpl` (see Requirement: Hybrid `Target` type supports both path and handle addressing).
 
-#### Scenario: Drive LRU is populated by uploadFile success without engine bus emission
+#### Scenario: Drive LRU is populated by uploadFile success
 
 - **WHEN** an upload to Google Drive resolves successfully and returns an entry whose `path` was not previously in the strategy's LRU
-- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; the engine bus observes ZERO `file-created` events for this upload (Decision 1)
+- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; no event is emitted (the engine has no event bus)
 
-#### Scenario: OneDrive LRU is populated by uploadFile success without engine bus emission
+#### Scenario: OneDrive LRU is populated by uploadFile success
 
 - **WHEN** an upload to OneDrive resolves successfully and returns an entry whose `path` was not previously in the strategy's LRU
-- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; the engine bus observes ZERO `file-created` events for this upload
+- **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; no event is emitted (the engine has no event bus)
 
-#### Scenario: Drive LRU is invalidated by deleteFile via engine bus subscription
+#### Scenario: Drive LRU is invalidated inline by deleteFile
 
 - **WHEN** `deleteFile` succeeds for a path present in the strategy's LRU
-- **THEN** the strategy's bus subscription on `deleted` invalidates the path's LRU entry (deleteFile is NOT migrated by this change and continues to emit on the engine bus)
+- **THEN** the strategy evicts that path's LRU entry inline within `doDeleteFileImpl` (there is no bus subscription; the engine has no event bus)
 
 ### Requirement: Engine exports a `withAuthRefresh` retry helper
 
@@ -868,4 +686,47 @@ continuation token (forwarded unchanged) otherwise.
 
 - **WHEN** a caller invokes `client.listDirectory(target, { cursor: staleToken })` and the provider rejects the token (Drive 400 / S3 InvalidArgument / OneDrive 400)
 - **THEN** the call rejects with `DatasourceError { tag: "provider-error", message: <provider message> }`; no `expired-cursor` tag is introduced (per design.md Decision 8). fs-sync's `normalizeFilesError` collapses this to the wire `tag: "other"` the renderer observes
+
+### Requirement: Template base class wraps every operation with refresh coordination and error normalization
+
+The engine SHALL provide `abstract class BaseDatasourceClient<T extends DatasourceType>` that concrete strategies extend. The base SHALL wrap deleteFile, rename, downloadFile, uploadFile, status, testConnection, and the read operations so that it (a) calls `normalizeError(e)` to convert any raw exception to a typed `DatasourceError<T>` before throwing, and (b) returns the typed result on success. The base SHALL NOT emit any event and SHALL NOT define, hold, or inject an event bus. The base SHALL NOT auto-refresh credentials on `auth-expired`; a normalized `auth-expired` error surfaces to the caller unchanged. Token refresh is exposed as the public single-flight `refreshCredentials()` primitive (see Requirement: Token refresh is single-flight per datasource), invoked explicitly by callers (typically via the exported `withAuthRefresh` helper). Concrete strategies SHALL implement only the `protected abstract doX(...)` methods plus `refreshTokenImpl()` and `normalizeError(raw)`. Strategies SHALL NOT emit events and SHALL NOT reference an event bus.
+
+#### Scenario: Base reports operation outcome via return value or thrown error
+
+- **WHEN** a strategy's `doDeleteFileImpl` or `doRenameImpl` resolves or throws
+- **THEN** the base returns the typed result (the deleted target, or the new `DatasourceFileEntry<T>`) on success, or throws the normalized `DatasourceError<T>` on failure — and no event is emitted (the engine has no event bus)
+
+#### Scenario: downloadFile reports progress via onProgress only
+
+- **WHEN** a strategy's `doDownloadFileImpl` produces bytes flowing through the returned Readable AND `options.onProgress` is provided
+- **THEN** `onProgress(loaded, total)` fires as bytes flow; the engine emits no downloading / file-downloaded / download-failed / download-cancelled event
+
+#### Scenario: Operations surface auth-expired without auto-retry
+
+- **WHEN** any operation's `doXImpl` throws an error that `normalizeError` tags `auth-expired`
+- **THEN** the base does NOT call `refreshTokenImpl`, does NOT retry, and the `auth-expired` `DatasourceError` propagates to the caller unchanged
+
+#### Scenario: Strategies and base reference no event bus
+
+- **WHEN** a Vitest/grep test scans every file under packages/fs-datasource-engine/src/
+- **THEN** no `.emit(`, `this.bus`, `ctx.bus`, `EventBus`, or `createEventBus` reference is present anywhere
+
+### Requirement: The engine defines no event bus; consumers own event emission
+
+The engine SHALL NOT define, export, instantiate, or inject an EventBus. `EngineContext` SHALL be `{ credentialStore: CredentialStore }` with NO bus field. The engine package entry point SHALL NOT export `createEventBus`, `EventBus`, `EventBusOptions`, `Clock`, or `ClockTimer`; `@ft5/ipc-contracts` SHALL NOT export `DatasourceEvent`, `AnyDatasourceEvent`, `PayloadMap`, or `CanonicalEventPayloads`. Callers observe operation outcomes via return values and thrown normalized `DatasourceError`, and progress via `options.onProgress`. Each consumer emits its own domain events on its own pub/sub mechanism.
+
+#### Scenario: No event-bus surface in the engine package
+
+- **WHEN** a grep test scans packages/fs-datasource-engine/src
+- **THEN** there is no `event-bus.ts` module, no `createEventBus` factory, and no `.emit(` call anywhere
+
+#### Scenario: EngineContext carries no bus
+
+- **WHEN** a typed test inspects the `EngineContext` type
+- **THEN** it is exactly `{ credentialStore: CredentialStore }` with no `bus` member, and `ClientFactory.create` / `createForAuth` accept that shape
+
+#### Scenario: Public exports drop the event types
+
+- **WHEN** a typed test imports from `@ft5/fs-datasource-engine` and `@ft5/ipc-contracts`
+- **THEN** no `EventBus` / `createEventBus` / `DatasourceEvent` / `AnyDatasourceEvent` / `PayloadMap` symbol is exported
 

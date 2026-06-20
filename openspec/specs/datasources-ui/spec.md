@@ -121,11 +121,11 @@ Adding a new provider type to the system SHALL require exactly (a) adding a `Pro
 
 All datasource reads and mutations from the renderer SHALL go through the `window.api.datasources.*` and `window.api.sync.*` surfaces. The renderer SHALL NOT import any provider SDK, any `fs`/`child_process`/`electron`/`drizzle-orm` specifier, or any module under `apps/desktop/src/main/` or `apps/desktop/src/preload/`. The main-process handlers route list/add/remove/action requests through the persistent `DatasourceRegistry`; authenticate requests route through the service via `window.api.sync.authenticate{Start,Complete,Cancel}`. There is no feature-flagged "engine-backed vs fixture" dichotomy — the registry is the single source of truth for datasource membership, and the service is the single source of truth for credentials.
 
-The `window.api.datasources.*` surface SHALL expose: `list()`, `add(req)`, `remove(req)`, `action(req)` (unified pause / resume / sync-now), `pickFilesToUpload()`, and `onEvent(cb)`. The `startConsent(req)` and `cancelConsent(req)` methods SHALL NOT be present — they have been retired and replaced by the service-mediated `window.api.sync.authenticate{Start,Cancel}` surface. The `upload(req)` method SHALL also be absent (retired earlier — Upload dialog uses `pickFilesToUpload()` + `files.upload`).
+The `window.api.datasources.*` surface SHALL expose: `list()`, `add(req)`, `remove(req)`, `action(req)` (unified pause / resume / sync-now), and `pickFilesToUpload()`. The `startConsent(req)` and `cancelConsent(req)` methods SHALL NOT be present — they have been retired and replaced by the service-mediated `window.api.sync.authenticate{Start,Cancel}` surface. The `upload(req)` method SHALL also be absent (retired earlier — Upload dialog uses `pickFilesToUpload()` + `files.upload`).
 
 The `window.api.sync.*` surface SHALL expose (in addition to the previously specified `enqueueUpload`, `enqueueMirror`, `listJobs`, `getJob`, `cancelJob`, `setRetryPolicy`, `getRetryPolicy`, `getStatus`, `subscribeEvents`, `unsubscribeEvents`, `onEvent`): `authenticateStart(req)`, `authenticateComplete(req)`, `authenticateCancel(req)`. Each call SHALL have a typed request/response pair in `packages/ipc-contracts/src/sync-service-desktop/`.
 
-The `DatasourceEvent` discriminated union SHALL NOT carry consent-related variants any longer — the `consent-started`, `consent-completed`, `consent-cancelled`, `consent-failed`, and `consent-timeout` variants SHALL be removed. Authentication lifecycle events flow exclusively on the sync event stream as `auth-*` events (see the new "Renderer subscribes to the sync event stream for authenticate lifecycle" requirement).
+The engine-bus event types (`DatasourceEvent` / `AnyDatasourceEvent` / `PayloadMap`) and the `datasources:event` channel are removed entirely by this change (see this delta's REMOVED requirements and the `fs-datasource-engine` delta). The renderer no longer observes ANY datasource events through `window.api.datasources` — the consent-* event family was already retired to the sync stream, and the remaining engine-event path is now gone. Authentication lifecycle events flow exclusively on `window.api.sync.onEvent` as `auth-*` events (see the "Renderer subscribes to the sync event stream for authenticate lifecycle" requirement).
 
 #### Scenario: Renderer has no direct SDK import
 
@@ -141,11 +141,6 @@ The `DatasourceEvent` discriminated union SHALL NOT carry consent-related varian
 
 - **WHEN** a type test imports `SyncAuthenticateStartRequest`, `SyncAuthenticateCompleteRequest`, `SyncAuthenticateCancelRequest` from `@ft5/ipc-contracts/sync-service-desktop`
 - **THEN** all three types are present, the preload exposes the matching methods on `window.api.sync`, the renderer call sites compile under strict mode, and each method has a typed response
-
-#### Scenario: Consent event variants are absent from DatasourceEvent
-
-- **WHEN** a type test imports `DatasourceEvent` from `@ft5/ipc-contracts`
-- **THEN** the union does NOT contain `consent-started`, `consent-completed`, `consent-cancelled`, `consent-failed`, or `consent-timeout` variants; a switch over `e.event` does NOT need to handle any consent-* arm
 
 ### Requirement: Upload action opens the in-app Upload dialog
 
@@ -269,42 +264,9 @@ The renderer's visual design SHALL target a Linear/Vercel-flavoured dense-quiet 
 - **WHEN** the dashboard renders the empty state
 - **THEN** an inline `<svg>` element with a distinguishing attribute (e.g. `data-illustration="empty-datasources"`) is present in the DOM, its `fill` / `stroke` resolve to CSS variables (`var(--foreground)`, `var(--primary)`), and no `lucide-react` icon is used as the primary empty-state visual
 
-### Requirement: Renderer subscribes to the datasource event stream
-
-The renderer SHALL expose a typed subscription surface `window.api.datasources.onEvent(callback): () => void` that delivers every engine-emitted `DatasourceEvent<T, K>` to the callback. The callback parameter SHALL be generically typed so TypeScript narrowing via `switch (e.datasourceType)` and `switch (e.event)` works at the consumer call site without manual casts. The returned function SHALL unsubscribe the callback. The subscription SHALL be available after the preload `contextBridge.exposeInMainWorld` runs and before the first React render.
-
-#### Scenario: onEvent delivers typed events
-
-- **WHEN** a renderer test subscribes via `window.api.datasources.onEvent(cb)` and the main process emits a `file-created` event for an `amazon-s3` datasource
-- **THEN** `cb` is invoked once with an event whose `datasourceType === "amazon-s3"` and whose `payload` type narrows (under `switch`) to S3's `file-created` payload shape
-
-#### Scenario: Unsubscribe stops delivery
-
-- **WHEN** a renderer test obtains an unsubscribe function from `onEvent` and calls it
-- **THEN** subsequent main-process emissions do not invoke the callback
-
-#### Scenario: Dashboard store reconciles optimistic state with events
-
-- **WHEN** a user triggers an upload via a card quick-action, the optimistic-UI path marks the card as `status === "syncing"`, and the main process later emits `file-created` for that datasource
-- **THEN** the store transitions the card's status to `"connected"` (or whichever terminal status the engine reports), within one animation frame of the event being delivered
-
-### Requirement: `datasources:event` IPC channel is the single event path
-
-The main process SHALL forward engine events to the renderer over a one-way IPC channel constant `DATASOURCES_CHANNELS.event === "datasources:event"` defined in `packages/ipc-contracts`. The renderer SHALL NOT receive datasource event data through any other channel (including `datasources:upload:progress`, which remains scoped to the legacy upload progress event only during the transition window). The preload SHALL expose exactly one entry point (`window.api.datasources.onEvent`) for this channel; renderers SHALL NOT reach for `ipcRenderer` directly.
-
-#### Scenario: Channel constant is defined in the shared contract
-
-- **WHEN** a test imports `DATASOURCES_CHANNELS` from `@ft5/ipc-contracts`
-- **THEN** the object contains `event: "datasources:event"`; the main-process forwarder and the preload both reference this constant rather than string-literal duplicates
-
-#### Scenario: Renderer never accesses ipcRenderer directly for events
-
-- **WHEN** a Vitest test scans every `.ts` / `.tsx` file under `apps/desktop/src/renderer/`
-- **THEN** no file imports `ipcRenderer` from `electron`; event subscription is always via `window.api.datasources.onEvent`
-
 ### Requirement: Datasource card reflects active sync and upload jobs
 
-`DatasourceCard` SHALL derive display state from the union of (a) the existing datasource-event stream and (b) the new sync-event stream (`window.api.sync.onEvent`) plus the initial `sync-state-seed`. The mapping SHALL be:
+`DatasourceCard` SHALL derive display state from the sync-event stream (`window.api.sync.onEvent`) plus the initial `sync-state-seed`. The mapping SHALL be:
 
 - **Active sync indicator.** If there is any job for this `datasourceId` with `kind === 'sync'` AND `status ∈ {running, queued, waiting-network}`, the card's `status` SHALL be `'syncing'` regardless of other engine-reported state (sync trumps idle for display purposes).
 - **Active upload progress bar.** If there is at least one job with `kind === 'upload'` AND `status === 'running'` for this `datasourceId`, the card SHALL render a compact progress bar positioned below the card header. The bar SHALL track the progress of the most-recently-started upload (tiebreaker: `startedAt` descending, then `jobId` lexicographically). When the tracked job terminates, the bar SHALL switch to the next-newest active upload, or disappear if none remain.
@@ -314,8 +276,8 @@ These display rules SHALL be computed in a pure derivation from the renderer's i
 
 #### Scenario: Sync state trumps idle on card display
 
-- **WHEN** the engine reports a datasource as `idle` on `datasources:event` AND the sync seed includes a running sync job for the same datasource
-- **THEN** the card displays `status: 'syncing'` with the existing pulse animation; toggling the ordering of the two event arrivals does not affect the final rendered state
+- **WHEN** a datasource's baseline summary state is `idle` AND the sync seed includes a running sync job for the same datasource
+- **THEN** the card displays `status: 'syncing'` with the existing pulse animation (sync trumps idle for display)
 
 #### Scenario: Upload progress bar tracks the most recent running upload
 
@@ -419,7 +381,7 @@ The Remove button SHALL open the shared `<ConfirmRemoveDatasourceDialog>` before
 
 The renderer SHALL consume the `auth-*` event family via `window.api.sync.onEvent(callback): () => void` (the existing sync event subscription, also used for job-* events). The `useAuthSession(correlationId)` hook SHALL be the single point of consumption — it subscribes via `sync.onEvent`, filters events by `event.correlationId === correlationId`, and exposes a `{ status: "pending" | "completed" | "cancelled" | "failed" | "timeout", message?, datasourceId?, tag? }` shape to consuming components.
 
-`useConsentSession` SHALL NOT be exported any longer — call sites migrate to `useAuthSession`. The renderer's existing `window.api.datasources.onEvent` subscription remains in place for non-authenticate datasource events (status-changed, etc.) but receives NO `auth-*` events.
+`useConsentSession` SHALL NOT be exported any longer — call sites migrate to `useAuthSession`.
 
 #### Scenario: useAuthSession resolves to completed on matching auth-completed event
 

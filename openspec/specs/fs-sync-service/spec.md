@@ -893,7 +893,7 @@ interface DownloadJob {
 }
 ```
 
-The `files:download` handler SHALL `set` the entry on download start (when minting `downloadJobId`), update `bytesDownloaded` from the engine's `onProgress` callback (throttled per the same coalescing approach as upload), and `delete` the entry on terminal success / failure / cancellation.
+The `files:download` handler SHALL `set` the entry on download start (when minting `downloadJobId`), update `bytesDownloaded` from the engine's `onProgress` callback on **every** tick (so the cancel/failure terminal payloads and `downloads:list-active` read the latest count), and `delete` the entry on terminal success / failure / cancellation. The DERIVED `downloading` IPC event (see "Service handler emits `downloading` / terminal events on the IPC stream") is handler-throttled at 1 second OR 10% progress delta — the engine no longer provides an event-bus coalescer, so the handler owns this throttle — with the latest pending progress flushed before the terminal event so the final byte count is never dropped or reordered ahead of the terminal.
 
 The registry SHALL NOT persist to disk. Service crashes lose the registry; in-flight downloads orphan their partial files. Disk persistence (and the resulting service-crash recovery) is tracked in follow-up `migrate-download-registry-to-sqlite`.
 
@@ -911,6 +911,11 @@ The registry SHALL NOT persist to disk. Service crashes lose the registry; in-fl
 
 - **WHEN** a `files:download` is cancelled mid-stream (the handler emits `download-cancelled { downloadJobId }`)
 - **THEN** the registry no longer contains the `downloadJobId` entry on the next read
+
+#### Scenario: Final progress flushes before the terminal event
+
+- **WHEN** a `files:download` completes after several throttled `onProgress` ticks
+- **THEN** the handler emits a final `downloading` reflecting the last byte count BEFORE it emits the terminal `file-downloaded` on `sync:event-stream`, and no `downloading` update is emitted after the terminal event
 
 ### Requirement: `downloads:list-active` RPC returns the registry snapshot
 
@@ -943,17 +948,17 @@ expected to be polled.
 
 ### Requirement: Service handler emits `downloading` / terminal events on the IPC stream
 
-The `files:download` handler SHALL emit consumer-domain events on the service's IPC event channel. These events are DERIVED, not relayed: fs-sync subscribes to the engine bus's four download lifecycle events (`downloading`, `file-downloaded`, `download-failed`, `download-cancelled` per the engine spec) and applies a business-logic transformation — minting a `downloadJobId`, throttling progress, running the integrity check post-pipe, applying retry policy, updating the DownloadRegistry — before emitting fs-sync's own desktop-facing events. The fs-sync wire shapes differ from the engine bus shapes: engine bus payloads are keyed by `(datasourceId, path)` and carry raw vendor facts; fs-sync payloads are keyed by `downloadJobId` and carry business-decoration metadata. fs-sync events are NOT a re-broadcast of engine events.
+The `files:download` handler SHALL emit consumer-domain events on the service's IPC event channel. These events are DERIVED, not relayed: fs-sync drives them from the engine's `downloadFile` call — its `options.onProgress` callback for progress, and the call's promise resolution / rejection (and the returned stream's lifecycle) for the terminal outcome — and applies a business-logic transformation — minting a `downloadJobId`, throttling progress, running the integrity check post-pipe, applying retry policy, updating the DownloadRegistry — before emitting fs-sync's own desktop-facing events. The fs-sync wire shapes differ from the engine's raw progress facts: the engine's `onProgress` reports raw `(loaded, total)` byte counts keyed by `(datasourceId, path)`; fs-sync payloads are keyed by `downloadJobId` and carry business-decoration metadata. fs-sync events are NOT a re-broadcast of engine events.
 
 The fs-sync wire shapes:
 
-- `downloading { downloadJobId, datasourceId, progress, path, bytesLoaded, bytesTotal }` — high-frequency progress; throttling is performed upstream at the engine-bus coalescer (1s OR 10-percentage-point window) before the handler emits to fs-sync's IPC bus. The `progress` field SHALL be the integer percentage when `bytesTotal !== null && bytesTotal > 0` (computed as `floor(bytesLoaded / bytesTotal * 100)`, clamped to `[0..100]`); the `progress` field SHALL be `0` when `bytesTotal === null` or `bytesTotal === 0`. The `bytesLoaded` field SHALL be the integer number of bytes drained from the engine response stream. The `bytesTotal` field SHALL be the **best-known total size of the resource**: the engine response's `contentLength` (the value of the `Content-Length` HTTP header parsed as an integer) when present, OR the metadata-derived `size` field captured by the handler's pre-cycle `client.getMetadata(target)` prefetch (see "Requirement: `files:download` handler prefetches resource size before the cycle loop" below), OR `null` when both sources are absent. Renderers SHALL prefer `(bytesLoaded, bytesTotal)` as the source of truth for display, falling back to a bytes-only progress format when `bytesTotal` is null (see file-explorer spec.md "Download toast renders combined percent+size when total is known, falls back to bytes-only when total is unknown").
+- `downloading { downloadJobId, datasourceId, progress, path, bytesLoaded, bytesTotal }` — high-frequency progress; throttling is performed by the handler itself (1 second OR 10% progress-delta window), because the engine no longer provides an event-bus coalescer; the latest pending progress update SHALL be flushed before the terminal event so the final byte count is never dropped or emitted after the terminal. The `progress` field SHALL be the integer percentage when `bytesTotal !== null && bytesTotal > 0` (computed as `floor(bytesLoaded / bytesTotal * 100)`, clamped to `[0..100]`); the `progress` field SHALL be `0` when `bytesTotal === null` or `bytesTotal === 0`. The `bytesLoaded` field SHALL be the integer number of bytes drained from the engine response stream. The `bytesTotal` field SHALL be the **best-known total size of the resource**: the engine response's `contentLength` (the value of the `Content-Length` HTTP header parsed as an integer) when present, OR the metadata-derived `size` field captured by the handler's pre-cycle `client.getMetadata(target)` prefetch (see "Requirement: `files:download` handler prefetches resource size before the cycle loop" below), OR `null` when both sources are absent. Renderers SHALL prefer `(bytesLoaded, bytesTotal)` as the source of truth for display, falling back to a bytes-only progress format when `bytesTotal` is null (see file-explorer spec.md "Download toast renders combined percent+size when total is known, falls back to bytes-only when total is unknown").
 - `download-retrying { downloadJobId, datasourceId, attempt, limit, waitMs, engineCause }` — emitted at the start of each environmental-retry sleep (NOT for the auth-expired Layer 2 branch). One event per retry attempt; not coalesced.
 - `file-downloaded { downloadJobId, datasourceId, savedPath, bytes }` — terminal success.
 - `download-failed { downloadJobId, datasourceId, tag, message }` — terminal failure.
 - `download-cancelled { downloadJobId, datasourceId, bytesDownloaded, bytesTotal, reason }` — terminal cancel.
 
-The handler invokes the engine's `onProgress` callback hook to drive the synchronous progress accounting (registry updates and the throttled `downloading` IPC emission). Terminal events emit exactly once per download. The handler treats engine bus subscription as the canonical source for cross-cutting download lifecycle observation; the synchronous callback is the low-overhead direct-caller path that mirrors the same byte-flow.
+The handler invokes the engine's `onProgress` callback hook to drive the synchronous progress accounting (registry updates and the handler-throttled `downloading` IPC emission). Terminal events emit exactly once per download. The handler treats the engine's `downloadFile` promise resolution / rejection (and the returned stream's lifecycle) as the canonical source for the terminal outcome; the synchronous `onProgress` callback is the low-overhead direct-caller path that drives the byte-flow accounting.
 
 A client subscribed via `sync:subscribe-events` for a specific `datasourceId` SHALL receive only events for that datasource; subscriptions without a filter SHALL receive all events.
 
@@ -966,39 +971,6 @@ A client subscribed via `sync:subscribe-events` for a specific `datasourceId` SH
 
 - **WHEN** a client subscribes via `sync:subscribe-events { datasourceId: "ds-1" }` and a `files:download` is in flight for `ds-1` against a provider that returns no `Content-Length` header (e.g., chunked transfer encoding for large media)
 - **THEN** the client receives `downloading { downloadJobId, datasourceId: "ds-1", progress: 0, path, bytesLoaded: <growing integer>, bytesTotal: null }` events at the throttled rate; the `progress` field stays `0` throughout (since total is unknown) but `bytesLoaded` increments toward the file's true size; on terminal completion the client receives exactly one `file-downloaded { downloadJobId, savedPath, bytes }`
-
-### Requirement: Service subscribes to engine bus events for download lifecycle
-
-The fs-sync service SHALL subscribe to the engine bus's four download lifecycle events (`downloading`, `file-downloaded`, `download-failed`, `download-cancelled`) and treat that subscription as the canonical source for DownloadRegistry state transitions. The mapping from engine bus event to registry mutation is:
-
-- `downloading { datasourceId, path, loaded, total }` → look up the `downloadJobId` for `(datasourceId, path)` in the registry; update the entry's `bytesDownloaded = loaded` and `contentLength = total` (subject to throttling).
-- `file-downloaded { datasourceId, path, bytes }` → look up the `downloadJobId` for `(datasourceId, path)`; remove the registry entry; emit fs-sync's `file-downloaded { downloadJobId, savedPath, bytes }` after the integrity check (`savedPath` populated from the handler's pipe target — fs-sync owns it; the engine never writes to disk).
-- `download-failed` (engine bus payload IS `SerializedDatasourceError<T>` directly per the `authentication-failed` precedent — `tag`, `retryable`, `retryAfterMs`, `raw`, `message` live at the payload root; `datasourceId` lives on the envelope; `path` is NOT on this payload) → fs-sync's correlation back to the in-flight `downloadJobId` flows through the `files:download` handler's synchronous rejection path (the `engine.downloadFile(target)` Promise / its returned stream's `error` event), where the call site already holds the `(datasourceId, path)` context; the bus subscription on `download-failed` is used for cross-cutting observation. The handler emits fs-sync's `download-failed { downloadJobId, tag, message }` (or, when retry policy applies, retains the entry and dispatches a fresh `engine.downloadFile` call instead of emitting terminal).
-- `download-cancelled { datasourceId, path, bytesDownloaded, bytesTotal }` → look up the `downloadJobId` for `(datasourceId, path)`; remove the registry entry; emit fs-sync's `download-cancelled { downloadJobId, bytesDownloaded, bytesTotal, reason }`.
-
-The correlation key from engine bus events to fs-sync's job state SHALL be `(datasourceId, path) → downloadJobId`. fs-sync's in-memory registry SHALL maintain a reverse index from `(datasourceId, path)` to `downloadJobId` to make this lookup O(1). v1 enforces at most one in-flight download per `(datasourceId, path)`; a second `files:download` request whose `(datasourceId, path)` already exists in the registry SHALL be rejected with `{ ok: false, error: { tag: "other", message: "download already in progress for this entry", retryable: false } }` before any engine call is issued.
-
-The handler's synchronous `options.onProgress` callback SHALL fire from the same byte-flow source as the engine bus emission; the handler MAY use the synchronous callback for low-overhead in-process accounting (registry update, throttled IPC emission) and use the bus subscription for cross-cutting observation (audit log, telemetry). Both paths converge on the same registry state.
-
-#### Scenario: Engine `downloading` updates registry
-
-- **WHEN** the engine bus emits `downloading { datasourceId: "ds-1", path: "/welcome.pdf", loaded: 524288, total: 1048576 }` and the registry contains a job entry for `(ds-1, /welcome.pdf)` with `downloadJobId: "job-A"`
-- **THEN** the registry entry's `bytesDownloaded` updates to `524288` (subject to throttling) and `contentLength` updates to `1048576`
-
-#### Scenario: Engine `file-downloaded` removes registry entry
-
-- **WHEN** the engine bus emits `file-downloaded { datasourceId: "ds-1", path: "/welcome.pdf", bytes }` and the registry contains a job entry for `(ds-1, /welcome.pdf)` with `downloadJobId: "job-A"`
-- **THEN** after the handler's integrity check resolves, the registry no longer contains `job-A`; fs-sync emits `file-downloaded { downloadJobId: "job-A", savedPath, bytes }` on the IPC event channel exactly once
-
-#### Scenario: Engine `download-cancelled` removes registry entry
-
-- **WHEN** the engine bus emits `download-cancelled { datasourceId: "ds-1", path: "/welcome.pdf", bytesDownloaded, bytesTotal }` and the registry contains a job entry for `(ds-1, /welcome.pdf)` with `downloadJobId: "job-A"`
-- **THEN** the registry no longer contains `job-A`; fs-sync emits `download-cancelled { downloadJobId: "job-A", bytesDownloaded, bytesTotal, reason }` on the IPC event channel exactly once
-
-#### Scenario: Concurrent download for the same `(datasourceId, path)` is rejected
-
-- **WHEN** a `files:download { datasourceId: "ds-1", path: "/welcome.pdf", toPath: <…> }` is dispatched while the registry already contains an entry for `(ds-1, /welcome.pdf)`
-- **THEN** the handler rejects the second request with `{ ok: false, error: { tag: "other", message: "download already in progress for this entry", retryable: false } }`; no `engine.downloadFile` call is issued for the second request; the first download's registry entry and event stream are unaffected
 
 ### Requirement: `files:download` handler retries mid-stream environmental failures within a per-cycle budget
 
@@ -1048,7 +1020,7 @@ The wait between a failure and the next retry SHALL be `max(err.retryAfterMs ?? 
 
 ### Requirement: Service emits `download-retrying` event during environmental retry sleeps
 
-The fs-sync IPC bus SHALL emit a `download-retrying` event at the START of each environmental-retry sleep — after the budget and wall-time checks pass and before `sleepCancellable` is awaited. Every retry attempt emits exactly one `download-retrying` event; the event is NOT subject to coalescing or throttling at the fs-sync IPC layer (the fs-sync bus is uncoalesced; the engine-bus coalescer that throttles `downloading` does not apply to fs-sync IPC emissions). The payload shape:
+The fs-sync IPC bus SHALL emit a `download-retrying` event at the START of each environmental-retry sleep — after the budget and wall-time checks pass and before `sleepCancellable` is awaited. Every retry attempt emits exactly one `download-retrying` event; the event is NOT subject to coalescing or throttling at the fs-sync IPC layer (the fs-sync bus is uncoalesced; the handler's own progress throttle that bounds `downloading` does not apply to `download-retrying`). The payload shape:
 
 ```
 {
@@ -1199,12 +1171,12 @@ The prefetched `size` value SHALL NOT be reused for the post-pipe integrity hash
 
 The handler-scoped `prefetchedSize` SHALL persist across all retry cycles and rewrite-from-0 paths within the same `files:download` invocation. Subsequent attempts that re-issue `engine.downloadFile(...)` SHALL benefit from the same fallback without re-issuing the prefetch.
 
-The registry's `DownloadJobEntry.contentLength` field SHALL be seeded with `prefetchedSize` immediately after a successful prefetch (before any `downloading` event arrives). Subsequent `downloading` events whose engine `total` is `null` SHALL NOT overwrite the registry's existing `contentLength` with `null`; the rule SHALL be "preserve existing contentLength when the new value is null." Engine-reported `total` (when non-null) takes priority — a resume cycle that picks up a newly-advertised `Content-Length` SHALL update `contentLength` accordingly.
+The registry's `DownloadJobEntry.contentLength` field SHALL be seeded with `prefetchedSize` immediately after a successful prefetch (before any `downloading` event arrives). Subsequent `onProgress` ticks whose `total` is `null` SHALL NOT overwrite the registry's existing `contentLength` with `null`; the rule SHALL be "preserve existing contentLength when the new value is null." An `onProgress`-reported `total` (when non-null) takes priority — a resume cycle that picks up a newly-advertised `Content-Length` SHALL update `contentLength` accordingly.
 
 #### Scenario: Drive media file without Content-Length surfaces percentage via metadata prefetch
 
-- **WHEN** the handler runs for a Google Drive native MP4 (`?alt=media` does NOT advertise a `Content-Length` header), `client.getMetadata(target)` resolves with `metadata.size === 398458880` (380 MB), and the engine emits successive `downloading { loaded: 167_772_160, total: null }` events
-- **THEN** the handler-scoped `prefetchedSize === 398458880`; each derived fs-sync `downloading` IPC event carries `bytesTotal: 398458880` (NOT null) and `progress: 42`; the registry's `DownloadJobEntry.contentLength` settles at `398458880` and is NOT overwritten by the null-total engine events
+- **WHEN** the handler runs for a Google Drive native MP4 (`?alt=media` does NOT advertise a `Content-Length` header), `client.getMetadata(target)` resolves with `metadata.size === 398458880` (380 MB), and the engine reports successive `onProgress(loaded, total)` ticks with `total: null` (e.g. `loaded: 167_772_160`)
+- **THEN** the handler-scoped `prefetchedSize === 398458880`; each derived fs-sync `downloading` IPC event carries `bytesTotal: 398458880` (NOT null) and `progress: 42`; the registry's `DownloadJobEntry.contentLength` settles at `398458880` and is NOT overwritten by the null-total `onProgress` ticks
 
 #### Scenario: Prefetch rejects → download still completes with bytes-only progress
 
@@ -1223,7 +1195,7 @@ The registry's `DownloadJobEntry.contentLength` field SHALL be seeded with `pref
 
 #### Scenario: Engine-reported Content-Length takes priority over prefetched size
 
-- **WHEN** the prefetch resolves with `size: 379_000_000` AND the engine's `downloading` events carry `total: 398_458_880` (e.g. Drive published an updated Content-Length on the GET that disagrees with stale metadata)
+- **WHEN** the prefetch resolves with `size: 379_000_000` AND the engine's `onProgress` ticks carry `total: 398_458_880` (e.g. Drive published an updated Content-Length on the GET that disagrees with stale metadata)
 - **THEN** the handler emits `downloading { bytesTotal: 398_458_880 }` (engine value); the registry's `contentLength` settles at `398_458_880`; `prefetchedSize` is ignored at the wire layer when the engine has fresher data
 
 #### Scenario: Doc-export with no metadata size falls back to bytes-only
@@ -1527,4 +1499,33 @@ For `tag` values not in the retry set (`auth-expired` is handled by the inner `w
 
 - **WHEN** a unit test wires `client.listDirectory` to reject with `{ tag: "provider-error", retryable: false }` on attempt 1 (e.g. OneDrive's deterministic malformed-cursor guard, which fails before any network call)
 - **THEN** the handler's response is `{ ok: false, error: { tag: "other", ... } }` (engine `provider-error` collapsed by `normalizeFilesError`); `client.listDirectory` was invoked exactly once; no back-off occurred — even though `provider-error` is in the retry-tag set, `retryable: false` short-circuits the loop
+
+### Requirement: Service drives DownloadRegistry transitions from `onProgress` and the download outcome
+
+The `files:download` handler SHALL drive `DownloadRegistry` state transitions from two in-process sources, NOT from any engine event bus (the engine has no event bus):
+
+- **Progress** — the engine's synchronous `options.onProgress(loaded, total)` callback. On each tick the handler updates the in-flight entry's `bytesDownloaded = loaded` and `contentLength = total` (subject to the handler's 1s-OR-10%-delta throttle; see "In-memory `DownloadRegistry` tracks active downloads").
+- **Terminal outcome** — the `engine.downloadFile` promise and the returned stream's lifecycle. A clean stream `end` (after the handler's integrity check) is success; a stream `error` / rejected promise is failure; an abort-signal-driven rejection is cancel. On any terminal outcome the handler removes the registry entry and emits the corresponding fs-sync event (`file-downloaded` / `download-failed` / `download-cancelled`) on the IPC stream.
+
+The handler already holds the `downloadJobId` for the in-flight call in its own closure (it minted it), so progress and terminal correlation require no engine-event lookup. The registry SHALL maintain a reverse index from `(datasourceId, path)` to `downloadJobId`. v1 enforces at most one in-flight download per `(datasourceId, path)`; a second `files:download` request whose `(datasourceId, path)` already exists in the registry SHALL be rejected with `{ ok: false, error: { tag: "other", message: "download already in progress for this entry", retryable: false } }` before any engine call is issued.
+
+#### Scenario: onProgress updates the registry
+
+- **WHEN** the engine invokes `onProgress(524288, 1048576)` for the in-flight download whose registry entry is keyed `downloadJobId: "job-A"`
+- **THEN** the entry's `bytesDownloaded` updates to `524288` (subject to the handler throttle) and `contentLength` updates to `1048576`
+
+#### Scenario: Successful download outcome removes the registry entry
+
+- **WHEN** `engine.downloadFile`'s returned stream ends cleanly and the handler's integrity check resolves for `downloadJobId: "job-A"`
+- **THEN** the registry no longer contains `job-A`; fs-sync emits `file-downloaded { downloadJobId: "job-A", savedPath, bytes }` on the IPC event channel exactly once (`savedPath` is the handler's pipe target — fs-sync owns it; the engine never writes to disk)
+
+#### Scenario: Cancelled download outcome removes the registry entry
+
+- **WHEN** `engine.downloadFile` rejects via the abort signal for `downloadJobId: "job-A"`
+- **THEN** the registry no longer contains `job-A`; fs-sync emits `download-cancelled { downloadJobId: "job-A", bytesDownloaded, bytesTotal, reason }` on the IPC event channel exactly once
+
+#### Scenario: Concurrent download for the same `(datasourceId, path)` is rejected
+
+- **WHEN** a `files:download { datasourceId: "ds-1", path: "/welcome.pdf", toPath: <…> }` is dispatched while the registry already contains an entry for `(ds-1, /welcome.pdf)`
+- **THEN** the handler rejects the second request with `{ ok: false, error: { tag: "other", message: "download already in progress for this entry", retryable: false } }`; no `engine.downloadFile` call is issued for the second request; the first download's registry entry and event stream are unaffected
 
