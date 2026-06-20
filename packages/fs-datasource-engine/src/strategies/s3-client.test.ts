@@ -34,7 +34,7 @@ import type {
   CredentialsFormIntent,
   StoredCredentials,
 } from "@ft5/ipc-contracts";
-import { DatasourceError, providers } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag, providers } from "@ft5/ipc-contracts";
 
 import type { BaseClientContext, CredentialStore } from "../base-client.js";
 import { createS3Client, S3Client, pathToKey, keyToPath } from "./s3-client.js";
@@ -316,7 +316,7 @@ describe("S3Client — getMetadata", () => {
       client.getMetadata({ kind: "path", path: "/nope.txt" }),
     ).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "not-found",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.NotFound,
     );
   });
 });
@@ -430,7 +430,7 @@ describe("S3Client — authenticate", () => {
       }),
     ).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "auth-revoked",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.AuthRevoked,
     );
   });
 
@@ -457,7 +457,7 @@ describe("S3Client — refreshToken", () => {
     const refreshImpl = (client as any).refreshTokenImpl.bind(client);
     await expect(refreshImpl()).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "auth-revoked",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.AuthRevoked,
     );
   });
 });
@@ -541,7 +541,7 @@ describe("S3Client — getQuota", () => {
     const { client } = makeHarness();
     await expect(client.getQuota()).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "unsupported",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.Unsupported,
     );
   });
 });
@@ -619,7 +619,7 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
     releasePut?.();
 
     await expect(uploadPromise).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+      (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.Cancelled,
     );
   });
 });
@@ -704,7 +704,7 @@ describe("S3Client — doRenameImpl introspection (file vs virtual-folder vs not
     ).rejects.toSatisfy(
       (e: unknown) =>
         e instanceof DatasourceError &&
-        e.tag === "unsupported" &&
+        e.tag === DatasourceErrorTag.Unsupported &&
         e.message === "S3 folder rename is not supported in this version",
     );
     expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(0);
@@ -718,7 +718,7 @@ describe("S3Client — doRenameImpl introspection (file vs virtual-folder vs not
     await expect(
       client.rename({ kind: "path", path: "/missing.txt" }, "new.txt", "fail"),
     ).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "not-found",
+      (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.NotFound,
     );
   });
 });

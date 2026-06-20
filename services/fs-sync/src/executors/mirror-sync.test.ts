@@ -5,7 +5,7 @@ import * as path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { applyMigrations } from "../db/migrations.js";
 import { createEventBus, type EventBus } from "../events/event-bus.js";
@@ -250,7 +250,7 @@ describe("MirrorSyncJobExecutor — auth-expired via withAuthRefresh (§3.7)", (
 
   function authExpired(): DatasourceError<DatasourceType> {
     return new DatasourceError({
-      tag: "auth-expired",
+      tag: DatasourceErrorTag.AuthExpired,
       datasourceType: "amazon-s3",
       datasourceId: "ds-1",
       retryable: false,

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
 import type { DatasourceFileEntry, DatasourceType } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { makeFilesListHandler } from "./files-list.js";
 
@@ -143,7 +143,7 @@ describe("files:list handler", () => {
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: false,
@@ -172,7 +172,7 @@ describe("files:list handler", () => {
   it("auth-revoked engine error returns ok:false with tag:'auth-revoked' retryable:false (no env-retry)", async () => {
     const listDirectory = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "auth-revoked",
+        tag: DatasourceErrorTag.AuthRevoked,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: false,
@@ -224,7 +224,7 @@ describe("files:list handler", () => {
     const handler = makeFilesListHandler({
       resolveClient: async () => {
         throw new DatasourceError({
-          tag: "invalid-datasource",
+          tag: DatasourceErrorTag.InvalidDatasource,
           datasourceType: "google-drive",
           datasourceId: "ds-misconfigured",
           retryable: false,
@@ -255,7 +255,7 @@ describe("files:list handler", () => {
     vi.useFakeTimers();
     const listDirectory = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -289,7 +289,7 @@ describe("files:list handler", () => {
     const engineEntry = makeEngineEntry({ handle: "h-ok", name: "ok.txt" });
     const netErr = () =>
       new DatasourceError({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -331,7 +331,7 @@ describe("files:list handler", () => {
     vi.useFakeTimers();
     const listDirectory = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -364,7 +364,7 @@ describe("files:list handler", () => {
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "rate-limited",
+          tag: DatasourceErrorTag.RateLimited,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: true,
@@ -401,7 +401,7 @@ describe("files:list handler", () => {
     vi.useFakeTimers();
     const listDirectory = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "provider-error",
+        tag: DatasourceErrorTag.ProviderError,
         datasourceType: "onedrive",
         datasourceId: "ds-1",
         retryable: false,

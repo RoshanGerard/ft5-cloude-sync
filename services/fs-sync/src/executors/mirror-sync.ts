@@ -9,7 +9,7 @@ import type {
 } from "@ft5/fs-datasource-engine";
 import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
-import { EntryKind } from "@ft5/ipc-contracts";
+import { DatasourceErrorTag, EntryKind } from "@ft5/ipc-contracts";
 
 import { SnapshotRepository } from "../jobs/snapshot-repository.js";
 import type { Executor, ExecutorResult } from "../scheduler/scheduler.js";
@@ -144,7 +144,7 @@ export function buildMirrorSyncExecutor(deps: MirrorSyncDeps): Executor {
         const e = err as DatasourceError<DatasourceType>;
         const tag = (e as { tag?: string }).tag ?? "internal-error";
         const message = (e as { message?: string }).message ?? "op failed";
-        if (tag === "network-error") {
+        if (tag === DatasourceErrorTag.NetworkError) {
           return {
             outcome: "waiting-network",
             errorTag: tag,

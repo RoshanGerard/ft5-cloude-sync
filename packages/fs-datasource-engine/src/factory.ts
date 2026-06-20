@@ -271,7 +271,7 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
   for (const key of Object.keys(registry) as ProviderId[]) {
     if (!(key in providers)) {
       throw new DatasourceError({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: key,
         datasourceId: FACTORY_CONSTRUCTION_DS_ID,
         retryable: false,
@@ -287,7 +287,7 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
   for (const expectedId of Object.keys(providers) as ProviderId[]) {
     if (!(expectedId in registry)) {
       throw new DatasourceError({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: expectedId,
         datasourceId: FACTORY_CONSTRUCTION_DS_ID,
         retryable: false,

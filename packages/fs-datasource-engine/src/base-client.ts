@@ -52,7 +52,7 @@ import type {
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError, EntryKind } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag, EntryKind } from "@ft5/ipc-contracts";
 
 import type { Readable } from "node:stream";
 
@@ -562,7 +562,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   async delete(target: Target, entryKind: EntryKind): Promise<void> {
     if (entryKind === EntryKind.Directory) {
       throw new DatasourceError<T>({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: this.type,
         datasourceId: this.datasourceId,
         retryable: false,
@@ -652,7 +652,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   async getQuota(): Promise<Quota> {
     if (!this.ctx.providerDescriptor.capabilities.quota) {
       throw new DatasourceError<T>({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: this.type,
         datasourceId: this.datasourceId,
         retryable: false,
@@ -740,7 +740,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
           refreshErr instanceof DatasourceError
             ? (refreshErr as DatasourceError<T>)
             : new DatasourceError<T>({
-                tag: "auth-expired",
+                tag: DatasourceErrorTag.AuthExpired,
                 datasourceType: this.type,
                 datasourceId: this.datasourceId,
                 retryable: false,

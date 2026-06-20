@@ -30,7 +30,7 @@ import type {
   OAuthIntent,
   StoredCredentials,
 } from "@ft5/ipc-contracts";
-import { DatasourceError, providers } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag, providers } from "@ft5/ipc-contracts";
 
 import type { BaseClientContext, CredentialStore } from "../base-client.js";
 import {
@@ -410,7 +410,7 @@ describe("OneDriveClient — listDirectory", () => {
         { cursor: "https://evil.example.com/v1.0/me/drive/root/children" },
       ),
     ).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "provider-error",
+      (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.ProviderError,
     );
     // The guard fires BEFORE any Graph call.
     expect(apiCalls).toHaveLength(0);
@@ -467,7 +467,7 @@ describe("OneDriveClient — getMetadata", () => {
     await expect(
       h.client.getMetadata({ kind: "path", path: "/nope.txt" }),
     ).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "not-found",
+      (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.NotFound,
     );
   });
 });
@@ -644,7 +644,7 @@ describe("OneDriveClient — refreshToken", () => {
     const refresh = (h.client as any).refreshTokenImpl.bind(h.client);
     await expect(refresh()).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "auth-revoked",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.AuthRevoked,
     );
   });
 });
@@ -1147,7 +1147,7 @@ describe("OneDriveClient — signal-driven cancel (resumable session)", () => {
       controller.abort();
 
       await expect(uploadPromise).rejects.toSatisfy(
-        (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+        (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.Cancelled,
       );
 
       // Exactly one DELETE to the session URL — issued against a FRESH
@@ -1207,7 +1207,7 @@ describe("OneDriveClient — signal-driven cancel (resumable session)", () => {
           { signal: controller.signal },
         ),
       ).rejects.toSatisfy(
-        (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+        (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.Cancelled,
       );
     } finally {
       unlinkSync(file);

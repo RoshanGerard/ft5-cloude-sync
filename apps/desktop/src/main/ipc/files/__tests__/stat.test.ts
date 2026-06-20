@@ -1,3 +1,4 @@
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { SyncCommandError } from "../../../sync/client.js";
@@ -43,7 +44,7 @@ describe("handleFilesStat — delegates to SyncClient.request('files:stat')", ()
   it("maps SyncCommandError(auth-revoked) into ok:false envelope", async () => {
     const client = makeFakeClient({
       reject: new SyncCommandError("files:stat", {
-        tag: "auth-revoked",
+        tag: FilesErrorTag.AuthRevoked,
         message: "reconnect required",
         retryable: false,
       }),

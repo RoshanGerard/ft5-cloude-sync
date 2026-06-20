@@ -49,6 +49,7 @@
 // injected so the helper is exercised as a plain function — no Sonner,
 // no window.api.
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
@@ -246,7 +247,7 @@ describe("createUploadJobToaster — sync:event-stream subscription", () => {
         uploadJobId: "u-A",
         datasourceId: "ds-1",
         targetPath: "/projects/2026/report.pdf",
-        tag: "rate-limited",
+        tag: FilesErrorTag.RateLimited,
         message: "Slow down",
       },
     });
@@ -285,7 +286,7 @@ describe("createUploadJobToaster — sync:event-stream subscription", () => {
         uploadJobId: "u-A",
         datasourceId: "ds-1",
         targetPath: "/projects/2026/report.pdf",
-        tag: "rate-limited",
+        tag: FilesErrorTag.RateLimited,
         message: "Slow down",
       },
     });

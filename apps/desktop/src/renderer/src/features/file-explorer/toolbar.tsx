@@ -3,7 +3,10 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import type { FilesSearchResponse } from "@ft5/ipc-contracts";
-import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
+import {
+  FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -208,7 +211,7 @@ function SearchInput({ store }: SearchInputProps) {
     // surfaces an empty result with truncated=true so the UI shows the
     // provider-honest empty state.
     const deferred =
-      response.error.tag === "other" &&
+      response.error.tag === FilesErrorTag.Other &&
       response.error.message === FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE;
     store.setSearchResults([], true, deferred);
   };

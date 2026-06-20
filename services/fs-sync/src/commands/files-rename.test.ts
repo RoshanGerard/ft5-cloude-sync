@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
 import type { DatasourceFileEntry, DatasourceType } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { makeFilesRenameHandler } from "./files-rename.js";
 
@@ -131,7 +131,7 @@ describe("files:rename handler", () => {
   it("conflict (engine tag === 'conflict') maps to envelope error tag:'conflict' with existingPath", async () => {
     const rename = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "conflict",
+        tag: DatasourceErrorTag.Conflict,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: false,
@@ -169,7 +169,7 @@ describe("files:rename handler", () => {
   it("unsupported (engine tag === 'unsupported') collapses to envelope tag:'other' with the strategy's message", async () => {
     const rename = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: "amazon-s3",
         datasourceId: "ds-1",
         retryable: false,
@@ -208,7 +208,7 @@ describe("files:rename handler", () => {
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "onedrive",
           datasourceId: "ds-1",
           retryable: false,
@@ -251,7 +251,7 @@ describe("files:rename handler", () => {
     // auth-expired→auth-revoked case, which had exactly that blind spot.)
     const rename = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "auth-expired",
+        tag: DatasourceErrorTag.AuthExpired,
         datasourceType: "onedrive",
         datasourceId: "ds-1",
         retryable: false,
@@ -285,7 +285,7 @@ describe("files:rename handler", () => {
   it("rate-limited preserves retryAfterMs and retryable:true", async () => {
     const rename = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "rate-limited",
+        tag: DatasourceErrorTag.RateLimited,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -317,7 +317,7 @@ describe("files:rename handler", () => {
   it("network-error maps to tag:'disconnected' (matches normalizeFilesError contract)", async () => {
     const rename = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         datasourceType: "amazon-s3",
         datasourceId: "ds-1",
         retryable: true,
@@ -347,7 +347,7 @@ describe("files:rename handler", () => {
   it("invalid-datasource passes through as tag:'invalid-datasource' (renderer renders <InvalidDatasourceState>)", async () => {
     const rename = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "invalid-datasource",
+        tag: DatasourceErrorTag.InvalidDatasource,
         datasourceType: "google-drive",
         datasourceId: "ds-misconfigured",
         retryable: false,

@@ -30,6 +30,7 @@
 
 import { useCallback, useRef, useState } from "react";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type {
   FileEntry,
   FilesDownloadRequest,
@@ -380,7 +381,7 @@ export function useDownloadOrchestrator(
           conflictPolicy: policy,
         });
         if (response.ok) return response;
-        if (response.error.tag !== "conflict") return response;
+        if (response.error.tag !== FilesErrorTag.Conflict) return response;
         const prompt = conflictPromptRef.current;
         if (prompt === null) return response;
         const choice: DownloadConflictChoice = await prompt(
@@ -397,7 +398,7 @@ export function useDownloadOrchestrator(
       return {
         ok: false,
         error: {
-          tag: "other",
+          tag: FilesErrorTag.Other,
           message: "download conflict retry limit exceeded",
           retryable: false,
         },

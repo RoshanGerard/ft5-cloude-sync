@@ -9,7 +9,10 @@ import type {
   FilesStatRequest,
   MimeFamily,
 } from "@ft5/ipc-contracts";
-import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
+import {
+  FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -522,7 +525,7 @@ export function list(req: FilesListRequest): FilesListResponse {
     return {
       ok: false,
       error: {
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: `datasource not found: ${req.datasourceId}`,
         retryable: false,
       },
@@ -564,7 +567,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
     return {
       ok: false,
       error: {
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: `datasource not found: ${req.datasourceId}`,
         retryable: false,
       },
@@ -586,7 +589,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
         path,
         handle,
         ok: false,
-        error: { tag: "other", message: "provider locked the file" },
+        error: { tag: FilesErrorTag.Other, message: "provider locked the file" },
       });
       continue;
     }
@@ -596,7 +599,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
         path,
         handle,
         ok: false,
-        error: { tag: "other", message: "not found" },
+        error: { tag: FilesErrorTag.Other, message: "not found" },
       });
       continue;
     }
@@ -606,7 +609,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
         handle,
         ok: false,
         error: {
-          tag: "other",
+          tag: FilesErrorTag.Other,
           message: "directory removal is not supported",
         },
       });
@@ -618,7 +621,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
         path,
         handle,
         ok: false,
-        error: { tag: "other", message: "not found" },
+        error: { tag: FilesErrorTag.Other, message: "not found" },
       });
       continue;
     }
@@ -628,7 +631,7 @@ export function remove(req: FilesRemoveRequest): FilesRemoveResponse {
         path,
         handle,
         ok: false,
-        error: { tag: "other", message: "not found" },
+        error: { tag: FilesErrorTag.Other, message: "not found" },
       });
       continue;
     }
@@ -686,7 +689,7 @@ export function search(req: FilesSearchRequest): FilesSearchResponse {
     return {
       ok: false,
       error: {
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
         retryable: false,
       },

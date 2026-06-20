@@ -11,7 +11,7 @@
 // Pure predicate over `unknown`; no I/O and no dependency beyond the engine's
 // `DatasourceError` type.
 
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 /**
  * Predicate gating the environmental retry layer (Layer 3 per
@@ -35,10 +35,10 @@ export function isEnvironmentallyRetryable(
 ): err is DatasourceError {
   return (
     err instanceof DatasourceError &&
-    err.tag !== "auth-expired" &&
+    err.tag !== DatasourceErrorTag.AuthExpired &&
     err.retryable === true &&
-    (err.tag === "network-error" ||
-      err.tag === "rate-limited" ||
-      err.tag === "provider-error")
+    (err.tag === DatasourceErrorTag.NetworkError ||
+      err.tag === DatasourceErrorTag.RateLimited ||
+      err.tag === DatasourceErrorTag.ProviderError)
   );
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DatasourceClient } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { makeFilesRemoveHandler } from "./files-remove.js";
 
@@ -68,7 +68,7 @@ describe("files:remove handler", () => {
     // The files error mapping collapses "unsupported" → "other".
     const deleteSpy = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: false,
@@ -150,7 +150,7 @@ describe("files:remove handler", () => {
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: false,
@@ -185,7 +185,7 @@ describe("files:remove handler", () => {
   it("single-target failure (engine throws rate-limited) returns per-target error", async () => {
     const deleteSpy = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "rate-limited",
+        tag: DatasourceErrorTag.RateLimited,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -221,7 +221,7 @@ describe("files:remove handler", () => {
       // Succeed for h-a and h-c; fail for h-b.
       if (target.handle === "h-b") {
         throw new DatasourceError({
-          tag: "provider-error",
+          tag: DatasourceErrorTag.ProviderError,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: false,

@@ -13,6 +13,7 @@
 // state. `job-failed` and `job-cancelled` must NOT clear — those may
 // represent genuine error conditions.
 
+import { DatasourceErrorTag } from "@ft5/ipc-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EventFrame } from "@ft5/ipc-contracts/sync-service";
@@ -132,7 +133,7 @@ describe("event-bridge — datasource error healing", () => {
         jobId,
         failedAt: Date.now(),
         attempt: 1,
-        errorTag: "provider-error",
+        errorTag: DatasourceErrorTag.ProviderError,
         errorMessage: "boom",
       },
     });

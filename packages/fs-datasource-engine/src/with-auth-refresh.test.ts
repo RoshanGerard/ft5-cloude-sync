@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import { withAuthRefresh } from "./with-auth-refresh.js";
 
@@ -18,7 +18,7 @@ import { withAuthRefresh } from "./with-auth-refresh.js";
 
 function authExpired(): DatasourceError<"amazon-s3"> {
   return new DatasourceError<"amazon-s3">({
-    tag: "auth-expired",
+    tag: DatasourceErrorTag.AuthExpired,
     datasourceType: "amazon-s3",
     datasourceId: "ds-1",
     retryable: false,
@@ -28,7 +28,7 @@ function authExpired(): DatasourceError<"amazon-s3"> {
 
 function networkError(): DatasourceError<"amazon-s3"> {
   return new DatasourceError<"amazon-s3">({
-    tag: "network-error",
+    tag: DatasourceErrorTag.NetworkError,
     datasourceType: "amazon-s3",
     datasourceId: "ds-1",
     retryable: true,

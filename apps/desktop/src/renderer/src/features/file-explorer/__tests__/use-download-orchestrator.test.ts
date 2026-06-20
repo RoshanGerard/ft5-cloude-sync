@@ -29,6 +29,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type {
   FileEntry,
   FilesDownloadResponse,
@@ -360,7 +361,7 @@ function conflictEnvelope(opts?: {
   return {
     ok: false,
     error: {
-      tag: "conflict",
+      tag: FilesErrorTag.Conflict,
       message: `destination already exists at ${opts?.existingPath ?? "/Users/alice/Downloads/ft5/welcome.pdf"}`,
       retryable: false,
       existingPath:

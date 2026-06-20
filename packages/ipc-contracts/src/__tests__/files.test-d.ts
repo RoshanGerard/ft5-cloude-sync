@@ -24,7 +24,7 @@ import type {
   FilesUploadValue,
   MimeFamily,
 } from "../files.js";
-import { FILES_CHANNELS } from "../files.js";
+import { FILES_CHANNELS, FilesErrorTag } from "../files.js";
 import type { ConflictPolicy } from "../sync-service/commands.js";
 
 describe("ipc-contracts files entry shape", () => {
@@ -139,7 +139,7 @@ describe("ipc-contracts files request/response pairs", () => {
     const err: FilesListResponse = {
       ok: false,
       error: {
-        tag: "auth-revoked",
+        tag: FilesErrorTag.AuthRevoked,
         message: "Session expired; please reconnect.",
         retryable: false,
       },
@@ -239,7 +239,7 @@ describe("ipc-contracts files request/response pairs", () => {
     const rate: FilesSearchResponse = {
       ok: false,
       error: {
-        tag: "rate-limited",
+        tag: FilesErrorTag.RateLimited,
         message: "Provider throttled the search request.",
         retryable: true,
         retryAfterMs: 4000,
@@ -307,7 +307,7 @@ describe("ipc-contracts files request/response pairs", () => {
             path: "/c",
             handle: "h-c",
             ok: false,
-            error: { tag: "other", message: "provider locked the file" },
+            error: { tag: FilesErrorTag.Other, message: "provider locked the file" },
           },
         ],
       },
@@ -411,7 +411,7 @@ describe("ipc-contracts files request/response pairs", () => {
     const err: FilesUploadResponse = {
       ok: false,
       error: {
-        tag: "auth-revoked",
+        tag: FilesErrorTag.AuthRevoked,
         message: "Session expired; please reconnect.",
         retryable: false,
       },
@@ -512,7 +512,7 @@ describe("ipc-contracts files request/response pairs", () => {
     // collision so the renderer's ConflictResolutionDialog can show the
     // colliding sibling path.
     const conflictErr: FilesErrorEnvelope = {
-      tag: "conflict",
+      tag: FilesErrorTag.Conflict,
       message: "name collision at /parent/bar.pdf",
       retryable: false,
       existingPath: "/parent/bar.pdf",
@@ -522,7 +522,7 @@ describe("ipc-contracts files request/response pairs", () => {
     // The field is structurally optional — assertions about other tags
     // work without specifying it.
     const otherErr: FilesErrorEnvelope = {
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "boom",
       retryable: false,
     };
@@ -556,7 +556,7 @@ describe("ipc-contracts files request/response pairs", () => {
     const conflict: FilesRenameResponse = {
       ok: false,
       error: {
-        tag: "conflict",
+        tag: FilesErrorTag.Conflict,
         message: "name collision at /parent/bar.pdf",
         retryable: false,
         existingPath: "/parent/bar.pdf",
@@ -590,7 +590,7 @@ describe("ipc-contracts files request/response pairs", () => {
     const failed: FilesDownloadResponse = {
       ok: false,
       error: {
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: "range not supported on this resource",
         retryable: false,
       },
@@ -717,7 +717,7 @@ describe("ipc-contracts files request/response pairs", () => {
     // callers MAY populate them but are not required to. The dialog
     // renders the hint block only when at least one is present.
     const conflictWithHints: FilesErrorEnvelope = {
-      tag: "conflict",
+      tag: FilesErrorTag.Conflict,
       message: "destination already exists at /home/alice/Downloads/welcome.pdf",
       retryable: false,
       existingPath: "/home/alice/Downloads/welcome.pdf",
@@ -733,7 +733,7 @@ describe("ipc-contracts files request/response pairs", () => {
     // tags (or rename-flavored conflicts) work without specifying
     // either.
     const otherErr: FilesErrorEnvelope = {
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "boom",
       retryable: false,
     };
@@ -741,7 +741,7 @@ describe("ipc-contracts files request/response pairs", () => {
     expect(otherErr.existingModifiedAt).toBeUndefined();
 
     const renameConflictPathOnly: FilesErrorEnvelope = {
-      tag: "conflict",
+      tag: FilesErrorTag.Conflict,
       message: "name collision at /parent/bar.pdf",
       retryable: false,
       existingPath: "/parent/bar.pdf",
@@ -752,14 +752,14 @@ describe("ipc-contracts files request/response pairs", () => {
     // Either hint field can be present alone — the dialog renders what
     // it has.
     const sizeOnly: FilesErrorEnvelope = {
-      tag: "conflict",
+      tag: FilesErrorTag.Conflict,
       message: "destination exists",
       retryable: false,
       existingPath: "/x",
       existingSize: 1024,
     };
     const modifiedAtOnly: FilesErrorEnvelope = {
-      tag: "conflict",
+      tag: FilesErrorTag.Conflict,
       message: "destination exists",
       retryable: false,
       existingPath: "/x",

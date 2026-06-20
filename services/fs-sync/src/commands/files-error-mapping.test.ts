@@ -1,20 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import { DatasourceError } from "@ft5/ipc-contracts";
+import {
+  DatasourceError,
+  DatasourceErrorTag,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 import { normalizeFilesError } from "./files-error-mapping.js";
 
 describe("normalizeFilesError", () => {
   it("maps auth-revoked DatasourceError 1:1", () => {
     const err = new DatasourceError({
-      tag: "auth-revoked",
+      tag: DatasourceErrorTag.AuthRevoked,
       datasourceType: "google-drive",
       datasourceId: "ds-1",
       retryable: false,
       message: "refresh token revoked",
     });
     expect(normalizeFilesError(err)).toEqual({
-      tag: "auth-revoked",
+      tag: FilesErrorTag.AuthRevoked,
       message: "refresh token revoked",
       retryable: false,
     });
@@ -22,7 +26,7 @@ describe("normalizeFilesError", () => {
 
   it("collapses auth-expired into auth-revoked (from UI's POV both mean reconnect)", () => {
     const err = new DatasourceError({
-      tag: "auth-expired",
+      tag: DatasourceErrorTag.AuthExpired,
       datasourceType: "onedrive",
       datasourceId: "ds-2",
       retryable: false,
@@ -33,7 +37,7 @@ describe("normalizeFilesError", () => {
 
   it("maps network-error to disconnected", () => {
     const err = new DatasourceError({
-      tag: "network-error",
+      tag: DatasourceErrorTag.NetworkError,
       datasourceType: "amazon-s3",
       datasourceId: "ds-3",
       retryable: true,
@@ -46,7 +50,7 @@ describe("normalizeFilesError", () => {
 
   it("maps rate-limited directly and preserves retryAfterMs when present", () => {
     const err = new DatasourceError({
-      tag: "rate-limited",
+      tag: DatasourceErrorTag.RateLimited,
       datasourceType: "google-drive",
       datasourceId: "ds-4",
       retryable: true,
@@ -54,7 +58,7 @@ describe("normalizeFilesError", () => {
       message: "too many requests",
     });
     expect(normalizeFilesError(err)).toEqual({
-      tag: "rate-limited",
+      tag: FilesErrorTag.RateLimited,
       message: "too many requests",
       retryable: true,
       retryAfterMs: 30000,
@@ -88,7 +92,7 @@ describe("normalizeFilesError", () => {
     // so the renderer's dialog can prompt the user with the exact path.
     // The engine puts the path on `DatasourceError.raw = { existingPath }`.
     const err = new DatasourceError({
-      tag: "conflict",
+      tag: DatasourceErrorTag.Conflict,
       datasourceType: "google-drive",
       datasourceId: "ds-1",
       retryable: false,
@@ -108,7 +112,7 @@ describe("normalizeFilesError", () => {
     // but omits the existingPath field — flat-optional, mirroring
     // retryAfterMs.
     const err = new DatasourceError({
-      tag: "conflict",
+      tag: DatasourceErrorTag.Conflict,
       datasourceType: "google-drive",
       datasourceId: "ds-1",
       retryable: false,
@@ -121,7 +125,7 @@ describe("normalizeFilesError", () => {
 
   it("conflict with non-object raw (defensive — string raw) omits existingPath", () => {
     const err = new DatasourceError({
-      tag: "conflict",
+      tag: DatasourceErrorTag.Conflict,
       datasourceType: "google-drive",
       datasourceId: "ds-1",
       retryable: false,
@@ -136,7 +140,7 @@ describe("normalizeFilesError", () => {
   it("maps plain Error to tag:'other' with the message and retryable:false", () => {
     const result = normalizeFilesError(new Error("pipe broken"));
     expect(result).toEqual({
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "pipe broken",
       retryable: false,
     });
@@ -145,7 +149,7 @@ describe("normalizeFilesError", () => {
   it("maps a non-Error throw to tag:'other' with stringified value", () => {
     const result = normalizeFilesError("bare string");
     expect(result).toEqual({
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "bare string",
       retryable: false,
     });
@@ -160,14 +164,14 @@ describe("normalizeFilesError", () => {
     // `<InvalidDatasourceState>` and `<InvalidDatasourceBanner>` can
     // render the actionable Reconnect / Remove affordances.
     const err = new DatasourceError({
-      tag: "invalid-datasource",
+      tag: DatasourceErrorTag.InvalidDatasource,
       datasourceType: "google-drive",
       datasourceId: "ds-misconfigured",
       retryable: false,
       message: "Credentials are missing — reconnect this datasource",
     });
     expect(normalizeFilesError(err)).toEqual({
-      tag: "invalid-datasource",
+      tag: FilesErrorTag.InvalidDatasource,
       message: "Credentials are missing — reconnect this datasource",
       retryable: false,
     });
@@ -199,7 +203,7 @@ describe("normalizeFilesError", () => {
       },
     });
     const err = new DatasourceError({
-      tag: "provider-error",
+      tag: DatasourceErrorTag.ProviderError,
       datasourceType: "google-drive",
       datasourceId: "ds-docs-fallback",
       retryable: false,
@@ -216,7 +220,7 @@ describe("normalizeFilesError", () => {
 
   it("substitutes friendly message when the DatasourceError message contains the Drive 'Use Export with Docs Editors files' phrase (alternate signature)", () => {
     const err = new DatasourceError({
-      tag: "provider-error",
+      tag: DatasourceErrorTag.ProviderError,
       datasourceType: "google-drive",
       datasourceId: "ds-docs-fallback-2",
       retryable: false,
@@ -244,7 +248,7 @@ describe("normalizeFilesError", () => {
 
   it("does NOT substitute when the message is a benign DatasourceError message (regression guard for the substitution)", () => {
     const err = new DatasourceError({
-      tag: "auth-revoked",
+      tag: DatasourceErrorTag.AuthRevoked,
       datasourceType: "google-drive",
       datasourceId: "ds-1",
       retryable: false,
@@ -257,7 +261,7 @@ describe("normalizeFilesError", () => {
 
   it("omits retryAfterMs when the DatasourceError did not carry one", () => {
     const err = new DatasourceError({
-      tag: "rate-limited",
+      tag: DatasourceErrorTag.RateLimited,
       datasourceType: "google-drive",
       datasourceId: "ds-5",
       retryable: true,

@@ -38,7 +38,10 @@ import {
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { FileEntry } from "@ft5/ipc-contracts";
-import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
+import {
+  FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 // FileExplorer now calls `useRouter()` for the back-to-dashboard button.
 // Mock `next/navigation` so the App Router invariant doesn't fire under
@@ -113,7 +116,7 @@ function installApiMock(options: InstallOptions = {}): void {
     ? {
         ok: false as const,
         error: {
-          tag: "other" as const,
+          tag: FilesErrorTag.Other as const,
           message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
           retryable: false,
         },

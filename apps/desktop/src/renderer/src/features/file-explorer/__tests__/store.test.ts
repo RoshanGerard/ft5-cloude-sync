@@ -4,6 +4,7 @@ import { act, render } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { createElement, useSyncExternalStore } from "react";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type {
   FileEntry,
   FilesListResponse,
@@ -1062,7 +1063,7 @@ describe("rename action — conflict re-prompt (§25)", () => {
     return {
       ok: false,
       error: {
-        tag: "conflict",
+        tag: FilesErrorTag.Conflict,
         message: "rename conflict",
         retryable: false,
         existingPath,
@@ -1404,7 +1405,7 @@ describe("remove action", () => {
               path: "c",
               handle: "c",
               ok: false as const,
-              error: { tag: "other" as const, message: "provider locked the file" },
+              error: { tag: FilesErrorTag.Other as const, message: "provider locked the file" },
             },
           ],
         },
@@ -1435,7 +1436,7 @@ describe("remove action", () => {
       Promise.resolve({
         ok: false as const,
         error: {
-          tag: "auth-revoked" as const,
+          tag: FilesErrorTag.AuthRevoked as const,
           message: "Refresh token expired",
           retryable: false,
         },

@@ -13,6 +13,8 @@
 //   everything else → terminal (user-retry may still kick in — see
 //                     phase 13)
 
+import { DatasourceErrorTag } from "@ft5/ipc-contracts";
+
 export type SystemRetryBranch =
   | {
       readonly branch: "waiting-network";
@@ -29,10 +31,10 @@ export function classifySystemRetry(
   errorTag: string,
   retryAfterMs?: number,
 ): SystemRetryBranch {
-  if (errorTag === "network-error") {
+  if (errorTag === DatasourceErrorTag.NetworkError) {
     return { branch: "waiting-network" };
   }
-  if (errorTag === "rate-limited") {
+  if (errorTag === DatasourceErrorTag.RateLimited) {
     return {
       branch: "retry-after",
       retryAfterMs: retryAfterMs ?? 5000,

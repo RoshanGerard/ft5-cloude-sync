@@ -13,7 +13,7 @@ import type {
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import {
   BaseDatasourceClient,
@@ -269,7 +269,7 @@ function defaultNormalize(
       tag: tag as DatasourceError<FakeType>["tag"],
       datasourceType: client.type,
       datasourceId: client.datasourceId,
-      retryable: tag === "rate-limited" || tag === "network-error",
+      retryable: tag === DatasourceErrorTag.RateLimited || tag === DatasourceErrorTag.NetworkError,
       raw,
     });
   };
@@ -419,7 +419,7 @@ describe("BaseDatasourceClient — uploadFile options forwarding", () => {
           options.signal?.addEventListener("abort", () => {
             reject(
               new DatasourceError<FakeType>({
-                tag: "cancelled",
+                tag: DatasourceErrorTag.Cancelled,
                 datasourceType: "amazon-s3",
                 datasourceId: "ds-1",
                 retryable: false,
@@ -444,7 +444,7 @@ describe("BaseDatasourceClient — uploadFile options forwarding", () => {
     await expect(promise).rejects.toSatisfy(
       (e: unknown) =>
         e instanceof DatasourceError &&
-        e.tag === "cancelled" &&
+        e.tag === DatasourceErrorTag.Cancelled &&
         e.retryable === false,
     );
   });
@@ -504,7 +504,7 @@ describe("BaseDatasourceClient — failure path normalization", () => {
       client.delete({ kind: "path", path: "/gone.txt" }, "file"),
     ).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "not-found",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.NotFound,
     );
   });
 
@@ -536,7 +536,7 @@ describe("BaseDatasourceClient — Unsupported errors throw without side effects
       client.getMetadata({ kind: "path", path: "/x" }),
     ).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "unsupported",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.Unsupported,
     );
   });
 });
@@ -720,7 +720,7 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
     // synthesized `auth-expired` (per the spec: synthesis happens only when the
     // underlying refresh did not itself produce a typed DatasourceError).
     const typed = new DatasourceError<FakeType>({
-      tag: "auth-revoked",
+      tag: DatasourceErrorTag.AuthRevoked,
       datasourceType: "amazon-s3",
       datasourceId: "ds-1",
       retryable: false,
@@ -765,7 +765,7 @@ describe("BaseDatasourceClient — operations surface auth-expired without auto-
         void target;
         void options;
         throw new DatasourceError<FakeType>({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "amazon-s3",
           datasourceId: "ds-1",
           retryable: false,
@@ -1123,7 +1123,7 @@ describe("BaseDatasourceClient — authenticate", () => {
     const { client, store } = makeHarness({
       doAuthenticate: async () => {
         throw new DatasourceError<FakeType>({
-          tag: "provider-error",
+          tag: DatasourceErrorTag.ProviderError,
           datasourceType: "amazon-s3",
           datasourceId: "ds-1",
           retryable: false,
@@ -1215,7 +1215,7 @@ describe("BaseDatasourceClient — rename success path", () => {
 describe("BaseDatasourceClient — rename `fail` policy surfaces conflict tag", () => {
   it("strategy throws conflict-tagged DatasourceError → base re-throws unchanged", async () => {
     const conflictErr = new DatasourceError<FakeType>({
-      tag: "conflict",
+      tag: DatasourceErrorTag.Conflict,
       datasourceType: "amazon-s3",
       datasourceId: "ds-1",
       retryable: false,
@@ -1311,7 +1311,7 @@ describe("BaseDatasourceClient — rename `overwrite` on a directory is refused"
     // emits no events (migrate-engine-events-to-consumer); the thrown
     // `unsupported` error IS the contract.
     const refusal = new DatasourceError<FakeType>({
-      tag: "unsupported",
+      tag: DatasourceErrorTag.Unsupported,
       datasourceType: "amazon-s3",
       datasourceId: "ds-1",
       retryable: false,

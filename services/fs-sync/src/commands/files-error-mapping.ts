@@ -10,8 +10,11 @@
 // field so the renderer's ConflictResolutionDialog can prompt with the
 // colliding sibling path.
 
-import type { FilesErrorTag } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import {
+  DatasourceError,
+  DatasourceErrorTag,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 export interface FilesErrorEnvelopeInner {
   readonly tag: FilesErrorTag;
@@ -68,17 +71,18 @@ function looksLikeDriveDocsEditorsRefusal(message: string): boolean {
 export function normalizeFilesError(err: unknown): FilesErrorEnvelopeInner {
   if (err instanceof DatasourceError) {
     const tag: FilesErrorTag =
-      err.tag === "auth-revoked" || err.tag === "auth-expired"
-        ? "auth-revoked"
-        : err.tag === "network-error"
-          ? "disconnected"
-          : err.tag === "rate-limited"
-            ? "rate-limited"
-            : err.tag === "invalid-datasource"
-              ? "invalid-datasource"
-              : err.tag === "conflict"
-                ? "conflict"
-                : "other";
+      err.tag === DatasourceErrorTag.AuthRevoked ||
+      err.tag === DatasourceErrorTag.AuthExpired
+        ? FilesErrorTag.AuthRevoked
+        : err.tag === DatasourceErrorTag.NetworkError
+          ? FilesErrorTag.Disconnected
+          : err.tag === DatasourceErrorTag.RateLimited
+            ? FilesErrorTag.RateLimited
+            : err.tag === DatasourceErrorTag.InvalidDatasource
+              ? FilesErrorTag.InvalidDatasource
+              : err.tag === DatasourceErrorTag.Conflict
+                ? FilesErrorTag.Conflict
+                : FilesErrorTag.Other;
     // Substitute the Drive Docs-Editors raw 403 JSON with a friendly
     // message — defence-in-depth fallback when the engine's upstream
     // Google Apps detection misses (e.g. a future Google subtype). The
@@ -96,7 +100,7 @@ export function normalizeFilesError(err: unknown): FilesErrorEnvelopeInner {
     if (typeof err.retryAfterMs === "number") {
       result = { ...result, retryAfterMs: err.retryAfterMs };
     }
-    if (tag === "conflict") {
+    if (tag === FilesErrorTag.Conflict) {
       const existingPath = readExistingPath(err.raw);
       if (existingPath !== undefined) {
         result = { ...result, existingPath };
@@ -110,5 +114,5 @@ export function normalizeFilesError(err: unknown): FilesErrorEnvelopeInner {
   const message = looksLikeDriveDocsEditorsRefusal(rawMessage)
     ? FRIENDLY_DOCS_EDITORS_MESSAGE
     : rawMessage;
-  return { tag: "other", message, retryable: false };
+  return { tag: FilesErrorTag.Other, message, retryable: false };
 }

@@ -46,6 +46,7 @@ import {
   within,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { DatasourceSummary } from "@ft5/ipc-contracts";
 
 import ExplorePage from "../page";
@@ -250,7 +251,7 @@ describe("/datasources/explore route page (task 2.3)", () => {
     const filesListMock = vi.fn().mockResolvedValue({
       ok: false,
       error: {
-        tag: "invalid-datasource",
+        tag: FilesErrorTag.InvalidDatasource,
         message: "Credentials are missing — reconnect this datasource",
         retryable: false,
       },

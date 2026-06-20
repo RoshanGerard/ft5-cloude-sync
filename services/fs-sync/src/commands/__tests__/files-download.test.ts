@@ -26,7 +26,11 @@ import type {
   EventName,
   EventPayloadMap,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import {
+  DatasourceError,
+  DatasourceErrorTag,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 import { createDownloadRegistry } from "../../downloads/registry.js";
 import { createEventBus } from "../../events/event-bus.js";
@@ -489,7 +493,7 @@ describe("files:download — mid-stream auth-expired retry loop (§13.5, §13.6)
             fakeFs.files.set(TO_PATH, FIRST_BYTES);
             yield FIRST_BYTES;
             throw new DatasourceError({
-              tag: "auth-expired",
+              tag: DatasourceErrorTag.AuthExpired,
               datasourceType: "google-drive",
               datasourceId: "ds-1",
               retryable: true,
@@ -547,7 +551,7 @@ describe("files:download — mid-stream auth-expired retry loop (§13.5, §13.6)
           fakeFs.files.set(TO_PATH, Buffer.alloc(0));
           // Every call errors immediately, BEFORE yielding any bytes.
           throw new DatasourceError({
-            tag: "auth-expired",
+            tag: DatasourceErrorTag.AuthExpired,
             datasourceType: "google-drive",
             datasourceId: "ds-1",
             retryable: true,
@@ -615,7 +619,7 @@ describe("files:download — handler-owned auth refresh (§4 / Decision 5)", () 
         // Initial GET rejects with auth-expired BEFORE any bytes stream —
         // the engine no longer auto-refreshed.
         throw new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: true,
@@ -659,7 +663,7 @@ describe("files:download — handler-owned auth refresh (§4 / Decision 5)", () 
     // Every GET rejects auth-expired before any bytes stream.
     const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
       throw new DatasourceError({
-        tag: "auth-expired",
+        tag: DatasourceErrorTag.AuthExpired,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -694,7 +698,7 @@ describe("files:download — handler-owned auth refresh (§4 / Decision 5)", () 
     expect(downloadFile).toHaveBeenCalledTimes(2);
     const failed = events.filter((e) => e.name === "download-failed");
     expect(failed).toHaveLength(1);
-    expect(failed[0]?.payload).toMatchObject({ tag: "auth-revoked" });
+    expect(failed[0]?.payload).toMatchObject({ tag: FilesErrorTag.AuthRevoked });
   });
 
   it("§4.5 refreshCredentials() itself rejects with a typed auth-revoked → terminal auth-revoked, download-failed emitted", async () => {
@@ -703,7 +707,7 @@ describe("files:download — handler-owned auth refresh (§4 / Decision 5)", () 
     // typed dead-token error (e.g. a revoked refresh token).
     const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
       throw new DatasourceError({
-        tag: "auth-expired",
+        tag: DatasourceErrorTag.AuthExpired,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -712,7 +716,7 @@ describe("files:download — handler-owned auth refresh (§4 / Decision 5)", () 
     });
     const refreshCredentials = vi.fn().mockRejectedValue(
       new DatasourceError({
-        tag: "auth-revoked",
+        tag: DatasourceErrorTag.AuthRevoked,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: false,
@@ -744,7 +748,7 @@ describe("files:download — handler-owned auth refresh (§4 / Decision 5)", () 
     expect(downloadFile).toHaveBeenCalledTimes(1);
     const failed = events.filter((e) => e.name === "download-failed");
     expect(failed).toHaveLength(1);
-    expect(failed[0]?.payload).toMatchObject({ tag: "auth-revoked" });
+    expect(failed[0]?.payload).toMatchObject({ tag: FilesErrorTag.AuthRevoked });
   });
 });
 
@@ -782,7 +786,7 @@ describe("files:download — range-not-honored detection (§13.7 / §13.8 + §12
               fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
               yield Buffer.alloc(512, 0xaa);
               throw new DatasourceError({
-                tag: "network-error",
+                tag: DatasourceErrorTag.NetworkError,
                 datasourceType: "google-drive",
                 datasourceId: "ds-1",
                 retryable: true,
@@ -875,7 +879,7 @@ describe("files:download — range-mismatch detection (§13.9, §13.10)", () => 
             fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
             yield Buffer.alloc(512, 0xaa);
             throw new DatasourceError({
-              tag: "auth-expired",
+              tag: DatasourceErrorTag.AuthExpired,
               datasourceType: "google-drive",
               datasourceId: "ds-1",
               retryable: true,
@@ -1436,7 +1440,7 @@ describe("files:download — handler-owned download-progress throttle (§1, Deci
             fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
             yield Buffer.alloc(512, 0xaa);
             throw new DatasourceError({
-              tag: "auth-expired",
+              tag: DatasourceErrorTag.AuthExpired,
               datasourceType: "google-drive",
               datasourceId: "ds-1",
               retryable: true,
@@ -1541,7 +1545,7 @@ describe("files:download — registry release on terminal events (§13.19, §13.
     // the registry-cleanup-on-terminal contract unambiguously.
     const downloadFile = vi.fn(async (): Promise<DownloadResult> => {
       throw new DatasourceError({
-        tag: "auth-revoked",
+        tag: DatasourceErrorTag.AuthRevoked,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: false,
@@ -1882,7 +1886,7 @@ describe("files:download — fs-sync IPC event wire shapes (spec.md line 203-208
     const sample: Got = {
       downloadJobId: "job-A",
       datasourceId: "ds-1",
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "byte count mismatch",
     };
     expect(sample.tag).toBe("other");
@@ -2202,7 +2206,7 @@ describe("files:download — network drop mid-stream recovers (§6.4)", () => {
           kind: "throw-mid-stream",
           bytesBefore: 0,
           error: new DatasourceError({
-            tag: "network-error",
+            tag: DatasourceErrorTag.NetworkError,
             datasourceType: "google-drive",
             datasourceId: "ds-1",
             retryable: true,
@@ -2268,7 +2272,7 @@ describe("files:download — exhausts env budget after CONSECUTIVE_FAIL_LIMIT (�
       fakeFs.unlink = unlinkSpy;
       const netError = () =>
         new DatasourceError({
-          tag: "network-error",
+          tag: DatasourceErrorTag.NetworkError,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: true,
@@ -2322,7 +2326,7 @@ describe("files:download — exhausts env budget after CONSECUTIVE_FAIL_LIMIT (�
       const failed = events.filter((e) => e.name === "download-failed");
       expect(failed).toHaveLength(1);
       expect(failed[0]?.payload).toMatchObject({
-        tag: "exhausted-retries",
+        tag: FilesErrorTag.ExhaustedRetries,
         message: "exhausted-retries: network-error",
       });
       expect(unlinkSpy).not.toHaveBeenCalled();
@@ -2343,7 +2347,7 @@ describe("files:download — byte-progress resets counter (§6.6)", () => {
       const fakeFs = makeFakeFs({ writableParents: [PARENT] });
       const netError = () =>
         new DatasourceError({
-          tag: "network-error",
+          tag: DatasourceErrorTag.NetworkError,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: true,
@@ -2452,7 +2456,7 @@ describe("files:download — walltime ceiling supersedes count (§6.7)", () => {
     // anywhere else: returns PAST_CEILING via the base impl.
     const netError = () =>
       new DatasourceError({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -2492,7 +2496,7 @@ describe("files:download — walltime ceiling supersedes count (§6.7)", () => {
     const failed = events.filter((e) => e.name === "download-failed");
     expect(failed).toHaveLength(1);
     expect(failed[0]?.payload).toMatchObject({
-      tag: "exhausted-retries",
+      tag: FilesErrorTag.ExhaustedRetries,
       message: "walltime-exceeded: network-error",
     });
     // Walltime exhaustion → partial kept.
@@ -2512,7 +2516,7 @@ describe("files:download — rate-limited honors retryAfterMs (§6.8)", () => {
     try {
       const fakeFs = makeFakeFs({ writableParents: [PARENT] });
       const rateLimited = new DatasourceError({
-        tag: "rate-limited",
+        tag: DatasourceErrorTag.RateLimited,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -2583,7 +2587,7 @@ describe("files:download — cancel during retry sleep (§6.9)", () => {
       const fakeFs = makeFakeFs({ writableParents: [PARENT] });
       const netError = () =>
         new DatasourceError({
-          tag: "network-error",
+          tag: DatasourceErrorTag.NetworkError,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: true,
@@ -2677,7 +2681,7 @@ describe("files:download — non-retryable tag bypasses env budget (§6.10)", ()
       const unlinkSpy = vi.fn(async () => { /* ok */ });
       fakeFs.unlink = unlinkSpy;
       const authRevoked = new DatasourceError({
-        tag: "auth-revoked",
+        tag: DatasourceErrorTag.AuthRevoked,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: false,
@@ -2715,7 +2719,7 @@ describe("files:download — non-retryable tag bypasses env budget (§6.10)", ()
       const failed = events.filter((e) => e.name === "download-failed");
       expect(failed).toHaveLength(1);
       expect(failed[0]?.payload).toMatchObject({
-        tag: "auth-revoked",
+        tag: FilesErrorTag.AuthRevoked,
       });
       expect(unlinkSpy).not.toHaveBeenCalled();
       expect(fakeFs.files.has(TO_PATH)).toBe(true);
@@ -2755,7 +2759,7 @@ describe("files:download — range-not-honored unlinks partial in-flight, NOT te
             fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
             yield Buffer.alloc(512, 0xaa);
             throw new DatasourceError({
-              tag: "network-error",
+              tag: DatasourceErrorTag.NetworkError,
               datasourceType: "google-drive",
               datasourceId: "ds-1",
               retryable: true,
@@ -2854,7 +2858,7 @@ describe("files:download — range-mismatch deletes partial (§6.12)", () => {
             fakeFs.files.set(TO_PATH, Buffer.alloc(512, 0xaa));
             yield Buffer.alloc(512, 0xaa);
             throw new DatasourceError({
-              tag: "auth-expired",
+              tag: DatasourceErrorTag.AuthExpired,
               datasourceType: "google-drive",
               datasourceId: "ds-1",
               retryable: true,
@@ -2892,7 +2896,7 @@ describe("files:download — range-mismatch deletes partial (§6.12)", () => {
     const failed = events.filter((e) => e.name === "download-failed");
     expect(failed).toHaveLength(1);
     expect(failed[0]?.payload).toMatchObject({
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "range mismatch on this resource",
     });
   });
@@ -2936,7 +2940,7 @@ describe("files:download — integrity-failed deletes partial (§6.13)", () => {
     const failed = events.filter((e) => e.name === "download-failed");
     expect(failed).toHaveLength(1);
     expect(failed[0]?.payload).toMatchObject({
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "integrity check failed",
     });
   });
@@ -2977,7 +2981,7 @@ describe("files:download — byte-count-mismatch keeps partial (§6.14)", () => 
     const failed = events.filter((e) => e.name === "download-failed");
     expect(failed).toHaveLength(1);
     expect(failed[0]?.payload).toMatchObject({
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "byte count mismatch",
     });
   });
@@ -3043,7 +3047,7 @@ describe("files:download — auth-expired co-exists with env retry (§6.16)", ()
             (async function* () {
               fakeFs.files.set(TO_PATH, Buffer.alloc(0));
               throw new DatasourceError({
-                tag: "network-error",
+                tag: DatasourceErrorTag.NetworkError,
                 datasourceType: "google-drive",
                 datasourceId: "ds-1",
                 retryable: true,
@@ -3061,7 +3065,7 @@ describe("files:download — auth-expired co-exists with env retry (§6.16)", ()
               fakeFs.files.set(TO_PATH, Buffer.alloc(256, 0xaa));
               yield Buffer.alloc(256, 0xaa);
               throw new DatasourceError({
-                tag: "auth-expired",
+                tag: DatasourceErrorTag.AuthExpired,
                 datasourceType: "google-drive",
                 datasourceId: "ds-1",
                 retryable: true,
@@ -3332,7 +3336,7 @@ describe("files:download — per-attempt timeout counts against budget (§11.8)"
       const failed = events.filter((e) => e.name === "download-failed");
       expect(failed).toHaveLength(1);
       expect(failed[0]?.payload).toMatchObject({
-        tag: "exhausted-retries",
+        tag: FilesErrorTag.ExhaustedRetries,
         message: "exhausted-retries: network-error",
       });
     } finally {
@@ -3439,7 +3443,7 @@ describe("files:download — Decision 3 rewrite-from-0 budget + sticky flag (§1
             fakeFs.files.set(TO_PATH, Buffer.alloc(64, 0xaa));
             yield Buffer.alloc(64, 0xaa);
             throw new DatasourceError({
-              tag: "network-error",
+              tag: DatasourceErrorTag.NetworkError,
               datasourceType: "google-drive",
               datasourceId: "ds-1",
               retryable: true,
@@ -3465,7 +3469,7 @@ describe("files:download — Decision 3 rewrite-from-0 budget + sticky flag (§1
       const stream = Readable.from(
         (async function* () {
           throw new DatasourceError({
-            tag: "network-error",
+            tag: DatasourceErrorTag.NetworkError,
             datasourceType: "google-drive",
             datasourceId: "ds-1",
             retryable: true,
@@ -3550,7 +3554,7 @@ describe("files:download — Decision 3 rewrite-from-0 budget + sticky flag (§1
               fakeFs.files.set(TO_PATH, Buffer.alloc(256, 0xaa));
               yield Buffer.alloc(256, 0xaa);
               throw new DatasourceError({
-                tag: "network-error",
+                tag: DatasourceErrorTag.NetworkError,
                 datasourceType: "google-drive",
                 datasourceId: "ds-1",
                 retryable: true,
@@ -3577,7 +3581,7 @@ describe("files:download — Decision 3 rewrite-from-0 budget + sticky flag (§1
               fakeFs.files.set(TO_PATH, Buffer.alloc(128, 0xbb));
               yield Buffer.alloc(128, 0xbb);
               throw new DatasourceError({
-                tag: "network-error",
+                tag: DatasourceErrorTag.NetworkError,
                 datasourceType: "google-drive",
                 datasourceId: "ds-1",
                 retryable: true,
@@ -3729,7 +3733,7 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
       // also reject under this fake. The handler swallows the post-pipe
       // failure too (existing behavior — proceeds without integrity).
       throw new DatasourceError({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -4019,7 +4023,7 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: true,
@@ -4094,7 +4098,7 @@ describe("files:download — pre-cycle metadata prefetch (§12.7, Decision 17)",
       .mockResolvedValueOnce(sampleEntry)
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: true,

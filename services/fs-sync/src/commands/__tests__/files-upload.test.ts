@@ -21,7 +21,11 @@ import type {
   DatasourceType,
   EventName,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import {
+  DatasourceError,
+  DatasourceErrorTag,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 import { createUploadRegistry } from "../../uploads/registry.js";
 import { createEventBus } from "../../events/event-bus.js";
@@ -206,7 +210,7 @@ describe("files:upload — happy path (§9.1, §9.6, §9.8)", () => {
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
-          tag: "auth-expired",
+          tag: DatasourceErrorTag.AuthExpired,
           datasourceType: "google-drive",
           datasourceId: "ds-1",
           retryable: false,
@@ -476,7 +480,7 @@ describe("files:upload — engine error (§9.10)", () => {
   it("on engine reject with non-cancelled tag: emits exactly one upload-failed; replies error envelope; clears registry", async () => {
     const uploadFile = vi.fn(async () => {
       throw new DatasourceError({
-        tag: "network-error",
+        tag: DatasourceErrorTag.NetworkError,
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: true,
@@ -518,7 +522,7 @@ describe("files:upload — engine error (§9.10)", () => {
       uploadJobId: "job-A",
       datasourceId: "ds-1",
       targetPath: TARGET_PATH,
-      tag: "disconnected",
+      tag: FilesErrorTag.Disconnected,
     });
     expect(events.filter((e) => e.name === "file-created")).toHaveLength(0);
     expect(events.filter((e) => e.name === "upload-cancelled")).toHaveLength(0);
@@ -557,7 +561,7 @@ describe("files:upload — cancel (§9.9)", () => {
           opts?.signal?.addEventListener("abort", () => {
             reject(
               new DatasourceError({
-                tag: "cancelled",
+                tag: DatasourceErrorTag.Cancelled,
                 datasourceType: "google-drive",
                 datasourceId: "ds-1",
                 retryable: false,

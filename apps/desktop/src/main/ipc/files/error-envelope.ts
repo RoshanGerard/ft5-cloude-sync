@@ -18,7 +18,8 @@
 // Unknown tags collapse to `other` so unexpected service drift doesn't
 // crash the renderer.
 
-import type { FilesErrorEnvelope, FilesErrorTag } from "@ft5/ipc-contracts";
+import { FilesErrorTag } from "@ft5/ipc-contracts";
+import type { FilesErrorEnvelope } from "@ft5/ipc-contracts";
 
 import { SyncCommandError } from "../../sync/client.js";
 
@@ -64,7 +65,7 @@ export function toFilesErrorEnvelope(err: unknown): FilesErrorEnvelope {
     return envelope;
   }
   return {
-    tag: "other",
+    tag: FilesErrorTag.Other,
     message: err instanceof Error ? err.message : String(err),
     retryable: false,
   };

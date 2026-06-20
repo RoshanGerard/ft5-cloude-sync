@@ -1,3 +1,4 @@
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -61,7 +62,7 @@ function statNotFound(): FilesStatResponse {
   return {
     ok: false,
     error: {
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "not found",
       retryable: false,
     },
@@ -276,7 +277,7 @@ describe("createUploadOrchestrator", () => {
         return {
           ok: false,
           error: {
-            tag: "auth-revoked",
+            tag: FilesErrorTag.AuthRevoked,
             message: "Token expired",
             retryable: false,
           },
@@ -309,7 +310,7 @@ describe("createUploadOrchestrator", () => {
     const stat: StatFn = vi.fn(async () => ({
       ok: false,
       error: {
-        tag: "disconnected",
+        tag: FilesErrorTag.Disconnected,
         message: "Network error",
         retryable: true,
       },
@@ -338,7 +339,7 @@ describe("createUploadOrchestrator", () => {
     const stat: StatFn = vi.fn(async () => ({
       ok: false,
       error: {
-        tag: "rate-limited",
+        tag: FilesErrorTag.RateLimited,
         message: "Slow down",
         retryable: true,
         retryAfterMs: 5000,
@@ -415,7 +416,7 @@ describe("createUploadOrchestrator", () => {
         return {
           ok: false,
           error: {
-            tag: "other",
+            tag: FilesErrorTag.Other,
             message: "disk full",
             retryable: false,
           },
@@ -462,7 +463,7 @@ describe("createUploadOrchestrator", () => {
     const upload: UploadFn = vi.fn(async () => ({
       ok: false,
       error: {
-        tag: "conflict",
+        tag: FilesErrorTag.Conflict,
         message: "An upload to this path is already in progress",
         retryable: false,
         existingUploadJobId: "u-first",

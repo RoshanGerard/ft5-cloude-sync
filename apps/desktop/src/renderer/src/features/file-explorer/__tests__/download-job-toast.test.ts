@@ -37,6 +37,7 @@
 //         initial progress; subsequent live events for any of those ids
 //         update the existing toast (not create a duplicate).
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
@@ -531,7 +532,7 @@ describe("createDownloadJobToaster (§24.1)", () => {
       payload: {
         downloadJobId: "job-A",
         datasourceId: "ds-1",
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: "stale event",
       },
     });
@@ -601,7 +602,7 @@ describe("createDownloadJobToaster (§24.1)", () => {
       payload: {
         downloadJobId: "job-A",
         datasourceId: "ds-1",
-        tag: "rate-limited",
+        tag: FilesErrorTag.RateLimited,
         message: "rate-limited",
       },
     });
@@ -639,7 +640,7 @@ describe("createDownloadJobToaster (§24.1)", () => {
       payload: {
         downloadJobId: "job-X",
         datasourceId: "ds-1",
-        tag: "auth-revoked",
+        tag: FilesErrorTag.AuthRevoked,
         message: "auth-revoked",
       },
     });
@@ -1075,7 +1076,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       payload: {
         downloadJobId: "job-A",
         datasourceId: "ds-1",
-        tag: "exhausted-retries",
+        tag: FilesErrorTag.ExhaustedRetries,
         message: "exhausted-retries: network-error",
       },
     });
@@ -1152,7 +1153,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       payload: {
         downloadJobId: "job-A",
         datasourceId: "ds-1",
-        tag: "exhausted-retries",
+        tag: FilesErrorTag.ExhaustedRetries,
         message: "exhausted-retries: network-error",
       },
     });
@@ -1209,7 +1210,7 @@ describe("createDownloadJobToaster — retrying state (§8)", () => {
       payload: {
         downloadJobId: "job-A",
         datasourceId: "ds-1",
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: "boom",
       },
     });
@@ -1334,7 +1335,7 @@ describe("createDownloadJobToaster — Cancel action (§12.2)", () => {
       payload: {
         downloadJobId: "job-A",
         datasourceId: "ds-1",
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: "boom",
       },
     });
