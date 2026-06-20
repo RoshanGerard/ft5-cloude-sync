@@ -541,10 +541,10 @@ interface FilesSearchCommand {
 
 // `files:remove` addresses each entry by `handle` (the authoritative,
 // unambiguous engine ID) while preserving `path` for the response's
-// per-path result matching. `kind` lets the handler skip a second
-// `getMetadata` round-trip when dispatching to deleteFile vs
-// deleteDirectory — and skipping that round-trip is the whole point of
-// this shape, since `getMetadata({ kind: "path", ... })` is itself
+// per-path result matching. `kind` is passed straight to the engine's
+// unified `delete(target, entryKind)`, letting the handler skip a second
+// `getMetadata` round-trip — and skipping that round-trip is the whole
+// point of this shape, since `getMetadata({ kind: "path", ... })` is itself
 // ambiguity-vulnerable on providers that allow multiple entries with
 // the same path (Google Drive).
 interface FilesRemoveTargetShape {
