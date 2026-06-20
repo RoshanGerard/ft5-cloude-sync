@@ -36,7 +36,6 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, providers } from "@ft5/ipc-contracts";
 
-import { createEventBus, type EventBus } from "../event-bus.js";
 import type { BaseClientContext, CredentialStore } from "../base-client.js";
 import { createS3Client, S3Client, pathToKey, keyToPath } from "./s3-client.js";
 
@@ -83,22 +82,14 @@ function makeStore(): CredentialStore {
 }
 
 function makeHarness(credsOverrides: Parameters<typeof makeCreds>[0] = {}): {
-  bus: EventBus;
-  events: unknown[];
   client: S3Client;
 } {
-  const bus = createEventBus();
-  const events: unknown[] = [];
-  bus.subscribe((e) => {
-    events.push(e);
-  });
   const ctx: BaseClientContext = {
-    bus,
     credentialStore: makeStore(),
     providerDescriptor: providers["amazon-s3"],
   };
   const client = createS3Client("ds-s3-1", makeCreds(credsOverrides), ctx);
-  return { bus, events, client };
+  return { client };
 }
 
 beforeEach(() => {
@@ -335,12 +326,12 @@ describe("S3Client — getMetadata", () => {
 // ---------------------------------------------------------------------------
 
 describe("S3Client — deleteFile", () => {
-  it("issues DeleteObject and emits `deleted`", async () => {
+  it("issues DeleteObject and resolves", async () => {
     s3Mock.on(DeleteObjectCommand).resolves({});
-    const { client, events } = makeHarness();
-    await client.deleteFile({ kind: "path", path: "/todelete.txt" });
-    const names = (events as Array<{ event: string }>).map((e) => e.event);
-    expect(names).toContain("deleted");
+    const { client } = makeHarness();
+    await expect(
+      client.deleteFile({ kind: "path", path: "/todelete.txt" }),
+    ).resolves.toBeUndefined();
     const input = s3Mock.commandCalls(DeleteObjectCommand)[0]!.args[0].input;
     expect(input.Key).toBe("todelete.txt");
   });
@@ -572,17 +563,17 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
   // directory. The OS cleans tmpdir entries on its own schedule; these tests
   // are short-lived, the leak is negligible.
 
-  it("uploads via lib-storage Upload; invokes options.onProgress and emits NO upload events on the engine bus (post-migrate-upload-orchestration-out-of-engine)", async () => {
+  it("uploads via lib-storage Upload and resolves with the new entry; threads options.onProgress (engine emits nothing — no event bus post-migrate-engine-events-to-consumer)", async () => {
     // For small bodies, lib-storage uses PutObject (not multipart). The
     // strategy threads `options.onProgress` to the SDK's
-    // `httpUploadProgress` event but does NOT emit any engine bus events.
+    // `httpUploadProgress` event; the engine has no event bus.
     s3Mock.on(PutObjectCommand).resolves({ ETag: '"etag-up"' });
     s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "uid" });
     s3Mock.on(UploadPartCommand).resolves({ ETag: '"p1"' });
     s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"etag-up"' });
 
     const onProgress = vi.fn<(loaded: number, total: number) => void>();
-    const { client, events } = makeHarness();
+    const { client } = makeHarness();
     const entry = await client.uploadFile(
       { kind: "path", path: "/uploads" },
       { path: bigFile, name: "big.bin" },
@@ -593,13 +584,6 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
     expect(entry.providerMetadata.bucket).toBe("test-bucket");
     expect(entry.providerMetadata.key).toBe("uploads/big.bin");
     expect(entry.providerMetadata.etag).toBeDefined();
-
-    const names = (events as Array<{ event: string }>).map((e) => e.event);
-    // Engine bus carries no upload-related events post-migration.
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
   });
 
   it("signal-driven cancel mid-upload triggers Upload.abort() and rejects with cancelled tag", async () => {
@@ -616,7 +600,7 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
           releasePut = () => resolve({ ETag: '"etag-never"' });
         }),
     );
-    const { client, events } = makeHarness();
+    const { client } = makeHarness();
     const controller = new AbortController();
 
     const uploadPromise = client.uploadFile(
@@ -637,12 +621,6 @@ describe("S3Client — uploadFile (multipart via lib-storage)", () => {
     await expect(uploadPromise).rejects.toSatisfy(
       (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
     );
-    // Engine bus stays silent for upload events.
-    const names = (events as Array<{ event: string }>).map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
   });
 });
 
@@ -690,7 +668,7 @@ function awsNotFoundError(): Error {
 }
 
 describe("S3Client — doRenameImpl introspection (file vs virtual-folder vs not-found)", () => {
-  it("HeadObject 200 → file branch: issues CopyObject + DeleteObject; emits entry-renamed", async () => {
+  it("HeadObject 200 → file branch: issues CopyObject + DeleteObject; resolves with the renamed entry", async () => {
     // HeadObject answers 200 for the source key.
     s3Mock.on(HeadObjectCommand, { Key: "old.txt" }).resolves({
       ContentLength: 12,
@@ -703,7 +681,7 @@ describe("S3Client — doRenameImpl introspection (file vs virtual-folder vs not
       CopyObjectResult: { ETag: '"new-etag"', LastModified: new Date("2024-06-02") },
     });
     s3Mock.on(DeleteObjectCommand).resolves({});
-    const { client, events } = makeHarness();
+    const { client } = makeHarness();
     const entry = await client.rename(
       { kind: "path", path: "/old.txt" },
       "new.txt",
@@ -713,9 +691,6 @@ describe("S3Client — doRenameImpl introspection (file vs virtual-folder vs not
     expect(entry.handle).toBe("new.txt");
     expect(entry.path).toBe("/new.txt");
     expect(entry.providerMetadata.key).toBe("new.txt");
-    expect((events as Array<{ event: string }>).map((e) => e.event)).toContain(
-      "entry-renamed",
-    );
   });
 
   it("HeadObject 404 + ListObjectsV2 returns ≥1 key → folder branch: throws unsupported with the S3-folder-rename message; no Copy/Delete issued", async () => {
@@ -796,7 +771,7 @@ describe("S3Client — doRenameImpl file-rename CopyObject + DeleteObject", () =
 // ---------------------------------------------------------------------------
 
 describe("S3Client — doRenameImpl orphan-tolerance on DeleteObject failure", () => {
-  it("when CopyObject succeeds but DeleteObject fails, still resolves with the renamed entry; bus emits one entry-renamed (per Decision 2: rename succeeded from user's perspective)", async () => {
+  it("when CopyObject succeeds but DeleteObject fails, still resolves with the renamed entry (per Decision 2: rename succeeded from user's perspective)", async () => {
     s3Mock.on(HeadObjectCommand, { Key: "old.txt" }).resolves({
       ContentLength: 5,
       LastModified: new Date("2024-06-01"),
@@ -807,7 +782,7 @@ describe("S3Client — doRenameImpl orphan-tolerance on DeleteObject failure", (
     });
     // DeleteObject fails after the copy lands (orphan scenario).
     s3Mock.on(DeleteObjectCommand).rejects(new Error("delete-blew-up"));
-    const { client, events } = makeHarness();
+    const { client } = makeHarness();
     const entry = await client.rename(
       { kind: "path", path: "/old.txt" },
       "new.txt",
@@ -815,10 +790,8 @@ describe("S3Client — doRenameImpl orphan-tolerance on DeleteObject failure", (
     );
     expect(entry.handle).toBe("new.txt");
     expect(entry.kind).toBe("file");
-    const eventNames = (events as Array<{ event: string }>).map((e) => e.event);
-    expect(eventNames.filter((n) => n === "entry-renamed")).toHaveLength(1);
-    // No public delete-failed event for the orphan; the rename succeeded
-    // from the user's perspective per design.md Decision 2.
+    // The failed DeleteObject does not surface to the caller; the rename
+    // succeeded from the user's perspective per design.md Decision 2.
   });
 });
 
@@ -981,17 +954,18 @@ describe("S3Client — doRenameImpl directory-overwrite refusal", () => {
 // through a Transform).
 
 describe("S3Client — doDownloadFileImpl (GetObject stream + Range + abortSignal)", () => {
-  it("calls GetObject with Bucket+Key (no Range when rangeStart is undefined); resolves with stream + ContentLength; bus emits downloading + file-downloaded after consumer drains", async () => {
+  it("calls GetObject with Bucket+Key (no Range when rangeStart is undefined); resolves with stream + ContentLength; drains intact and fires options.onProgress (engine emits nothing — no event bus)", async () => {
     const fixture = Buffer.from("hello-from-s3");
     s3Mock.on(GetObjectCommand).resolves({
       Body: Readable.from(fixture) as unknown as undefined,
       ContentLength: fixture.length,
     });
-    const { client, events } = makeHarness();
-    const result = await client.downloadFile({
-      kind: "path",
-      path: "/hello.txt",
-    });
+    const onProgress = vi.fn<(loaded: number, total: number | null) => void>();
+    const { client } = makeHarness();
+    const result = await client.downloadFile(
+      { kind: "path", path: "/hello.txt" },
+      { onProgress },
+    );
     expect(result.contentLength).toBe(fixture.length);
     expect(result.contentRange).toBeUndefined();
     const chunks: Buffer[] = [];
@@ -1005,11 +979,12 @@ describe("S3Client — doDownloadFileImpl (GetObject stream + Range + abortSigna
     expect(getInput.Bucket).toBe("test-bucket");
     expect(getInput.Key).toBe("hello.txt");
     expect(getInput.Range).toBeUndefined();
-    const eventNames = (events as Array<{ event: string }>).map((e) => e.event);
-    expect(eventNames.filter((n) => n === "downloading").length).toBeGreaterThanOrEqual(1);
-    expect(eventNames.filter((n) => n === "file-downloaded")).toHaveLength(1);
-    expect(eventNames).not.toContain("download-failed");
-    expect(eventNames).not.toContain("download-cancelled");
+    // Progress is consumer-observed via options.onProgress (the sole progress
+    // channel — the engine no longer emits `downloading`/`file-downloaded`).
+    // The final loaded count reaches the full byte length on a complete drain.
+    expect(onProgress).toHaveBeenCalled();
+    const lastCall = onProgress.mock.calls.at(-1)!;
+    expect(lastCall[0]).toBe(fixture.length);
   });
 
   it("forwards options.rangeStart > 0 as Range:bytes=<n>- on GetObject; parses ContentRange from the 206-equivalent response", async () => {
@@ -1032,7 +1007,7 @@ describe("S3Client — doDownloadFileImpl (GetObject stream + Range + abortSigna
       end: start + partial.length - 1,
       total,
     });
-    // Drain so the base emits file-downloaded.
+    // Drain the stream to completion.
     await new Promise<void>((resolve, reject) => {
       result.stream.on("data", () => {});
       result.stream.on("end", () => resolve());
@@ -1049,7 +1024,7 @@ describe("S3Client — doDownloadFileImpl (GetObject stream + Range + abortSigna
 // ---------------------------------------------------------------------------
 
 describe("S3Client — doDownloadFileImpl AbortSignal forwarding", () => {
-  it("aborting the consumer signal propagates AbortError; bus emits exactly one download-cancelled with byte counts at abort time; no download-failed", async () => {
+  it("aborting the consumer signal propagates AbortError: the returned stream errors with a normalized tag:cancelled DatasourceError, and options.onProgress's last loaded reflects the bytes seen at abort time", async () => {
     const controller = new AbortController();
     // GetObject mock returns a Readable that pushes one chunk then awaits abort.
     let pushedFirstChunk = false;
@@ -1078,34 +1053,33 @@ describe("S3Client — doDownloadFileImpl AbortSignal forwarding", () => {
         ContentLength: 16384,
       }),
     );
-    const { client, events } = makeHarness();
+    const onProgress = vi.fn<(loaded: number, total: number | null) => void>();
+    const { client } = makeHarness();
     const result = await client.downloadFile(
       { kind: "handle", handle: "CANCEL-KEY" },
-      { signal: controller.signal },
+      { signal: controller.signal, onProgress },
     );
     let bytesSeen = 0;
+    let caught: unknown;
     await new Promise<void>((resolve) => {
       result.stream.on("data", (c: Buffer) => {
         bytesSeen += c.length;
         if (bytesSeen >= 2048) controller.abort();
       });
-      result.stream.on("error", () => resolve());
+      result.stream.on("error", (e: unknown) => {
+        caught = e;
+        resolve();
+      });
       result.stream.on("end", () => resolve());
     });
-    const cancelled = (events as Array<{ event: string; payload: unknown }>).filter(
-      (e) => e.event === "download-cancelled",
-    );
-    expect(cancelled).toHaveLength(1);
-    expect(cancelled[0]!.payload).toMatchObject({
-      path: "CANCEL-KEY",
-      bytesDownloaded: 2048,
-    });
-    expect(
-      (events as Array<{ event: string }>).some((e) => e.event === "download-failed"),
-    ).toBe(false);
-    expect(
-      (events as Array<{ event: string }>).some((e) => e.event === "file-downloaded"),
-    ).toBe(false);
+    // The engine no longer emits download-cancelled; the cancellation surfaces
+    // as the stream erroring with a normalized tag:cancelled DatasourceError.
+    expect(caught).toBeInstanceOf(DatasourceError);
+    expect((caught as DatasourceError<"amazon-s3">).tag).toBe("cancelled");
+    // The old download-cancelled event's `bytesDownloaded` analog: the last
+    // onProgress loaded reaches the first-chunk byte count seen before abort.
+    expect(onProgress).toHaveBeenCalled();
+    expect(onProgress.mock.calls.at(-1)![0]).toBe(2048);
   });
 });
 
@@ -1114,7 +1088,7 @@ describe("S3Client — doDownloadFileImpl AbortSignal forwarding", () => {
 // ---------------------------------------------------------------------------
 
 describe("S3Client — doDownloadFileImpl mid-stream ExpiredToken → auth-expired", () => {
-  it("when the body errors mid-stream with name='ExpiredToken', normalizeErrorImpl maps to tag:auth-expired; bus emits one download-failed carrying the SerializedDatasourceError; no download-cancelled / file-downloaded", async () => {
+  it("when the body errors mid-stream with name='ExpiredToken', normalizeErrorImpl maps to tag:auth-expired; the returned stream errors with that normalized DatasourceError (engine emits nothing — no event bus)", async () => {
     let pushedFirst = false;
     let scheduledError = false;
     const body = new Readable({
@@ -1138,31 +1112,27 @@ describe("S3Client — doDownloadFileImpl mid-stream ExpiredToken → auth-expir
       Body: body as unknown as undefined,
       ContentLength: 8192,
     });
-    const { client, events } = makeHarness();
+    const { client } = makeHarness();
     const result = await client.downloadFile({
       kind: "handle",
       handle: "EXP-KEY",
     });
+    let caught: unknown;
     await new Promise<void>((resolve) => {
       result.stream.on("data", () => {});
       result.stream.on("end", () => resolve());
-      result.stream.on("error", () => resolve());
+      result.stream.on("error", (e: unknown) => {
+        caught = e;
+        resolve();
+      });
     });
-    const failed = (events as Array<{ event: string; payload: unknown }>).filter(
-      (e) => e.event === "download-failed",
-    );
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.payload).toMatchObject({
-      tag: "auth-expired",
-      datasourceType: "amazon-s3",
-      datasourceId: "ds-s3-1",
-    });
-    expect(
-      (events as Array<{ event: string }>).some((e) => e.event === "download-cancelled"),
-    ).toBe(false);
-    expect(
-      (events as Array<{ event: string }>).some((e) => e.event === "file-downloaded"),
-    ).toBe(false);
+    // The mid-stream provider error is normalized and surfaced as the
+    // returned stream's `error` — there is no download-failed event.
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"amazon-s3">;
+    expect(err.tag).toBe("auth-expired");
+    expect(err.datasourceType).toBe("amazon-s3");
+    expect(err.datasourceId).toBe("ds-s3-1");
   });
 });
 
@@ -1213,7 +1183,7 @@ describe("S3Client — doRenameImpl keep-both suffix retry", () => {
       CopyObjectResult: { ETag: '"new"', LastModified: new Date() },
     });
     s3Mock.on(DeleteObjectCommand).resolves({});
-    const { client, events } = makeHarness();
+    const { client } = makeHarness();
     const entry = await client.rename(
       { kind: "path", path: "/foo.pdf" },
       "bar.pdf",
@@ -1226,9 +1196,6 @@ describe("S3Client — doRenameImpl keep-both suffix retry", () => {
     expect(copyCalls).toHaveLength(1);
     expect(copyCalls[0]!.args[0].input.Key).toBe("bar-3.pdf");
     expect(copyCalls[0]!.args[0].input.CopySource).toBe("test-bucket/foo.pdf");
-    expect(
-      (events as Array<{ event: string }>).filter((e) => e.event === "entry-renamed"),
-    ).toHaveLength(1);
   });
 
   it("after 99 collisions (newName + suffixes 2..99), throws DatasourceError { tag:'provider-error', message:'exhausted keep-both attempts' }; no CopyObject issued", async () => {

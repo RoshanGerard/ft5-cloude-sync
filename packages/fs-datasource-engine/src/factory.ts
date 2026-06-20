@@ -9,7 +9,7 @@
 // Each `create` call looks up the registered factory for `providerId`,
 // resolves the corresponding `ProviderDescriptor` from `@ft5/ipc-contracts`,
 // assembles a fresh `BaseClientContext` that pairs the supplied
-// `EngineContext` (bus + credentialStore) with the descriptor, and delegates
+// `EngineContext` (credentialStore) with the descriptor, and delegates
 // to the registered factory. The main factory itself:
 //   * does NOT cache — every call returns a fresh client. Callers that want
 //     to reuse clients across IPC invocations own that caching at their
@@ -49,7 +49,6 @@ import type {
   DatasourceClient,
 } from "./base-client.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { EventBus } from "./event-bus.js";
 // Provider strategies. Phases 6, 7, and 8 delivered the real S3, OneDrive,
 // and Google Drive strategies respectively.
 import {
@@ -86,7 +85,6 @@ export const FACTORY_CONSTRUCTION_DS_ID = "<factory-construction>";
  * process.
  */
 export interface EngineContext {
-  bus: EventBus;
   credentialStore: CredentialStore;
 }
 
@@ -234,10 +232,10 @@ export interface ClientFactory {
    *     persists the user-supplied values.
    *
    * `datasourceId` is optional — when omitted, the factory mints a
-   * temporary id (`"pre-auth-${randomUUID()}"`) so the strategy's
-   * event-bus subscription has a stable key during construction. Callers
-   * with an existing id (e.g. the renderer's Reconnect path) SHOULD pass
-   * it through so events about the in-flight auth flow are addressable.
+   * temporary id (`"pre-auth-${randomUUID()}"`) so the in-flight auth flow
+   * has a stable key for credential persistence and error reporting.
+   * Callers with an existing id (e.g. the renderer's Reconnect path)
+   * SHOULD pass it through.
    *
    * @throws DatasourceError `tag="invalid-datasource"` if:
    *   - `providerId` is not in the registry (unknown provider), OR
@@ -328,15 +326,14 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
       // Construct a fresh BaseClientContext per call — the descriptor is
       // per-provider, so it cannot live inside the EngineContext.
       const baseCtx: BaseClientContext = {
-        bus: ctx.bus,
         credentialStore: ctx.credentialStore,
         providerDescriptor: descriptor,
       };
       // `entry.create` is typed as `ProviderFactoryFn<P>` via the mapped
-      // type, so the call returns `DatasourceClient<P>` directly.
-      // NOTE: callers are responsible for calling `.dispose()` on returned
-      // clients when they discard them — strategies that subscribe to the
-      // bus (e.g., OneDriveClient) leak the subscription otherwise.
+      // type, so the call returns `DatasourceClient<P>` directly. Strategies
+      // no longer subscribe to any bus (the engine event bus was removed in
+      // migrate-engine-events-to-consumer); `dispose()` is a contract-stable
+      // no-op across base + strategies.
       return entry.create(datasourceId, credentials, baseCtx);
     },
 
@@ -346,9 +343,10 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
       ctx: EngineContext,
       datasourceId?: string,
     ): DatasourceClient<P> {
-      // Mint a temporary id when the caller did not supply one. The
-      // strategy's bus subscription is keyed on this id; a stable value
-      // matters for the lifetime of this single authenticate flow.
+      // Mint a temporary id when the caller did not supply one. A stable
+      // value matters for the lifetime of this single authenticate flow
+      // (it threads through credential persistence and any errors the flow
+      // surfaces).
       const effectiveDatasourceId =
         datasourceId ?? `pre-auth-${randomUUID()}`;
 
@@ -391,7 +389,6 @@ export function createClientFactory(registry: ProviderRegistry): ClientFactory {
 
       const descriptor = providers[providerId];
       const baseCtx: BaseClientContext = {
-        bus: ctx.bus,
         credentialStore: ctx.credentialStore,
         providerDescriptor: descriptor,
       };

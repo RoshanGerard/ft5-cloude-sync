@@ -33,7 +33,6 @@ import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 
 import type { OAuthAppConfig } from "../auth-types.js";
 import type { CredentialStore } from "../credential-store.js";
-import { createEventBus } from "../event-bus.js";
 import {
   createClientFactory,
   createDefaultProviderRegistry,
@@ -56,7 +55,6 @@ function makeStore(): CredentialStore {
 
 function makeContext(): EngineContext {
   return {
-    bus: createEventBus(),
     credentialStore: makeStore(),
   };
 }
@@ -115,7 +113,6 @@ describe("ClientFactory.createForAuth — OAuth provider (§3.1)", () => {
       delete: async () => undefined,
     };
     const ctx: EngineContext = {
-      bus: createEventBus(),
       credentialStore: trackingStore,
     };
     const factory = createClientFactory(createDefaultProviderRegistry());

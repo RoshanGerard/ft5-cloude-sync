@@ -6,11 +6,11 @@
 // `refreshTokenImpl()` and `normalizeError()`.
 //
 // Crossing-cutting responsibilities centralised here:
-//   1. Event emission for `deleteFile`, `rename`, `downloadFile` (pre-op,
-//      post-op, failure) via the injected `EventBus`. `uploadFile` is
-//      EXEMPT — per migrate-upload-orchestration-out-of-engine, the engine
-//      bus does not carry upload lifecycle events; those are emitted by
-//      the fs-sync service handler on `sync:event-stream`.
+//   1. Error normalization for every public operation (see item 3). Per
+//      migrate-engine-events-to-consumer the engine no longer emits any
+//      lifecycle events: public methods return their typed result on success
+//      or throw a normalized `DatasourceError` on failure, with NO bus side
+//      effects. Downstream consumers (fs-sync) own all event emission.
 //   2. Public single-flight credential refresh via `refreshCredentials()`
 //      (per migrate-engine-retry-policy-to-consumer Decisions 2 + 7). The
 //      base does NOT auto-refresh around operations — a normalized
@@ -24,7 +24,8 @@
 //      `DatasourceError<T>` by the strategy's `normalizeError` before they
 //      cross the base's boundary.
 //
-// Strategies MUST NOT emit events directly (a contract test enforces this).
+// The engine emits no events (the event bus was removed in
+// migrate-engine-events-to-consumer); strategies likewise emit nothing.
 // Strategies MUST NOT re-enter the base's refresh path (`refreshCredentials`)
 // from `refreshTokenImpl` (see Decision 7 / Risks in design.md —
 // `refreshTokenImpl` is the critical section of the single-flight mutex).
@@ -32,34 +33,30 @@
 // Note: If `CredentialStore.put` rejects inside the refresh cycle (e.g., disk
 // full, keychain unavailable), the rejection is routed through the
 // refresh-failed path — `refreshCredentials()` rejects with
-// `DatasourceError.AuthExpired` and emits `token-expired` /
-// `authentication-failed`, not a distinct storage error. Host implementations
-// of `CredentialStore` SHOULD surface storage failures via their own logging /
-// telemetry so the root cause is debuggable. A future phase may introduce a
-// dedicated `storage-error` tag.
+// `DatasourceError.AuthExpired`, not a distinct storage error. Host
+// implementations of `CredentialStore` SHOULD surface storage failures via
+// their own logging / telemetry so the root cause is debuggable. A future
+// phase may introduce a dedicated `storage-error` tag.
 
 import type {
   AuthIntent,
   AuthResult,
   CredentialsFormIntent,
-  DatasourceEvent,
   DatasourceStatus,
   DatasourceType,
   DatasourceFileEntry,
   FileMetadata,
   OAuthIntent,
-  PayloadMap,
   ProviderDescriptor,
   Quota,
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError, serializeDatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError } from "@ft5/ipc-contracts";
 
 import type { Readable } from "node:stream";
 
 import type { CredentialStore } from "./credential-store.js";
-import type { EventBus } from "./event-bus.js";
 
 // Re-export the port so callers that were already importing `CredentialStore`
 // from "./base-client.js" keep compiling during the move. The canonical
@@ -105,10 +102,11 @@ export type ConflictPolicy = "fail" | "overwrite" | "keep-both";
  *   "cancelled"` from other failures and routes terminal emission to
  *   `download-cancelled` rather than `download-failed`.
  * - `onProgress` (optional): synchronous consumer callback fired from
- *   the strategy's byte-counting hook. Per design.md, the SAME hook
- *   that calls `onProgress` ALSO calls the base's
- *   `protected emitDownloading(...)` helper so the bus and the
- *   consumer callback observe the same byte-flow source.
+ *   the strategy's byte-counting hook as bytes flow. This is the sole
+ *   progress channel — the engine no longer emits any `downloading`
+ *   events (the event bus was removed in
+ *   migrate-engine-events-to-consumer); fs-sync's download handler owns
+ *   progress throttling and terminal emission via this callback.
  */
 export interface DownloadOptions {
   rangeStart?: number;
@@ -266,7 +264,6 @@ export interface DatasourceClient<T extends DatasourceType> {
 // ---------------------------------------------------------------------------
 
 export interface BaseClientContext {
-  bus: EventBus;
   credentialStore: CredentialStore;
   providerDescriptor: ProviderDescriptor;
 }
@@ -290,10 +287,6 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
 
   /** Single-flight refresh promise. `null` when no refresh is in flight. */
   private refreshPromise: Promise<AuthResult> | null = null;
-
-  /** Last known status value; used so `status()` can emit `status-changed`
-   * only when the value actually changes between calls. */
-  private lastStatus: DatasourceStatus | null = null;
 
   constructor(init: BaseClientInit) {
     this.datasourceId = init.datasourceId;
@@ -419,12 +412,12 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    *     validate `range-not-honored` (provider returned 200 instead
    *     of 206) and `range-mismatch` cases.
    *   - Run a byte-counting hook against the provider stream that
-   *     fires BOTH `options.onProgress(loaded, total)` AND
-   *     `this.emitDownloading(path, loaded, total)` from the same
-   *     source, so the consumer callback and the bus emission stay
-   *     in lockstep (per spec.md Requirement: "downloadFile is a
-   *     stateless one-shot HTTP primitive" + the four download
-   *     lifecycle events).
+   *     fires `options.onProgress(loaded, total)` as bytes flow. This is
+   *     the sole progress channel — the engine emits no `downloading`
+   *     events (the event bus was removed in
+   *     migrate-engine-events-to-consumer); fs-sync's download handler
+   *     consumes `onProgress` and owns progress throttling + terminal
+   *     emission off its own pipe-to-disk path.
    *
    * Per-strategy implementations land in §7 (Drive), §8 (OneDrive),
    * and §9 (S3). Section 5's strategy placeholders throw
@@ -462,23 +455,11 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
 
   async status(): Promise<DatasourceStatus> {
     try {
-      const value = await this.doStatusImpl();
-      if (this.lastStatus !== value) {
-        this.lastStatus = value;
-        this.emit("status-changed", false, { status: value });
-      }
-      return value;
+      return await this.doStatusImpl();
     } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      // Per spec, status emits a status-changed event carrying the error
-      // (Unsupported errors remain silent on the bus).
-      if (normalized.tag !== "unsupported") {
-        this.emit("status-changed", false, {
-          status: "error" as DatasourceStatus,
-          error: normalized.tag,
-        });
-      }
-      throw normalized;
+      // Normalize-only — the engine no longer emits `status-changed`
+      // (migrate-engine-events-to-consumer Decision 1).
+      throw this.ensureNormalized(err);
     }
   }
 
@@ -486,14 +467,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     try {
       await this.doTestConnectionImpl();
     } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag !== "unsupported") {
-        this.emit("status-changed", false, {
-          status: "error" as DatasourceStatus,
-          error: normalized.tag,
-        });
-      }
-      throw normalized;
+      throw this.ensureNormalized(err);
     }
   }
 
@@ -506,30 +480,13 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     try {
       intent = await this.doAuthenticateImpl();
     } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag !== "unsupported") {
-        // Decision 12.4: emit the full serialized DatasourceError so
-        // subscribers receive `retryable` / `retryAfterMs` / `raw`
-        // (not a reason string). Structured-clone across IPC drops the
-        // class identity, which is why we project to a plain shape here.
-        // Cast note: TS does not distribute `PayloadMap[T]["authentication-failed"]`
-        // to `SerializedDatasourceError<T>` when T is a generic parameter
-        // (indexed-access-on-generic limitation). At every concrete
-        // instantiation the types are equal — see the test-d assertions.
-        this.emit(
-          "authentication-failed",
-          false,
-          serializeDatasourceError(
-            normalized,
-          ) as PayloadMap[T]["authentication-failed"],
-        );
-      }
-      throw normalized;
+      // Normalize-only — the engine no longer emits `authentication-failed`
+      // (migrate-engine-events-to-consumer Decision 1).
+      throw this.ensureNormalized(err);
     }
     // Decorate the intent's completion closure so the base:
     //   1. awaits the strategy-provided token exchange,
-    //   2. persists credentials via `credentialStore.put`,
-    //   3. emits `authenticated` (or `authentication-failed` on reject).
+    //   2. persists credentials via `credentialStore.put`.
     return this.decorateIntent(intent);
   }
 
@@ -586,16 +543,10 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   async deleteFile(target: Target): Promise<void> {
     try {
       await this.doDeleteFileImpl(target);
-      this.emit("deleted", false, { target });
     } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag !== "unsupported") {
-        this.emit("delete-failed", false, {
-          tag: normalized.tag,
-          message: normalized.message,
-        });
-      }
-      throw normalized;
+      // Normalize-only — the engine no longer emits `deleted` /
+      // `delete-failed` (migrate-engine-events-to-consumer Decision 1).
+      throw this.ensureNormalized(err);
     }
   }
 
@@ -620,10 +571,9 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * Rename wrapper. The base calls `doRenameImpl` directly (per
    * migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh; a
    * normalized `auth-expired` surfaces raw and the consumer retries via
-   * `withAuthRefresh`), emits `entry-renamed { from, to }` once on success,
-   * and routes failures through the existing `delete-failed` taxonomy with
-   * `via: "rename"`. Unsupported errors stay silent on the bus per the
-   * engine-wide convention applied to every other op.
+   * `withAuthRefresh`) and returns the renamed entry on success. Failures are
+   * normalized and rethrown — the engine no longer emits any event
+   * (migrate-engine-events-to-consumer Decision 1).
    *
    * Per design.md Decision 1, per-policy orchestration is strategy-side
    * — the base passes `conflictPolicy` through to `doRenameImpl`
@@ -637,85 +587,10 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     conflictPolicy: ConflictPolicy,
   ): Promise<DatasourceFileEntry<T>> {
     try {
-      const entry = await this.doRenameImpl(target, newName, conflictPolicy);
-      // Cast note: TS does not distribute `PayloadMap[T]["entry-renamed"]`
-      // to `{ from: Target; to: DatasourceFileEntry<T> }` when T is a
-      // generic parameter (indexed-access-on-generic limitation, same as
-      // `authentication-failed` below). At every concrete instantiation
-      // the types are equal — see the test-d assertions in
-      // datasources-engine.test-d.ts.
-      this.emit(
-        "entry-renamed",
-        false,
-        { from: target, to: entry } as PayloadMap[T]["entry-renamed"],
-      );
-      return entry;
+      return await this.doRenameImpl(target, newName, conflictPolicy);
     } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag !== "unsupported") {
-        this.emit("delete-failed", false, {
-          tag: normalized.tag,
-          message: normalized.message,
-          via: "rename",
-        });
-      }
-      throw normalized;
+      throw this.ensureNormalized(err);
     }
-  }
-
-  /**
-   * Per-call progress hooks for in-flight `downloadFile` calls, keyed
-   * by `path`. Each entry is the closure-local `recordProgress`
-   * callback that the call's own `lastLoaded` / `lastTotal` live
-   * inside; `emitDownloading(path, …)` looks the entry up so a tick
-   * threads through to the right call's closure when multiple
-   * downloads run concurrently on the same client (different paths).
-   *
-   * The architecture allows concurrent downloads on the same client:
-   * fs-sync enforces single-flight per `(datasourceId, path)` at the
-   * service layer (§13.23), NOT per `(datasourceId)`. The same client
-   * instance therefore legitimately serves multiple concurrent
-   * downloads on different paths. Two simultaneous calls for the
-   * SAME path on one client are a fs-sync invariant violation; if it
-   * ever happens, the second `set` clobbers the first — the same
-   * failure mode as the original single-slot design, which is
-   * acceptable since fs-sync's reverse index already prevents it.
-   */
-  private readonly activeDownloads = new Map<
-    string,
-    (loaded: number, total: number | null) => void
-  >();
-
-  /**
-   * Emit a `downloading` event on the bus AND notify the active
-   * download's per-call progress hook (so `download-cancelled` /
-   * `download-failed` can carry the last-reported byte counts from
-   * the call's own closure, not a shared instance slot). Strategies
-   * invoke this from the same byte-counting hook that fires the
-   * consumer's `onProgress` callback, so the bus and the consumer
-   * stay in lockstep on a single source of truth (per design.md /
-   * tasks.md §5.7-§5.8).
-   *
-   * Cast note: TS does not distribute `PayloadMap[T]["downloading"]`
-   * to the literal payload shape when T is a generic parameter
-   * (indexed-access-on-generic limitation, same as `entry-renamed` and
-   * `authentication-failed`). At every concrete instantiation the types
-   * are equal — see the test-d assertions.
-   */
-  protected emitDownloading(
-    path: string,
-    loaded: number,
-    total: number | null,
-  ): void {
-    const recordProgress = this.activeDownloads.get(path);
-    if (recordProgress !== undefined) {
-      recordProgress(loaded, total);
-    }
-    this.emit(
-      "downloading",
-      true,
-      { path, loaded, total } as PayloadMap[T]["downloading"],
-    );
   }
 
   /**
@@ -723,11 +598,17 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * The base calls `doDownloadFileImpl` directly (per
    * migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh on
    * `auth-expired`; the consumer's download handler refreshes via
-   * `refreshCredentials()` and re-issues the GET with `rangeStart`), attaches
-   * stream-end / stream-error listeners to drive `file-downloaded` /
-   * `download-failed` / `download-cancelled`, and keeps closure-local
-   * last-byte-counts so the cancel path's payload is populated with real
-   * numbers.
+   * `refreshCredentials()` and re-issues the GET with `rangeStart`) and
+   * returns the strategy's `{ stream, contentLength, contentRange }`
+   * unchanged. An initial-call failure (no stream returned) is normalized and
+   * rethrown.
+   *
+   * The engine no longer emits any download lifecycle events nor attaches
+   * stream listeners (migrate-engine-events-to-consumer Decision 1): progress
+   * flows solely via `options.onProgress` (the strategy's byte-counting hook),
+   * and fs-sync's download handler owns terminal handling
+   * (`file-downloaded` / `download-failed` / `download-cancelled`) off its own
+   * synchronous pipe-to-disk path.
    *
    * The shape returned to the consumer is the strategy's shape
    * unchanged — the base does NOT replace the stream, mutate
@@ -739,124 +620,18 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     target: Target,
     options: DownloadOptions = {},
   ): Promise<DownloadResult> {
-    const path = target.kind === "path" ? target.path : target.handle;
-    // Per-call byte-tracking lives entirely in this method's closure. Each
-    // concurrent invocation captures its OWN `lastLoaded` / `lastTotal` so
-    // a cancel / failure on one call cannot read the byte counts of another
-    // call running on the same client instance (different path). The
-    // closure-local `recordProgress` is registered in `activeDownloads`
-    // by path so `emitDownloading(path, …)` routes a tick to the right
-    // call's closure; the cancel / failure-path emits below read from the
-    // closure variables directly, never from the map.
-    let lastLoaded = 0;
-    let lastTotal: number | null = null;
-    const recordProgress = (loaded: number, total: number | null): void => {
-      lastLoaded = loaded;
-      lastTotal = total;
-    };
-    this.activeDownloads.set(path, recordProgress);
-    let result: DownloadResult;
     try {
-      result = await this.doDownloadFileImpl(target, options);
+      return await this.doDownloadFileImpl(target, options);
     } catch (err) {
       // Initial-call failure (no stream returned). The base does NOT refresh
       // here (Decision 1) — a normalized `auth-expired` surfaces raw to the
       // consumer's download handler, which owns the refresh-and-re-issue
-      // (migrate-engine-retry-policy-to-consumer Decision 5). Cancel takes
-      // precedence over failure when the consumer's signal is already aborted
-      // (e.g., abort fired before the SDK call settled).
-      this.activeDownloads.delete(path);
-      const normalized = this.ensureNormalized(err);
-      if (
-        options.signal?.aborted ||
-        normalized.tag === "cancelled" ||
-        (err instanceof Error && err.name === "AbortError")
-      ) {
-        this.emit(
-          "download-cancelled",
-          false,
-          {
-            path,
-            bytesDownloaded: lastLoaded,
-            bytesTotal: lastTotal ?? 0,
-          } as PayloadMap[T]["download-cancelled"],
-        );
-        throw new DatasourceError<T>({
-          tag: "cancelled",
-          datasourceType: this.type,
-          datasourceId: this.datasourceId,
-          retryable: false,
-          message: "download cancelled",
-        });
-      }
-      this.emit(
-        "download-failed",
-        false,
-        serializeDatasourceError(
-          normalized,
-        ) as PayloadMap[T]["download-failed"],
-      );
-      throw normalized;
+      // (migrate-engine-retry-policy-to-consumer Decision 5). The strategy's
+      // `normalizeErrorImpl` maps AbortError → `tag: "cancelled"`, so an
+      // aborted initial call rejects with a `cancelled` DatasourceError; the
+      // consumer classifies cancellation from its own AbortController state.
+      throw this.ensureNormalized(err);
     }
-    // Stream is open. Attach observational listeners so the bus's terminal
-    // event fires when the consumer's pipe drains (or errors / aborts).
-    // Capture `contentLength` for the cancel-path `bytesTotal` fallback.
-    const contentLength = result.contentLength;
-    let terminalEmitted = false;
-    const emitTerminal = (kind: "end" | "error" | "abort", err?: unknown): void => {
-      if (terminalEmitted) return;
-      terminalEmitted = true;
-      this.activeDownloads.delete(path);
-      if (kind === "end") {
-        this.emit(
-          "file-downloaded",
-          false,
-          {
-            path,
-            bytes: lastLoaded || (contentLength ?? 0),
-          } as PayloadMap[T]["file-downloaded"],
-        );
-        return;
-      }
-      // Failure / cancel branch. Distinguish AbortError / `tag: "cancelled"`
-      // / aborted-signal from other failures.
-      const isAbortError =
-        err instanceof Error && err.name === "AbortError";
-      const isCancelTag =
-        err instanceof DatasourceError && err.tag === "cancelled";
-      if (kind === "abort" || isAbortError || isCancelTag || options.signal?.aborted) {
-        this.emit(
-          "download-cancelled",
-          false,
-          {
-            path,
-            bytesDownloaded: lastLoaded,
-            bytesTotal: contentLength,
-          } as PayloadMap[T]["download-cancelled"],
-        );
-        return;
-      }
-      const normalized = this.ensureNormalized(err);
-      this.emit(
-        "download-failed",
-        false,
-        serializeDatasourceError(
-          normalized,
-        ) as PayloadMap[T]["download-failed"],
-      );
-    };
-    result.stream.on("end", () => emitTerminal("end"));
-    result.stream.on("error", (err) => emitTerminal("error", err));
-    // AbortSignal-driven cancel: the strategy's signal-listener typically
-    // destroys the stream with AbortError, which fires our `error` listener
-    // above. This redundant abort listener handles the edge case where the
-    // strategy did not wire abort to a stream-error (e.g., the SDK simply
-    // ends the stream without erroring) — the base still routes terminal
-    // emission to `download-cancelled`.
-    options.signal?.addEventListener("abort", () => emitTerminal("abort"), {
-      once: true,
-    });
-    return result;
   }
 
   /**
@@ -875,18 +650,18 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
         message: "getQuota is not supported by this provider",
       });
     }
-    // Delegate to the shared read-op wrapper so a rate-limit failure emits
-    // `rate-limited` (parity with listDirectory / search / getMetadata). The
-    // capability-gate above short-circuits BEFORE runReadOp, so Unsupported
-    // stays silent on the bus.
+    // Delegate to the shared read-op wrapper (normalize-only — parity with
+    // listDirectory / search / getMetadata). The capability-gate above
+    // short-circuits BEFORE runReadOp.
     return this.runReadOp(() => this.doGetQuotaImpl());
   }
 
   /**
    * Release any host-level resources the client holds. The base implementation
-   * is a no-op — subclasses that subscribe to the bus, hold timers, or own
-   * external handles override this and call their own teardown (MAY call
-   * `super.dispose()` but it is not required).
+   * is a no-op — subclasses that hold timers or own external handles override
+   * this and call their own teardown (MAY call `super.dispose()` but it is not
+   * required). No strategy subscribes to any bus (the engine event bus was
+   * removed in migrate-engine-events-to-consumer).
    *
    * `dispose()` is idempotent by contract — callers (e.g., Phase 10's IPC
    * lifecycle owner) may invoke it more than once. Implementations MUST
@@ -901,31 +676,16 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   // -------------------------------------------------------------------------
 
   /**
-   * Read-op wrapper (list / search / getMetadata / getQuota): emits no
-   * pre-event, no success-event; on failure emits a non-`*-failed` signal
-   * via `status-changed` (or `rate-limited`) per task-text semantics, then
-   * rethrows. Unsupported is silent.
+   * Read-op wrapper (list / search / getMetadata / getQuota): normalize-only.
+   * Any raw provider exception is converted into a `DatasourceError<T>` and
+   * rethrown — the engine no longer emits `rate-limited` / `status-changed`
+   * (migrate-engine-events-to-consumer Decision 1).
    */
   private async runReadOp<R>(op: () => Promise<R>): Promise<R> {
     try {
       return await op();
     } catch (err) {
-      const normalized = this.ensureNormalized(err);
-      if (normalized.tag === "rate-limited") {
-        this.emit("rate-limited", false, {
-          tag: normalized.tag,
-          retryAfterMs: normalized.retryAfterMs,
-        });
-      } else if (
-        normalized.tag !== "unsupported" &&
-        normalized.tag !== "auth-expired"
-      ) {
-        this.emit("status-changed", false, {
-          status: "error" as DatasourceStatus,
-          error: normalized.tag,
-        });
-      }
-      throw normalized;
+      throw this.ensureNormalized(err);
     }
   }
 
@@ -936,47 +696,36 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
    * (typically via the exported `withAuthRefresh` helper) after observing an
    * `auth-expired` error.
    *
-   * The shared promise covers `refreshTokenImpl()`, persistence, and the
-   * `token-refreshed` emission as a single end-to-end cycle, so concurrent
-   * callers on the same client instance share exactly one refresh (one
-   * `refreshTokenImpl` call, one `put`, one `token-refreshed` event). The
+   * The shared promise covers `refreshTokenImpl()` + persistence as a single
+   * end-to-end cycle, so concurrent callers on the same client instance share
+   * exactly one refresh (one `refreshTokenImpl` call, one `put`). The
    * refreshed `AuthResult` is persisted via `CredentialStore.put` BEFORE the
    * returned promise resolves. The `refreshPromise` field is cleared after the
    * cycle completes (success or failure) so a subsequent failure can re-enter
    * with a fresh cycle.
    *
    * On refresh failure (the strategy's `refreshTokenImpl` rejects, OR the
-   * subsequent `put` rejects) the cycle emits `token-expired` +
-   * `authentication-failed` exactly once and rejects. When the underlying
-   * refresh itself threw a typed `DatasourceError` that error propagates
-   * unchanged; otherwise the cycle synthesizes one tagged `auth-expired`
-   * carrying the raw cause.
+   * subsequent `put` rejects) the cycle rejects. When the underlying refresh
+   * itself threw a typed `DatasourceError` that error propagates unchanged;
+   * otherwise the cycle synthesizes one tagged `auth-expired` carrying the raw
+   * cause. The engine no longer emits `token-refreshed` / `token-expired` /
+   * `authentication-failed` (migrate-engine-events-to-consumer Decision 1).
    */
   refreshCredentials(): Promise<AuthResult> {
     if (this.refreshPromise !== null) return this.refreshPromise;
-    // The stored promise covers refreshTokenImpl → persist → token-refreshed
-    // emission as a single end-to-end cycle. The failure emission (relocated
-    // here from the former operation-wrapper catch) also lives INSIDE the
-    // cycle so concurrent callers observe exactly one token-expired +
-    // authentication-failed pair, mirroring the single success emission.
+    // The stored promise covers refreshTokenImpl → persist as a single
+    // end-to-end cycle so concurrent callers share exactly one refresh.
     const cycle = (async (): Promise<AuthResult> => {
       try {
         const result = await this.refreshTokenImpl();
         // Persist BEFORE the promise resolves so a crash post-refresh does not
-        // lose the token. A put rejection routes to the catch below — the
-        // `token-refreshed` emission after it is skipped.
+        // lose the token. A put rejection routes to the catch below.
         await this.persistCredentials(result);
-        // Emit exactly once per shared refresh cycle.
-        this.emit("token-refreshed", false, { accessToken: "<redacted>" });
         return result;
       } catch (refreshErr) {
-        // Refresh (or persistence) failed: emit both events, then reject.
-        this.emit("token-expired", false, {});
-        // Decision 12.4: emit the full serialized DatasourceError. The raw
-        // refresh exception is preserved under `raw` so consumers can still
-        // surface the underlying cause. When refresh rejected with a
-        // DatasourceError we reuse it; otherwise synthesize one tagged
-        // `auth-expired` carrying the raw.
+        // Refresh (or persistence) failed: normalize and reject. When refresh
+        // rejected with a DatasourceError we reuse it; otherwise synthesize
+        // one tagged `auth-expired` carrying the raw cause.
         const refreshNormalized: DatasourceError<T> =
           refreshErr instanceof DatasourceError
             ? (refreshErr as DatasourceError<T>)
@@ -991,16 +740,6 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
                     ? refreshErr.message
                     : String(refreshErr),
               });
-        // Cast note: see the comment at the first emit site — TS cannot
-        // prove the indexed access reduces to `SerializedDatasourceError<T>`
-        // through a generic `T`.
-        this.emit(
-          "authentication-failed",
-          false,
-          serializeDatasourceError(
-            refreshNormalized,
-          ) as PayloadMap[T]["authentication-failed"],
-        );
         throw refreshNormalized;
       }
     })();
@@ -1061,49 +800,13 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
     try {
       result = await run();
     } catch (err) {
-      const normalized =
-        err instanceof DatasourceError
-          ? (err as DatasourceError<T>)
-          : this.normalizeErrorImpl(err);
-      if (normalized.tag !== "unsupported") {
-        // Decision 12.4: emit the full serialized DatasourceError so
-        // host-side subscribers can reconstruct retry affordances from
-        // `retryable` / `retryAfterMs` (not a bare reason string).
-        // Cast note: see the comment at the first emit site — TS cannot
-        // prove the indexed access reduces to `SerializedDatasourceError<T>`
-        // through a generic `T`.
-        this.emit(
-          "authentication-failed",
-          false,
-          serializeDatasourceError(
-            normalized,
-          ) as PayloadMap[T]["authentication-failed"],
-        );
-      }
-      throw normalized;
+      // Normalize-only — the engine no longer emits `authentication-failed`
+      // (migrate-engine-events-to-consumer Decision 1).
+      throw err instanceof DatasourceError
+        ? (err as DatasourceError<T>)
+        : this.normalizeErrorImpl(err);
     }
     await this.persistCredentials(result);
-    this.emit("authenticated", false, {});
     return result;
-  }
-
-  /**
-   * Emit a typed envelope on the injected bus. Generic over `K` so payloads
-   * narrow against `PayloadMap[T][K]` at the base's emission sites.
-   */
-  private emit<K extends keyof PayloadMap[T]>(
-    event: K,
-    streaming: boolean,
-    payload: PayloadMap[T][K],
-  ): void {
-    const envelope: DatasourceEvent<T, K> = {
-      event,
-      datasourceType: this.type,
-      datasourceId: this.datasourceId,
-      ts: Date.now(),
-      payload,
-      ...(streaming ? { streaming: true as const } : {}),
-    };
-    this.ctx.bus.emit(envelope);
   }
 }

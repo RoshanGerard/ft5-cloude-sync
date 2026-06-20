@@ -1,21 +1,19 @@
 // Phase 1 scaffold: the FS Datasource Engine is a framework-agnostic workspace
-// package (no Electron imports). The runtime surface (EventBus,
-// BaseDatasourceClient, ClientFactory, ProviderRegistry, concrete strategies)
-// arrives in Phases 2–8. For now the package re-exports the shared contract
-// types that live in `@ft5/ipc-contracts` so consumers can begin programming
-// against the public types without yet instantiating any runtime.
+// package (no Electron imports). The runtime surface (BaseDatasourceClient,
+// ClientFactory, ProviderRegistry, concrete strategies) arrives in
+// Phases 3–8. For now the package re-exports the shared contract types that
+// live in `@ft5/ipc-contracts` so consumers can begin programming against the
+// public types without yet instantiating any runtime.
 export type {
   AuthIntent,
   AuthResult,
   CredentialsFormIntent,
-  DatasourceEvent,
   DatasourceErrorTag,
   DatasourceType,
   DatasourceFileEntry,
   FileMetadata,
   DatasourceMimeFamily,
   OAuthIntent,
-  PayloadMap,
   ProviderMetadata,
   Quota,
   StoredCredentials,
@@ -23,14 +21,11 @@ export type {
 } from "@ft5/ipc-contracts";
 export { DatasourceError } from "@ft5/ipc-contracts";
 
-// Phase 2: event bus runtime. Framework-agnostic — pure Node, no Electron.
-export { createEventBus } from "./event-bus.js";
-export type {
-  Clock,
-  ClockTimer,
-  EventBus,
-  EventBusOptions,
-} from "./event-bus.js";
+// migrate-engine-events-to-consumer Decision 1: the engine no longer owns an
+// event bus. Public methods return typed results or throw a normalized
+// `DatasourceError` with no bus side effects; downstream consumers (fs-sync)
+// own all event emission. The former `createEventBus` / `EventBus` /
+// `EventBusOptions` / `Clock` / `ClockTimer` exports are removed.
 
 // Phase 3: Template base class + Strategy interface. The three concrete
 // strategies (S3, OneDrive, Google Drive) live under `./strategies/` and

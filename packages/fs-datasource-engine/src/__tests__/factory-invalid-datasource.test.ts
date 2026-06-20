@@ -22,7 +22,6 @@ import {
   type StoredCredentials,
 } from "@ft5/ipc-contracts";
 
-import { createEventBus } from "../event-bus.js";
 import type { CredentialStore } from "../credential-store.js";
 import {
   createClientFactory,
@@ -47,7 +46,6 @@ function makeCredentialStore(): CredentialStore {
 
 function makeEngineContext(): EngineContext {
   return {
-    bus: createEventBus(),
     credentialStore: makeCredentialStore(),
   };
 }

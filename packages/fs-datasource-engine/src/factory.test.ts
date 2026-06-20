@@ -12,7 +12,6 @@ import type { ProviderId } from "@ft5/ipc-contracts";
 import { providers } from "@ft5/ipc-contracts";
 import { DatasourceError } from "@ft5/ipc-contracts";
 
-import { createEventBus } from "./event-bus.js";
 import type { CredentialStore } from "./credential-store.js";
 import type {
   BaseClientContext,
@@ -43,7 +42,6 @@ function makeCredentialStore(): CredentialStore {
 
 function makeEngineContext(): EngineContext {
   return {
-    bus: createEventBus(),
     credentialStore: makeCredentialStore(),
   };
 }
@@ -199,7 +197,7 @@ describe("createClientFactory", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
-  it("wires bus, credentialStore, and providerDescriptor into the BaseClientContext", () => {
+  it("wires credentialStore and providerDescriptor into the BaseClientContext", () => {
     const ctx = makeEngineContext();
     let captured: {
       datasourceId: string;
@@ -230,8 +228,7 @@ describe("createClientFactory", () => {
     const c = captured!;
     expect(c.datasourceId).toBe("ds-42");
     expect(c.credentials).toBe(mockCreds);
-    // Referentially equal bus + store propagate into the BaseClientContext.
-    expect(c.ctx.bus).toBe(ctx.bus);
+    // Referentially equal store propagates into the BaseClientContext.
     expect(c.ctx.credentialStore).toBe(ctx.credentialStore);
     // Descriptor is resolved from the shared @ft5/ipc-contracts export.
     expect(c.ctx.providerDescriptor).toBe(providers["amazon-s3"]);

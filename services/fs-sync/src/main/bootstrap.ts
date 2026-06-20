@@ -18,7 +18,6 @@ import { COMMAND_NAMES } from "@ft5/ipc-contracts/sync-service";
 import {
   createClientFactory,
   createDefaultProviderRegistry,
-  createEventBus as createEngineEventBus,
   type ClientFactory,
   type ProviderRegistry,
 } from "@ft5/fs-datasource-engine";
@@ -193,11 +192,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     observer?.onStage("acquire-pid-guard");
 
     // 5. construct-credential-store
-    // Two buses: `bus` is the service-internal event bus (scheduler, probe,
-    // subscriptions, executors); `engineBus` is the engine's coalescing bus
-    // required by EngineContext. They are distinct types — do not cross-wire.
+    // `bus` is the service-internal event bus (scheduler, probe,
+    // subscriptions, executors). The engine no longer owns an event bus
+    // (migrate-engine-events-to-consumer) — `EngineContext` is now just
+    // `{ credentialStore }`.
     const bus: EventBus = createEventBus();
-    const engineBus = createEngineEventBus();
     // Download-side singletons (per add-engine-rename-download §11 + §13).
     // - `downloadRegistry` is the in-memory `Map<downloadJobId, entry>`
     //   shared by the `files:download` handler (mutates per byte tick),
@@ -255,7 +254,6 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     const resolveClient = createResolveClient({
       credentialStore,
       factory,
-      engineBus,
     });
     observer?.onStage("construct-client-factory");
 
@@ -289,7 +287,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
     // until completeWith resolves OR cancel/timeout fires. The §15
     // SIGINT path will dispose every active session via broker.dispose().
     const correlationStore = createAuthCorrelationStore();
-    const engineContext = { bus: engineBus, credentialStore };
+    const engineContext = { credentialStore };
     const loopbackBroker = createOAuthLoopbackBroker({
       bus,
       engineContext,
@@ -341,9 +339,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<Runtime> {
       // sync:cancel-download, and downloads:list-active. The handler
       // owns the download-progress throttle via `options.onProgress`
       // (migrate-engine-events-to-consumer §1) — no engine-bus
-      // subscription is wired here anymore. (`engineBus` is still
-      // created above + threaded into createResolveClient / engineContext
-      // as `EngineContext.bus`; that wiring is removed in slice 2.)
+      // subscription is wired here anymore. The engine event bus was
+      // removed entirely in slice 2 (`EngineContext` is now just
+      // `{ credentialStore }`).
       downloadRegistry,
       hashComputer,
       // migrate-upload-orchestration-out-of-engine §9/§10 upload

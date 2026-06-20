@@ -36,7 +36,6 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, providers } from "@ft5/ipc-contracts";
 
-import { createEventBus, type EventBus } from "../event-bus.js";
 import type { BaseClientContext, CredentialStore } from "../base-client.js";
 import {
   appendExtensionIfMissing,
@@ -374,19 +373,11 @@ function makeHarness(options: {
   store?: CredentialStore;
   codeVerifierFactory?: () => string;
 }): {
-  bus: EventBus;
-  events: Array<{ event: string; payload: unknown }>;
   client: GoogleDriveClient;
   store: CredentialStore;
 } {
-  const bus = createEventBus();
-  const events: Array<{ event: string; payload: unknown }> = [];
-  bus.subscribe((e) => {
-    events.push({ event: e.event as string, payload: e.payload });
-  });
   const store = options.store ?? makeStore();
   const ctx: BaseClientContext = {
-    bus,
     credentialStore: store,
     providerDescriptor: providers["google-drive"],
   };
@@ -408,7 +399,7 @@ function makeHarness(options: {
     },
   ) as GoogleDriveClient;
   createdClients.push(client);
-  return { bus, events, client, store };
+  return { client, store };
 }
 
 const createdClients: GoogleDriveClient[] = [];
@@ -927,7 +918,7 @@ describe("GoogleDriveClient — path ambiguity surfacing", () => {
     expect(meta2.providerMetadata.ambiguousSiblings).toEqual(["dup-B"]);
   });
 
-  it("after a `deleted` bus event for the ambiguous path, the next resolution re-walks and re-surfaces ambiguity from the fresh list response", async () => {
+  it("after deleting the ambiguous path (inline cache eviction), the next resolution re-walks and re-surfaces ambiguity from the fresh list response", async () => {
     let listCallCount = 0;
     const { client } = makeFakeDrive({
       lists: [
@@ -982,11 +973,12 @@ describe("GoogleDriveClient — path ambiguity surfacing", () => {
     await h.client.getMetadata({ kind: "path", path: "/dup.txt" });
     const listsAfterFirst = listCallCount;
 
-    // Emit a deleted event for this path (via strategy's deleteFile by handle
-    // to avoid the ambiguity-reject on path-form delete).
+    // Delete this path (via strategy's deleteFile by handle to avoid the
+    // ambiguity-reject on path-form delete). Eviction is inline in
+    // doDeleteFileImpl (migrate-engine-cache-invalidation).
     await h.client.deleteFile({ kind: "handle", handle: "dup-first" });
-    // The deleted event fires with a handle-target — cache eviction by
-    // handle clears the /dup.txt entry. Trigger a fresh resolution.
+    // The inline handle-target eviction clears the /dup.txt entry. Trigger a
+    // fresh resolution.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cache = (h.client as any).pathHandleCache as Map<string, unknown>;
     // Full-path entry should be gone.
@@ -1107,7 +1099,7 @@ describe("GoogleDriveClient — getMetadata", () => {
 // ---------------------------------------------------------------------------
 
 describe("GoogleDriveClient — deleteFile", () => {
-  it("by handle — calls files.delete({fileId}) and emits `deleted`", async () => {
+  it("by handle — calls files.delete({fileId}) and resolves", async () => {
     const { client, calls } = makeFakeDrive({
       deletes: [
         {
@@ -1117,11 +1109,11 @@ describe("GoogleDriveClient — deleteFile", () => {
       ],
     });
     const h = makeHarness({ drive: client });
-    await h.client.deleteFile({ kind: "handle", handle: "TO-DEL" });
+    await expect(
+      h.client.deleteFile({ kind: "handle", handle: "TO-DEL" }),
+    ).resolves.toBeUndefined();
     expect(calls.delete).toHaveLength(1);
     expect(calls.delete[0]!.fileId).toBe("TO-DEL");
-    const names = h.events.map((e) => e.event);
-    expect(names).toContain("deleted");
   });
 
   it("by PATH on an ambiguous path rejects with DatasourceError tag=conflict (data-loss guard) — all fileIds in raw.ambiguousSiblings; no delete call made", async () => {
@@ -1846,14 +1838,6 @@ describe("GoogleDriveClient — upload (resumable, small file)", () => {
     expect(methods).toContain("POST");
     expect(methods).toContain("PUT");
 
-    // Engine bus is silent for upload events post-migrate-upload-
-    // orchestration-out-of-engine.
-    const names = h.events.map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
-
     // The consumer's onProgress was invoked with monotonic loaded values.
     expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
     const loaded = onProgress.mock.calls.map((c) => c[0]);
@@ -1865,8 +1849,7 @@ describe("GoogleDriveClient — upload (resumable, small file)", () => {
     // "path↔fileId LRU invalidation" describe block below — that block
     // primes a list response and observes whether a subsequent path-keyed
     // call still walks the path or short-circuits. Here we verify the
-    // primary migration contract (no bus emission) plus the entry shape
-    // the strategy hands the consumer.
+    // entry shape the strategy hands the consumer.
     expect(entry.path).toBeDefined();
     expect(entry.handle).toBe("UP-ID");
   });
@@ -2095,13 +2078,6 @@ describe("GoogleDriveClient — signal-driven cancel (resumable session)", () =>
       // leaving the session orphaned on Drive. The strategy uses a
       // fresh AbortController.timeout(5000) for cleanup.
       expect(deleteCalls[0]!.signal).not.toBe(controller.signal);
-
-      // Engine bus is silent for upload events.
-      const names = (h.events as Array<{ event: string }>).map((e) => e.event);
-      expect(names).not.toContain("uploading");
-      expect(names).not.toContain("file-created");
-      expect(names).not.toContain("upload-failed");
-      expect(names).not.toContain("upload-cancelled");
     } finally {
       unlinkSync(file);
     }
@@ -2384,62 +2360,7 @@ describe("GoogleDriveClient — rename cache invalidation", () => {
 // dispose()
 // ---------------------------------------------------------------------------
 
-describe("GoogleDriveClient — bus decoupling + dispose()", () => {
-  it("a `deleted` bus event does NOT evict the cache — eviction is inline, not bus-driven (migrate-engine-cache-invalidation)", async () => {
-    const { client } = makeFakeDrive({
-      lists: [
-        {
-          qMatch: "name='a.txt'",
-          handler: () => ({
-            files: [
-              {
-                id: "A",
-                name: "a.txt",
-                mimeType: "text/plain",
-                parents: ["root"],
-                createdTime: "2024-01-01T00:00:00Z",
-              },
-            ],
-          }),
-        },
-      ],
-      gets: [
-        {
-          fileId: "A",
-          handler: () => ({
-            id: "A",
-            name: "a.txt",
-            mimeType: "text/plain",
-            parents: ["root"],
-            modifiedTime: "2024-06-01T00:00:00Z",
-            createdTime: "2024-01-01T00:00:00Z",
-          }),
-        },
-      ],
-    });
-    const h = makeHarness({ drive: client });
-    await h.client.getMetadata({ kind: "path", path: "/a.txt" });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cache = (h.client as any).pathHandleCache as Map<
-      string,
-      { fileId: string; ambiguousSiblings?: string[] }
-    >;
-    expect(cache.get("/a.txt")?.fileId).toBe("A");
-
-    // No constructor bus-subscription drives eviction anymore — emitting a
-    // `deleted` event must NOT touch the strategy's cache (the old
-    // self-subscription was removed; eviction is inline in the mutating ops).
-    h.bus.emit({
-      event: "deleted",
-      datasourceType: "google-drive",
-      datasourceId: "ds-gd-1",
-      ts: Date.now(),
-      payload: { target: { kind: "path", path: "/a.txt" } },
-    });
-
-    expect(cache.get("/a.txt")?.fileId).toBe("A");
-  });
-
+describe("GoogleDriveClient — dispose()", () => {
   it("dispose() is idempotent", () => {
     const { client } = makeFakeDrive({});
     const h = makeHarness({ drive: client });
@@ -2725,32 +2646,6 @@ describe("GoogleDriveClient — scope drift detection", () => {
     );
   });
 
-  it("status() with scope-insufficient credentials emits a single status-changed event carrying error=auth-revoked, and does NOT emit authentication-failed", async () => {
-    const fakeFetch = vi.fn();
-    const aboutSpy = vi.fn();
-    const { client } = makeFakeDrive({ about: aboutSpy });
-    const h = makeHarness({
-      drive: client,
-      fetchImpl: fakeFetch as unknown as typeof fetch,
-      creds: makeCredsWithScope("https://www.googleapis.com/auth/drive.file"),
-    });
-    // Snapshot event count after construction, before calling status().
-    const eventsBefore = h.events.length;
-    await expect(h.client.status()).rejects.toBeInstanceOf(DatasourceError);
-    const eventsAfter = h.events.slice(eventsBefore);
-    // Positive assertion: exactly one status-changed event carrying error=auth-revoked.
-    const statusChangedEvents = eventsAfter.filter((e) => e.event === "status-changed");
-    expect(statusChangedEvents).toHaveLength(1);
-    const payload = statusChangedEvents[0]!.payload as { status?: string; error?: string };
-    expect(payload.status).toBe("error");
-    expect(payload.error).toBe("auth-revoked");
-    // Negative assertion: no authentication-failed event on this path.
-    const authFailedEvents = eventsAfter.filter((e) => e.event === "authentication-failed");
-    expect(authFailedEvents).toHaveLength(0);
-    // about.get must NOT be called when scope check fails first.
-    expect(aboutSpy).not.toHaveBeenCalled();
-  });
-
   it("status() with no meta.scope calls tokeninfo, persists the issued scope, then surfaces scope-insufficient when the issued scope is narrow", async () => {
     const aboutSpy = vi.fn(() => ({ storageQuota: { limit: "100", usage: "1" } }));
     const { client: drive } = makeFakeDrive({ about: aboutSpy });
@@ -2867,7 +2762,7 @@ describe("GoogleDriveClient — scope drift detection", () => {
 //                   strategy; tested separately under §7.x if covered.
 
 describe("GoogleDriveClient — doRenameImpl (files.update, kind via mimeType)", () => {
-  it("renames a file via drive.files.update and emits one entry-renamed event with kind='file' from the post-rename mimeType", async () => {
+  it("renames a file via drive.files.update and resolves with the renamed entry (kind='file' from the post-rename mimeType)", async () => {
     const { client, calls } = makeFakeDrive({
       lists: [
         // Path resolution: /old.txt
@@ -2923,10 +2818,6 @@ describe("GoogleDriveClient — doRenameImpl (files.update, kind via mimeType)",
     expect(entry.providerMetadata.fileId).toBe("FILE-X");
     expect(calls.update).toHaveLength(1);
     expect(calls.update[0]!.fileId).toBe("FILE-X");
-
-    const renames = h.events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
   });
 
   it("renames a folder via drive.files.update — same uniform call shape; kind='folder' from the post-rename mimeType", async () => {
@@ -3038,23 +2929,15 @@ describe("GoogleDriveClient — doRenameImpl sibling-collision pre-check on `fai
     );
     // No update issued — pre-check short-circuited the rename.
     expect(calls.update).toHaveLength(0);
-
-    // Failure-path bus emission goes through delete-failed { via: rename }.
-    const failures = h.events.filter((e) => e.event === "delete-failed");
-    expect(failures).toHaveLength(1);
-    expect(failures[0]!.payload).toMatchObject({
-      tag: "conflict",
-      via: "rename",
-    });
   });
 });
 
 describe("GoogleDriveClient — doRenameImpl `overwrite` on a file deletes the colliding sibling", () => {
-  it("when policy='overwrite' AND a sibling with the new name exists in the same parent, deletes that sibling (via direct files.delete — no `deleted` bus emission) THEN issues files.update; bus observes one entry-renamed and zero `deleted` events", async () => {
+  it("when policy='overwrite' AND a sibling with the new name exists in the same parent, deletes that sibling (via direct files.delete) THEN issues files.update; resolves with the renamed entry", async () => {
     // Per design.md Decision 1 + base-client doRenameImpl JSDoc + §4.6:
-    // strategy-side overwrite-on-file performs sibling-deletion (without
-    // emitting a `deleted` bus event — that primitive is internal cleanup,
-    // NOT a public deletion) THEN renames. Drive permits ambiguous siblings
+    // strategy-side overwrite-on-file performs sibling-deletion (internal
+    // cleanup, NOT a public deletion) THEN renames. Drive permits ambiguous
+    // siblings
     // by default (see class header); without this step, rename + overwrite
     // would silently create a duplicate name in the same parent.
     const { client, calls } = makeFakeDrive({
@@ -3128,13 +3011,6 @@ describe("GoogleDriveClient — doRenameImpl `overwrite` on a file deletes the c
     expect(calls.delete).toHaveLength(1);
     expect(calls.delete[0]!.fileId).toBe("EXISTING-NEW");
     expect(calls.update).toHaveLength(1);
-
-    // No `deleted` event — the strategy-internal sibling cleanup MUST NOT
-    // emit a public deletion (per the engine-wide convention that
-    // primitives don't emit; only the public `deleteFile` wrapper does).
-    expect(h.events.some((e) => e.event === "deleted")).toBe(false);
-    const renames = h.events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
   });
 });
 
@@ -3187,11 +3063,6 @@ describe("GoogleDriveClient — doRenameImpl directory-overwrite refusal", () =>
       "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
     );
     expect(calls.update).toHaveLength(0);
-
-    // Unsupported is silent on the bus — no delete-failed event for this
-    // refusal path (per the engine-wide convention).
-    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
-    expect(h.events.some((e) => e.event === "entry-renamed")).toBe(false);
   });
 });
 
@@ -3221,7 +3092,7 @@ describe("GoogleDriveClient — doRenameImpl directory-overwrite refusal", () =>
 // candidate `Makefile-2`.
 
 describe("GoogleDriveClient — doRenameImpl `keep-both` policy retries with suffix until success", () => {
-  it("first sibling-list collides for `bar.pdf`, second collides for `bar-2.pdf`, third returns empty for `bar-3.pdf`; then files.update with name='bar-3.pdf'; bus emits one entry-renamed with to.name='bar-3.pdf'", async () => {
+  it("first sibling-list collides for `bar.pdf`, second collides for `bar-2.pdf`, third returns empty for `bar-3.pdf`; then files.update with name='bar-3.pdf'; resolves with the renamed entry name='bar-3.pdf'", async () => {
     const { client, calls } = makeFakeDrive({
       lists: [
         // Path resolution: /foo.pdf
@@ -3308,13 +3179,6 @@ describe("GoogleDriveClient — doRenameImpl `keep-both` policy retries with suf
     expect(
       (calls.update[0]!.requestBody as { name?: string } | undefined)?.name,
     ).toBe("bar-3.pdf");
-
-    const renames = h.events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    expect(
-      (renames[0]!.payload as { to?: { name?: string } }).to?.name,
-    ).toBe("bar-3.pdf");
-    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
   });
 
   it("after 99 collisions (newName + suffixes 2..99), throws DatasourceError { tag: 'provider-error', message: 'exhausted keep-both attempts' } (wire-layer collapses provider-error → 'other' downstream); no files.update issued", async () => {
@@ -3407,7 +3271,7 @@ describe("GoogleDriveClient — doRenameImpl `keep-both` policy retries with suf
 // ---------------------------------------------------------------------------
 
 describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)", () => {
-  it("calls files.get({fileId, alt:'media'}, {responseType:'stream', signal}) and resolves with stream + contentLength + bus emits downloading + file-downloaded", async () => {
+  it("calls files.get({fileId, alt:'media'}, {responseType:'stream', signal}) and resolves with stream + contentLength; onProgress reports final loaded === contentLength", async () => {
     const fixture = Buffer.from("hello-world-bytes");
     const { client, calls } = makeFakeDrive({
       lists: [
@@ -3464,14 +3328,18 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
         },
       ],
     });
+    const onProgress = vi.fn<(loaded: number, total: number | null) => void>();
     const h = makeHarness({ drive: client });
-    const result = await h.client.downloadFile({
-      kind: "path",
-      path: "/hello.txt",
-    });
+    const result = await h.client.downloadFile(
+      {
+        kind: "path",
+        path: "/hello.txt",
+      },
+      { onProgress },
+    );
     expect(result.contentLength).toBe(fixture.length);
     expect(result.contentRange).toBeUndefined();
-    // Drain the stream so the base's `end` listener fires `file-downloaded`.
+    // Drain the stream so the byte-counting Transform fires onProgress.
     const chunks: Buffer[] = [];
     await new Promise<void>((resolve, reject) => {
       result.stream.on("data", (c: Buffer) => chunks.push(c));
@@ -3491,16 +3359,12 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
     expect(calls.get[1]!.params.fileId).toBe("DL-ID");
     expect(calls.get[1]!.params.alt).toBe("media");
 
-    const downloadings = h.events.filter((e) => e.event === "downloading");
-    const downloaded = h.events.filter((e) => e.event === "file-downloaded");
-    expect(downloadings.length).toBeGreaterThanOrEqual(1);
-    expect(downloaded).toHaveLength(1);
-    expect(downloaded[0]!.payload).toMatchObject({
-      path: "/hello.txt",
-      bytes: fixture.length,
-    });
-    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
-    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
+    // Progress is consumer-observed via options.onProgress only (the engine
+    // emits no events). The byte-counting Transform fires onProgress per
+    // chunk; the final loaded value equals the advertised contentLength.
+    expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const loadedValues = onProgress.mock.calls.map((c) => c[0]);
+    expect(loadedValues[loadedValues.length - 1]).toBe(fixture.length);
   });
 
   it("forwards options.rangeStart > 0 as a Range:bytes=<n>- header into the SDK call and parses Content-Range from the 206 response", async () => {
@@ -3555,7 +3419,8 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
       end: start + partial.length - 1,
       total,
     });
-    // Drain so the base emits file-downloaded.
+    // Drain the stream to completion (no events; return value is the
+    // contract surface asserted above).
     await new Promise<void>((resolve, reject) => {
       result.stream.on("data", () => {});
       result.stream.on("end", () => resolve());
@@ -3568,7 +3433,7 @@ describe("GoogleDriveClient — doDownloadFileImpl (files.get alt=media stream)"
 });
 
 describe("GoogleDriveClient — doDownloadFileImpl AbortSignal forwarding", () => {
-  it("aborting the consumer signal makes the SDK reject AbortError; bus emits exactly one download-cancelled with the byte counts at abort time; no download-failed", async () => {
+  it("aborting the consumer signal makes the SDK reject AbortError; the returned stream errors with a DatasourceError tag='cancelled', and onProgress's last loaded value reflects the bytes seen before abort", async () => {
     const controller = new AbortController();
     const { client } = makeFakeDrive({
       gets: [
@@ -3614,37 +3479,46 @@ describe("GoogleDriveClient — doDownloadFileImpl AbortSignal forwarding", () =
         },
       ],
     });
+    const onProgress = vi.fn<(loaded: number, total: number | null) => void>();
     const h = makeHarness({ drive: client });
     const result = await h.client.downloadFile(
       { kind: "handle", handle: "CANCEL-ID" },
-      { signal: controller.signal },
+      { signal: controller.signal, onProgress },
     );
     // Drive consumer pipe so byte counter ticks; then abort.
     let bytesSeen = 0;
-    const consumer = new Promise<unknown>((resolve) => {
+    let streamError: unknown;
+    const consumer = new Promise<void>((resolve) => {
       result.stream.on("data", (c: Buffer) => {
         bytesSeen += c.length;
         // Trigger abort once first chunk has been observed.
         if (bytesSeen >= 2048) controller.abort();
       });
-      result.stream.on("error", (err) => resolve(err));
-      result.stream.on("end", () => resolve(null));
+      result.stream.on("error", (err) => {
+        streamError = err;
+        resolve();
+      });
+      result.stream.on("end", () => resolve());
     });
     await consumer;
 
-    const cancelled = h.events.filter((e) => e.event === "download-cancelled");
-    expect(cancelled).toHaveLength(1);
-    expect(cancelled[0]!.payload).toMatchObject({
-      path: "CANCEL-ID",
-      bytesDownloaded: 2048,
-    });
-    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
-    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+    // The engine no longer emits download-cancelled — the abort surfaces as
+    // the returned stream erroring with a normalized DatasourceError whose
+    // tag is `cancelled` (normalizeErrorImpl maps AbortError → cancelled).
+    expect(streamError).toBeInstanceOf(DatasourceError);
+    expect((streamError as DatasourceError<"google-drive">).tag).toBe(
+      "cancelled",
+    );
+    // onProgress's last loaded value reflects the bytes counted before abort
+    // (the single 2048-byte chunk that flowed through the counter).
+    expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const loadedValues = onProgress.mock.calls.map((c) => c[0]);
+    expect(loadedValues[loadedValues.length - 1]).toBe(2048);
   });
 });
 
-describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired → download-failed", () => {
-  it("normalizes a mid-stream 401 to tag:auth-expired; bus emits exactly one download-failed whose payload IS the SerializedDatasourceError; no download-cancelled", async () => {
+describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired on the stream", () => {
+  it("normalizes a mid-stream 401 to tag:auth-expired; the returned stream errors with that normalized DatasourceError", async () => {
     const { client } = makeFakeDrive({
       gets: [
         {
@@ -3664,8 +3538,8 @@ describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expir
             // Push a chunk so byte-counting fires once, then synthesize a
             // mid-stream 401 by destroying the stream with a Gaxios-shaped
             // 401 error. The strategy's normalizeErrorImpl maps this to
-            // tag:auth-expired; the base emits download-failed carrying the
-            // serialized error.
+            // tag:auth-expired; the returned stream re-emits that normalized
+            // DatasourceError on its `error` event.
             setImmediate(() => {
               stream.push(Buffer.alloc(512));
               const err401 = makeGaxiosError(
@@ -3697,19 +3571,15 @@ describe("GoogleDriveClient — doDownloadFileImpl mid-stream 401 → auth-expir
         resolve();
       });
     });
-    expect(caught).toBeInstanceOf(Error);
-
-    const failed = h.events.filter((e) => e.event === "download-failed");
-    expect(failed).toHaveLength(1);
-    // Payload IS the SerializedDatasourceError — not a wrapper. Mirrors
-    // base-client.test.ts §5.9 + the authentication-failed precedent.
-    expect(failed[0]!.payload).toMatchObject({
-      tag: "auth-expired",
-      datasourceType: "google-drive",
-      datasourceId: "ds-gd-1",
-    });
-    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
-    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+    // The engine no longer emits download-failed — the mid-stream provider
+    // error is normalized by normalizeErrorImpl and surfaced on the returned
+    // stream's `error` event as a DatasourceError tag='auth-expired'. fs-sync's
+    // download handler owns terminal emission off this surface.
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"google-drive">;
+    expect(err.tag).toBe("auth-expired");
+    expect(err.datasourceType).toBe("google-drive");
+    expect(err.datasourceId).toBe("ds-gd-1");
   });
 });
 
@@ -3759,24 +3629,6 @@ describe("GoogleDriveClient — doDownloadFileImpl Google Apps native refusal", 
     expect(calls.get).toHaveLength(1);
     expect(calls.get[0]!.params.alt).toBeUndefined();
     expect(calls.get[0]!.params.fields).toBe("mimeType");
-
-    // The base's downloadFile wrapper MUST emit `download-failed` even
-    // for `tag: "unsupported"` throws from `doDownloadFileImpl` —
-    // otherwise the renderer's toaster never sees the failure and the
-    // user gets silent nothing (worse than the raw 403 they had before
-    // this fix). Verify the event reaches the bus carrying the
-    // concise message the renderer renders.
-    const failed = h.events.filter((e) => e.event === "download-failed");
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.payload).toMatchObject({
-      tag: "unsupported",
-      datasourceType: "google-drive",
-      datasourceId: "ds-gd-1",
-    });
-    const failedPayload = failed[0]!.payload as { message?: string };
-    expect(failedPayload.message).toBe(
-      "Google Drive documents download not supported",
-    );
   });
 
   it("each Google Apps subtype (sheet/presentation/drawing/form/script) is refused with the same concise message", async () => {

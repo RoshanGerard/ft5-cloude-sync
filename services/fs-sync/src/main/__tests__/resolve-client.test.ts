@@ -15,7 +15,6 @@ import {
 import type {
   ClientFactory,
   CredentialStore,
-  EventBus as EngineEventBus,
 } from "@ft5/fs-datasource-engine";
 
 import { createResolveClient } from "../resolve-client.js";
@@ -36,13 +35,11 @@ function makeFactory(): ClientFactory {
   } as unknown as ClientFactory;
 }
 
-const fakeEngineBus = {} as EngineEventBus;
-
 describe("resolveClient — InvalidDatasource on missing credentials (§5)", () => {
   it("rejects with DatasourceError tag === invalid-datasource when credentialStore returns null", async () => {
     const credentialStore = makeCredentialStore(async () => null);
     const factory = makeFactory();
-    const resolve = createResolveClient({ credentialStore, factory, engineBus: fakeEngineBus });
+    const resolve = createResolveClient({ credentialStore, factory });
 
     await expect(resolve("ds-missing")).rejects.toBeInstanceOf(DatasourceError);
   });
@@ -50,7 +47,7 @@ describe("resolveClient — InvalidDatasource on missing credentials (§5)", () 
   it("thrown error carries the real datasourceId, retryable: false, and a recognisable raw marker", async () => {
     const credentialStore = makeCredentialStore(async () => null);
     const factory = makeFactory();
-    const resolve = createResolveClient({ credentialStore, factory, engineBus: fakeEngineBus });
+    const resolve = createResolveClient({ credentialStore, factory });
 
     let caught: DatasourceError | undefined;
     try {
@@ -71,7 +68,7 @@ describe("resolveClient — InvalidDatasource on missing credentials (§5)", () 
   it("does NOT invoke factory.create when credentials are missing", async () => {
     const credentialStore = makeCredentialStore(async () => null);
     const factory = makeFactory();
-    const resolve = createResolveClient({ credentialStore, factory, engineBus: fakeEngineBus });
+    const resolve = createResolveClient({ credentialStore, factory });
 
     await expect(resolve("ds-1")).rejects.toBeInstanceOf(DatasourceError);
     expect(factory.create).not.toHaveBeenCalled();

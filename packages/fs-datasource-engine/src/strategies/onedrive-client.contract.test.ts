@@ -565,9 +565,8 @@ const fixture: StrategyContractFixture = {
 
 runStrategyContractSuite({
   providerName: "OneDriveClient",
-  buildClient: (bus, credentialStore, creds) => {
+  buildClient: (credentialStore, creds) => {
     const ctx: BaseClientContext = {
-      bus,
       credentialStore,
       providerDescriptor: providers.onedrive,
     };

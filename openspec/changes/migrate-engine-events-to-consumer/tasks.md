@@ -12,12 +12,12 @@
 
 ## 2. Engine: remove the `EventBus` (Decision 1)
 
-- [ ] 2.1 Update the engine guard/contract tests first (red): replace "only base-client emits" with "no `.emit(`/`this.bus`/`ctx.bus`/`EventBus`/`createEventBus` anywhere in `packages/fs-datasource-engine/src`"; assert `EngineContext` is `{ credentialStore }`.
-- [ ] 2.2 Remove the private `emit()` (`base-client.ts:1094-1108`) and all ~21 call sites (status/auth/token/delete/rename/download emissions). For `downloadFile`, remove `emitDownloading`'s bus emit and the terminal `emitTerminal` bus logic (`base-client.ts:806-858`); KEEP the strategy→`options.onProgress` invocation. Re-evaluate whether `activeDownloads`/`recordProgress` can be deleted once terminal bus emissions are gone.
-- [ ] 2.3 Remove the `bus` field from `BaseClientContext` (`base-client.ts:268-272`) and `EngineContext` (`factory.ts:88-91`); update `factory.create`/`createForAuth` and the per-create context assembly to `{ credentialStore }`.
-- [ ] 2.4 Delete `packages/fs-datasource-engine/src/event-bus.ts`; remove `createEventBus`/`EventBus`/`EventBusOptions`/`Clock`/`ClockTimer` from `index.ts`.
-- [ ] 2.5 Fix the stale OneDrive class-header comment (`onedrive-client.ts:41-45`, "a strategy MAY subscribe — and we do") to reflect no subscription / no bus.
-- [ ] 2.6 `pnpm --filter @ft5/fs-datasource-engine test` green.
+- [x] 2.1 Update the engine guard/contract tests first (red): replace "only base-client emits" with "no `.emit(`/`this.bus`/`ctx.bus`/`EventBus`/`createEventBus` anywhere in `packages/fs-datasource-engine/src`"; assert `EngineContext` is `{ credentialStore }`.
+- [x] 2.2 Remove the private `emit()` (`base-client.ts:1094-1108`) and all ~21 call sites (status/auth/token/delete/rename/download emissions). For `downloadFile`, remove `emitDownloading`'s bus emit and the terminal `emitTerminal` bus logic (`base-client.ts:806-858`); KEEP the strategy→`options.onProgress` invocation. Re-evaluate whether `activeDownloads`/`recordProgress` can be deleted once terminal bus emissions are gone.
+- [x] 2.3 Remove the `bus` field from `BaseClientContext` (`base-client.ts:268-272`) and `EngineContext` (`factory.ts:88-91`); update `factory.create`/`createForAuth` and the per-create context assembly to `{ credentialStore }`.
+- [x] 2.4 Delete `packages/fs-datasource-engine/src/event-bus.ts`; remove `createEventBus`/`EventBus`/`EventBusOptions`/`Clock`/`ClockTimer` from `index.ts`.
+- [x] 2.5 Fix the stale OneDrive class-header comment (`onedrive-client.ts:41-45`, "a strategy MAY subscribe — and we do") to reflect no subscription / no bus.
+- [x] 2.6 Engine tests green — 16 files / 328 passed. NOTE: the engine package has NO per-package `test` script, so `pnpm --filter @ft5/fs-datasource-engine test` no-ops; engine tests run via the root vitest config: `pnpm exec vitest run packages/fs-datasource-engine` (or the full-suite `pnpm test`).
 
 ## 3. ipc-contracts: remove the event types + channel (Decisions 1, 4)
 
@@ -36,11 +36,11 @@
 
 ## 5. Engine/strategy/factory test sweep (transform bus assertions)
 
-- [ ] 5.1 DELETE `packages/fs-datasource-engine/src/event-bus.test.ts` (tests the removed component).
-- [ ] 5.2 Transform `base-client.test.ts`: replace the `collect(bus)` helper + emission assertions with return-value / thrown-error assertions; delete the strategy-emit guard meta-test (`:2089-2106`).
-- [ ] 5.3 Transform strategy tests (`s3-client`/`googledrive-client`/`onedrive-client`.test.ts + `*-preauth.test.ts`): drop `createEventBus`/`bus.subscribe`; assert outcomes via return/throw.
-- [ ] 5.4 Transform factory tests (`factory.test.ts`, `factory-create-for-auth.test.ts`, `factory-invalid-datasource.test.ts`): drop `bus` from the test `EngineContext`.
-- [ ] 5.5 Clean up unused `EngineEventBus`/`fakeEngineBus` type imports in fs-sync: `authenticate-*.test.ts`, `oauth/__tests__/loopback-broker*.test.ts`, `main/__tests__/resolve-client.test.ts`, and the `makeEngineBus()` fakes in `downloads-list-active.test.ts` + `__integration__/download-conflict.test.ts`.
+- [x] 5.1 DELETE `packages/fs-datasource-engine/src/event-bus.test.ts` (tests the removed component).
+- [x] 5.2 Transform `base-client.test.ts`: replace the `collect(bus)` helper + emission assertions with return-value / thrown-error assertions; delete the strategy-emit guard meta-test (`:2089-2106`).
+- [x] 5.3 Transform strategy tests (`s3-client`/`googledrive-client`/`onedrive-client`.test.ts + `*-preauth.test.ts`): drop `createEventBus`/`bus.subscribe`; assert outcomes via return/throw.
+- [x] 5.4 Transform factory tests (`factory.test.ts`, `factory-create-for-auth.test.ts`, `factory-invalid-datasource.test.ts`): drop `bus` from the test `EngineContext`.
+- [x] 5.5 Clean up unused `EngineEventBus`/`fakeEngineBus` type imports in fs-sync. DONE: `resolve-client.test.ts` + `oauth/__tests__/loopback-broker.test.ts` + `loopback-broker-dev-override.test.ts` had dangling `EventBus as EngineEventBus` imports of the removed engine type (+ `engineContext` literals with a now-gone `bus`) — removed; their `EngineContext` literals are now `{ credentialStore }`. (`authenticate-*.test.ts` import `EventBus` from the fs-sync SERVICE bus `../events/event-bus.js`, NOT the engine — untouched. The `makeEngineBus()` fakes in `downloads-list-active.test.ts` + `download-conflict.test.ts` were already removed in slice 1.) NOTE: fs-sync `tsconfig` EXCLUDES `*.test.ts`, so these dangling type imports were invisible to `tsc -b` + elided by vitest at runtime — caught by an explicit grep during slice-3 recovery.
 
 ## 6. Verification + spec sync (Decision 7)
 

@@ -32,7 +32,6 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError, providers } from "@ft5/ipc-contracts";
 
-import { createEventBus, type EventBus } from "../event-bus.js";
 import type { BaseClientContext, CredentialStore } from "../base-client.js";
 import {
   createOneDriveClient,
@@ -181,19 +180,11 @@ function makeHarness(options: {
   fetchImpl?: typeof fetch;
   credsOverrides?: Parameters<typeof makeCreds>[0];
 }): {
-  bus: EventBus;
-  events: Array<{ event: string; payload: unknown }>;
   client: OneDriveClient;
   store: CredentialStore;
 } {
-  const bus = createEventBus();
-  const events: Array<{ event: string; payload: unknown }> = [];
-  bus.subscribe((e) => {
-    events.push({ event: e.event as string, payload: e.payload });
-  });
   const store = makeStore();
   const ctx: BaseClientContext = {
-    bus,
     credentialStore: store,
     providerDescriptor: providers.onedrive,
   };
@@ -211,12 +202,13 @@ function makeHarness(options: {
     },
   ) as OneDriveClient;
   createdClients.push(client);
-  return { bus, events, client, store };
+  return { client, store };
 }
 
 // Track every client created through `makeHarness` so `afterEach` can dispose
-// each one. Without this, the bus-subscription held by OneDriveClient would
-// leak across tests — mattering once the dispose contract is in place.
+// each one. `dispose()` is a contract-stable no-op post
+// migrate-engine-events-to-consumer (no bus subscription to release), but the
+// loop keeps the dispose-idempotency contract exercised across the suite.
 const createdClients: OneDriveClient[] = [];
 
 beforeEach(() => {
@@ -485,7 +477,7 @@ describe("OneDriveClient — getMetadata", () => {
 // ---------------------------------------------------------------------------
 
 describe("OneDriveClient — deleteFile", () => {
-  it("issues DELETE on /me/drive/root:<path>: and emits `deleted`", async () => {
+  it("issues DELETE on /me/drive/root:<path>: and resolves to void", async () => {
     const { client, apiCalls } = makeFakeGraph([
       {
         match: "/me/drive/root:/todelete.txt:",
@@ -493,9 +485,9 @@ describe("OneDriveClient — deleteFile", () => {
       },
     ]);
     const h = makeHarness({ graph: client });
-    await h.client.deleteFile({ kind: "path", path: "/todelete.txt" });
-    const names = h.events.map((e) => e.event);
-    expect(names).toContain("deleted");
+    await expect(
+      h.client.deleteFile({ kind: "path", path: "/todelete.txt" }),
+    ).resolves.toBeUndefined();
     expect(apiCalls[0]).toBe("/me/drive/root:/todelete.txt:");
   });
 
@@ -855,15 +847,9 @@ describe("OneDriveClient — upload (simple PUT for <= 4MB)", () => {
     // Body must be a Buffer, not a path-string (streaming from disk or in-mem buf)
     expect(putBodies[0]).toBeDefined();
 
-    // Engine bus is silent for upload events post-migrate-upload-
-    // orchestration-out-of-engine.
-    const names = h.events.map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
-
     // The consumer's onProgress was invoked with monotonic loaded values.
+    // Progress is the sole observable channel — the engine emits no events
+    // (the bus was removed in migrate-engine-events-to-consumer).
     expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -920,14 +906,9 @@ describe("OneDriveClient — upload (resumable session for > 4MB)", () => {
       expect(c.url).toBe("https://up.example.com/session/abc");
       expect((c.init?.method ?? "").toUpperCase()).toBe("PUT");
     }
-    // Engine bus is silent for upload events post-migrate-upload-
-    // orchestration-out-of-engine.
-    const names = h.events.map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
 
+    // Progress is the sole observable channel — the engine emits no events
+    // (the bus was removed in migrate-engine-events-to-consumer).
     expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -1177,13 +1158,6 @@ describe("OneDriveClient — signal-driven cancel (resumable session)", () => {
       expect(deleteCalls[0]!.url).toBe("https://up.example.com/session/cancel");
       expect(deleteCalls[0]!.method).toBe("DELETE");
       expect(deleteCalls[0]!.signal).not.toBe(controller.signal);
-
-      // Engine bus carries no upload events.
-      const names = (h.events as Array<{ event: string }>).map((e) => e.event);
-      expect(names).not.toContain("uploading");
-      expect(names).not.toContain("file-created");
-      expect(names).not.toContain("upload-failed");
-      expect(names).not.toContain("upload-cancelled");
     } finally {
       unlinkSync(file);
     }
@@ -1235,12 +1209,6 @@ describe("OneDriveClient — signal-driven cancel (resumable session)", () => {
       ).rejects.toSatisfy(
         (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
       );
-
-      const names = (h.events as Array<{ event: string }>).map((e) => e.event);
-      expect(names).not.toContain("uploading");
-      expect(names).not.toContain("file-created");
-      expect(names).not.toContain("upload-failed");
-      expect(names).not.toContain("upload-cancelled");
     } finally {
       unlinkSync(file);
     }
@@ -1294,7 +1262,7 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
     expect(apiCalls[1]).toBe("/me/drive/items/cached-id");
   });
 
-  it("on `deleted` event for a path the cached entry is evicted", async () => {
+  it("deleteFile of a cached path evicts the cached entry (inline eviction)", async () => {
     // The seed getMetadata resolves via path; the cached delete then routes
     // via /items/<id>. Prime both addressing forms.
     const { client: graphClient } = makeFakeGraph([
@@ -1471,55 +1439,18 @@ describe("OneDriveClient — URL encoding", () => {
 });
 
 // ---------------------------------------------------------------------------
-// bus decoupling + dispose()
+// dispose()
 // ---------------------------------------------------------------------------
 //
-// migrate-engine-cache-invalidation removed the constructor bus
-// self-subscription: cache eviction is now performed inline by the mutating
-// ops (doDeleteFileImpl / doRenameImpl), so a `deleted` event on the bus no
-// longer drives eviction. `dispose()` is a contract-stable no-op.
+// The engine event bus was removed in migrate-engine-events-to-consumer, and
+// the constructor bus self-subscription was already removed by
+// migrate-engine-cache-invalidation (cache eviction is inline in the mutating
+// ops — doDeleteFileImpl / doRenameImpl). `dispose()` is therefore a
+// contract-stable no-op; the only surviving contract is its idempotency.
+// (Inline-eviction behavior is exercised by the LRU-invalidation describe
+// above and by the shared strategy-contract suite.)
 
-describe("OneDriveClient — bus decoupling + dispose()", () => {
-  it("a `deleted` bus event does NOT evict the cache — eviction is inline, not bus-driven (migrate-engine-cache-invalidation)", async () => {
-    // Seed a cache entry via getMetadata so we can observe that a subsequent
-    // `deleted` event evicts the path BEFORE dispose, but NOT after dispose.
-    const { client: graphClient } = makeFakeGraph([
-      {
-        match: "/me/drive/root:/a.txt:",
-        verbs: {
-          get: () => ({
-            id: "A",
-            name: "a.txt",
-            file: { mimeType: "text/plain" },
-            size: 1,
-            lastModifiedDateTime: "2024-06-01T00:00:00Z",
-            parentReference: { path: "/drive/root:" },
-          }),
-        },
-      },
-    ]);
-    const h = makeHarness({ graph: graphClient });
-    // Prime cache
-    await h.client.getMetadata({ kind: "path", path: "/a.txt" });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cache = (h.client as any).pathHandleCache as Map<string, string>;
-    expect(cache.get("/a.txt")).toBe("A");
-
-    // No constructor bus-subscription drives eviction anymore — emitting a
-    // `deleted` event must NOT touch the strategy's cache (the old
-    // self-subscription was removed; eviction is inline in the mutating ops).
-    h.bus.emit({
-      event: "deleted",
-      datasourceType: "onedrive",
-      datasourceId: "ds-od-1",
-      ts: Date.now(),
-      payload: { target: { kind: "path", path: "/a.txt" } },
-    });
-
-    // The cache entry MUST still be there — no bus subscription evicts it.
-    expect(cache.get("/a.txt")).toBe("A");
-  });
-
+describe("OneDriveClient — dispose()", () => {
   it("dispose() is idempotent — calling twice does not throw", () => {
     const { client: graphClient } = makeFakeGraph([]);
     const h = makeHarness({ graph: graphClient });
@@ -1583,7 +1514,7 @@ describe("OneDriveClient — testConnection / status", () => {
 // before any PATCH is issued.
 
 describe("OneDriveClient — doRenameImpl (PATCH /me/drive/items, kind via folder/file facet)", () => {
-  it("renames a file via PATCH and emits one entry-renamed event with kind='file'", async () => {
+  it("renames a file via PATCH and resolves with the renamed entry (kind='file')", async () => {
     const patchBodies: unknown[] = [];
     const { client, apiCalls } = makeFakeGraph([
       // Path resolution for /old.txt
@@ -1639,10 +1570,6 @@ describe("OneDriveClient — doRenameImpl (PATCH /me/drive/items, kind via folde
     expect(patchBodies[0]).toMatchObject({ name: "new.txt" });
     // PATCH issued on the items/<id> URL.
     expect(apiCalls.some((u) => u === "/me/drive/items/FILE-X")).toBe(true);
-
-    const renames = h.events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
   });
 
   it("renames a folder via PATCH — same uniform call shape; kind='folder' from response folder facet", async () => {
@@ -1748,18 +1675,11 @@ describe("OneDriveClient — doRenameImpl sibling-collision pre-check on `fail`"
     expect((err.raw as { existingPath?: string }).existingPath).toBe("/bar.txt");
     // No PATCH issued — pre-check short-circuited the rename.
     expect(patchCalls).toHaveLength(0);
-
-    const failures = h.events.filter((e) => e.event === "delete-failed");
-    expect(failures).toHaveLength(1);
-    expect(failures[0]!.payload).toMatchObject({
-      tag: "conflict",
-      via: "rename",
-    });
   });
 });
 
 describe("OneDriveClient — doRenameImpl `overwrite` on a file deletes the colliding sibling", () => {
-  it("when policy='overwrite' AND a sibling with the new name exists, deletes that sibling (via direct DELETE — no `deleted` bus emission) THEN issues PATCH; bus observes one entry-renamed and zero `deleted` events", async () => {
+  it("when policy='overwrite' AND a sibling with the new name exists, deletes that sibling (via direct DELETE) THEN issues PATCH; resolves with the renamed entry", async () => {
     const deleteCalls: string[] = [];
     const patchCalls: unknown[] = [];
     const { client, apiCalls } = makeFakeGraph([
@@ -1832,12 +1752,10 @@ describe("OneDriveClient — doRenameImpl `overwrite` on a file deletes the coll
     expect(entry.name).toBe("new.txt");
     expect(deleteCalls).toEqual(["EXISTING-NEW"]);
     expect(patchCalls).toHaveLength(1);
-    // No `deleted` event — the strategy-internal sibling cleanup MUST NOT
-    // emit a public deletion (engine-wide convention; primitives don't emit).
-    expect(h.events.some((e) => e.event === "deleted")).toBe(false);
-    const renames = h.events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    // DELETE was issued on the colliding sibling URL.
+    // The strategy-internal sibling cleanup issues a direct DELETE on the
+    // colliding sibling URL (NOT via the public deleteFile primitive). The
+    // engine emits no events at all post migrate-engine-events-to-consumer;
+    // the direct DELETE is verified via deleteCalls / apiCalls below.
     expect(apiCalls.some((u) => u === "/me/drive/items/EXISTING-NEW")).toBe(
       true,
     );
@@ -1893,14 +1811,11 @@ describe("OneDriveClient — doRenameImpl directory-overwrite refusal", () => {
       "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
     );
     expect(patchCalls).toHaveLength(0);
-    // Unsupported is silent on the bus — no delete-failed event.
-    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
-    expect(h.events.some((e) => e.event === "entry-renamed")).toBe(false);
   });
 });
 
 describe("OneDriveClient — doRenameImpl Graph 409 race normalizes to conflict", () => {
-  it("if a race made the §8.2 pre-check pass but PATCH errors with 409, the strategy normalizes to tag:conflict and the base routes to delete-failed { via: 'rename' }", async () => {
+  it("if a race made the §8.2 pre-check pass but PATCH errors with 409, the strategy rejects with tag:conflict", async () => {
     // Pre-check passes (no children); PATCH fails with 409 (e.g., another
     // client created /bar.txt between the pre-check and the PATCH).
     const { client } = makeFakeGraph([
@@ -1944,17 +1859,11 @@ describe("OneDriveClient — doRenameImpl Graph 409 race normalizes to conflict"
     }
     expect(caught).toBeInstanceOf(DatasourceError);
     expect((caught as DatasourceError<"onedrive">).tag).toBe("conflict");
-    const failures = h.events.filter((e) => e.event === "delete-failed");
-    expect(failures).toHaveLength(1);
-    expect(failures[0]!.payload).toMatchObject({
-      tag: "conflict",
-      via: "rename",
-    });
   });
 });
 
 describe("OneDriveClient — doRenameImpl `keep-both` policy retries with suffix until success", () => {
-  it("first sibling-list collides for `bar.pdf`, second collides for `bar-2.pdf`, third returns empty for `bar-3.pdf`; then PATCH with name='bar-3.pdf'; bus emits one entry-renamed", async () => {
+  it("first sibling-list collides for `bar.pdf`, second collides for `bar-2.pdf`, third returns empty for `bar-3.pdf`; then PATCH with name='bar-3.pdf'; resolves with the suffixed entry", async () => {
     const patchBodies: unknown[] = [];
     const { client } = makeFakeGraph([
       {
@@ -2030,12 +1939,6 @@ describe("OneDriveClient — doRenameImpl `keep-both` policy retries with suffix
     expect(entry.handle).toBe("FOO-FILE");
     expect(patchBodies).toHaveLength(1);
     expect(patchBodies[0]).toMatchObject({ name: "bar-3.pdf" });
-    const renames = h.events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    expect((renames[0]!.payload as { to?: { name?: string } }).to?.name).toBe(
-      "bar-3.pdf",
-    );
-    expect(h.events.some((e) => e.event === "delete-failed")).toBe(false);
   });
 
   it("after 99 collisions (newName + suffixes 2..99), throws DatasourceError { tag:'provider-error', message:'exhausted keep-both attempts' }; no PATCH issued", async () => {
@@ -2120,12 +2023,14 @@ describe("OneDriveClient — doRenameImpl `keep-both` policy retries with suffix
 // `Transform` so byte counting is inline (mirrors Drive §7.7 — `Transform`
 // avoids the timing race a `PassThrough` + `data` listener would introduce).
 //
-// The Transform's `_transform` invokes `options.onProgress` AND
-// `this.emitDownloading(path, loaded, total)` per chunk so bus + callback
-// are driven from the same byte source.
+// The Transform's `_transform` invokes `options.onProgress(loaded, total)` per
+// chunk — the SOLE progress channel. The engine emits no download events (the
+// bus was removed in migrate-engine-events-to-consumer); the consumer (fs-sync)
+// owns terminal handling off its own pipe-to-disk path. Mid-stream provider
+// errors surface as a stream `error` carrying a normalized `DatasourceError`.
 
 describe("OneDriveClient — doDownloadFileImpl (fetch /me/drive/items/{id}/content stream)", () => {
-  it("calls fetch on /me/drive/items/<id>/content with signal forwarded; resolves with stream + contentLength + bus emits downloading + file-downloaded", async () => {
+  it("calls fetch on /me/drive/items/<id>/content; resolves with stream + contentLength; onProgress fires with the final loaded byte count", async () => {
     const fixture = Buffer.from("hello-world-bytes");
     const { client: graphClient } = makeFakeGraph([
       // Path resolution for /hello.txt
@@ -2151,13 +2056,14 @@ describe("OneDriveClient — doDownloadFileImpl (fetch /me/drive/items/{id}/cont
       });
     }) as unknown as typeof fetch;
     const h = makeHarness({ graph: graphClient, fetchImpl });
-    const result = await h.client.downloadFile({
-      kind: "path",
-      path: "/hello.txt",
-    });
+    const progressTicks: Array<{ loaded: number; total: number | null }> = [];
+    const result = await h.client.downloadFile(
+      { kind: "path", path: "/hello.txt" },
+      { onProgress: (loaded, total) => progressTicks.push({ loaded, total }) },
+    );
     expect(result.contentLength).toBe(fixture.length);
     expect(result.contentRange).toBeUndefined();
-    // Drain the stream so the base's `end` listener fires `file-downloaded`.
+    // Drain the stream so the inline byte-counting Transform fires onProgress.
     const chunks: Buffer[] = [];
     await new Promise<void>((resolve, reject) => {
       result.stream.on("data", (c: Buffer) => chunks.push(c));
@@ -2168,16 +2074,10 @@ describe("OneDriveClient — doDownloadFileImpl (fetch /me/drive/items/{id}/cont
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0]!.url).toContain("/me/drive/items/DL-ID/content");
 
-    const downloadings = h.events.filter((e) => e.event === "downloading");
-    const downloaded = h.events.filter((e) => e.event === "file-downloaded");
-    expect(downloadings.length).toBeGreaterThanOrEqual(1);
-    expect(downloaded).toHaveLength(1);
-    expect(downloaded[0]!.payload).toMatchObject({
-      path: "/hello.txt",
-      bytes: fixture.length,
-    });
-    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
-    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
+    // Progress is the sole observable channel — onProgress fired ≥1 time and
+    // the final loaded equals the byte count (the engine emits no events).
+    expect(progressTicks.length).toBeGreaterThanOrEqual(1);
+    expect(progressTicks[progressTicks.length - 1]!.loaded).toBe(fixture.length);
   });
 
   it("forwards options.rangeStart > 0 as a Range:bytes=<n>- header into fetch and parses Content-Range from the 206 response", async () => {
@@ -2208,7 +2108,7 @@ describe("OneDriveClient — doDownloadFileImpl (fetch /me/drive/items/{id}/cont
       end: start + partial.length - 1,
       total,
     });
-    // Drain so the base emits file-downloaded.
+    // Drain to completion.
     await new Promise<void>((resolve, reject) => {
       result.stream.on("data", () => {});
       result.stream.on("end", () => resolve());
@@ -2220,7 +2120,7 @@ describe("OneDriveClient — doDownloadFileImpl (fetch /me/drive/items/{id}/cont
 });
 
 describe("OneDriveClient — doDownloadFileImpl AbortSignal forwarding", () => {
-  it("aborting the consumer signal makes fetch reject AbortError; bus emits exactly one download-cancelled with the byte counts at abort time; no download-failed", async () => {
+  it("aborting the consumer signal errors the stream after the first chunk; onProgress reports up to the bytes seen at abort time (and below total)", async () => {
     const controller = new AbortController();
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const sig = init?.signal as AbortSignal | undefined;
@@ -2254,39 +2154,50 @@ describe("OneDriveClient — doDownloadFileImpl AbortSignal forwarding", () => {
     }) as unknown as typeof fetch;
     const { client: graphClient } = makeFakeGraph([]);
     const h = makeHarness({ graph: graphClient, fetchImpl });
+    const progressTicks: Array<{ loaded: number; total: number | null }> = [];
     const result = await h.client.downloadFile(
       { kind: "handle", handle: "CANCEL-ID" },
-      { signal: controller.signal },
+      {
+        signal: controller.signal,
+        onProgress: (loaded, total) => progressTicks.push({ loaded, total }),
+      },
     );
     let bytesSeen = 0;
-    const consumer = new Promise<unknown>((resolve) => {
+    let streamErrored = false;
+    await new Promise<void>((resolve) => {
       result.stream.on("data", (c: Buffer) => {
         bytesSeen += c.length;
         if (bytesSeen >= 2048) controller.abort();
       });
-      result.stream.on("error", (err) => resolve(err));
-      result.stream.on("end", () => resolve(null));
+      result.stream.on("error", () => {
+        streamErrored = true;
+        resolve();
+      });
+      result.stream.on("end", () => resolve());
     });
-    await consumer;
-    const cancelled = h.events.filter((e) => e.event === "download-cancelled");
-    expect(cancelled).toHaveLength(1);
-    expect(cancelled[0]!.payload).toMatchObject({
-      path: "CANCEL-ID",
-      bytesDownloaded: 2048,
-    });
-    expect(h.events.some((e) => e.event === "download-failed")).toBe(false);
-    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+    // On abort the source stream errors → the byte-counting Transform is
+    // destroyed with the normalized error → the consumer sees a stream
+    // `error`. The engine emits no events; fs-sync classifies the cancel from
+    // its own AbortController state.
+    expect(streamErrored).toBe(true);
+    // onProgress observed at least the first chunk and never exceeded it (the
+    // source blocked on the abort after 2048 bytes; total advertised 16384).
+    expect(progressTicks.length).toBeGreaterThanOrEqual(1);
+    const lastTick = progressTicks[progressTicks.length - 1]!;
+    expect(lastTick.loaded).toBeGreaterThanOrEqual(2048);
+    expect(lastTick.loaded).toBeLessThan(16384);
   });
 });
 
-describe("OneDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired → download-failed", () => {
-  it("normalizes a mid-stream Graph 401 to tag:auth-expired; bus emits exactly one download-failed whose payload IS the SerializedDatasourceError; no download-cancelled", async () => {
+describe("OneDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired stream error", () => {
+  it("normalizes a mid-stream Graph 401 to tag:auth-expired; the stream surfaces a DatasourceError with that tag", async () => {
     const fetchImpl = vi.fn(async () => {
       // Push one chunk so byte counting runs once, then synthesize a
       // mid-stream 401 by erroring the underlying ReadableStream with a
       // Graph-shaped 401 error. The strategy's normalizeErrorImpl maps this
-      // to tag:auth-expired; the base emits download-failed carrying the
-      // serialized error.
+      // to tag:auth-expired; the byte-counting Transform is destroyed with
+      // that normalized error, so the consumer's stream `error` listener
+      // receives a DatasourceError tagged auth-expired.
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(new Uint8Array(512));
@@ -2323,16 +2234,14 @@ describe("OneDriveClient — doDownloadFileImpl mid-stream 401 → auth-expired 
         resolve();
       });
     });
-    expect(caught).toBeInstanceOf(Error);
-    const failed = h.events.filter((e) => e.event === "download-failed");
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.payload).toMatchObject({
-      tag: "auth-expired",
-      datasourceType: "onedrive",
-      datasourceId: "ds-od-1",
-    });
-    expect(h.events.some((e) => e.event === "download-cancelled")).toBe(false);
-    expect(h.events.some((e) => e.event === "file-downloaded")).toBe(false);
+    // The mid-stream 401 surfaces as a normalized DatasourceError on the
+    // stream `error` event — directly assertable now that the engine no
+    // longer routes it through a `download-failed` bus event.
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<"onedrive">;
+    expect(err.tag).toBe("auth-expired");
+    expect(err.datasourceType).toBe("onedrive");
+    expect(err.datasourceId).toBe("ds-od-1");
   });
 });
 
