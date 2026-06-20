@@ -22,6 +22,13 @@ The following are explicitly EXEMPT and MAY remain raw strings:
 - `openspec/specs/**/*.md` (documents wire values; off-limits to direct
   edits) and code comments.
 - `dist/` build outputs and `node_modules/`.
+- Literals belonging to a DIFFERENT error vocabulary that happens to
+  share the string. `ServiceErrorTag` (the `SyncCommandError` / sync
+  `ErrorShape` family) is a plain type union with no const object and is
+  out of scope; its only value shared with `DatasourceErrorTag` is
+  `not-found`. A `not-found` literal on a `SyncCommandError` / `sync:*`
+  site stays raw and is recorded in the guard allowlist, while
+  `not-found` on a `DatasourceError` site MUST migrate.
 
 Because the five values shared with `FilesErrorTag` (`auth-revoked`,
 `rate-limited`, `conflict`, `cancelled`, `invalid-datasource`) are

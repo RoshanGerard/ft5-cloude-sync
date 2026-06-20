@@ -113,10 +113,37 @@ invariant, not a compiler- or test-enforced one.
 **Mitigation:** (a) per-site read of the surrounding declared type before
 substituting; (b) mandatory code review on every package commit
 specifically checking enum-correctness on the five shared values;
-(c) unique-to-one-enum literals (`auth-expired`, `not-found`,
+(c) unique-to-one-enum literals (`auth-expired`,
 `unsupported`, `network-error`, `provider-error` →
 `DatasourceErrorTag`; `disconnected`, `other`, `exhausted-retries` →
 `FilesErrorTag`) carry no ambiguity and can be migrated mechanically.
+
+**Third vocabulary — `ServiceErrorTag` (the `not-found` split).** A third
+error vocabulary exists: `ServiceErrorTag` (`packages/ipc-contracts/src/sync-service/errors.ts`),
+the tag union for `SyncCommandError` / the sync `ErrorShape` family
+(`NotFoundErrorShape`, etc.). It is a plain `type` union with **no `as
+const` object** — there is no `ServiceErrorTag.NotFound` to reference, so
+it is **out of scope** (per Non-Goals: each vocabulary gets its own
+change) and cannot be migrated even in principle. Of the 13
+Datasource/Files values, the **only** value `ServiceErrorTag` also
+carries is `not-found`. The split rule:
+
+- `not-found` on a `DatasourceError` / engine site (e.g.
+  `e instanceof DatasourceError && e.tag === "not-found"`, strategy
+  `tag: "not-found"` throws) → migrate to `DatasourceErrorTag.NotFound`.
+- `not-found` on a `SyncCommandError` / sync `ErrorShape` /
+  `sync:*` handler site → **leave as a raw literal** (ServiceErrorTag
+  vocabulary). These sites are recorded in the guard's
+  `WIRE_LITERAL_ALLOWLIST` with the reason "ServiceErrorTag vocabulary,
+  out of scope", so `not-found` stays enforced for engine misses while
+  the out-of-scope sites are an auditable allowlist.
+
+Note `FilesErrorTag` has **no** `not-found` member, so a `not-found`
+literal in a `files:*`-adjacent file is never a `FilesErrorTag`
+reference — it is either an engine `DatasourceError` passthrough
+(migrate) or a service error (allowlist); resolve per site. Non-`tag`
+collisions are inert to the guard: `JobStatus` (`"cancelled"`, …) uses
+`status:`, not `tag:`/`case`, so it never matches.
 
 ### Decision 3 — Spec delta captures the const-reference convention as a load-bearing requirement
 
