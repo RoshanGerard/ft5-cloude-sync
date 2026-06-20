@@ -155,7 +155,7 @@ export interface StrategyContractFixture {
   }): boolean;
 
   /** Prime a successful delete. The scenario invokes
-   * `client.deleteFile({ kind: "path", path: targetPath })`. */
+   * `client.delete({ kind: "path", path: targetPath }, "file")`. */
   primeDeleteOk(targetPath: string): void;
 
   /**
@@ -507,22 +507,22 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       ).toBe(true);
     });
 
-    it("deleteFile resolves to void", async () => {
+    it("delete (file) resolves to void", async () => {
       fixture.resetMock();
       fixture.primeDeleteOk("/contract-delete.txt");
       const { client } = makeHarness();
-      const result = await client.deleteFile({
-        kind: "path",
-        path: "/contract-delete.txt",
-      });
+      const result = await client.delete(
+        { kind: "path", path: "/contract-delete.txt" },
+        "file",
+      );
       expect(result).toBeUndefined();
     });
 
-    it("deleteDirectory throws Unsupported immediately", async () => {
+    it("delete (directory) throws Unsupported immediately", async () => {
       fixture.resetMock();
       const { client } = makeHarness();
       await expect(
-        client.deleteDirectory({ kind: "path", path: "/any" }),
+        client.delete({ kind: "path", path: "/any" }, "directory"),
       ).rejects.toSatisfy(
         (e: unknown) =>
           e instanceof DatasourceError && e.tag === "unsupported",
@@ -774,7 +774,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       // priming is collision-free, then prime + delete the SAME listed entry.
       fixture.resetMock();
       fixture.primeDeleteOfListedFile();
-      await client.deleteFile({ kind: "path", path: file!.path });
+      await client.delete({ kind: "path", path: file!.path }, "file");
 
       // The successful delete MUST have evicted the cached path inline.
       expect(cache!.has(file!.path)).toBe(false);

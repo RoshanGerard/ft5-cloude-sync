@@ -368,16 +368,6 @@ describe("BaseDatasourceClient — success path", () => {
     expect(calls[1]).toEqual([500, 1000]);
     expect(calls[2]).toEqual([1000, 1000]);
   });
-
-  it("deleteFile resolves to void on success", async () => {
-    const { client } = makeHarness({
-      doDeleteFile: async () => undefined,
-    });
-
-    await expect(
-      client.deleteFile({ kind: "path", path: "/x.txt" }),
-    ).resolves.toBeUndefined();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -503,7 +493,7 @@ describe("BaseDatasourceClient — failure path normalization", () => {
     expect((caught as DatasourceError).tag).toBe("network-error");
   });
 
-  it("deleteFile failure throws a normalized DatasourceError", async () => {
+  it("delete (file) failure throws a normalized DatasourceError", async () => {
     const { client } = makeHarness({
       doDeleteFile: async () => {
         throw { __tag: "not-found" };
@@ -511,7 +501,7 @@ describe("BaseDatasourceClient — failure path normalization", () => {
     });
 
     await expect(
-      client.deleteFile({ kind: "path", path: "/gone.txt" }),
+      client.delete({ kind: "path", path: "/gone.txt" }, "file"),
     ).rejects.toSatisfy(
       (e: unknown) =>
         e instanceof DatasourceError && e.tag === "not-found",
@@ -960,28 +950,6 @@ describe("BaseDatasourceClient — listDirectory pagination wrapper", () => {
     // the normalized thrown error IS the contract.
     expect(caught).toBeInstanceOf(DatasourceError);
     expect((caught as DatasourceError).tag).toBe("provider-error");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// deleteDirectory always throws Unsupported
-// ---------------------------------------------------------------------------
-
-describe("BaseDatasourceClient — deleteDirectory unsupported", () => {
-  it("throws Unsupported with raw='disabled-for-product-stability'", async () => {
-    const { client } = makeHarness();
-
-    let caught: unknown;
-    try {
-      await client.deleteDirectory({ kind: "path", path: "/any" });
-    } catch (e) {
-      caught = e;
-    }
-
-    expect(caught).toBeInstanceOf(DatasourceError);
-    const err = caught as DatasourceError<FakeType>;
-    expect(err.tag).toBe("unsupported");
-    expect(err.raw).toBe("disabled-for-product-stability");
   });
 });
 

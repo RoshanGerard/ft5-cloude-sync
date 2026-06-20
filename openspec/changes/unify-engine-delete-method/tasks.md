@@ -17,10 +17,10 @@
 
 ## 3. Engine test-surface migration
 
-- [ ] 3.1 Migrate every `deleteFile` / `deleteDirectory` call site to `delete(target, entryKind)`: `base-client.test.ts` (:378, :514 → `delete(…, "file")`; :976 → `delete(…, "directory")`), `s3-client.test.ts:333`, `onedrive-client.test.ts` (:489, :502, :1295), `googledrive-client.test.ts` (:979, :1113, :1155, :1182, :1213, :2141) — all `"file"`.
-- [ ] 3.2 Relocate the base "directory → Unsupported" describe (`base-client.test.ts:967-`) onto the unified `delete(target, "directory")` (keep asserting `tag === "unsupported"`).
-- [ ] 3.3 Update the shared strategy-contract suite (`__tests__/strategy-contract.ts`): the delete conformance call (:514 → `delete(…, "file")`), the "deleteDirectory throws Unsupported" scenario (:521-525 → `delete(…, "directory")`), the cached-eviction invariant call (:777 → `delete(…, "file")`), and the comment at :158.
-- [ ] 3.4 Run `pnpm exec vitest run packages/fs-datasource-engine` — all engine tests green.
+- [x] 3.1 Migrated every `deleteFile` / `deleteDirectory` call site to `delete(target, entryKind)`: `base-client.test.ts` (error-normalization test → `delete(…, "file")`), `s3-client.test.ts`, `onedrive-client.test.ts` (×3, incl. describe/it labels), `googledrive-client.test.ts` (×6) — all `"file"`.
+- [x] 3.2 The slice-2 unified-delete describe already covers file-dispatch + directory→Unsupported, so the redundant old `base-client.test.ts` "deleteFile resolves to void" it and "deleteDirectory unsupported" describe were removed (relocated onto the unified method); the unique error-normalization test was migrated.
+- [x] 3.3 Updated the shared strategy-contract suite (`__tests__/strategy-contract.ts`): the delete conformance call + "delete (file) resolves to void" desc, the "delete (directory) throws Unsupported" scenario → `delete(…, "directory")`, the cached-eviction invariant call → `delete(…, "file")`, and the doc comment.
+- [x] 3.4 `pnpm exec vitest run packages/fs-datasource-engine` — 328/328 green, no type errors, zero `.deleteFile(`/`.deleteDirectory(` call sites remain in the engine package.
 
 ## 4. fs-sync consumer updates (code only — no spec/wire change)
 
