@@ -423,6 +423,43 @@ describe("InvalidDatasourceState — credentials-form inline reconnect (amazon-s
   });
 });
 
+describe("InvalidDatasourceState — unknown providerId does not trap the user", () => {
+  it("a defined-but-unregistered providerId falls through to authenticateStart (inline error) and keeps Reconnect + Remove reachable — no empty form arm", async () => {
+    // Registry/version skew: providerId is present on the summary but not in
+    // the frozen providers registry, so credentialsSchema is undefined. The
+    // form arm MUST NOT be revealed (it would render an escape-less empty form).
+    authenticateStartMock.mockResolvedValue({
+      ok: false,
+      error: { tag: "unknown-provider", providerId: "mystery", message: "no" },
+    });
+
+    render(
+      <InvalidDatasourceState
+        providerId="mystery-provider"
+        datasourceId="ds-1"
+        onReconnectSucceeded={() => {}}
+        onRequestRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^reconnect$/i }));
+
+    // Falls through to authenticateStart (mirrors the pre-change behaviour).
+    await waitFor(() =>
+      expect(authenticateStartMock).toHaveBeenCalledTimes(1),
+    );
+    // No trapped empty form: the access-key field is NOT shown…
+    expect(screen.queryByLabelText(/access key id/i)).not.toBeInTheDocument();
+    // …and both prompt actions remain reachable.
+    expect(
+      screen.getByRole("button", { name: /^reconnect$/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /remove datasource/i }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("InvalidDatasourceState — failed authenticateStart feedback (Decision 5)", () => {
   it("OAuth: authenticateStart {ok:false} surfaces an inline error instead of silently re-enabling", async () => {
     authenticateStartMock.mockResolvedValue({

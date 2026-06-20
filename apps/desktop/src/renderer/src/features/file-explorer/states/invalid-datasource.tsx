@@ -103,7 +103,14 @@ export function InvalidDatasourceState({
     setStartError(null);
     // Credential-form providers reconnect via the inline form (it owns the
     // authenticateStart/Complete flow); reveal it instead of starting OAuth.
-    if (credentialsSchema !== "oauth") {
+    // Gate strictly on a KNOWN form schema: an unrecognised schema (e.g.
+    // registry/version skew where providerId isn't in the frozen registry)
+    // falls through to authenticateStart and surfaces inline via Decision 5,
+    // rather than trapping the user in an escape-less empty form arm.
+    if (
+      credentialsSchema === "aws-access-key" ||
+      credentialsSchema === "custom"
+    ) {
       setShowForm(true);
       return;
     }
@@ -141,13 +148,13 @@ export function InvalidDatasourceState({
   const reconnectLabel = isWaiting ? "Connecting…" : "Reconnect";
 
   // ---- Credential-form inline arm (keep header, form below) -------------
-  if (showForm && providerId !== undefined && credentialsSchema !== "oauth") {
+  if (
+    showForm &&
+    providerId !== undefined &&
+    (credentialsSchema === "aws-access-key" || credentialsSchema === "custom")
+  ) {
     const FormComponent =
-      credentialsSchema === "aws-access-key"
-        ? AwsAccessKeyForm
-        : credentialsSchema === "custom"
-          ? CustomForm
-          : null;
+      credentialsSchema === "aws-access-key" ? AwsAccessKeyForm : CustomForm;
     return (
       <div
         data-testid="file-explorer-state-invalid-datasource"
@@ -167,15 +174,13 @@ export function InvalidDatasourceState({
           Reconnect {providerDisplayName}
         </div>
         <div className="mt-2 w-full max-w-sm">
-          {FormComponent ? (
-            <FormComponent
-              providerId={providerId}
-              providerDisplayName={providerDisplayName}
-              datasourceId={datasourceId}
-              onSubmit={handleFormSubmit}
-              onBack={handleFormBack}
-            />
-          ) : null}
+          <FormComponent
+            providerId={providerId}
+            providerDisplayName={providerDisplayName}
+            datasourceId={datasourceId}
+            onSubmit={handleFormSubmit}
+            onBack={handleFormBack}
+          />
         </div>
       </div>
     );
