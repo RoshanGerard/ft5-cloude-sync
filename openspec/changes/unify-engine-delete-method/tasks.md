@@ -4,9 +4,9 @@
 
 ## 1. `EntryKind` const-ref promotion (ipc-contracts)
 
-- [ ] 1.1 In `packages/ipc-contracts/src/files.ts`, promote `EntryKind` from the bare union to the `as const` const-ref form mirroring `FilesErrorTag` / `DatasourceErrorTag`: `export const EntryKind = { Directory: "directory", File: "file" } as const; export type EntryKind = (typeof EntryKind)[keyof typeof EntryKind];`. Keep the export name and the derived type identical (`"directory" | "file"`).
-- [ ] 1.2 Confirm the value export is re-exported where the type is (`packages/ipc-contracts/src/index.ts`) so `EntryKind.File` / `EntryKind.Directory` are importable by consumers.
-- [ ] 1.3 `pnpm typecheck` (tsc -b) over the whole workspace to PROVE non-breaking — every existing `EntryKind` consumer (`FilesRemoveTarget`, sync-service commands, renderer, mock-fs) still compiles and existing string-literal assignments still hold. Add a `*.test-d.ts` assertion if one doesn't already cover the const-ref shape.
+- [x] 1.1 In `packages/ipc-contracts/src/files.ts`, promote `EntryKind` from the bare union to the `as const` const-ref form mirroring `FilesErrorTag` / `DatasourceErrorTag`: `export const EntryKind = { Directory: "directory", File: "file" } as const; export type EntryKind = (typeof EntryKind)[keyof typeof EntryKind];`. Keep the export name and the derived type identical (`"directory" | "file"`).
+- [x] 1.2 Confirm the value export is re-exported where the type is (`packages/ipc-contracts/src/index.ts`) so `EntryKind.File` / `EntryKind.Directory` are importable by consumers. (Moved `EntryKind` from the `export type { … }` block to the value `export { EntryKind, FilesErrorTag }` line — the merged type travels with the value export.)
+- [x] 1.3 `pnpm typecheck` (tsc -b) over the whole workspace PROVES non-breaking — every existing `EntryKind` consumer (`FilesRemoveTarget`, sync-service commands, renderer, mock-fs) still compiles and existing string-literal assignments still hold. Added `__tests__/entry-kind.test-d.ts` (mirrors `files-error-tag.test-d.ts`) locking the `as const` shape + derived-union type + literal coexistence.
 
 ## 2. Engine: collapse to `delete(target, entryKind)` (base-enforced refusal)
 

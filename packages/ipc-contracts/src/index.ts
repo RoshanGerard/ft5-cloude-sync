@@ -40,9 +40,8 @@ export { DATASOURCES_CHANNELS, providers } from "./datasources.js";
 // add-invalid-datasource-state Decision 1) — re-exported as a value so
 // net-new code can reference `FilesErrorTag.InvalidDatasource`. The
 // merged-name type-alias travels with the value export.
-export { FilesErrorTag } from "./files.js";
+export { EntryKind, FilesErrorTag } from "./files.js";
 export type {
-  EntryKind,
   FileEntry,
   FilesDownloadRequest,
   FilesDownloadResponse,

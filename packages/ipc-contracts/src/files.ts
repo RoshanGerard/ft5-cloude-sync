@@ -94,7 +94,16 @@ export type FilesEnvelope<T> =
   | { ok: true; value: T }
   | { ok: false; error: FilesErrorEnvelope };
 
-export type EntryKind = "directory" | "file";
+// Per unify-engine-delete-method design.md Decision 3, EntryKind is exposed
+// as an `as const` object + derived type (mirroring `FilesErrorTag`). Net-new
+// code references via `EntryKind.File` / `EntryKind.Directory`; existing
+// literal references such as `kind === "file"` continue to type-check because
+// the derived type is the same two-string union (non-breaking).
+export const EntryKind = {
+  Directory: "directory",
+  File: "file",
+} as const;
+export type EntryKind = (typeof EntryKind)[keyof typeof EntryKind];
 
 export type MimeFamily =
   | "image"
