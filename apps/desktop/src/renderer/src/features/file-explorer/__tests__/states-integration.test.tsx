@@ -128,7 +128,11 @@ describe("FileExplorer — state branch integration", () => {
     expect(screen.queryByTestId("file-explorer-skeleton")).toBeNull();
   });
 
-  it("renders AuthRevokedState when files.list rejects with tag:'auth-revoked' (engine wins over connected store)", async () => {
+  it("renders the shared reconnect-required state when files.list rejects with tag:'auth-revoked' (engine wins over connected store)", async () => {
+    // unify-datasource-reconnect-view — auth-revoked now routes to the SAME
+    // shared reconnect view as invalid-datasource (the amber navigate-away
+    // AuthRevokedState is retired). The arm uses useDatasourceActions +
+    // useAuthSession, so this render must be inside <DatasourcesProvider>.
     installApi(async () => ({
       ok: false,
       error: {
@@ -141,14 +145,24 @@ describe("FileExplorer — state branch integration", () => {
     // providerStatus 'connected' is the conflict case: store says OK but
     // engine says auth-revoked. Engine response must win.
     render(
-      <FileExplorer datasourceId="ds-state-2" providerStatus="connected" />,
+      <DatasourcesProvider>
+        <FileExplorer
+          datasourceId="ds-state-2"
+          providerId="onedrive"
+          providerStatus="connected"
+        />
+      </DatasourcesProvider>,
     );
 
     await waitFor(() =>
       expect(
-        screen.getByTestId("file-explorer-state-auth-revoked"),
+        screen.getByTestId("file-explorer-state-invalid-datasource"),
       ).toBeInTheDocument(),
     );
+    // The retired amber auth-revoked view is gone.
+    expect(
+      screen.queryByTestId("file-explorer-state-auth-revoked"),
+    ).toBeNull();
     expect(screen.queryByTestId("explorer-row")).toBeNull();
   });
 
