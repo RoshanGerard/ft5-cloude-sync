@@ -976,7 +976,7 @@ describe("GoogleDriveClient — path ambiguity surfacing", () => {
     // Delete this path (via strategy's deleteFile by handle to avoid the
     // ambiguity-reject on path-form delete). Eviction is inline in
     // doDeleteFileImpl (migrate-engine-cache-invalidation).
-    await h.client.deleteFile({ kind: "handle", handle: "dup-first" });
+    await h.client.delete({ kind: "handle", handle: "dup-first" }, "file");
     // The inline handle-target eviction clears the /dup.txt entry. Trigger a
     // fresh resolution.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1098,7 +1098,7 @@ describe("GoogleDriveClient — getMetadata", () => {
 // deleteFile
 // ---------------------------------------------------------------------------
 
-describe("GoogleDriveClient — deleteFile", () => {
+describe("GoogleDriveClient — delete (file)", () => {
   it("by handle — calls files.delete({fileId}) and resolves", async () => {
     const { client, calls } = makeFakeDrive({
       deletes: [
@@ -1110,7 +1110,7 @@ describe("GoogleDriveClient — deleteFile", () => {
     });
     const h = makeHarness({ drive: client });
     await expect(
-      h.client.deleteFile({ kind: "handle", handle: "TO-DEL" }),
+      h.client.delete({ kind: "handle", handle: "TO-DEL" }, "file"),
     ).resolves.toBeUndefined();
     expect(calls.delete).toHaveLength(1);
     expect(calls.delete[0]!.fileId).toBe("TO-DEL");
@@ -1152,7 +1152,7 @@ describe("GoogleDriveClient — deleteFile", () => {
     });
     const h = makeHarness({ drive: client });
     const err = await h.client
-      .deleteFile({ kind: "path", path: "/dup.txt" })
+      .delete({ kind: "path", path: "/dup.txt" }, "file")
       .then(
         () => {
           throw new Error("expected deleteFile to reject");
@@ -1179,7 +1179,7 @@ describe("GoogleDriveClient — deleteFile", () => {
       ],
     });
     const h = makeHarness({ drive: client });
-    await h.client.deleteFile({ kind: "handle", handle: "dup-B" });
+    await h.client.delete({ kind: "handle", handle: "dup-B" }, "file");
     expect(calls.delete).toHaveLength(1);
     expect(calls.delete[0]!.fileId).toBe("dup-B");
   });
@@ -1210,7 +1210,7 @@ describe("GoogleDriveClient — deleteFile", () => {
       ],
     });
     const h = makeHarness({ drive: client });
-    await h.client.deleteFile({ kind: "path", path: "/gone.txt" });
+    await h.client.delete({ kind: "path", path: "/gone.txt" }, "file");
     expect(calls.delete[0]!.fileId).toBe("gone-id");
   });
 });
@@ -2138,7 +2138,7 @@ describe("GoogleDriveClient — path↔fileId LRU invalidation", () => {
     >;
     expect(cache.get("/doc.txt")?.fileId).toBe("doc-id");
 
-    await h.client.deleteFile({ kind: "path", path: "/doc.txt" });
+    await h.client.delete({ kind: "path", path: "/doc.txt" }, "file");
     expect(cache.get("/doc.txt")).toBeUndefined();
   });
 });

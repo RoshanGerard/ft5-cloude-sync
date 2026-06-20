@@ -72,8 +72,7 @@ function makeFakeClient<T extends ProviderId>(
     search: vi.fn(),
     getMetadata: vi.fn(),
     uploadFile: vi.fn(),
-    deleteFile: vi.fn(),
-    deleteDirectory: vi.fn(),
+    delete: vi.fn(),
     getQuota: vi.fn(),
   } as unknown as DatasourceClient<T>;
 }
@@ -187,8 +186,7 @@ describe("createClientFactory", () => {
       "search",
       "getMetadata",
       "uploadFile",
-      "deleteFile",
-      "deleteDirectory",
+      "delete",
       "getQuota",
     ] as const) {
       expect(typeof client[m]).toBe("function");
@@ -384,7 +382,7 @@ describe("createDefaultProviderRegistry", () => {
       // Public surface still present.
       expect(typeof client.status).toBe("function");
       expect(typeof client.uploadFile).toBe("function");
-      expect(typeof client.deleteDirectory).toBe("function");
+      expect(typeof client.delete).toBe("function");
     }
   });
 });

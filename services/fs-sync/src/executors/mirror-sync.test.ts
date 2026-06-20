@@ -86,7 +86,7 @@ function fakeClient() {
     size: 0,
     kind: "file" as const,
   }));
-  const deleteFile = vi.fn(async () => void 0);
+  const deleteSpy = vi.fn(async () => void 0);
   // refreshCredentials is required on the `DatasourceClient` interface after
   // migrate-engine-retry-policy-to-consumer; the executor now wraps each
   // engine call in `withAuthRefresh`, which calls `refreshCredentials()` on
@@ -97,16 +97,16 @@ function fakeClient() {
     .fn()
     .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
   return {
-    client: { uploadFile, deleteFile, refreshCredentials },
+    client: { uploadFile, delete: deleteSpy, refreshCredentials },
     uploadFile,
-    deleteFile,
+    deleteSpy,
     refreshCredentials,
   };
 }
 
 describe("MirrorSyncJobExecutor — source-health precondition", () => {
   it("fails with tag='source-unavailable' and emits event when source missing", async () => {
-    const { client, uploadFile, deleteFile } = fakeClient();
+    const { client, uploadFile, deleteSpy } = fakeClient();
     // Seed snapshot to prove zero remote calls are made on unavailable source.
     const snaps = new SnapshotRepository(db);
     for (let i = 0; i < 50; i++) {
@@ -126,7 +126,7 @@ describe("MirrorSyncJobExecutor — source-health precondition", () => {
     expect(res.outcome).toBe("failed");
     if (res.outcome === "failed") expect(res.errorTag).toBe("source-unavailable");
     expect(uploadFile).not.toHaveBeenCalled();
-    expect(deleteFile).not.toHaveBeenCalled();
+    expect(deleteSpy).not.toHaveBeenCalled();
     expect(emitted.map((e) => e.name)).toContain("source-unavailable");
     // Snapshot rows untouched.
     expect(snaps.listForDatasource("ds-1")).toHaveLength(50);
@@ -186,7 +186,7 @@ describe("MirrorSyncJobExecutor — end-to-end", () => {
     });
     await seed("still-here.txt", "ok");
 
-    const { client, uploadFile, deleteFile } = fakeClient();
+    const { client, uploadFile, deleteSpy } = fakeClient();
     const exec = buildMirrorSyncExecutor({
       db,
       resolveClient: async () => client as never,
@@ -194,7 +194,13 @@ describe("MirrorSyncJobExecutor — end-to-end", () => {
     });
     const res = await exec(ctxFor(root));
     expect(res.outcome).toBe("completed");
-    expect(deleteFile).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    // mirror-sync calls client.delete({ kind:"handle", ... }, "file") on the
+    // delete-remote path (EntryKind.File === "file").
+    expect(deleteSpy).toHaveBeenCalledWith(
+      { kind: "handle", handle: "r-ghost" },
+      "file",
+    );
     expect(uploadFile).toHaveBeenCalledTimes(1);
     const completed = emitted.find((e) => e.name === "sync-completed");
     expect(completed?.payload).toMatchObject({
@@ -218,7 +224,7 @@ describe("MirrorSyncJobExecutor — end-to-end", () => {
       remoteHandle: "r-b",
     });
 
-    const { client, uploadFile, deleteFile } = fakeClient();
+    const { client, uploadFile, deleteSpy } = fakeClient();
     const hashSpy = vi.fn(async () => "should-not-be-called");
     const exec = buildMirrorSyncExecutor({
       db,
@@ -228,7 +234,7 @@ describe("MirrorSyncJobExecutor — end-to-end", () => {
     const res = await exec(ctxFor(root));
     expect(res.outcome).toBe("completed");
     expect(uploadFile).not.toHaveBeenCalled();
-    expect(deleteFile).not.toHaveBeenCalled();
+    expect(deleteSpy).not.toHaveBeenCalled();
     expect(hashSpy).not.toHaveBeenCalled();
     const completed = emitted.find((e) => e.name === "sync-completed");
     expect(completed?.payload).toMatchObject({ skipped: 1, uploaded: 0 });
@@ -273,7 +279,7 @@ describe("MirrorSyncJobExecutor — auth-expired via withAuthRefresh (§3.7)", (
     const refreshCredentials = vi
       .fn()
       .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
-    const client = { uploadFile, deleteFile: vi.fn(async () => void 0), refreshCredentials };
+    const client = { uploadFile, delete: vi.fn(async () => void 0), refreshCredentials };
     const exec = buildMirrorSyncExecutor({
       db,
       resolveClient: async () => client as never,
@@ -306,7 +312,7 @@ describe("MirrorSyncJobExecutor — auth-expired via withAuthRefresh (§3.7)", (
     const refreshCredentials = vi
       .fn()
       .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
-    const client = { uploadFile, deleteFile: vi.fn(async () => void 0), refreshCredentials };
+    const client = { uploadFile, delete: vi.fn(async () => void 0), refreshCredentials };
     const exec = buildMirrorSyncExecutor({
       db,
       resolveClient: async () => client as never,

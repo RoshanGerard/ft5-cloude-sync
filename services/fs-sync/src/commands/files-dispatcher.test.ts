@@ -40,8 +40,7 @@ function makeFakeClient(): DatasourceClient<DatasourceType> {
     createFile: vi.fn(),
     uploadFile: vi.fn(),
     cancelUpload: vi.fn(),
-    deleteFile: vi.fn(),
-    deleteDirectory: vi.fn(),
+    delete: vi.fn(),
     getQuota: vi.fn(),
     // Required on DatasourceClient after migrate-engine-retry-policy-to-consumer;
     // the wrapped handlers call it only on an `auth-expired` path (none here),
@@ -208,8 +207,8 @@ describe("files:* dispatcher integration", () => {
     });
   });
 
-  it("files:remove end-to-end: dispatcher fans out to deleteFile by handle with allSettled (no getMetadata round-trip)", async () => {
-    (fakeClient.deleteFile as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  it("files:remove end-to-end: dispatcher fans out to delete by handle with allSettled (no getMetadata round-trip)", async () => {
+    (fakeClient.delete as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 
     const h = handlers["files:remove"]!;
     const result = await h(
@@ -230,16 +229,22 @@ describe("files:* dispatcher integration", () => {
         { path: "/b", handle: "h-b", ok: true },
       ]);
     }
-    expect(fakeClient.deleteFile).toHaveBeenCalledTimes(2);
+    expect(fakeClient.delete).toHaveBeenCalledTimes(2);
     // Handle-based addressing skips the ambiguity-vulnerable getMetadata call.
     expect(fakeClient.getMetadata).not.toHaveBeenCalled();
-    expect(fakeClient.deleteFile).toHaveBeenCalledWith({
-      kind: "handle",
-      handle: "h-a",
-    });
-    expect(fakeClient.deleteFile).toHaveBeenCalledWith({
-      kind: "handle",
-      handle: "h-b",
-    });
+    expect(fakeClient.delete).toHaveBeenCalledWith(
+      {
+        kind: "handle",
+        handle: "h-a",
+      },
+      "file",
+    );
+    expect(fakeClient.delete).toHaveBeenCalledWith(
+      {
+        kind: "handle",
+        handle: "h-b",
+      },
+      "file",
+    );
   });
 });

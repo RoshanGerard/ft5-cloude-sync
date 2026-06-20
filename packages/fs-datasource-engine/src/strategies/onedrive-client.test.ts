@@ -476,7 +476,7 @@ describe("OneDriveClient — getMetadata", () => {
 // deleteFile
 // ---------------------------------------------------------------------------
 
-describe("OneDriveClient — deleteFile", () => {
+describe("OneDriveClient — delete (file)", () => {
   it("issues DELETE on /me/drive/root:<path>: and resolves to void", async () => {
     const { client, apiCalls } = makeFakeGraph([
       {
@@ -486,12 +486,12 @@ describe("OneDriveClient — deleteFile", () => {
     ]);
     const h = makeHarness({ graph: client });
     await expect(
-      h.client.deleteFile({ kind: "path", path: "/todelete.txt" }),
+      h.client.delete({ kind: "path", path: "/todelete.txt" }, "file"),
     ).resolves.toBeUndefined();
     expect(apiCalls[0]).toBe("/me/drive/root:/todelete.txt:");
   });
 
-  it("deleteFile by handle issues DELETE on /me/drive/items/<id>", async () => {
+  it("delete (file) by handle issues DELETE on /me/drive/items/<id>", async () => {
     const { client, apiCalls } = makeFakeGraph([
       {
         match: "/me/drive/items/ITEM-DEL",
@@ -499,7 +499,7 @@ describe("OneDriveClient — deleteFile", () => {
       },
     ]);
     const h = makeHarness({ graph: client });
-    await h.client.deleteFile({ kind: "handle", handle: "ITEM-DEL" });
+    await h.client.delete({ kind: "handle", handle: "ITEM-DEL" }, "file");
     expect(apiCalls[0]).toBe("/me/drive/items/ITEM-DEL");
   });
 });
@@ -1262,7 +1262,7 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
     expect(apiCalls[1]).toBe("/me/drive/items/cached-id");
   });
 
-  it("deleteFile of a cached path evicts the cached entry (inline eviction)", async () => {
+  it("delete (file) of a cached path evicts the cached entry (inline eviction)", async () => {
     // The seed getMetadata resolves via path; the cached delete then routes
     // via /items/<id>. Prime both addressing forms.
     const { client: graphClient } = makeFakeGraph([
@@ -1292,7 +1292,7 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
     const cacheBefore = (h.client as any).pathHandleCache as Map<string, string>;
     expect(cacheBefore.get("/todelete.txt")).toBeDefined();
 
-    await h.client.deleteFile({ kind: "path", path: "/todelete.txt" });
+    await h.client.delete({ kind: "path", path: "/todelete.txt" }, "file");
     // After deleteFile, the cached entry MUST be evicted (inline eviction —
     // no `deleted` bus event drives it; migrate-engine-cache-invalidation).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

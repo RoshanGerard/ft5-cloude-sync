@@ -94,7 +94,16 @@ export type FilesEnvelope<T> =
   | { ok: true; value: T }
   | { ok: false; error: FilesErrorEnvelope };
 
-export type EntryKind = "directory" | "file";
+// Per unify-engine-delete-method design.md Decision 3, EntryKind is exposed
+// as an `as const` object + derived type (mirroring `FilesErrorTag`). Net-new
+// code references via `EntryKind.File` / `EntryKind.Directory`; existing
+// literal references such as `kind === "file"` continue to type-check because
+// the derived type is the same two-string union (non-breaking).
+export const EntryKind = {
+  Directory: "directory",
+  File: "file",
+} as const;
+export type EntryKind = (typeof EntryKind)[keyof typeof EntryKind];
 
 export type MimeFamily =
   | "image"
@@ -229,11 +238,12 @@ export const FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE =
 
 // Per-entry deletion target. `handle` is the authoritative address; `path`
 // is preserved so the per-path response envelope matches back to the
-// renderer's display keys. `kind` lets the handler dispatch to
-// `deleteFile` vs `deleteDirectory` without a second round-trip to
-// `getMetadata` — that second round-trip was itself ambiguity-vulnerable
-// on providers (notably Google Drive) that allow multiple entries at the
-// same path. See files-remove.ts for the end-to-end story.
+// renderer's display keys. `kind` is passed straight to the engine's
+// unified `delete(target, entryKind)` (unify-engine-delete-method),
+// avoiding a second round-trip to `getMetadata` — that round-trip was
+// itself ambiguity-vulnerable on providers (notably Google Drive) that
+// allow multiple entries at the same path. See files-remove.ts for the
+// end-to-end story.
 //
 // Rename / Download are currently mock-fs only; when the sibling change
 // `add-engine-rename-download` lands, its contracts SHOULD adopt the same

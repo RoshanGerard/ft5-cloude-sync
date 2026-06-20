@@ -368,16 +368,6 @@ describe("BaseDatasourceClient — success path", () => {
     expect(calls[1]).toEqual([500, 1000]);
     expect(calls[2]).toEqual([1000, 1000]);
   });
-
-  it("deleteFile resolves to void on success", async () => {
-    const { client } = makeHarness({
-      doDeleteFile: async () => undefined,
-    });
-
-    await expect(
-      client.deleteFile({ kind: "path", path: "/x.txt" }),
-    ).resolves.toBeUndefined();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -503,7 +493,7 @@ describe("BaseDatasourceClient — failure path normalization", () => {
     expect((caught as DatasourceError).tag).toBe("network-error");
   });
 
-  it("deleteFile failure throws a normalized DatasourceError", async () => {
+  it("delete (file) failure throws a normalized DatasourceError", async () => {
     const { client } = makeHarness({
       doDeleteFile: async () => {
         throw { __tag: "not-found" };
@@ -511,7 +501,7 @@ describe("BaseDatasourceClient — failure path normalization", () => {
     });
 
     await expect(
-      client.deleteFile({ kind: "path", path: "/gone.txt" }),
+      client.delete({ kind: "path", path: "/gone.txt" }, "file"),
     ).rejects.toSatisfy(
       (e: unknown) =>
         e instanceof DatasourceError && e.tag === "not-found",
@@ -964,16 +954,30 @@ describe("BaseDatasourceClient — listDirectory pagination wrapper", () => {
 });
 
 // ---------------------------------------------------------------------------
-// deleteDirectory always throws Unsupported
+// Unified delete(target, entryKind) — unify-engine-delete-method
+// File deletes dispatch to doDeleteFileImpl; directory deletes are refused
+// with Unsupported in the BASE (global product policy, Decision 10 relocated
+// from the removed deleteDirectory) — identical tag/raw, no strategy call.
 // ---------------------------------------------------------------------------
 
-describe("BaseDatasourceClient — deleteDirectory unsupported", () => {
-  it("throws Unsupported with raw='disabled-for-product-stability'", async () => {
-    const { client } = makeHarness();
+describe("BaseDatasourceClient — unified delete(target, entryKind)", () => {
+  it("entryKind 'file' dispatches to doDeleteFileImpl and resolves void", async () => {
+    const doDeleteFile = vi.fn(async () => undefined);
+    const { client } = makeHarness({ doDeleteFile });
+
+    await expect(
+      client.delete({ kind: "path", path: "/x.txt" }, "file"),
+    ).resolves.toBeUndefined();
+    expect(doDeleteFile).toHaveBeenCalledOnce();
+  });
+
+  it("entryKind 'directory' throws Unsupported (raw='disabled-for-product-stability') without calling doDeleteFileImpl", async () => {
+    const doDeleteFile = vi.fn(async () => undefined);
+    const { client } = makeHarness({ doDeleteFile });
 
     let caught: unknown;
     try {
-      await client.deleteDirectory({ kind: "path", path: "/any" });
+      await client.delete({ kind: "path", path: "/any" }, "directory");
     } catch (e) {
       caught = e;
     }
@@ -982,6 +986,8 @@ describe("BaseDatasourceClient — deleteDirectory unsupported", () => {
     const err = caught as DatasourceError<FakeType>;
     expect(err.tag).toBe("unsupported");
     expect(err.raw).toBe("disabled-for-product-stability");
+    expect(err.retryable).toBe(false);
+    expect(doDeleteFile).not.toHaveBeenCalled();
   });
 });
 

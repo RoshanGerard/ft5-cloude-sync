@@ -325,12 +325,12 @@ describe("S3Client — getMetadata", () => {
 // delete
 // ---------------------------------------------------------------------------
 
-describe("S3Client — deleteFile", () => {
+describe("S3Client — delete (file)", () => {
   it("issues DeleteObject and resolves", async () => {
     s3Mock.on(DeleteObjectCommand).resolves({});
     const { client } = makeHarness();
     await expect(
-      client.deleteFile({ kind: "path", path: "/todelete.txt" }),
+      client.delete({ kind: "path", path: "/todelete.txt" }, "file"),
     ).resolves.toBeUndefined();
     const input = s3Mock.commandCalls(DeleteObjectCommand)[0]!.args[0].input;
     expect(input.Key).toBe("todelete.txt");

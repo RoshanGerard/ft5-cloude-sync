@@ -63,8 +63,7 @@ function makeFakeClient(
       // this provider checksum, so they must match for keep-both to succeed.
       providerMetadata: { md5Checksum: "deadbeef" },
     }),
-    deleteFile: vi.fn(),
-    deleteDirectory: vi.fn(),
+    delete: vi.fn(),
     rename: vi.fn(),
     downloadFile: vi.fn(),
     uploadFile: vi.fn(),
