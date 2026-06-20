@@ -95,7 +95,7 @@ function fakeClient() {
       size: 0,
       kind: "file" as const,
     })),
-    deleteFile: vi.fn(async () => void 0),
+    delete: vi.fn(async () => void 0),
     // Required on DatasourceClient after migrate-engine-retry-policy-to-consumer;
     // the mirror executor wraps engine calls in `withAuthRefresh`, which calls
     // this only on `auth-expired` (no such path here) — stubbed for runtime-safety.
@@ -318,7 +318,7 @@ describe("end-to-end: source-unavailable", () => {
       const names = events.map((e) => e.name);
       expect(names).toContain("source-unavailable");
       expect(fc.uploadFile).not.toHaveBeenCalled();
-      expect(fc.deleteFile).not.toHaveBeenCalled();
+      expect(fc.delete).not.toHaveBeenCalled();
     } finally {
       cli.close();
     }

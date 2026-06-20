@@ -12,8 +12,8 @@
 
 - [x] 2.1 Failing test first: added a base-client describe asserting `delete(target, "directory")` throws `DatasourceError { tag: "unsupported", retryable: false, raw: "disabled-for-product-stability" }` (without calling `doDeleteFileImpl`) and that `delete(target, "file")` dispatches to `doDeleteFileImpl`. Watched it fail (`client.delete is not a function`).
 - [x] 2.2 In `packages/fs-datasource-engine/src/base-client.ts`: added `delete(target: Target, entryKind: EntryKind): Promise<void>` to the `DatasourceClient<T>` interface and a base wrapper that — `entryKind === EntryKind.Directory` → throws the relocated `unsupported` error (verbatim tag/raw, message "directory delete is disabled for product stability"); else → `await this.doDeleteFileImpl(target)` under the same normalize-on-throw (`ensureNormalized`) wrapper. Imported `EntryKind` (value+type) from `@ft5/ipc-contracts`. (Add-migrate-remove sequence: `delete` coexists with `deleteFile`/`deleteDirectory` until callers migrate.)
-- [ ] 2.3 Remove the public `deleteFile(target)` and `deleteDirectory(target)` methods (interface declarations + base wrappers) — done AFTER slices 3+4 migrate all callers. Keep the `protected abstract doDeleteFileImpl(target)` hook and all three strategies' implementations + inline path-cache eviction UNTOUCHED.
-- [ ] 2.4 Green the unified-delete test (done — 40/40 base-client); confirm no `doDeleteDirectoryImpl` was introduced and no strategy file changed (re-confirm after removal step).
+- [x] 2.3 Removed the public `deleteFile(target)` and `deleteDirectory(target)` methods (interface declarations + base wrappers) after all callers migrated. Kept the `protected abstract doDeleteFileImpl(target)` hook and all three strategies' implementations + inline path-cache eviction UNTOUCHED. Also fixed the `factory.test.ts` method-presence conformance (stub literal + name-list loop) and renamed stale `deleteFile` describe/it labels (Drive/OneDrive).
+- [x] 2.4 Engine suite green (328/328, no type errors) after removal; confirmed no `doDeleteDirectoryImpl` introduced and no strategy source file changed (only test labels).
 
 ## 3. Engine test-surface migration
 
@@ -24,10 +24,10 @@
 
 ## 4. fs-sync consumer updates (code only — no spec/wire change)
 
-- [ ] 4.1 `services/fs-sync/src/commands/files-remove.ts:61-72` — collapse the `if (target.kind === "directory") client.deleteDirectory(...) else client.deleteFile(...)` branch into one `client.delete({ kind: "handle", handle: target.handle }, target.kind)`, still wrapped in `withAuthRefresh`. Update the explanatory comment (:55).
-- [ ] 4.2 `services/fs-sync/src/commands/files-remove.test.ts` — update the directory-target test (desc at :62) to assert the unified `delete(handle, "directory")` call still surfaces a per-target `unsupported` error and the `files:remove` envelope stays `ok: true`.
-- [ ] 4.3 `services/fs-sync/src/executors/mirror-sync.ts:134` — `client.deleteFile({ kind: "handle", handle: op.remoteHandle })` → `client.delete({ kind: "handle", handle: op.remoteHandle }, EntryKind.File)` (verify the op is a file delete in mirror-sync's context). Update its tests if they assert the call shape.
-- [ ] 4.4 Grep the whole repo once more for any remaining `.deleteFile(` / `.deleteDirectory(` reference (prod or test) and confirm zero remain outside archived specs.
+- [x] 4.1 `services/fs-sync/src/commands/files-remove.ts` — collapsed the `if (target.kind === "directory") deleteDirectory else deleteFile` branch into one `client.delete({ kind: "handle", handle: target.handle }, target.kind)`, still wrapped in `withAuthRefresh`. Updated the explanatory comments.
+- [x] 4.2 `services/fs-sync/src/commands/files-remove.test.ts` — migrated the mock + all behavioral tests (file → `delete(…, "file")`, directory → `delete(…, "directory")` surfacing a per-target `unsupported` error with envelope `ok: true`; mock message anchored to the production string); spies renamed off the `delete` keyword. (subagent + reviewed)
+- [x] 4.3 `services/fs-sync/src/executors/mirror-sync.ts` — `client.deleteFile(...)` → `client.delete({ kind: "handle", handle: op.remoteHandle }, EntryKind.File)` (delete-remote path is a file delete; added `import { EntryKind }`). `mirror-sync.test.ts` migrated + strengthened with a `delete(…, "file")` call-args assertion.
+- [x] 4.4 Grep confirms ZERO `.deleteFile(`/`.deleteDirectory(`/`deleteFile:`/`deleteDirectory:` references remain in `packages/fs-datasource-engine/src` or `services/fs-sync/src` (only historical doc comments). Subagent also caught + migrated `files-rename.test.ts` (12th mock-literal file). `tsc -b` EXIT 0 (whole-workspace gate).
 
 ## 5. Verification + spec sync
 

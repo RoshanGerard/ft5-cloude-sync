@@ -197,8 +197,6 @@ export interface DatasourceClient<T extends DatasourceType> {
       onProgress?: (loaded: number, total: number) => void;
     },
   ): Promise<DatasourceFileEntry<T>>;
-  deleteFile(target: Target): Promise<void>;
-  deleteDirectory(target: Target): Promise<never>;
   /**
    * Unified delete (per unify-engine-delete-method): one method for files
    * and directories. `entryKind === "directory"` is refused with
@@ -548,33 +546,6 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       // `withAuthRefresh` wrap can detect it and refresh.
       throw this.ensureNormalized(err);
     }
-  }
-
-  async deleteFile(target: Target): Promise<void> {
-    try {
-      await this.doDeleteFileImpl(target);
-    } catch (err) {
-      // Normalize-only — the engine no longer emits `deleted` /
-      // `delete-failed` (migrate-engine-events-to-consumer Decision 1).
-      throw this.ensureNormalized(err);
-    }
-  }
-
-  /**
-   * deleteDirectory is unconditionally `Unsupported` for product stability
-   * (Decision 10). Per spec scenario, no `*-failed` event fires for
-   * Unsupported errors.
-   */
-  async deleteDirectory(target: Target): Promise<never> {
-    void target;
-    throw new DatasourceError<T>({
-      tag: "unsupported",
-      datasourceType: this.type,
-      datasourceId: this.datasourceId,
-      retryable: false,
-      raw: "disabled-for-product-stability",
-      message: "deleteDirectory is disabled for product stability",
-    });
   }
 
   /**

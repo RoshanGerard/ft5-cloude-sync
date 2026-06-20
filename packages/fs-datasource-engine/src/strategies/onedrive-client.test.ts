@@ -476,7 +476,7 @@ describe("OneDriveClient — getMetadata", () => {
 // deleteFile
 // ---------------------------------------------------------------------------
 
-describe("OneDriveClient — deleteFile", () => {
+describe("OneDriveClient — delete (file)", () => {
   it("issues DELETE on /me/drive/root:<path>: and resolves to void", async () => {
     const { client, apiCalls } = makeFakeGraph([
       {
@@ -1262,7 +1262,7 @@ describe("OneDriveClient — path↔handle LRU invalidation", () => {
     expect(apiCalls[1]).toBe("/me/drive/items/cached-id");
   });
 
-  it("deleteFile of a cached path evicts the cached entry (inline eviction)", async () => {
+  it("delete (file) of a cached path evicts the cached entry (inline eviction)", async () => {
     // The seed getMetadata resolves via path; the cached delete then routes
     // via /items/<id>. Prime both addressing forms.
     const { client: graphClient } = makeFakeGraph([

@@ -21,8 +21,7 @@ function makeFakeClient(
     createFile: vi.fn(),
     uploadFile: vi.fn(),
     cancelUpload: vi.fn(),
-    deleteFile: vi.fn(),
-    deleteDirectory: vi.fn(),
+    delete: vi.fn(),
     getQuota: vi.fn(),
     refreshCredentials: vi
       .fn()
@@ -36,9 +35,9 @@ const ctx = {
 } as const;
 
 describe("files:remove handler", () => {
-  it("single-target file: dispatches deleteFile by handle and returns ok:true with results[0].ok:true", async () => {
-    const deleteFile = vi.fn().mockResolvedValue(undefined);
-    const client = makeFakeClient({ deleteFile });
+  it("single-target file: dispatches delete by handle with entryKind 'file' and returns ok:true with results[0].ok:true", async () => {
+    const deleteSpy = vi.fn().mockResolvedValue(undefined);
+    const client = makeFakeClient({ delete: deleteSpy });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
@@ -54,27 +53,30 @@ describe("files:remove handler", () => {
       result: { results: [{ path: "/a.txt", handle: "h-a-1", ok: true }] },
     });
     // Authoritative addressing: handle, not path. Skips getMetadata.
-    expect(deleteFile).toHaveBeenCalledWith({ kind: "handle", handle: "h-a-1" });
+    // Unified delete(target, entryKind) — a file target passes "file".
+    expect(deleteSpy).toHaveBeenCalledWith(
+      { kind: "handle", handle: "h-a-1" },
+      "file",
+    );
     expect(client.getMetadata).not.toHaveBeenCalled();
-    expect(client.deleteDirectory).not.toHaveBeenCalled();
   });
 
-  it("single-target directory: dispatches deleteDirectory by handle (which engines unconditionally reject with 'unsupported') and surfaces a per-target error", async () => {
+  it("single-target directory: dispatches delete by handle with entryKind 'directory' (which engines unconditionally reject with 'unsupported') and surfaces a per-target error", async () => {
     // Real engines throw DatasourceError{ tag: "unsupported" } for every
-    // deleteDirectory call — see BaseClient.deleteDirectory. Here we mock
+    // delete(target, "directory") call — see BaseClient.delete. Here we mock
     // the contracted rejection so the test matches production behavior.
     // The files error mapping collapses "unsupported" → "other".
-    const deleteDirectory = vi.fn().mockRejectedValue(
+    const deleteSpy = vi.fn().mockRejectedValue(
       new DatasourceError({
         tag: "unsupported",
         datasourceType: "google-drive",
         datasourceId: "ds-1",
         retryable: false,
         raw: "disabled-for-product-stability",
-        message: "deleteDirectory is disabled for product stability",
+        message: "directory delete is disabled for product stability",
       }),
     );
-    const client = makeFakeClient({ deleteDirectory });
+    const client = makeFakeClient({ delete: deleteSpy });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
@@ -85,11 +87,10 @@ describe("files:remove handler", () => {
       ctx,
     );
 
-    expect(deleteDirectory).toHaveBeenCalledWith({
-      kind: "handle",
-      handle: "h-folder",
-    });
-    expect(client.deleteFile).not.toHaveBeenCalled();
+    expect(deleteSpy).toHaveBeenCalledWith(
+      { kind: "handle", handle: "h-folder" },
+      "directory",
+    );
     expect(client.getMetadata).not.toHaveBeenCalled();
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -99,7 +100,7 @@ describe("files:remove handler", () => {
       if (!r0.ok) {
         expect(r0.error.tag).toBe("other");
         expect(r0.error.message).toBe(
-          "deleteDirectory is disabled for product stability",
+          "directory delete is disabled for product stability",
         );
       }
     }
@@ -113,10 +114,10 @@ describe("files:remove handler", () => {
     // two files share a path. With handle addressing, each target
     // deletes cleanly.
     const deletedHandles: string[] = [];
-    const deleteFile = vi.fn().mockImplementation(async (target: { handle: string }) => {
+    const deleteSpy = vi.fn().mockImplementation(async (target: { handle: string }) => {
       deletedHandles.push(target.handle);
     });
-    const client = makeFakeClient({ deleteFile });
+    const client = makeFakeClient({ delete: deleteSpy });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
@@ -140,12 +141,12 @@ describe("files:remove handler", () => {
     }
   });
 
-  it("file delete: auth-expired once then succeeds → refreshCredentials called exactly once, deleteFile retries and target succeeds (withAuthRefresh)", async () => {
+  it("file delete: auth-expired once then succeeds → refreshCredentials called exactly once, delete retries and target succeeds (withAuthRefresh)", async () => {
     // migrate-engine-retry-policy-to-consumer §3.4 — each per-target delete
     // owns its own refresh-once/retry-once. RED before the wrap (the first
     // auth-expired surfaces raw → per-target error), GREEN after (refresh +
     // retry → results[0].ok:true).
-    const deleteFile = vi
+    const deleteSpy = vi
       .fn()
       .mockRejectedValueOnce(
         new DatasourceError({
@@ -160,7 +161,7 @@ describe("files:remove handler", () => {
     const refreshCredentials = vi
       .fn()
       .mockResolvedValue({ accessToken: "new", refreshToken: "r" });
-    const client = makeFakeClient({ deleteFile, refreshCredentials });
+    const client = makeFakeClient({ delete: deleteSpy, refreshCredentials });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
@@ -178,11 +179,11 @@ describe("files:remove handler", () => {
       ]);
     }
     expect(refreshCredentials).toHaveBeenCalledTimes(1);
-    expect(deleteFile).toHaveBeenCalledTimes(2);
+    expect(deleteSpy).toHaveBeenCalledTimes(2);
   });
 
   it("single-target failure (engine throws rate-limited) returns per-target error", async () => {
-    const deleteFile = vi.fn().mockRejectedValue(
+    const deleteSpy = vi.fn().mockRejectedValue(
       new DatasourceError({
         tag: "rate-limited",
         datasourceType: "google-drive",
@@ -192,7 +193,7 @@ describe("files:remove handler", () => {
         message: "provider throttled",
       }),
     );
-    const client = makeFakeClient({ deleteFile });
+    const client = makeFakeClient({ delete: deleteSpy });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
@@ -216,7 +217,7 @@ describe("files:remove handler", () => {
   });
 
   it("multi-target partial failure: results array preserves per-target outcome in order", async () => {
-    const deleteFile = vi.fn().mockImplementation(async (target: { handle: string }) => {
+    const deleteSpy = vi.fn().mockImplementation(async (target: { handle: string }) => {
       // Succeed for h-a and h-c; fail for h-b.
       if (target.handle === "h-b") {
         throw new DatasourceError({
@@ -228,7 +229,7 @@ describe("files:remove handler", () => {
         });
       }
     });
-    const client = makeFakeClient({ deleteFile });
+    const client = makeFakeClient({ delete: deleteSpy });
     const handler = makeFilesRemoveHandler({ resolveClient: async () => client });
 
     const result = await handler(
@@ -289,8 +290,7 @@ describe("files:remove handler", () => {
     );
 
     expect(result).toEqual({ ok: true, result: { results: [] } });
-    expect(client.deleteFile).not.toHaveBeenCalled();
-    expect(client.deleteDirectory).not.toHaveBeenCalled();
+    expect(client.delete).not.toHaveBeenCalled();
     expect(client.getMetadata).not.toHaveBeenCalled();
   });
 });

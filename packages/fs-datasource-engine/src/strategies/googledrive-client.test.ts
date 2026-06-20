@@ -1098,7 +1098,7 @@ describe("GoogleDriveClient — getMetadata", () => {
 // deleteFile
 // ---------------------------------------------------------------------------
 
-describe("GoogleDriveClient — deleteFile", () => {
+describe("GoogleDriveClient — delete (file)", () => {
   it("by handle — calls files.delete({fileId}) and resolves", async () => {
     const { client, calls } = makeFakeDrive({
       deletes: [

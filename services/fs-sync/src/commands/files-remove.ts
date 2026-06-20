@@ -5,8 +5,8 @@
 // with the same path, so a path-based `getMetadata` + `deleteFile` pair
 // is ambiguity-vulnerable. Handle-based addressing avoids that entirely
 // and also lets us drop the `getMetadata` round-trip: the caller already
-// supplies `kind`, so the handler can dispatch directly to `deleteFile`
-// vs `deleteDirectory`.
+// supplies `kind`, so the handler passes it straight to the engine's
+// unified `delete(target, entryKind)` (unify-engine-delete-method).
 //
 // Per-target outcomes are aggregated into the envelope. The outer `ok`
 // stays `true` as long as the command itself executed (i.e. resolveClient
@@ -49,27 +49,20 @@ export function makeFilesRemoveHandler(
         try {
           // Address by handle — the engine's Target union supports both
           // `{ kind: "path" }` and `{ kind: "handle" }`, and the handle
-          // form is unambiguous on every provider. Dispatch on the
-          // caller-supplied `kind` (UI's vocab: "directory" / "file") —
-          // the engine's corresponding terminal is `deleteDirectory` /
-          // `deleteFile`, and the engine always throws `unsupported` for
-          // deleteDirectory (see BaseClient.deleteDirectory); the caller
-          // surfaces that as a per-target error.
+          // form is unambiguous on every provider. Pass the caller-supplied
+          // `kind` (UI's vocab: "directory" / "file") to the unified
+          // `delete(target, entryKind)` (unify-engine-delete-method); the
+          // engine refuses `"directory"` with `unsupported` in the base
+          // (Decision 10) and the caller surfaces that as a per-target error.
           // migrate-engine-retry-policy-to-consumer Decision 4 — engine no
           // longer auto-refreshes on `auth-expired`; each per-target delete
           // owns its own refresh-once/retry-once via `withAuthRefresh`.
-          if (target.kind === "directory") {
-            await withAuthRefresh(client, () =>
-              client.deleteDirectory({
-                kind: "handle",
-                handle: target.handle,
-              }),
-            );
-          } else {
-            await withAuthRefresh(client, () =>
-              client.deleteFile({ kind: "handle", handle: target.handle }),
-            );
-          }
+          await withAuthRefresh(client, () =>
+            client.delete(
+              { kind: "handle", handle: target.handle },
+              target.kind,
+            ),
+          );
           return { path: target.path, handle: target.handle, ok: true };
         } catch (err) {
           const normalized = normalizeFilesError(err);

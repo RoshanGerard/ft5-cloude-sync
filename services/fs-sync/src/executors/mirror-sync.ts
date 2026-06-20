@@ -9,6 +9,7 @@ import type {
 } from "@ft5/fs-datasource-engine";
 import { withAuthRefresh } from "@ft5/fs-datasource-engine";
 import type { DatasourceType } from "@ft5/ipc-contracts";
+import { EntryKind } from "@ft5/ipc-contracts";
 
 import { SnapshotRepository } from "../jobs/snapshot-repository.js";
 import type { Executor, ExecutorResult } from "../scheduler/scheduler.js";
@@ -131,7 +132,10 @@ export function buildMirrorSyncExecutor(deps: MirrorSyncDeps): Executor {
           // delete-remote — same `withAuthRefresh` wrap as the upload path
           // above (Decision 4).
           await withAuthRefresh(client, () =>
-            client.deleteFile({ kind: "handle", handle: op.remoteHandle }),
+            client.delete(
+              { kind: "handle", handle: op.remoteHandle },
+              EntryKind.File,
+            ),
           );
           snapshots.delete(job.datasourceId, op.relPath);
           deleted++;

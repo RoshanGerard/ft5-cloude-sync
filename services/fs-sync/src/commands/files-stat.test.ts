@@ -21,8 +21,7 @@ function makeFakeClient(
     createFile: vi.fn(),
     uploadFile: vi.fn(),
     cancelUpload: vi.fn(),
-    deleteFile: vi.fn(),
-    deleteDirectory: vi.fn(),
+    delete: vi.fn(),
     getQuota: vi.fn(),
     refreshCredentials: vi
       .fn()
