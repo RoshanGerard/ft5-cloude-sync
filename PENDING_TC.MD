@@ -987,3 +987,41 @@ engine; the smokes below are the real confirmation.
 **Owner:** unassigned. Blocked on a packaged build + real datasource credentials
 (same gate as add-drive-oauth-browser-consent §1 setup). Until run, treat the
 pagination flow as automated-green but NOT yet provider-verified.
+
+---
+
+## migrate-engine-events-to-consumer — deferred running-system download-progress smoke (2026-06-20)
+
+The engine `EventBus` removal is fully implemented and the FULL repo suite (302
+files / 2767 tests) is green. The one behavioral change — the download-progress
+throttle relocated from the engine-bus coalescer into the fs-sync download
+handler (`options.onProgress` → a handler-local 1s-OR-10% coalescer with
+flush-before-terminal) — is covered by dedicated handler tests (throttle gate,
+flush-on-terminal for success AND failure, within-cycle wire value on resume).
+BUT it has NEVER been eyeballed in a REAL download against a live provider; every
+test drives the fake `downloadFile`'s `onProgress`. CLAUDE.md step 8 ("feature
+exercised against a running system") is therefore explicitly DEFERRED here, not
+met by the automated suite.
+
+1. **Real download progress + throttle (running system)** — dev or packaged
+   build, download a multi-MB file from a real datasource. Expect: the download
+   toast updates at the throttled cadence (≤ ~1/s on a fast download, plus on 10%
+   crossings) — NOT flooded at chunk frequency; the final 100% lands as a
+   `downloading` BEFORE the terminal `file-downloaded`, and no progress update
+   appears after the terminal; the download completes and the file is byte-correct.
+2. **Resume-cycle progress** — interrupt mid-download (kill network) to force a
+   range-resume (`rangeStart > 0`). Expect: progress continues without a renderer
+   crash; the wire `bytesLoaded` is the engine's within-cycle value (UNCHANGED by
+   this migration — the pre-existing resume-progress rough edge is preserved, not
+   fixed; see design.md Decision 2 / Non-Goals).
+3. **No renderer-observable regression from the bus removal** — confirm the
+   renderer still receives `auth-*` events via `window.api.sync.onEvent` on
+   reconnect, and the file explorer still updates after rename/delete (via RPC
+   responses + the optimistic store) — i.e. removing the engine bus + the dead
+   `datasources:event` path lost no renderer-facing behavior.
+
+**Owner:** unassigned. Blocked on a real datasource + a running fs-sync service
+(same gate as add-drive-oauth-browser-consent §1). Risk is low — the change is a
+removal plus one throttle relocation, both heavily unit-tested — but treat the
+bus removal as automated-green and NOT yet exercised against a running system
+until these run.
