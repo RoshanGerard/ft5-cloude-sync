@@ -22,6 +22,10 @@ The following are explicitly EXEMPT and MAY remain raw strings:
 - `openspec/specs/**/*.md` (documents wire values; off-limits to direct
   edits) and code comments.
 - `dist/` build outputs and `node_modules/`.
+- Type-position declarations — `readonly tag:` interface members and
+  string-literal union types (e.g. event-payload tag unions) — which
+  DECLARE a contract's allowed tag values (definitions, peers of the const
+  object), not value references.
 
 Because the five values shared with `DatasourceErrorTag` (`auth-revoked`,
 `rate-limited`, `conflict`, `cancelled`, `invalid-datasource`) are

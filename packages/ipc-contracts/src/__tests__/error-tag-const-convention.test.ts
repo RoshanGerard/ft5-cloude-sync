@@ -55,7 +55,12 @@ const EXEMPT_FILES = new Set(
 // `<repo-relative posix path>|||<trimmed source line>`; an entry stops
 // matching if the line text changes, forcing a re-review. Populated during
 // the per-package sweep as genuine wire-payload literals are found.
-const WIRE_LITERAL_ALLOWLIST = new Set<string>([]);
+const WIRE_LITERAL_ALLOWLIST = new Set<string>([
+  // Deliberate literal-form back-compat assertion: this test exists to prove
+  // the pre-refactor raw-literal form still type-checks (the derived type IS
+  // the string union). Migrating it would defeat the test's purpose.
+  'packages/ipc-contracts/src/__tests__/datasource-error-tag.test-d.ts|||tag: "auth-revoked",',
+]);
 
 // Union of every DatasourceErrorTag + FilesErrorTag value.
 const TAG_VALUES = [
@@ -75,6 +80,18 @@ const TAG_VALUES = [
 ];
 
 const VAL = `(?:${TAG_VALUES.join("|")})`;
+
+// Type-position declarations are contract DEFINITIONS, not value
+// references — peers of the const objects themselves (interface members
+// like `readonly tag: "not-found"` and inline payload unions like
+// `readonly tag: "auth-revoked" | "disconnected" | …`). They are exempt,
+// and so are string-literal unions of tag values (`"a" | "b"`), which only
+// occur in type position. `readonly` is type-only syntax, so it never
+// hides a runtime value; a single-pipe union next to a tag literal is
+// likewise never a runtime construction (`||` logical-or is unaffected —
+// it has no adjacent string literal on the pipe).
+const TYPE_DECL = /\breadonly\s+(?:tag|errorTag)\s*:/;
+const TAG_UNION = new RegExp(`"${VAL}"\\s*\\|\\s*"|"\\s*\\|\\s*"${VAL}"`);
 
 // Error-tag contexts, evaluated on a comment-stripped line:
 // - construction `tag: "…"` (the leading [^"\w] guard skips JSON `"tag":`);
@@ -130,6 +147,8 @@ function findViolations(): string[] {
     lines.forEach((rawLine, idx) => {
       const line = stripLineComment(rawLine);
       if (!PATTERNS.some((re) => re.test(line))) return;
+      // Skip contract type-position declarations (definitions, not refs).
+      if (TYPE_DECL.test(line) || TAG_UNION.test(line)) return;
       const relPosix = rel.replaceAll(path.sep, "/");
       const key = `${relPosix}|||${rawLine.trim()}`;
       if (WIRE_LITERAL_ALLOWLIST.has(key)) return;

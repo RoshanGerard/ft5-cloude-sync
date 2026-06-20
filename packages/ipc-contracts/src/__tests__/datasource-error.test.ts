@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { DatasourceError } from "../fs-datasource-engine.js";
+import { DatasourceError, DatasourceErrorTag } from "../fs-datasource-engine.js";
 
 describe("DatasourceError — construction + shape", () => {
   it("is a subclass of Error and DatasourceError (instanceof both)", () => {
     const err = new DatasourceError({
-      tag: "not-found",
+      tag: DatasourceErrorTag.NotFound,
       datasourceType: "amazon-s3",
       datasourceId: "ds-1",
       retryable: false,
@@ -16,7 +16,7 @@ describe("DatasourceError — construction + shape", () => {
 
   it("copies every required init field onto the instance", () => {
     const err = new DatasourceError({
-      tag: "rate-limited",
+      tag: DatasourceErrorTag.RateLimited,
       datasourceType: "google-drive",
       datasourceId: "ds-gdrive-7",
       retryable: true,
@@ -36,7 +36,7 @@ describe("DatasourceError — construction + shape", () => {
 
   it("omits optional fields when not supplied", () => {
     const err = new DatasourceError({
-      tag: "unsupported",
+      tag: DatasourceErrorTag.Unsupported,
       datasourceType: "amazon-s3",
       datasourceId: "ds-1",
       retryable: false,
@@ -50,7 +50,7 @@ describe("DatasourceError — construction + shape", () => {
 
   it("falls back to a deterministic message when one is not supplied", () => {
     const err = new DatasourceError({
-      tag: "auth-expired",
+      tag: DatasourceErrorTag.AuthExpired,
       datasourceType: "onedrive",
       datasourceId: "ds-od-3",
       retryable: false,
@@ -76,7 +76,9 @@ describe("DatasourceError — construction + shape", () => {
         tag,
         datasourceType: "amazon-s3",
         datasourceId: "ds-x",
-        retryable: tag === "rate-limited" || tag === "network-error",
+        retryable:
+          tag === DatasourceErrorTag.RateLimited ||
+          tag === DatasourceErrorTag.NetworkError,
       });
       expect(err.tag).toBe(tag);
     }
@@ -84,7 +86,7 @@ describe("DatasourceError — construction + shape", () => {
 
   it("preserves a usable stack trace", () => {
     const err = new DatasourceError({
-      tag: "provider-error",
+      tag: DatasourceErrorTag.ProviderError,
       datasourceType: "amazon-s3",
       datasourceId: "ds-1",
       retryable: false,

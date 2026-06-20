@@ -206,6 +206,41 @@ build on unrelated grounds, so it does not risk blocking the PR on
 incidental matches once the sweep is complete. The ESLint rule (editor-
 time DX, auto-fix) is genuinely additive and stays a follow-up.
 
+### Decision 6 — Scope is tag-CONTEXT *references*; type-position declarations and assertion-only literals are exempt (refined during apply)
+
+Two boundaries surfaced while migrating `packages/ipc-contracts` and were
+folded into the guard:
+
+- **Type-position declarations are DEFINITIONS, not references.** A
+  `readonly tag: "not-found"` interface member, or an inline payload union
+  like `readonly tag: "auth-revoked" | "disconnected" | …`
+  (`DownloadFailedPayload`, `UploadFailedPayload`, the sync `ErrorShape`
+  family, etc.) DECLARES a contract's allowed tag values — it is a peer of
+  the const-object definition, not a value reference. These are exempt
+  (the guard skips `readonly tag:` lines and string-literal unions —
+  `readonly` is type-only syntax so it never hides a runtime value; `||`
+  logical-or is unaffected since it has no string literal adjacent to the
+  pipe). This is also why `ServiceErrorTag`'s `readonly tag: "not-found"`
+  interface members need no allowlist entry — they are type-position.
+
+- **Migration scope is tag-CONTEXT references only:** construction
+  (`tag:` / `errorTag:` object property, incl. inside `toMatchObject({…})`
+  / `toEqual({…})`), comparison (`tag` / `.tag === / !== / ==`), and
+  `case` arms. OUT of scope (neither guarded nor migrated): assertion-only
+  literals (`expect(x.tag).toBe("rate-limited")`), tag-value arrays
+  (`["auth-expired", …] as const`), and bare function-arg literals.
+  Guarding those would force matching bare strings (`"other"`, `"conflict"`,
+  `"cancelled"`) in arbitrary positions, which collide with non-tag uses
+  (`ConflictPolicy`, `JobStatus`, the English word "other"). Restricting
+  to tag-context keeps the guard sound and the migration well-defined; a
+  same-file mix (migrated `tag:` next to a literal `.toBe(...)`) is the
+  accepted cost.
+
+- **Deliberate literal-form back-compat tests stay literal** (allowlisted).
+  `datasource-error-tag.test-d.ts` has a test whose POINT is that the raw
+  literal form still type-checks (the derived type is unchanged); migrating
+  it would defeat the test. One `WIRE_LITERAL_ALLOWLIST` entry records it.
+
 ## Risks / Trade-offs
 
 - **Wrong-enum substitution on the 5 shared literals — type-safe and

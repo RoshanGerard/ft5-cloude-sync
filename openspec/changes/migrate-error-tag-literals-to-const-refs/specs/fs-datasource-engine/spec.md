@@ -22,6 +22,9 @@ The following are explicitly EXEMPT and MAY remain raw strings:
 - `openspec/specs/**/*.md` (documents wire values; off-limits to direct
   edits) and code comments.
 - `dist/` build outputs and `node_modules/`.
+- Type-position declarations — `readonly tag:` interface members and
+  string-literal union types — which DECLARE a contract's allowed tag
+  values (definitions, peers of the const object), not value references.
 - Literals belonging to a DIFFERENT error vocabulary that happens to
   share the string. `ServiceErrorTag` (the `SyncCommandError` / sync
   `ErrorShape` family) is a plain type union with no const object and is

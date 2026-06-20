@@ -5,7 +5,6 @@ import type {
   AuthIntent,
   AuthResult,
   CredentialsFormIntent,
-  DatasourceErrorTag,
   DatasourceType,
   DatasourceFileEntry,
   FileMetadata,
@@ -19,7 +18,7 @@ import type {
   Target,
 } from "../fs-datasource-engine.js";
 import { serializeDatasourceError } from "../fs-datasource-engine.js";
-import { DatasourceError } from "../fs-datasource-engine.js";
+import { DatasourceError, DatasourceErrorTag } from "../fs-datasource-engine.js";
 
 describe("ipc-contracts fs-datasource-engine types — addressing", () => {
   it("DatasourceType aliases ProviderId (engine surface is provider-typed)", () => {
@@ -277,7 +276,7 @@ describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
     // ABSENT on the projection (not `undefined`) to honour
     // `exactOptionalPropertyTypes`.
     const minimal = new DatasourceError<"amazon-s3">({
-      tag: "auth-expired",
+      tag: DatasourceErrorTag.AuthExpired,
       datasourceType: "amazon-s3",
       datasourceId: "ds-minimal",
       retryable: false,
@@ -285,7 +284,7 @@ describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
     });
     const minSer = serializeDatasourceError(minimal);
     expect(minSer).toEqual({
-      tag: "auth-expired",
+      tag: DatasourceErrorTag.AuthExpired,
       datasourceType: "amazon-s3",
       datasourceId: "ds-minimal",
       retryable: false,
@@ -296,7 +295,7 @@ describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
 
     // Full — every optional field populated survives the projection.
     const full = new DatasourceError<"google-drive">({
-      tag: "rate-limited",
+      tag: DatasourceErrorTag.RateLimited,
       datasourceType: "google-drive",
       datasourceId: "ds-full",
       retryable: true,
@@ -306,7 +305,7 @@ describe("ipc-contracts fs-datasource-engine types — error taxonomy", () => {
     });
     const fullSer = serializeDatasourceError(full);
     expect(fullSer).toEqual({
-      tag: "rate-limited",
+      tag: DatasourceErrorTag.RateLimited,
       datasourceType: "google-drive",
       datasourceId: "ds-full",
       retryable: true,
