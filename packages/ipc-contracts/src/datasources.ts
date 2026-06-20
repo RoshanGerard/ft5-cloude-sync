@@ -170,13 +170,10 @@ export const DATASOURCES_CHANNELS = {
   // migrate-upload-orchestration-out-of-engine §7.5 / §13.4 — the
   // `uploadProgress` channel was removed. Upload events now flow on
   // `sync:event-stream` (channel `sync:event`) keyed by `uploadJobId`.
-  // One-way main → renderer stream carrying `DatasourceEvent<T, K>` envelopes
-  // emitted by the FS Datasource Engine's bus. Wired up by the event bridge
-  // in Phase 10 of `openspec/changes/add-fs-datasource-engine`; declared here
-  // in Phase 1 so contract consumers can name the channel without reaching
-  // into a later-phase file. The `consent-*` event family that previously
-  // flowed alongside the engine's events on this channel was retired by
-  // `implement-datasource-onboarding`; authenticate lifecycle events now
-  // flow as `auth-*` on the service's `sync:event` stream.
-  event: "datasources:event",
+  //
+  // migrate-engine-events-to-consumer Decision 4 — the `event`
+  // (`datasources:event`) channel was removed along with the engine
+  // EventBus. It had no production emitter or consumer; datasource-facing
+  // events now flow exclusively as `auth-*` / `job-*` on the service's
+  // `sync:event` stream.
 } as const;

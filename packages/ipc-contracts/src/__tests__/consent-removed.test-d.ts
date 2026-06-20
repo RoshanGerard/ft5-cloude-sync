@@ -43,13 +43,15 @@ describe("ipc-contracts datasources — consent surface is fully retired", () =>
     // `uploadProgress` was additionally removed by
     // migrate-upload-orchestration-out-of-engine §7.5 / §13.4 — the
     // upload-event channel migrated to `sync:event-stream` keyed by
-    // `uploadJobId`.
+    // `uploadJobId`. `event` (`datasources:event`) was removed by
+    // migrate-engine-events-to-consumer Decision 4 along with the engine
+    // EventBus — it had no production emitter or consumer; datasource-
+    // facing events flow as `auth-*` / `job-*` on `sync:event`.
     const remaining = Object.keys(DATASOURCES_CHANNELS).sort();
     expect(remaining).toEqual(
       [
         "action",
         "add",
-        "event",
         "list",
         "pickFilesToUpload",
         "remove",
