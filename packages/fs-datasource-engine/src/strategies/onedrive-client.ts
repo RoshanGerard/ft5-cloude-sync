@@ -337,7 +337,7 @@ function readCredsFromStored(credentials: StoredCredentials): OneDriveCredsMeta 
     typeof meta.redirectUri !== "string"
   ) {
     throw new DatasourceError<"onedrive">({
-      tag: "auth-revoked",
+      tag: DatasourceErrorTag.AuthRevoked,
       datasourceType: "onedrive",
       datasourceId: "<init>",
       retryable: false,
@@ -763,7 +763,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       // type-checks. Honors Decision 8's intent of NOT adding a new engine tag.
       if (!options.cursor.startsWith(GRAPH_NEXTLINK_PREFIX)) {
         throw new DatasourceError<"onedrive">({
-          tag: "provider-error",
+          tag: DatasourceErrorTag.ProviderError,
           datasourceType: "onedrive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -888,7 +888,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     // and reject with `cancelled` if the consumer aborted.
     if (options.signal?.aborted) {
       throw new DatasourceError<"onedrive">({
-        tag: "cancelled",
+        tag: DatasourceErrorTag.Cancelled,
         datasourceType: "onedrive",
         datasourceId: this.datasourceId,
         retryable: false,
@@ -1107,7 +1107,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       }
       if (probe.folder !== undefined) {
         throw new DatasourceError<"onedrive">({
-          tag: "unsupported",
+          tag: DatasourceErrorTag.Unsupported,
           datasourceType: "onedrive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -1157,7 +1157,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
           ? `${parentPath}/${newName}`
           : `/${newName}`;
         throw new DatasourceError<"onedrive">({
-          tag: "conflict",
+          tag: DatasourceErrorTag.Conflict,
           datasourceType: "onedrive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -1196,7 +1196,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
       }
       if (chosen === null) {
         throw new DatasourceError<"onedrive">({
-          tag: "provider-error",
+          tag: DatasourceErrorTag.ProviderError,
           datasourceType: "onedrive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -1511,7 +1511,7 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     const { refreshToken } = this.requireCreds();
     if (!refreshToken) {
       throw new DatasourceError<"onedrive">({
-        tag: "auth-revoked",
+        tag: DatasourceErrorTag.AuthRevoked,
         datasourceType: "onedrive",
         datasourceId: this.datasourceId,
         retryable: false,

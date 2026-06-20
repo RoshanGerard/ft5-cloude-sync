@@ -34,7 +34,7 @@ import type {
   OAuthIntent,
   StoredCredentials,
 } from "@ft5/ipc-contracts";
-import { DatasourceError, providers } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag, providers } from "@ft5/ipc-contracts";
 
 import type { BaseClientContext, CredentialStore } from "../base-client.js";
 import {
@@ -1089,7 +1089,7 @@ describe("GoogleDriveClient — getMetadata", () => {
     await expect(
       h.client.getMetadata({ kind: "handle", handle: "MISSING" }),
     ).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "not-found",
+      (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.NotFound,
     );
   });
 });
@@ -1325,7 +1325,7 @@ describe("GoogleDriveClient — search", () => {
     await expect(
       h.client.getMetadata({ kind: "path", path: entry.path }),
     ).rejects.toSatisfy(
-      (e: unknown) => e instanceof DatasourceError && e.tag === "not-found",
+      (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.NotFound,
     );
 
     // Handle round-trip returns the real file with the real parent chain.
@@ -1615,7 +1615,7 @@ describe("GoogleDriveClient — refreshToken", () => {
     const refresh = (h.client as any).refreshTokenImpl.bind(h.client);
     await expect(refresh()).rejects.toSatisfy(
       (e: unknown) =>
-        e instanceof DatasourceError && e.tag === "auth-revoked",
+        e instanceof DatasourceError && e.tag === DatasourceErrorTag.AuthRevoked,
     );
   });
 });
@@ -2065,7 +2065,7 @@ describe("GoogleDriveClient — signal-driven cancel (resumable session)", () =>
       controller.abort();
 
       await expect(uploadPromise).rejects.toSatisfy(
-        (e: unknown) => e instanceof DatasourceError && e.tag === "cancelled",
+        (e: unknown) => e instanceof DatasourceError && e.tag === DatasourceErrorTag.Cancelled,
       );
 
       expect(deleteCalls).toHaveLength(1);
@@ -2491,7 +2491,7 @@ describe("GoogleDriveClient — scope drift detection", () => {
     });
     await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
       if (!(e instanceof DatasourceError)) return false;
-      if (e.tag !== "auth-revoked") return false;
+      if (e.tag !== DatasourceErrorTag.AuthRevoked) return false;
       if (e.retryable !== false) return false;
       const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
       return (
@@ -2517,7 +2517,7 @@ describe("GoogleDriveClient — scope drift detection", () => {
     });
     await expect(h.client.testConnection()).rejects.toSatisfy((e: unknown) => {
       if (!(e instanceof DatasourceError)) return false;
-      if (e.tag !== "auth-revoked") return false;
+      if (e.tag !== DatasourceErrorTag.AuthRevoked) return false;
       if (e.retryable !== false) return false;
       const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
       return (
@@ -2541,7 +2541,7 @@ describe("GoogleDriveClient — scope drift detection", () => {
     });
     await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
       if (!(e instanceof DatasourceError)) return false;
-      if (e.tag !== "auth-revoked") return false;
+      if (e.tag !== DatasourceErrorTag.AuthRevoked) return false;
       if (e.retryable !== false) return false;
       const raw = e.raw as { kind?: string; requiredScope?: string; actualScope?: string };
       return (
@@ -2674,7 +2674,7 @@ describe("GoogleDriveClient — scope drift detection", () => {
     // First status(): backfill + sufficiency check fails for narrow scope
     await expect(h.client.status()).rejects.toSatisfy((e: unknown) => {
       if (!(e instanceof DatasourceError)) return false;
-      if (e.tag !== "auth-revoked") return false;
+      if (e.tag !== DatasourceErrorTag.AuthRevoked) return false;
       const raw = e.raw as { kind?: string; actualScope?: string };
       return (
         raw?.kind === "scope-insufficient" &&
@@ -2710,7 +2710,7 @@ describe("GoogleDriveClient — scope drift detection", () => {
     store.get = async () => seedCreds;
     const h = makeHarness({ drive, fetchImpl, creds: seedCreds, store });
     await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
-      e instanceof DatasourceError && e.tag === "auth-revoked" && e.retryable === false,
+      e instanceof DatasourceError && e.tag === DatasourceErrorTag.AuthRevoked && e.retryable === false,
     );
     expect(puts).toHaveLength(0);
     expect(aboutSpy).not.toHaveBeenCalled();
@@ -2732,12 +2732,12 @@ describe("GoogleDriveClient — scope drift detection", () => {
     store.get = async () => seedCreds;
     const h = makeHarness({ drive, fetchImpl, creds: seedCreds, store });
     await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
-      e instanceof DatasourceError && e.tag === "network-error",
+      e instanceof DatasourceError && e.tag === DatasourceErrorTag.NetworkError,
     );
     expect(puts).toHaveLength(0);
     // Next call retries the tokeninfo fetch (no caching of failed backfill)
     await expect(h.client.status()).rejects.toSatisfy((e: unknown) =>
-      e instanceof DatasourceError && e.tag === "network-error",
+      e instanceof DatasourceError && e.tag === DatasourceErrorTag.NetworkError,
     );
     expect(calls).toBe(2);
   });

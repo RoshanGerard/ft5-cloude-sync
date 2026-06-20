@@ -434,7 +434,7 @@ function readCredsFromStored(
     typeof meta.redirectUri !== "string"
   ) {
     throw new DatasourceError<"google-drive">({
-      tag: "auth-revoked",
+      tag: DatasourceErrorTag.AuthRevoked,
       datasourceType: "google-drive",
       datasourceId: "<init>",
       retryable: false,
@@ -782,7 +782,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       const matches = resp.files ?? [];
       if (matches.length === 0) {
         throw new DatasourceError<"google-drive">({
-          tag: "not-found",
+          tag: DatasourceErrorTag.NotFound,
           datasourceType: "google-drive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -794,7 +794,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       const chosenId = chosen.id;
       if (!chosenId) {
         throw new DatasourceError<"google-drive">({
-          tag: "provider-error",
+          tag: DatasourceErrorTag.ProviderError,
           datasourceType: "google-drive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -913,7 +913,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     }
     if (!isScopeSufficient(scope)) {
       throw new DatasourceError<"google-drive">({
-        tag: "auth-revoked",
+        tag: DatasourceErrorTag.AuthRevoked,
         retryable: false,
         datasourceType: "google-drive",
         datasourceId: this.datasourceId,
@@ -1525,7 +1525,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       ambiguousSiblings.length > 0
     ) {
       throw new DatasourceError<"google-drive">({
-        tag: "conflict",
+        tag: DatasourceErrorTag.Conflict,
         datasourceType: "google-drive",
         datasourceId: this.datasourceId,
         retryable: false,
@@ -1621,7 +1621,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       }
       if (mimeType === DRIVE_FOLDER_MIME) {
         throw new DatasourceError<"google-drive">({
-          tag: "unsupported",
+          tag: DatasourceErrorTag.Unsupported,
           datasourceType: "google-drive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -1687,7 +1687,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
           ? `${parentInfo!.parentPath}/${newName}`
           : `/${newName}`;
         throw new DatasourceError<"google-drive">({
-          tag: "conflict",
+          tag: DatasourceErrorTag.Conflict,
           datasourceType: "google-drive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -1735,7 +1735,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         // for the renderer. The user-visible behavior matches the spec
         // scenario at `specs/fs-datasource-engine/spec.md:191-193`.
         throw new DatasourceError<"google-drive">({
-          tag: "provider-error",
+          tag: DatasourceErrorTag.ProviderError,
           datasourceType: "google-drive",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -1875,7 +1875,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
       // `add-drive-docs-editors-export` still owns the proper export
       // path; this is just the friendly refusal.
       throw new DatasourceError<"google-drive">({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: "google-drive",
         datasourceId: this.datasourceId,
         retryable: false,
@@ -1988,7 +1988,7 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     const { refreshToken } = this.requireCreds();
     if (!refreshToken) {
       throw new DatasourceError<"google-drive">({
-        tag: "auth-revoked",
+        tag: DatasourceErrorTag.AuthRevoked,
         datasourceType: "google-drive",
         datasourceId: this.datasourceId,
         retryable: false,

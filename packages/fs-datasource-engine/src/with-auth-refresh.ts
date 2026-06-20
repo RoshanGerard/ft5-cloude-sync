@@ -16,7 +16,7 @@
 // use it or implement their own retry policy directly against the public
 // `refreshCredentials()` primitive.
 
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 import type { DatasourceType } from "@ft5/ipc-contracts";
 
 import type { DatasourceClient } from "./base-client.js";
@@ -36,7 +36,7 @@ export async function withAuthRefresh<R>(
   try {
     return await op();
   } catch (err) {
-    if (!(err instanceof DatasourceError) || err.tag !== "auth-expired") {
+    if (!(err instanceof DatasourceError) || err.tag !== DatasourceErrorTag.AuthExpired) {
       throw err;
     }
     await client.refreshCredentials();

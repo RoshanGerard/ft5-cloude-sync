@@ -32,7 +32,7 @@ import type {
   DatasourceFileEntry,
   StoredCredentials,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, DatasourceErrorTag } from "@ft5/ipc-contracts";
 import { describe, expect, it } from "vitest";
 
 import type { DatasourceClient } from "../base-client.js";
@@ -489,7 +489,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       // "signal forwarded to provider call unblocks promptly on abort".
       await expect(inflight).rejects.toSatisfy(
         (e: unknown) =>
-          e instanceof DatasourceError && e.tag === "cancelled",
+          e instanceof DatasourceError && e.tag === DatasourceErrorTag.Cancelled,
       );
 
       // The engine emits no events — cancellation surfaces solely as the
@@ -525,7 +525,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         client.delete({ kind: "path", path: "/any" }, "directory"),
       ).rejects.toSatisfy(
         (e: unknown) =>
-          e instanceof DatasourceError && e.tag === "unsupported",
+          e instanceof DatasourceError && e.tag === DatasourceErrorTag.Unsupported,
       );
     });
 
@@ -537,7 +537,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         client.getMetadata({ kind: "path", path: "/missing.txt" }),
       ).rejects.toSatisfy(
         (e: unknown) =>
-          e instanceof DatasourceError && e.tag === "not-found",
+          e instanceof DatasourceError && e.tag === DatasourceErrorTag.NotFound,
       );
     });
 
@@ -556,7 +556,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       } else {
         await expect(client.getQuota()).rejects.toSatisfy(
           (e: unknown) =>
-            e instanceof DatasourceError && e.tag === "unsupported",
+            e instanceof DatasourceError && e.tag === DatasourceErrorTag.Unsupported,
         );
       }
     });
@@ -569,7 +569,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         client.listDirectory({ kind: "path", path: "/" }),
       ).rejects.toSatisfy(
         (e: unknown) =>
-          e instanceof DatasourceError && e.tag === "rate-limited",
+          e instanceof DatasourceError && e.tag === DatasourceErrorTag.RateLimited,
       );
     });
 
@@ -646,7 +646,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
           ),
         ).rejects.toSatisfy(
           (e: unknown) =>
-            e instanceof DatasourceError && e.tag === "unsupported",
+            e instanceof DatasourceError && e.tag === DatasourceErrorTag.Unsupported,
         );
       }
     });

@@ -311,7 +311,7 @@ function readCredsFromStored(credentials: StoredCredentials): S3CredsMeta {
     typeof m.bucket !== "string"
   ) {
     throw new DatasourceError<"amazon-s3">({
-      tag: "auth-revoked",
+      tag: DatasourceErrorTag.AuthRevoked,
       datasourceType: "amazon-s3",
       datasourceId: "<init>",
       retryable: false,
@@ -408,7 +408,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
           typeof bucket !== "string"
         ) {
           throw new DatasourceError<"amazon-s3">({
-            tag: "provider-error",
+            tag: DatasourceErrorTag.ProviderError,
             datasourceType: "amazon-s3",
             datasourceId: this.datasourceId,
             retryable: false,
@@ -579,7 +579,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       );
       if (!resp.Contents?.length && !resp.CommonPrefixes?.length) {
         throw new DatasourceError<"amazon-s3">({
-          tag: "not-found",
+          tag: DatasourceErrorTag.NotFound,
           datasourceType: "amazon-s3",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -730,7 +730,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
     const kind = await this.introspectKey(oldKey);
     if (kind === null) {
       throw new DatasourceError<"amazon-s3">({
-        tag: "not-found",
+        tag: DatasourceErrorTag.NotFound,
         datasourceType: "amazon-s3",
         datasourceId: this.datasourceId,
         retryable: false,
@@ -743,7 +743,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       // generic folder-rename refusal so the message is policy-specific.
       if (conflictPolicy === "overwrite") {
         throw new DatasourceError<"amazon-s3">({
-          tag: "unsupported",
+          tag: DatasourceErrorTag.Unsupported,
           datasourceType: "amazon-s3",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -753,7 +753,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       }
       // §9.7/§9.8 — generic folder-rename refusal.
       throw new DatasourceError<"amazon-s3">({
-        tag: "unsupported",
+        tag: DatasourceErrorTag.Unsupported,
         datasourceType: "amazon-s3",
         datasourceId: this.datasourceId,
         retryable: false,
@@ -777,7 +777,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       if (exists) {
         const existingPath = `/${candidateInitial}`;
         throw new DatasourceError<"amazon-s3">({
-          tag: "conflict",
+          tag: DatasourceErrorTag.Conflict,
           datasourceType: "amazon-s3",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -805,7 +805,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       }
       if (chosenKey === null || chosenName === null) {
         throw new DatasourceError<"amazon-s3">({
-          tag: "provider-error",
+          tag: DatasourceErrorTag.ProviderError,
           datasourceType: "amazon-s3",
           datasourceId: this.datasourceId,
           retryable: false,
@@ -892,7 +892,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       return "file";
     } catch (err) {
       const normalized = this.normalizeErrorImpl(err);
-      if (normalized.tag !== "not-found") {
+      if (normalized.tag !== DatasourceErrorTag.NotFound) {
         throw normalized;
       }
       // Fall through to ListObjectsV2 to detect the virtual-folder case.
@@ -929,7 +929,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
       return true;
     } catch (err) {
       const normalized = this.normalizeErrorImpl(err);
-      if (normalized.tag === "not-found") return false;
+      if (normalized.tag === DatasourceErrorTag.NotFound) return false;
       throw normalized;
     }
   }
@@ -1026,7 +1026,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
 
   protected override async doGetQuotaImpl(): Promise<Quota> {
     throw new DatasourceError<"amazon-s3">({
-      tag: "unsupported",
+      tag: DatasourceErrorTag.Unsupported,
       datasourceType: "amazon-s3",
       datasourceId: this.datasourceId,
       retryable: false,
@@ -1046,7 +1046,7 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
     // an `auth-expired` tag to this strategy, this throw stops the
     // refresh-and-retry loop immediately with the correct taxonomy tag.
     throw new DatasourceError<"amazon-s3">({
-      tag: "auth-revoked",
+      tag: DatasourceErrorTag.AuthRevoked,
       datasourceType: "amazon-s3",
       datasourceId: this.datasourceId,
       retryable: false,
