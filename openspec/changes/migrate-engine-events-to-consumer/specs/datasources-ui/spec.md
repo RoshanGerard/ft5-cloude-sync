@@ -22,7 +22,7 @@ The `window.api.datasources.*` surface SHALL expose: `list()`, `add(req)`, `remo
 
 The `window.api.sync.*` surface SHALL expose (in addition to the previously specified `enqueueUpload`, `enqueueMirror`, `listJobs`, `getJob`, `cancelJob`, `setRetryPolicy`, `getRetryPolicy`, `getStatus`, `subscribeEvents`, `unsubscribeEvents`, `onEvent`): `authenticateStart(req)`, `authenticateComplete(req)`, `authenticateCancel(req)`. Each call SHALL have a typed request/response pair in `packages/ipc-contracts/src/sync-service-desktop/`.
 
-The `DatasourceEvent` discriminated union SHALL NOT carry consent-related variants any longer — the `consent-started`, `consent-completed`, `consent-cancelled`, `consent-failed`, and `consent-timeout` variants SHALL be removed. Authentication lifecycle events flow exclusively on the sync event stream as `auth-*` events (see the new "Renderer subscribes to the sync event stream for authenticate lifecycle" requirement).
+The engine-bus event types (`DatasourceEvent` / `AnyDatasourceEvent` / `PayloadMap`) and the `datasources:event` channel are removed entirely by this change (see this delta's REMOVED requirements and the `fs-datasource-engine` delta). The renderer no longer observes ANY datasource events through `window.api.datasources` — the consent-* event family was already retired to the sync stream, and the remaining engine-event path is now gone. Authentication lifecycle events flow exclusively on `window.api.sync.onEvent` as `auth-*` events (see the "Renderer subscribes to the sync event stream for authenticate lifecycle" requirement).
 
 #### Scenario: Renderer has no direct SDK import
 
@@ -38,11 +38,6 @@ The `DatasourceEvent` discriminated union SHALL NOT carry consent-related varian
 
 - **WHEN** a type test imports `SyncAuthenticateStartRequest`, `SyncAuthenticateCompleteRequest`, `SyncAuthenticateCancelRequest` from `@ft5/ipc-contracts/sync-service-desktop`
 - **THEN** all three types are present, the preload exposes the matching methods on `window.api.sync`, the renderer call sites compile under strict mode, and each method has a typed response
-
-#### Scenario: Consent event variants are absent from DatasourceEvent
-
-- **WHEN** a type test imports `DatasourceEvent` from `@ft5/ipc-contracts`
-- **THEN** the union does NOT contain `consent-started`, `consent-completed`, `consent-cancelled`, `consent-failed`, or `consent-timeout` variants; a switch over `e.event` does NOT need to handle any consent-* arm
 
 ### Requirement: Datasource card reflects active sync and upload jobs
 

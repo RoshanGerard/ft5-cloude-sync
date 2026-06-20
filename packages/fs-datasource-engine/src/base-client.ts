@@ -98,9 +98,9 @@ export type ConflictPolicy = "fail" | "overwrite" | "keep-both";
  * - `signal` (optional): consumer-supplied AbortSignal. The strategy
  *   threads it into the underlying SDK / fetch so an abort propagates
  *   to the in-flight provider request and the returned stream errors
- *   with AbortError. The base distinguishes AbortError / `tag:
- *   "cancelled"` from other failures and routes terminal emission to
- *   `download-cancelled` rather than `download-failed`.
+ *   with AbortError. The consumer (fs-sync) distinguishes AbortError /
+ *   `tag: "cancelled"` from other failures and emits its own terminal
+ *   event accordingly — the engine emits none.
  * - `onProgress` (optional): synchronous consumer callback fired from
  *   the strategy's byte-counting hook as bytes flow. This is the sole
  *   progress channel — the engine no longer emits any `downloading`
@@ -174,10 +174,10 @@ export interface DatasourceClient<T extends DatasourceType> {
    * migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh; a
    * normalized `auth-expired` surfaces raw for the consumer's
    * `withAuthRefresh` to retry), applies error normalization only, and
-   * returns the strategy's resolved entry directly. The engine bus observes
-   * ZERO upload-related events from this code path — `uploading`,
-   * `file-created`, `upload-failed`, and `upload-cancelled` are emitted by the
-   * fs-sync service handler on `sync:event-stream`, not on the engine bus.
+   * returns the strategy's resolved entry directly. This code path emits NO
+   * events (the engine has no event bus) — `uploading`, `file-created`,
+   * `upload-failed`, and `upload-cancelled` are emitted by the fs-sync service
+   * handler on `sync:event-stream`.
    *
    * Cancellation is consumer-driven via `options.signal`: the strategy
    * forwards the signal into its underlying SDK / fetch call and runs
@@ -203,9 +203,10 @@ export interface DatasourceClient<T extends DatasourceType> {
    * Rename `target` to `newName` per `conflictPolicy` (per
    * add-engine-rename-download spec). The base calls the strategy's
    * `doRenameImpl` directly (per migrate-engine-retry-policy-to-consumer
-   * Decision 1 — no auto-refresh) and emits exactly one
-   * `entry-renamed { from, to }` event on success or one
-   * `delete-failed { tag, message, via: "rename" }` on failure.
+   * Decision 1 — no auto-refresh) and returns the renamed
+   * `DatasourceFileEntry<T>` on success or throws a normalized
+   * `DatasourceError` on failure (the engine emits no event; the wire
+   * `delete-failed` / `via: "rename"` shaping is the consumer's concern).
    * Per-policy orchestration (sibling-detection, suffix-retry,
    * directory-overwrite refusal) lives inside each strategy's
    * `doRenameImpl` since the introspection is provider-specific —
@@ -229,11 +230,12 @@ export interface DatasourceClient<T extends DatasourceType> {
    * Consumer-domain orchestration of resume (calling `downloadFile` again with
    * `rangeStart = bytesWritten`) lives in fs-sync.
    *
-   * The base emits `downloading` per progress tick (driven by the
-   * strategy's byte-counting hook), `file-downloaded` on the
-   * stream's `end` event, `download-failed` on stream error, and
-   * `download-cancelled` on AbortSignal (or normalized
-   * `tag: "cancelled"`).
+   * Progress is reported via `options.onProgress` (driven by the
+   * strategy's byte-counting hook); the engine emits NO events. The
+   * terminal outcome is observed from the returned stream's lifecycle
+   * (`end` / `error` / abort) plus the resolved/rejected promise —
+   * fs-sync's download handler derives its own `downloading` /
+   * `file-downloaded` / `download-failed` / `download-cancelled` from those.
    */
   downloadFile(
     target: Target,
@@ -250,11 +252,10 @@ export interface DatasourceClient<T extends DatasourceType> {
    *
    * Concurrent calls on the same client instance share one in-flight
    * `refreshTokenImpl()` call; the refreshed `AuthResult` is persisted via
-   * `CredentialStore.put` BEFORE the returned promise resolves, and exactly
-   * one `token-refreshed` event is emitted on success. On failure it emits
-   * `token-expired` + `authentication-failed` and rejects with a
-   * `DatasourceError` (tagged `auth-expired` when the underlying refresh did
-   * not itself throw a typed `DatasourceError`).
+   * `CredentialStore.put` BEFORE the returned promise resolves. The engine
+   * emits no event. On failure it rejects with a `DatasourceError` (tagged
+   * `auth-expired` when the underlying refresh did not itself throw a typed
+   * `DatasourceError`).
    */
   refreshCredentials(): Promise<AuthResult>;
 }
@@ -303,7 +304,7 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
   protected abstract doTestConnectionImpl(): Promise<void>;
   /** Primitive for `authenticate()` — MUST return a pure intent; the base
    * decorates the intent's `completeWith`/`submit` to persist credentials
-   * and emit the success/failure events. */
+   * via `CredentialStore.put` (no event emitted). */
   protected abstract doAuthenticateImpl(): Promise<AuthIntent>;
   /**
    * Primitive for `listDirectory()` (per
