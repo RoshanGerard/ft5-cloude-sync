@@ -28,6 +28,7 @@
 //      message (per-file failures are INDEPENDENT — one failing does
 //      not prevent the others from dispatching).
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type {
   ConflictPolicy,
   FilesStatRequest,
@@ -151,11 +152,11 @@ type PreflightOutcome = PreflightAbort | PreflightClassified;
 
 function tagToAbortMessage(tag: string): string | null {
   switch (tag) {
-    case "auth-revoked":
+    case FilesErrorTag.AuthRevoked:
       return "Sign in again to upload files";
-    case "disconnected":
+    case FilesErrorTag.Disconnected:
       return "Datasource unreachable — try again when connected";
-    case "rate-limited":
+    case FilesErrorTag.RateLimited:
       return "Provider rate limit reached — try again shortly";
     default:
       return null;

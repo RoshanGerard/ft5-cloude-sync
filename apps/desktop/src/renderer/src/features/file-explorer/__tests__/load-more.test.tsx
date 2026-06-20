@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
+
 import { createExplorerStore } from "../store.js";
 import type { ExplorerStore } from "../store.js";
 import { LoadMoreRegion, humanizeFilesErrorTag } from "../load-more.js";
@@ -104,7 +106,7 @@ describe("LoadMoreRegion — state machine", () => {
     const store = makeStore();
     seedPage(store, 500, "tokA");
     await driveLoadMoreFailure(store, {
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "connection timed out",
     });
     render(<LoadMoreRegion store={store} />);
@@ -214,7 +216,7 @@ describe("LoadMoreRegion — V-2 page-load-failed row", () => {
     const store = makeStore();
     seedPage(store, 500, "tokA");
     await driveLoadMoreFailure(store, {
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "connection timed out",
     });
     render(<LoadMoreRegion store={store} />);
@@ -228,7 +230,7 @@ describe("LoadMoreRegion — V-2 page-load-failed row", () => {
   it("row announces via aria-live='assertive'", async () => {
     const store = makeStore();
     seedPage(store, 500, "tokA");
-    await driveLoadMoreFailure(store, { tag: "other", message: "boom" });
+    await driveLoadMoreFailure(store, { tag: FilesErrorTag.Other, message: "boom" });
     render(<LoadMoreRegion store={store} />);
     expect(screen.getByTestId("load-more-failed")).toHaveAttribute(
       "aria-live",
@@ -244,7 +246,7 @@ describe("LoadMoreRegion — V-2 page-load-failed row", () => {
     // network-error -> disconnected) — NOT the engine tag `network-error`,
     // which can never cross the wire.
     await driveLoadMoreFailure(store, {
-      tag: "disconnected",
+      tag: FilesErrorTag.Disconnected,
       message: "connection timed out",
     });
     render(<LoadMoreRegion store={store} />);
@@ -263,7 +265,7 @@ describe("LoadMoreRegion — V-2 page-load-failed row", () => {
     const store = makeStore();
     seedPage(store, 500, "tokA");
     await driveLoadMoreFailure(store, {
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "connection timed out",
     });
     render(<LoadMoreRegion store={store} />);
@@ -277,7 +279,7 @@ describe("LoadMoreRegion — V-2 page-load-failed row", () => {
     const store = makeStore();
     const retrySpy = vi.spyOn(store, "retryLoadMore").mockResolvedValue();
     seedPage(store, 500, "tokA");
-    await driveLoadMoreFailure(store, { tag: "other", message: "boom" });
+    await driveLoadMoreFailure(store, { tag: FilesErrorTag.Other, message: "boom" });
     render(<LoadMoreRegion store={store} />);
     const retry = screen.getByRole("button", { name: "Retry" });
     expect(retry).toHaveAttribute("data-variant", "outline");
@@ -289,7 +291,7 @@ describe("LoadMoreRegion — V-2 page-load-failed row", () => {
   it("already-loaded entries stay in state when the failed row shows", async () => {
     const store = makeStore();
     seedPage(store, 500, "tokA");
-    await driveLoadMoreFailure(store, { tag: "other", message: "boom" });
+    await driveLoadMoreFailure(store, { tag: FilesErrorTag.Other, message: "boom" });
     render(<LoadMoreRegion store={store} />);
     expect(store.getSnapshot().entries.length).toBe(500);
   });
@@ -297,7 +299,7 @@ describe("LoadMoreRegion — V-2 page-load-failed row", () => {
   it("does NOT steal focus when the failed row appears", async () => {
     const store = makeStore();
     seedPage(store, 500, "tokA");
-    await driveLoadMoreFailure(store, { tag: "other", message: "boom" });
+    await driveLoadMoreFailure(store, { tag: FilesErrorTag.Other, message: "boom" });
     // A sentinel element holds focus before the row renders.
     const sentinel = document.createElement("button");
     sentinel.textContent = "sentinel";

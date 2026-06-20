@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { SyncCommandError } from "../../../sync/client.js";
@@ -60,7 +61,7 @@ describe("handleFilesRename — delegates to SyncClient.request('files:rename')"
 
   it("maps SyncCommandError(conflict) rejection into ok:false envelope preserving tag/message/retryable", async () => {
     const wireError = {
-      tag: "other",
+      tag: FilesErrorTag.Other,
       message: "conflict: a file with that name already exists",
       retryable: false,
     } as const;

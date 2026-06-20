@@ -35,6 +35,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { FileEntry, FilesRemoveTarget } from "@ft5/ipc-contracts";
 
 import { Button } from "@/components/ui/button";
@@ -747,8 +748,8 @@ export function FileExplorer({
   // envelope. The drop-zone uses its own `DropZoneStatus` union that
   // matches the spec's blocking rule exactly.
   const dropZoneStatus: DropZoneStatus = useMemo(() => {
-    if (state.errorTag === "disconnected") return "disconnected";
-    if (state.errorTag === "auth-revoked") return "auth-revoked";
+    if (state.errorTag === FilesErrorTag.Disconnected) return "disconnected";
+    if (state.errorTag === FilesErrorTag.AuthRevoked) return "auth-revoked";
     if (providerStatus === "syncing") return "syncing";
     return "usable";
   }, [state.errorTag, providerStatus]);
@@ -759,9 +760,9 @@ export function FileExplorer({
   // tooltip) and are read by AT.
   const uploadBlockedReason: string | null = useMemo(() => {
     switch (dropZoneStatus) {
-      case "disconnected":
+      case FilesErrorTag.Disconnected:
         return "This datasource is disconnected";
-      case "auth-revoked":
+      case FilesErrorTag.AuthRevoked:
         return "Sign in again to upload";
       case "syncing":
         return "This datasource is still indexing — try again in a moment";
@@ -834,13 +835,13 @@ export function FileExplorer({
             // Tagged-error envelope branches. Engine response wins over
             // the optional `providerStatus` hint — once an errorTag is
             // set we trust it for the current folder.
-            if (state.errorTag === "disconnected") {
+            if (state.errorTag === FilesErrorTag.Disconnected) {
               return <DisconnectedState onRetry={handleRetry} />;
             }
-            if (state.errorTag === "auth-revoked") {
+            if (state.errorTag === FilesErrorTag.AuthRevoked) {
               return <AuthRevokedState onReconnect={handleReconnect} />;
             }
-            if (state.errorTag === "invalid-datasource") {
+            if (state.errorTag === FilesErrorTag.InvalidDatasource) {
               // Pattern-A full-replace state for misconfigured datasources.
               // Reconnect lifecycle (sync.authenticateStart +
               // useAuthSession) lives inside <InvalidDatasourceState>; the

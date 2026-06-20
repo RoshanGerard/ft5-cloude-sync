@@ -1,3 +1,4 @@
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { SyncCommandError } from "../../../sync/client.js";
@@ -19,7 +20,7 @@ describe("handleFilesRemove — delegates to SyncClient.request('files:remove')"
         path: "/b",
         handle: "h-b",
         ok: false as const,
-        error: { tag: "other" as const, message: "locked" },
+        error: { tag: FilesErrorTag.Other as const, message: "locked" },
       },
     ];
     const client = makeFakeClient({ resolve: { results } });
@@ -43,7 +44,7 @@ describe("handleFilesRemove — delegates to SyncClient.request('files:remove')"
   it("maps SyncCommandError (batch-level failure) into ok:false envelope", async () => {
     const client = makeFakeClient({
       reject: new SyncCommandError("files:remove", {
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: "no credentials for datasourceId=ds-ghost",
         retryable: false,
       }),

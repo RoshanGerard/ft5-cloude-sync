@@ -32,6 +32,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 vi.mock("next/navigation", () => ({
@@ -234,7 +235,7 @@ describe("FileExplorer handleDownload wiring (§23/§24 follow-up)", () => {
     downloadMock.mockReset();
     downloadMock.mockResolvedValue({
       ok: false,
-      error: { tag: "other", message: "boom" },
+      error: { tag: FilesErrorTag.Other, message: "boom" },
     });
 
     render(<FileExplorer datasourceId="ds-1" />);

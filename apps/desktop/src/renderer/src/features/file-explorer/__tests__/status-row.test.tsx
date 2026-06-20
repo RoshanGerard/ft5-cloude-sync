@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
+
 import { createExplorerStore } from "../store.js";
 import type { ExplorerStore } from "../store.js";
 import { StatusRow, deriveStatusText } from "../status-row.js";
@@ -232,7 +234,7 @@ describe("StatusRow — pagination three-state count (V-3)", () => {
         list: () =>
           Promise.resolve({
             ok: false as const,
-            error: { tag: "other" as const, message, retryable: true },
+            error: { tag: FilesErrorTag.Other as const, message, retryable: true },
           }),
       },
     };

@@ -1,3 +1,4 @@
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { SyncCommandError } from "../../../sync/client.js";
@@ -37,7 +38,7 @@ describe("handleFilesSearch — delegates to SyncClient.request('files:search')"
   it("maps SyncCommandError(disconnected) into ok:false envelope with retryable:true", async () => {
     const client = makeFakeClient({
       reject: new SyncCommandError("files:search", {
-        tag: "disconnected",
+        tag: FilesErrorTag.Disconnected,
         message: "ECONNREFUSED",
         retryable: true,
       }),

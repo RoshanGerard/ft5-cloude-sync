@@ -3,11 +3,11 @@
 import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type {
   FileEntry,
   FilesDownloadResponse,
   FilesErrorEnvelope,
-  FilesErrorTag,
   FilesListResponse,
   FilesListValue,
   FilesRemoveResponse,
@@ -955,7 +955,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
           ...state,
           loadingMore: false,
           loadMoreError: {
-            tag: "other",
+            tag: FilesErrorTag.Other,
             message,
             retryable: false,
           },
@@ -1185,7 +1185,7 @@ export function createExplorerStore(datasourceId: string): ExplorerStore {
         }
         // Conflict + prompt registered → re-prompt and re-dispatch.
         if (
-          response.error.tag === "conflict" &&
+          response.error.tag === FilesErrorTag.Conflict &&
           renameConflictPrompt !== null
         ) {
           const choice = await renameConflictPrompt(

@@ -22,6 +22,7 @@ import {
 } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 vi.mock("next/navigation", () => ({
@@ -339,7 +340,7 @@ describe("LoadMoreRegion behavior through the composite (spec scenarios)", () =>
           return {
             ok: false as const,
             error: {
-              tag: "other" as const,
+              tag: FilesErrorTag.Other as const,
               message: "connection timed out",
               retryable: true,
             },
@@ -489,7 +490,7 @@ describe("LoadMoreRegion behavior through the composite (spec scenarios)", () =>
             return {
               ok: false as const,
               error: {
-                tag: "other" as const,
+                tag: FilesErrorTag.Other as const,
                 message: "connection timed out",
                 retryable: true,
               },

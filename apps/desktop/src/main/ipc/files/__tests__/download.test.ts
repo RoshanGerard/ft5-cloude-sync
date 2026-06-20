@@ -1,3 +1,4 @@
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { SyncCommandError } from "../../../sync/client.js";
@@ -50,7 +51,7 @@ describe("handleFilesDownload — delegates to SyncClient.request('files:downloa
 
   it("maps SyncCommandError(rate-limited) rejection into ok:false envelope preserving tag/message/retryable/retryAfterMs", async () => {
     const wireError = {
-      tag: "rate-limited",
+      tag: FilesErrorTag.RateLimited,
       message: "too many requests",
       retryable: true,
       retryAfterMs: 5000,

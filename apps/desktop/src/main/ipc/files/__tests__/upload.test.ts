@@ -15,6 +15,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { FilesUploadRequest } from "@ft5/ipc-contracts";
 
 import { SyncCommandError } from "../../../sync/client.js";
@@ -80,7 +81,7 @@ describe("handleFilesUpload — direct RPC over SyncClient.request", () => {
 
   it("maps a SyncCommandError rejection into ok:false envelope preserving tag/message/retryable/retryAfterMs", async () => {
     const wireError = {
-      tag: "rate-limited",
+      tag: FilesErrorTag.RateLimited,
       message: "too many requests",
       retryable: true,
       retryAfterMs: 5000,
@@ -112,7 +113,7 @@ describe("handleFilesUpload — direct RPC over SyncClient.request", () => {
     // packages/ipc-contracts/src/sync-service/commands.ts
     // `FilesCommandErrorShape.existingUploadJobId`.
     const wireError = {
-      tag: "conflict",
+      tag: FilesErrorTag.Conflict,
       message: "An upload to this path is already in progress",
       retryable: false,
       existingUploadJobId: "u-first",
@@ -140,7 +141,7 @@ describe("handleFilesUpload — direct RPC over SyncClient.request", () => {
     // in-flight upload is aborted via `sync:cancel-upload`. Round-trips
     // through the same envelope as the rest of the files surface.
     const wireError = {
-      tag: "cancelled",
+      tag: FilesErrorTag.Cancelled,
       message: "upload cancelled",
       retryable: false,
     } as const;

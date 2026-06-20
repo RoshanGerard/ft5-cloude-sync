@@ -17,6 +17,7 @@ import {
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 import { FileExplorer } from "../file-explorer";
@@ -109,7 +110,7 @@ describe("FileExplorer — state branch integration", () => {
     installApi(async () => ({
       ok: false,
       error: {
-        tag: "disconnected",
+        tag: FilesErrorTag.Disconnected,
         message: "Network unreachable",
         retryable: true,
       },
@@ -132,7 +133,7 @@ describe("FileExplorer — state branch integration", () => {
     installApi(async () => ({
       ok: false,
       error: {
-        tag: "auth-revoked",
+        tag: FilesErrorTag.AuthRevoked,
         message: "Refresh token expired",
         retryable: false,
       },
@@ -236,7 +237,7 @@ describe("FileExplorer — state branch integration", () => {
     installApi(async () => ({
       ok: false,
       error: {
-        tag: "invalid-datasource",
+        tag: FilesErrorTag.InvalidDatasource,
         message: "Credentials are missing — reconnect this datasource",
         retryable: false,
       },

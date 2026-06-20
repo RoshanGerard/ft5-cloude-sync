@@ -15,7 +15,10 @@ import type {
   FilesStatRequest,
   FilesStatResponse,
 } from "@ft5/ipc-contracts";
-import { FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE } from "@ft5/ipc-contracts";
+import {
+  FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
+  FilesErrorTag,
+} from "@ft5/ipc-contracts";
 
 // Renderer-side round-trip test for every `window.api.files.*` method.
 //
@@ -156,7 +159,7 @@ describe("window.api.files round-trip", () => {
     const deferredResponse: FilesSearchResponse = {
       ok: false,
       error: {
-        tag: "other",
+        tag: FilesErrorTag.Other,
         message: FILES_PROVIDER_SEARCH_DEFERRED_MESSAGE,
         retryable: false,
       },
@@ -214,7 +217,7 @@ describe("window.api.files round-trip", () => {
             path: "/projects/c.txt",
             handle: "h-c",
             ok: false,
-            error: { tag: "other", message: "provider locked the file" },
+            error: { tag: FilesErrorTag.Other, message: "provider locked the file" },
           },
         ],
       },
@@ -298,7 +301,7 @@ describe("window.api.files round-trip", () => {
     const conflictResponse: FilesDownloadResponse = {
       ok: false,
       error: {
-        tag: "conflict",
+        tag: FilesErrorTag.Conflict,
         message: "destination already exists at /Users/me/Downloads/report.pdf",
         retryable: false,
         existingPath: "/Users/me/Downloads/report.pdf",

@@ -35,6 +35,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import { FilesErrorTag } from "@ft5/ipc-contracts";
 import type { FileEntry } from "@ft5/ipc-contracts";
 
 // FileExplorer now calls `useRouter()` for the back-to-dashboard button.
@@ -430,7 +431,7 @@ describe("FileExplorer composite (Subagent P)", () => {
           return {
             ok: false as const,
             error: {
-              tag: "invalid-datasource",
+              tag: FilesErrorTag.InvalidDatasource,
               message: "Credentials are missing — reconnect this datasource",
               retryable: false,
             },

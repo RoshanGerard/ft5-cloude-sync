@@ -96,6 +96,15 @@ const WIRE_LITERAL_ALLOWLIST = new Set<string>([
   'apps/desktop/src/renderer/src/features/datasources/__tests__/store-auth.test.tsx|||tag: "auth-revoked",',
   'apps/desktop/src/renderer/src/features/datasources/__tests__/oauth-form.test.tsx|||tag: "auth-revoked",',
   'apps/desktop/src/renderer/src/features/datasources/__tests__/use-auth-session.test.tsx|||tag: "auth-revoked",',
+  // Same AuthFailedTag vocabulary: `AuthSessionState.tag` is `AuthFailedTag`
+  // (datasources/store.tsx), so this `auth-revoked` is NOT FilesErrorTag.
+  'apps/desktop/src/renderer/src/features/file-explorer/states/__tests__/invalid-datasource.test.tsx|||tag: "auth-revoked",',
+  // Deliberate OFF-TAXONOMY fixture: `"network-error"` is NOT a FilesErrorTag
+  // member (Files has `disconnected`, not `network-error`), yet this test
+  // hands the store a `FilesListResponse` carrying it. Pre-existing fixture;
+  // there is no FilesErrorTag.NetworkError to migrate to. Left raw.
+  'apps/desktop/src/renderer/src/features/file-explorer/__tests__/store.test.ts|||tag: "network-error",',
+  'apps/desktop/src/renderer/src/features/file-explorer/__tests__/store.test.ts|||error: { tag: "network-error" as const, message: "boom", retryable: true },',
 ]);
 
 // Union of every DatasourceErrorTag + FilesErrorTag value.
@@ -128,6 +137,11 @@ const VAL = `(?:${TAG_VALUES.join("|")})`;
 // it has no adjacent string literal on the pipe).
 const TYPE_DECL = /\breadonly\s+(?:tag|errorTag)\s*:/;
 const TAG_UNION = new RegExp(`"${VAL}"\\s*\\|\\s*"|"\\s*\\|\\s*"${VAL}"`);
+// An object-TYPE member uses a `;` separator (`{ tag: "other"; message:
+// string }`) where a value object uses `,`. A tag literal immediately
+// followed by `;` is therefore a type-position member even without
+// `readonly` — also a definition, not a value reference.
+const TYPE_MEMBER = new RegExp(`(?:tag|errorTag)\\s*:\\s*"${VAL}"\\s*;`);
 
 // Error-tag contexts, evaluated on a comment-stripped line:
 // - construction `tag: "…"` (the leading [^"\w] guard skips JSON `"tag":`);
@@ -184,7 +198,8 @@ function findViolations(): string[] {
       const line = stripLineComment(rawLine);
       if (!PATTERNS.some((re) => re.test(line))) return;
       // Skip contract type-position declarations (definitions, not refs).
-      if (TYPE_DECL.test(line) || TAG_UNION.test(line)) return;
+      if (TYPE_DECL.test(line) || TAG_UNION.test(line) || TYPE_MEMBER.test(line))
+        return;
       const relPosix = rel.replaceAll(path.sep, "/");
       const key = `${relPosix}|||${rawLine.trim()}`;
       if (WIRE_LITERAL_ALLOWLIST.has(key)) return;
