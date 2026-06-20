@@ -10,10 +10,10 @@
 
 ## 2. Engine: collapse to `delete(target, entryKind)` (base-enforced refusal)
 
-- [ ] 2.1 Failing test first: add a base-client test asserting `delete(target, "directory")` throws `DatasourceError { tag: "unsupported", retryable: false, raw: "disabled-for-product-stability" }` and that `delete(target, "file")` dispatches to `doDeleteFileImpl`. Watch it fail.
-- [ ] 2.2 In `packages/fs-datasource-engine/src/base-client.ts`: add `delete(target: Target, entryKind: EntryKind): Promise<void>` to the `DatasourceClient<T>` interface and a base wrapper that — `entryKind === EntryKind.Directory` → throws the relocated `unsupported` error (verbatim tag/raw/message from the old `deleteDirectory`); else → `await this.doDeleteFileImpl(target)` under the same normalize-on-throw (`ensureNormalized`) wrapper as today. Import `EntryKind` from `@ft5/ipc-contracts`.
-- [ ] 2.3 Remove the public `deleteFile(target)` and `deleteDirectory(target)` methods (interface declarations + base wrappers). Keep the `protected abstract doDeleteFileImpl(target)` hook and all three strategies' implementations + inline path-cache eviction UNTOUCHED.
-- [ ] 2.4 Green the test; confirm no `doDeleteDirectoryImpl` was introduced and no strategy file changed.
+- [x] 2.1 Failing test first: added a base-client describe asserting `delete(target, "directory")` throws `DatasourceError { tag: "unsupported", retryable: false, raw: "disabled-for-product-stability" }` (without calling `doDeleteFileImpl`) and that `delete(target, "file")` dispatches to `doDeleteFileImpl`. Watched it fail (`client.delete is not a function`).
+- [x] 2.2 In `packages/fs-datasource-engine/src/base-client.ts`: added `delete(target: Target, entryKind: EntryKind): Promise<void>` to the `DatasourceClient<T>` interface and a base wrapper that — `entryKind === EntryKind.Directory` → throws the relocated `unsupported` error (verbatim tag/raw, message "directory delete is disabled for product stability"); else → `await this.doDeleteFileImpl(target)` under the same normalize-on-throw (`ensureNormalized`) wrapper. Imported `EntryKind` (value+type) from `@ft5/ipc-contracts`. (Add-migrate-remove sequence: `delete` coexists with `deleteFile`/`deleteDirectory` until callers migrate.)
+- [ ] 2.3 Remove the public `deleteFile(target)` and `deleteDirectory(target)` methods (interface declarations + base wrappers) — done AFTER slices 3+4 migrate all callers. Keep the `protected abstract doDeleteFileImpl(target)` hook and all three strategies' implementations + inline path-cache eviction UNTOUCHED.
+- [ ] 2.4 Green the unified-delete test (done — 40/40 base-client); confirm no `doDeleteDirectoryImpl` was introduced and no strategy file changed (re-confirm after removal step).
 
 ## 3. Engine test-surface migration
 

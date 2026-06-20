@@ -52,7 +52,7 @@ import type {
   StoredCredentials,
   Target,
 } from "@ft5/ipc-contracts";
-import { DatasourceError } from "@ft5/ipc-contracts";
+import { DatasourceError, EntryKind } from "@ft5/ipc-contracts";
 
 import type { Readable } from "node:stream";
 
@@ -199,6 +199,15 @@ export interface DatasourceClient<T extends DatasourceType> {
   ): Promise<DatasourceFileEntry<T>>;
   deleteFile(target: Target): Promise<void>;
   deleteDirectory(target: Target): Promise<never>;
+  /**
+   * Unified delete (per unify-engine-delete-method): one method for files
+   * and directories. `entryKind === "directory"` is refused with
+   * `Unsupported` in the base (global product policy, Decision 10 relocated
+   * from the removed `deleteDirectory`); `entryKind === "file"` deletes via
+   * the strategy's `doDeleteFileImpl`. Replaces the `deleteFile` +
+   * `deleteDirectory` split.
+   */
+  delete(target: Target, entryKind: EntryKind): Promise<void>;
   /**
    * Rename `target` to `newName` per `conflictPolicy` (per
    * add-engine-rename-download spec). The base calls the strategy's
@@ -566,6 +575,35 @@ export abstract class BaseDatasourceClient<T extends DatasourceType>
       raw: "disabled-for-product-stability",
       message: "deleteDirectory is disabled for product stability",
     });
+  }
+
+  /**
+   * Unified delete (per unify-engine-delete-method). `entryKind ===
+   * "directory"` is refused with `Unsupported` — the global product-stability
+   * policy (Decision 10) relocated here from the removed `deleteDirectory`,
+   * with identical tag/raw so callers catching `unsupported` see no change.
+   * The refusal lives in the BASE (not per-strategy introspection, unlike
+   * rename whose directory handling is provider-specific) because directory
+   * delete is refused uniformly across every provider. File deletes dispatch
+   * to the strategy's `doDeleteFileImpl` under normalize-on-throw; the engine
+   * emits no event.
+   */
+  async delete(target: Target, entryKind: EntryKind): Promise<void> {
+    if (entryKind === EntryKind.Directory) {
+      throw new DatasourceError<T>({
+        tag: "unsupported",
+        datasourceType: this.type,
+        datasourceId: this.datasourceId,
+        retryable: false,
+        raw: "disabled-for-product-stability",
+        message: "directory delete is disabled for product stability",
+      });
+    }
+    try {
+      await this.doDeleteFileImpl(target);
+    } catch (err) {
+      throw this.ensureNormalized(err);
+    }
   }
 
   /**

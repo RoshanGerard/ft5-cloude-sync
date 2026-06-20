@@ -986,6 +986,44 @@ describe("BaseDatasourceClient — deleteDirectory unsupported", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Unified delete(target, entryKind) — unify-engine-delete-method
+// File deletes dispatch to doDeleteFileImpl; directory deletes are refused
+// with Unsupported in the BASE (global product policy, Decision 10 relocated
+// from the removed deleteDirectory) — identical tag/raw, no strategy call.
+// ---------------------------------------------------------------------------
+
+describe("BaseDatasourceClient — unified delete(target, entryKind)", () => {
+  it("entryKind 'file' dispatches to doDeleteFileImpl and resolves void", async () => {
+    const doDeleteFile = vi.fn(async () => undefined);
+    const { client } = makeHarness({ doDeleteFile });
+
+    await expect(
+      client.delete({ kind: "path", path: "/x.txt" }, "file"),
+    ).resolves.toBeUndefined();
+    expect(doDeleteFile).toHaveBeenCalledOnce();
+  });
+
+  it("entryKind 'directory' throws Unsupported (raw='disabled-for-product-stability') without calling doDeleteFileImpl", async () => {
+    const doDeleteFile = vi.fn(async () => undefined);
+    const { client } = makeHarness({ doDeleteFile });
+
+    let caught: unknown;
+    try {
+      await client.delete({ kind: "path", path: "/any" }, "directory");
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<FakeType>;
+    expect(err.tag).toBe("unsupported");
+    expect(err.raw).toBe("disabled-for-product-stability");
+    expect(err.retryable).toBe(false);
+    expect(doDeleteFile).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getQuota capability gating
 // ---------------------------------------------------------------------------
 
