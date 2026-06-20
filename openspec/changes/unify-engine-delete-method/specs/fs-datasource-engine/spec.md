@@ -115,6 +115,36 @@ Drive and OneDrive strategies maintain a path-handle LRU cache. After this migra
 - **WHEN** `delete` of a file (`entryKind === "file"`) succeeds for a path present in the strategy's LRU
 - **THEN** the strategy evicts that path's LRU entry inline within `doDeleteFileImpl` (there is no bus subscription; the engine has no event bus)
 
+### Requirement: Google Drive status / testConnection fail-fast on insufficient scope
+
+When `status()` or `testConnection()` is invoked on a `GoogleDriveClient`, the strategy SHALL — before issuing the existing `about.get` probe — assert that the credential's stored scope grants the engine's mutating operations. The check is satisfied if and only if the space-separated `meta.scope` string contains the literal token `https://www.googleapis.com/auth/drive` (string equality on a space-tokenized split, NOT a prefix match). Other Drive scopes (`drive.file`, `drive.readonly`, `drive.metadata.readonly`, `drive.appdata`) SHALL be considered insufficient on their own, even if combined with each other, because the engine performs `uploadFile` and `delete` operations.
+
+#### Scenario: Sufficient scope passes the check
+
+- **GIVEN** a `GoogleDriveClient` whose `meta.scope === "https://www.googleapis.com/auth/drive"`
+- **WHEN** `status()` is called
+- **THEN** no `tokeninfo` request is made, the existing `about.get` probe is issued, and the method resolves with `"connected"`
+
+### Requirement: Rename conflict surfaces `DatasourceError { tag: "conflict" }` when policy is "fail"
+
+The `DatasourceErrorTag` taxonomy SHALL include a new member `Conflict = "conflict"`. When `rename` is called with `conflictPolicy: "fail"` and the target name collides with an existing remote sibling at the same parent path, the call SHALL reject with `DatasourceError { tag: "conflict", retryable: false, raw: { existingPath: string } }`.
+
+When `conflictPolicy: "overwrite"`, the engine SHALL delete the colliding sibling (via a direct provider delete) before performing the rename; the operation SHALL resolve with the new entry; the internal delete of the colliding sibling is not surfaced separately (the engine emits no event).
+
+#### Scenario: Rename with policy "overwrite" replaces the colliding sibling
+
+- **WHEN** the user renames `foo.pdf` to `bar.pdf`, `bar.pdf` exists, and `conflictPolicy: "overwrite"`
+- **THEN** the engine deletes the existing `bar.pdf` first, then performs the rename; the call resolves with the new entry; the internal delete of the colliding sibling is not separately surfaced (the engine emits no event)
+
+### Requirement: Template base class wraps every operation with refresh coordination and error normalization
+
+The engine SHALL provide `abstract class BaseDatasourceClient<T extends DatasourceType>` that concrete strategies extend. The base SHALL wrap delete, rename, downloadFile, uploadFile, status, testConnection, and the read operations so that it (a) calls `normalizeError(e)` to convert any raw exception to a typed `DatasourceError<T>` before throwing, and (b) returns the typed result on success. The base SHALL NOT emit any event and SHALL NOT define, hold, or inject an event bus. The base SHALL NOT auto-refresh credentials on `auth-expired`; a normalized `auth-expired` error surfaces to the caller unchanged. Token refresh is exposed as the public single-flight `refreshCredentials()` primitive (see Requirement: Token refresh is single-flight per datasource), invoked explicitly by callers (typically via the exported `withAuthRefresh` helper). Concrete strategies SHALL implement only the `protected abstract doX(...)` methods plus `refreshTokenImpl()` and `normalizeError(raw)`. Strategies SHALL NOT emit events and SHALL NOT reference an event bus.
+
+#### Scenario: Base reports operation outcome via return value or thrown error
+
+- **WHEN** a strategy's `doDeleteFileImpl` or `doRenameImpl` resolves or throws
+- **THEN** the base returns the typed result (the deleted target, or the new `DatasourceFileEntry<T>`) on success, or throws the normalized `DatasourceError<T>` on failure — and no event is emitted (the engine has no event bus)
+
 ## REMOVED Requirements
 
 ### Requirement: `deleteDirectory` and unsupported `getQuota` throw `Unsupported`

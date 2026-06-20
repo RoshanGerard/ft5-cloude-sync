@@ -19,10 +19,11 @@ Against the rename design the split now reads as inconsistent — a new contribu
 
 ### Modified Capabilities
 - `fs-datasource-engine`: the public delete surface collapses to one `delete(target, entryKind)` method; the Decision-10 directory-delete `Unsupported` refusal is preserved but relocated from the removed `deleteDirectory` method to the base `delete()` wrapper.
+- `fs-sync-service`: the `MirrorSyncJobExecutor`, system-retry, and source-health requirements update their engine-call references from `deleteFile` to the unified `delete(target, "file")`. Behavior is unchanged (the executor still deletes remote files; the source-health guard still makes zero remote calls) — only the engine method name the spec cites changed.
 
 ## Impact
 
 - **Engine** (`packages/fs-datasource-engine`): `DatasourceClient<T>` interface + base `delete()` wrapper; public `deleteFile`/`deleteDirectory` removed; the `doDeleteFileImpl` strategy hook and its inline path-cache eviction (from `migrate-engine-cache-invalidation`) are unchanged.
 - **ipc-contracts** (`packages/ipc-contracts`): `EntryKind` promoted to the `as const` const-ref form. Already an engine workspace dependency — no new dependency.
-- **fs-sync** (`services/fs-sync`): `files-remove.ts` + `mirror-sync.ts` call-site updates (code only — no fs-sync spec or IPC wire change; behavior identical).
+- **fs-sync** (`services/fs-sync`): `files-remove.ts` + `mirror-sync.ts` call-site updates, plus a `fs-sync-service` spec delta refreshing engine-method-name references (`deleteFile` → `delete`) in the MirrorSyncJobExecutor / system-retry / source-health requirements. Behavior identical; no IPC wire change.
 - **Tests**: the engine test suite (~6 files) + the shared strategy-contract suite + the fs-sync handler tests migrate to the unified `delete(target, entryKind)` call.
