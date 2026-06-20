@@ -33,7 +33,6 @@ import type {
   ClientFactory,
   CredentialStore,
   EngineContext,
-  EventBus as EngineEventBus,
   OAuthAppConfig,
   OAuthIntent,
 } from "@ft5/fs-datasource-engine";
@@ -70,8 +69,6 @@ function makeBusSpy(bus: EventBus): {
   });
   return { events };
 }
-
-const fakeEngineBus = {} as EngineEventBus;
 
 function makeFakeCredentialStore(): CredentialStore {
   return {
@@ -169,7 +166,7 @@ describe("OAuthLoopbackBroker — dev override: short-circuit", () => {
     dataDirsToCleanup.push(dataDir);
     const bus = createEventBus();
     const credentialStore = makeFakeCredentialStore();
-    const engineContext: EngineContext = { bus: fakeEngineBus, credentialStore };
+    const engineContext: EngineContext = { credentialStore };
     const { factory, createForAuthSpy } = makeFakeFactory();
     const mintDatasourceId = vi.fn(() => "ds-dev-42");
     const { events } = makeBusSpy(bus);
@@ -220,7 +217,7 @@ describe("OAuthLoopbackBroker — dev override: short-circuit", () => {
     dataDirsToCleanup.push(dataDir);
     const bus = createEventBus();
     const credentialStore = makeFakeCredentialStore();
-    const engineContext: EngineContext = { bus: fakeEngineBus, credentialStore };
+    const engineContext: EngineContext = { credentialStore };
     const { factory } = makeFakeFactory();
     const mintDatasourceId = vi.fn(() => "ds-minted");
     const { events } = makeBusSpy(bus);
@@ -253,7 +250,7 @@ describe("OAuthLoopbackBroker — dev override: short-circuit", () => {
     dataDirsToCleanup.push(dataDir);
     const bus = createEventBus();
     const credentialStore = makeFakeCredentialStore();
-    const engineContext: EngineContext = { bus: fakeEngineBus, credentialStore };
+    const engineContext: EngineContext = { credentialStore };
     const { factory, createForAuthSpy } = makeFakeFactory();
     const { events } = makeBusSpy(bus);
 
@@ -279,7 +276,7 @@ describe("OAuthLoopbackBroker — dev override: short-circuit", () => {
     dataDirsToCleanup.push(dataDir);
     const bus = createEventBus();
     const credentialStore = makeFakeCredentialStore();
-    const engineContext: EngineContext = { bus: fakeEngineBus, credentialStore };
+    const engineContext: EngineContext = { credentialStore };
     const { factory, createForAuthSpy } = makeFakeFactory();
     const { events } = makeBusSpy(bus);
 
@@ -310,7 +307,7 @@ describe("OAuthLoopbackBroker — dev override: warning", () => {
     dataDirsToCleanup.push(dataDir);
     const bus = createEventBus();
     const credentialStore = makeFakeCredentialStore();
-    const engineContext: EngineContext = { bus: fakeEngineBus, credentialStore };
+    const engineContext: EngineContext = { credentialStore };
     const { factory } = makeFakeFactory();
     const warnOnce = vi.fn();
     const mintDatasourceId = vi
@@ -341,7 +338,7 @@ describe("OAuthLoopbackBroker — dev override: warning", () => {
     dataDirsToCleanup.push(dataDir);
     const bus = createEventBus();
     const credentialStore = makeFakeCredentialStore();
-    const engineContext: EngineContext = { bus: fakeEngineBus, credentialStore };
+    const engineContext: EngineContext = { credentialStore };
     const { factory } = makeFakeFactory();
     const warnOnce = vi.fn();
 
@@ -364,7 +361,7 @@ describe("OAuthLoopbackBroker — dev override: warning", () => {
     dataDirsToCleanup.push(dataDir);
     const bus = createEventBus();
     const credentialStore = makeFakeCredentialStore();
-    const engineContext: EngineContext = { bus: fakeEngineBus, credentialStore };
+    const engineContext: EngineContext = { credentialStore };
     const { factory } = makeFakeFactory();
     const warnOnce = vi.fn();
 

@@ -1,18 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { Readable } from "node:stream";
 
 import type {
   AuthIntent,
   AuthResult,
   CredentialsFormIntent,
-  DatasourceEvent,
   DatasourceStatus,
-  DatasourceType,
   DatasourceFileEntry,
   FileMetadata,
-  PayloadMap,
   ProviderDescriptor,
   Quota,
   StoredCredentials,
@@ -20,7 +15,6 @@ import type {
 } from "@ft5/ipc-contracts";
 import { DatasourceError } from "@ft5/ipc-contracts";
 
-import { createEventBus, type EventBus } from "./event-bus.js";
 import {
   BaseDatasourceClient,
   type BaseClientContext,
@@ -73,7 +67,6 @@ interface DownloadOptions {
   rangeStart?: number;
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number | null) => void;
-  emitDownloading?: (loaded: number, total: number | null) => void;
 }
 
 interface DownloadResult {
@@ -286,16 +279,6 @@ function defaultNormalize(
 // Fixtures / helpers
 // ---------------------------------------------------------------------------
 
-type AnyEvent = DatasourceEvent<DatasourceType, keyof PayloadMap[DatasourceType]>;
-
-function collect(bus: EventBus): AnyEvent[] {
-  const out: AnyEvent[] = [];
-  bus.subscribe((e) => {
-    out.push(e);
-  });
-  return out;
-}
-
 function makeProviderDescriptor(quota = true): ProviderDescriptor {
   return {
     id: "amazon-s3",
@@ -328,26 +311,22 @@ function makeStore(): CredentialStore & {
 }
 
 interface Harness {
-  bus: EventBus;
-  events: AnyEvent[];
   store: ReturnType<typeof makeStore>;
   descriptor: ProviderDescriptor;
   client: FakeDatasourceClient;
 }
 
 function makeHarness(cfg: FakeConfig = {}, quotaCap = true): Harness {
-  const bus = createEventBus();
-  const events = collect(bus);
   const store = makeStore();
   const descriptor = makeProviderDescriptor(quotaCap);
   const client = new FakeDatasourceClient(
     {
       datasourceId: "ds-1",
-      ctx: { bus, credentialStore: store, providerDescriptor: descriptor },
+      ctx: { credentialStore: store, providerDescriptor: descriptor },
     },
     cfg,
   );
-  return { bus, events, store, descriptor, client };
+  return { store, descriptor, client };
 }
 
 afterEach(() => {
@@ -355,13 +334,14 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Successful op: pre + post events in order
+// Successful op: returns the typed result; no bus side effects
+// (the engine event bus was removed in migrate-engine-events-to-consumer).
 // ---------------------------------------------------------------------------
 
-describe("BaseDatasourceClient — success path emission", () => {
-  it("uploadFile resolves with the entry and emits NO upload events on the engine bus (post-migrate-upload-orchestration-out-of-engine)", async () => {
+describe("BaseDatasourceClient — success path", () => {
+  it("uploadFile resolves with the entry and drives the consumer's onProgress", async () => {
     const onProgress = vi.fn<(loaded: number, total: number) => void>();
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doUploadFile: async (_parent, _file, options) => {
         // Strategies invoke the consumer's onProgress callback as bytes
         // flow. Simulate two ticks plus a final at total.
@@ -379,14 +359,9 @@ describe("BaseDatasourceClient — success path emission", () => {
     );
 
     expect(result.path).toBe("/demo.txt");
-    // Engine bus is silent for upload (Decision 1):
-    const names = events.map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
     // Consumer's onProgress callback DID fire with monotonic non-decreasing
-    // loaded values (the strategy's contract).
+    // loaded values (the strategy's contract). This is the only progress
+    // channel — the engine emits nothing.
     expect(onProgress).toHaveBeenCalledTimes(3);
     const calls = onProgress.mock.calls;
     expect(calls[0]).toEqual([0, 1000]);
@@ -394,32 +369,30 @@ describe("BaseDatasourceClient — success path emission", () => {
     expect(calls[2]).toEqual([1000, 1000]);
   });
 
-  it("deleteFile emits `deleted` on success and no `delete-failed`", async () => {
-    const { client, events } = makeHarness({
+  it("deleteFile resolves to void on success", async () => {
+    const { client } = makeHarness({
       doDeleteFile: async () => undefined,
     });
 
-    await client.deleteFile({ kind: "path", path: "/x.txt" });
-
-    const names = events.map((e) => e.event);
-    expect(names).toContain("deleted");
-    expect(names).not.toContain("delete-failed");
+    await expect(
+      client.deleteFile({ kind: "path", path: "/x.txt" }),
+    ).resolves.toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
 // uploadFile forwards options.onProgress directly to doUploadFileImpl.
 // Strategies invoke it (loaded, total) as bytes flow. The base does NOT
-// translate those calls into bus events any more (per migrate-upload-
-// orchestration-out-of-engine) — the consumer (fs-sync handler) owns
-// throttle + bus emission.
+// emit any event (per migrate-upload-orchestration-out-of-engine and
+// migrate-engine-events-to-consumer) — the consumer (fs-sync handler) owns
+// throttle + event emission.
 // ---------------------------------------------------------------------------
 
 describe("BaseDatasourceClient — uploadFile options forwarding", () => {
-  it("options.onProgress is forwarded to doUploadFileImpl; invoking it does NOT emit bus events", async () => {
+  it("options.onProgress is forwarded to doUploadFileImpl", async () => {
     let captured: ((loaded: number, total: number) => void) | undefined;
 
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doUploadFile: async (_parent, _file, options) => {
         captured = options.onProgress;
         // Simulate mid-upload progress ticks.
@@ -443,20 +416,14 @@ describe("BaseDatasourceClient — uploadFile options forwarding", () => {
     expect(onProgress).toHaveBeenCalledTimes(2);
     expect(onProgress.mock.calls[0]).toEqual([500, 1000]);
     expect(onProgress.mock.calls[1]).toEqual([1000, 1000]);
-    // No upload-related bus events fire from the base.
-    const names = events.map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
   });
 
-  it("options.signal is forwarded to doUploadFileImpl; abort propagates as DatasourceError(cancelled) WITHOUT bus emission", async () => {
+  it("options.signal is forwarded to doUploadFileImpl; abort propagates as DatasourceError(cancelled)", async () => {
     // The consumer constructs an AbortController, passes its signal to
     // uploadFile, aborts mid-upload. The strategy detects the abort and
     // rejects with DatasourceError { tag: "cancelled" }. The wrapper
-    // propagates the rejection. NO bus emission for upload events.
-    const { client, events } = makeHarness({
+    // propagates the rejection.
+    const { client } = makeHarness({
       doUploadFile: (_parent, _file, options) =>
         new Promise<DatasourceFileEntry<FakeType>>((_res, reject) => {
           options.signal?.addEventListener("abort", () => {
@@ -490,13 +457,6 @@ describe("BaseDatasourceClient — uploadFile options forwarding", () => {
         e.tag === "cancelled" &&
         e.retryable === false,
     );
-
-    // Engine bus stays silent for the entire upload lifecycle.
-    const names = events.map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("upload-cancelled");
   });
 
   // The former "withRefresh still applies to uploadFile — auth-expired
@@ -511,17 +471,17 @@ describe("BaseDatasourceClient — uploadFile options forwarding", () => {
 // Note: the legacy "transactionId / progress percentage" assertions and
 // the "total=0 defensive" test are obsolete post-migrate-upload-
 // orchestration-out-of-engine — the base no longer translates onProgress
-// into a transactionId-keyed bus event with percentage. The consumer
+// into a transactionId-keyed event with percentage. The consumer
 // (fs-sync handler) owns that translation.
 
 
 // ---------------------------------------------------------------------------
-// Failing op: pre + failed, throws normalized error
+// Failing op: throws normalized error (no bus side effects)
 // ---------------------------------------------------------------------------
 
-describe("BaseDatasourceClient — failure path emission", () => {
-  it("uploadFile rejects with normalized DatasourceError and emits NO upload events on the engine bus", async () => {
-    const { client, events } = makeHarness({
+describe("BaseDatasourceClient — failure path normalization", () => {
+  it("uploadFile rejects with a normalized DatasourceError carrying the strategy's tag", async () => {
+    const { client } = makeHarness({
       doUploadFile: async () => {
         throw { __tag: "network-error" };
       },
@@ -541,17 +501,10 @@ describe("BaseDatasourceClient — failure path emission", () => {
     // as a DatasourceError carrying the strategy's tag.
     expect(caught).toBeInstanceOf(DatasourceError);
     expect((caught as DatasourceError).tag).toBe("network-error");
-    // But the engine bus is silent for upload events
-    // (per migrate-upload-orchestration-out-of-engine).
-    const names = events.map((e) => e.event);
-    expect(names).not.toContain("uploading");
-    expect(names).not.toContain("upload-failed");
-    expect(names).not.toContain("file-created");
-    expect(names).not.toContain("upload-cancelled");
   });
 
-  it("deleteFile failure emits delete-failed and throws", async () => {
-    const { client, events } = makeHarness({
+  it("deleteFile failure throws a normalized DatasourceError", async () => {
+    const { client } = makeHarness({
       doDeleteFile: async () => {
         throw { __tag: "not-found" };
       },
@@ -559,9 +512,10 @@ describe("BaseDatasourceClient — failure path emission", () => {
 
     await expect(
       client.deleteFile({ kind: "path", path: "/gone.txt" }),
-    ).rejects.toBeInstanceOf(DatasourceError);
-    const names = events.map((e) => e.event);
-    expect(names).toContain("delete-failed");
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        e instanceof DatasourceError && e.tag === "not-found",
+    );
   });
 
 });
@@ -580,9 +534,9 @@ describe("BaseDatasourceClient — failure path emission", () => {
 // Unsupported error does NOT emit a failed event
 // ---------------------------------------------------------------------------
 
-describe("BaseDatasourceClient — Unsupported errors are silent on the bus", () => {
-  it("getMetadata with Unsupported throws and emits no *-failed event", async () => {
-    const { client, events } = makeHarness({
+describe("BaseDatasourceClient — Unsupported errors throw without side effects", () => {
+  it("getMetadata with Unsupported throws the normalized `unsupported` error", async () => {
+    const { client } = makeHarness({
       doGetMetadata: async () => {
         throw { __tag: "unsupported" };
       },
@@ -594,9 +548,6 @@ describe("BaseDatasourceClient — Unsupported errors are silent on the bus", ()
       (e: unknown) =>
         e instanceof DatasourceError && e.tag === "unsupported",
     );
-    const names = events.map((e) => e.event);
-    expect(names).not.toContain("status-changed");
-    expect(names.filter((n) => String(n).endsWith("-failed"))).toHaveLength(0);
   });
 });
 
@@ -616,9 +567,9 @@ describe("BaseDatasourceClient — Unsupported errors are silent on the bus", ()
 // in `with-auth-refresh.test.ts`.
 
 describe("BaseDatasourceClient — public refreshCredentials() single-flight", () => {
-  it("5 concurrent refreshCredentials() calls trigger exactly one refreshTokenImpl + one token-refreshed; all resolve with the same AuthResult", async () => {
+  it("5 concurrent refreshCredentials() calls trigger exactly one refreshTokenImpl + one put; all resolve with the same AuthResult", async () => {
     const refreshed: AuthResult = { accessToken: "new-token" };
-    const { client, events, store } = makeHarness({
+    const { client, store } = makeHarness({
       refreshToken: async () => refreshed,
     });
 
@@ -628,28 +579,25 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
 
     // refreshTokenImpl was called exactly once across the 5 concurrent callers.
     expect(client.refreshTokenSpy).toHaveBeenCalledTimes(1);
-    // credentialStore.put was called exactly once.
+    // credentialStore.put was called exactly once. (The engine no longer
+    // emits token-refreshed — single-flight is proven via the spy + put +
+    // shared AuthResult, per migrate-engine-events-to-consumer.)
     expect(store.putMock).toHaveBeenCalledTimes(1);
-    // exactly one token-refreshed event.
-    const refreshedEvents = events.filter((e) => e.event === "token-refreshed");
-    expect(refreshedEvents).toHaveLength(1);
     // all 5 callers resolved with the same refreshed AuthResult.
     for (const r of results) {
       expect(r).toEqual(refreshed);
     }
   });
 
-  it("5 concurrent refreshCredentials() calls that ALL fail emit token-expired + authentication-failed EXACTLY ONCE (not per-caller); all reject with auth-expired; put NOT called", async () => {
-    // Regression guard (engine code-review Minor #1). The failure emission
-    // lives INSIDE the single-flight cycle (the guard sits before the
-    // try/catch split), so N concurrent failing callers observe exactly one
-    // refreshTokenImpl call and one token-expired + one authentication-failed
-    // — NOT N pairs. The single-failing-caller test above proves "one pair
-    // per cycle"; the 5-concurrent-succeeding test proves promise-sharing;
-    // this test pins the conjunction (the exact property Decision 2 relocated
-    // the emission to achieve). A future refactor moving the emit back
-    // per-caller would make this RED.
-    const { client, events, store } = makeHarness({
+  it("5 concurrent refreshCredentials() calls that ALL fail share ONE refresh cycle; all reject with auth-expired; put NOT called", async () => {
+    // Regression guard (engine code-review Minor #1). The single-flight cycle
+    // holds on the failure path: N concurrent failing callers observe exactly
+    // one refreshTokenImpl call and all share the same rejection — NOT N
+    // independent cycles. (The engine no longer emits token-expired /
+    // authentication-failed — that emission moved to the consumer in
+    // migrate-engine-events-to-consumer; single-flight is now proven via the
+    // refreshTokenImpl spy + the shared rejection.)
+    const { client, store } = makeHarness({
       refreshToken: async () => {
         throw new Error("refresh exploded");
       },
@@ -663,11 +611,6 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
     expect(client.refreshTokenSpy).toHaveBeenCalledTimes(1);
     // No persistence on failure.
     expect(store.putMock).not.toHaveBeenCalled();
-    // Exactly one of each failure event across all 5 concurrent callers.
-    const names = events.map((e) => e.event);
-    expect(names.filter((n) => n === "token-expired")).toHaveLength(1);
-    expect(names.filter((n) => n === "authentication-failed")).toHaveLength(1);
-    expect(names).not.toContain("token-refreshed");
     // All 5 callers reject with the shared auth-expired error.
     expect(settled).toHaveLength(5);
     for (const s of settled) {
@@ -687,12 +630,11 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
       callOrder.push("put");
     });
 
-    const bus = createEventBus();
     const descriptor = makeProviderDescriptor();
     const client = new FakeDatasourceClient(
       {
         datasourceId: "ds-1",
-        ctx: { bus, credentialStore: store, providerDescriptor: descriptor },
+        ctx: { credentialStore: store, providerDescriptor: descriptor },
       },
       {
         refreshToken: async () => {
@@ -713,8 +655,8 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
     expect(callOrder).toEqual(["refreshToken", "put", "resolved"]);
   });
 
-  it("refresh failure (refreshTokenImpl throws) emits token-expired + authentication-failed and rejects with AuthExpired; put NOT called", async () => {
-    const { client, events, store } = makeHarness({
+  it("refresh failure (refreshTokenImpl throws) rejects with AuthExpired; put NOT called", async () => {
+    const { client, store } = makeHarness({
       refreshToken: async () => {
         throw new Error("refresh exploded");
       },
@@ -727,32 +669,16 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
       caught = e;
     }
 
+    // The refresh-failure path wraps the raw refresh exception into a
+    // `DatasourceError` tagged `auth-expired` carrying the raw cause. The
+    // engine no longer emits token-expired / authentication-failed events —
+    // the rejection IS the contract (migrate-engine-events-to-consumer).
     expect(caught).toBeInstanceOf(DatasourceError);
-    expect((caught as DatasourceError).tag).toBe("auth-expired");
-
-    const names = events.map((e) => e.event);
-    expect(names).toContain("token-expired");
-    expect(names).toContain("authentication-failed");
-    expect(names).not.toContain("token-refreshed");
-    // Exactly one of each failure event (single-flight cycle emits once).
-    expect(names.filter((n) => n === "token-expired")).toHaveLength(1);
-    expect(names.filter((n) => n === "authentication-failed")).toHaveLength(1);
-
-    // Decision 12.4: `authentication-failed` payload is the full
-    // SerializedDatasourceError shape (not a reason string). The refresh-
-    // failure path wraps the raw refresh exception into a `DatasourceError`
-    // tagged `auth-expired` before serializing — consumers receive retry
-    // affordances plus the raw cause.
-    const authFailed = events.find((e) => e.event === "authentication-failed");
-    expect(authFailed?.payload).toMatchObject({
-      tag: "auth-expired",
-      datasourceType: "amazon-s3",
-      datasourceId: "ds-1",
-      retryable: false,
-      message: expect.any(String),
-    });
+    const err = caught as DatasourceError;
+    expect(err.tag).toBe("auth-expired");
+    expect(err.retryable).toBe(false);
     // `raw` preserves the original refresh exception for diagnostics.
-    expect((authFailed?.payload as { raw?: unknown }).raw).toBeDefined();
+    expect((err as unknown as { raw?: unknown }).raw).toBeDefined();
 
     // Store was NOT updated with new credentials.
     expect(store.putMock).not.toHaveBeenCalled();
@@ -766,13 +692,11 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
     const store = makeStore();
     store.putMock.mockRejectedValue(putError);
 
-    const bus = createEventBus();
-    const events = collect(bus);
     const descriptor = makeProviderDescriptor();
     const client = new FakeDatasourceClient(
       {
         datasourceId: "ds-1",
-        ctx: { bus, credentialStore: store, providerDescriptor: descriptor },
+        ctx: { credentialStore: store, providerDescriptor: descriptor },
       },
       {
         // refreshTokenImpl resolves with a valid AuthResult — the failure
@@ -788,29 +712,12 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
       caught = e;
     }
 
+    // The put rejection reframes as a synthesized `auth-expired`
+    // DatasourceError carrying the credential-store exception as `raw`.
     expect(caught).toBeInstanceOf(DatasourceError);
-    expect((caught as DatasourceError).tag).toBe("auth-expired");
-
-    const names = events.map((e) => e.event);
-    expect(names).toContain("token-expired");
-    expect(names).toContain("authentication-failed");
-    // token-refreshed is NOT emitted — the put rejection skips it (it lives
-    // after `persistCredentials` inside the single-flight cycle's try).
-    expect(names).not.toContain("token-refreshed");
-
-    // Decision 12.4: `authentication-failed` payload is the full
-    // SerializedDatasourceError shape — the refresh-failure path serializes a
-    // synthesized `auth-expired` DatasourceError carrying the credential-store
-    // exception as `raw`.
-    const authFailed = events.find((e) => e.event === "authentication-failed");
-    expect(authFailed?.payload).toMatchObject({
-      tag: "auth-expired",
-      datasourceType: "amazon-s3",
-      datasourceId: "ds-1",
-      retryable: false,
-      message: expect.any(String),
-    });
-    expect((authFailed?.payload as { raw?: unknown }).raw).toBeDefined();
+    const err = caught as DatasourceError;
+    expect(err.tag).toBe("auth-expired");
+    expect((err as unknown as { raw?: unknown }).raw).toBeDefined();
 
     // put was attempted exactly once; its error is NOT re-surfaced as a
     // distinct error to the caller.
@@ -829,7 +736,7 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
       retryable: false,
       message: "refresh token revoked by provider",
     });
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       refreshToken: async () => {
         throw typed;
       },
@@ -842,13 +749,8 @@ describe("BaseDatasourceClient — public refreshCredentials() single-flight", (
       caught = e;
     }
 
-    // The exact typed instance propagates.
+    // The exact typed instance propagates unchanged.
     expect(caught).toBe(typed);
-
-    // The failure events still fire, carrying the typed error's tag.
-    const authFailed = events.find((e) => e.event === "authentication-failed");
-    expect(authFailed?.payload).toMatchObject({ tag: "auth-revoked" });
-    expect(events.some((e) => e.event === "token-expired")).toBe(true);
   });
 });
 
@@ -1033,7 +935,7 @@ describe("BaseDatasourceClient — listDirectory pagination wrapper", () => {
         throw { __tag: "provider-error" };
       },
     );
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doListDirectory: doListDirectory as unknown as (
         target: Target,
         options: { cursor?: string; pageSize?: number },
@@ -1053,12 +955,11 @@ describe("BaseDatasourceClient — listDirectory pagination wrapper", () => {
       caught = e;
     }
 
+    // runReadOp normalizes the raw provider marker and rethrows — the engine
+    // no longer emits a status-changed event (migrate-engine-events-to-consumer);
+    // the normalized thrown error IS the contract.
     expect(caught).toBeInstanceOf(DatasourceError);
     expect((caught as DatasourceError).tag).toBe("provider-error");
-    // runReadOp's failure path emits status-changed for non-rate-limited,
-    // non-unsupported, non-auth-expired tags — unchanged by pagination.
-    const names = events.map((e) => e.event);
-    expect(names).toContain("status-changed");
   });
 });
 
@@ -1067,8 +968,8 @@ describe("BaseDatasourceClient — listDirectory pagination wrapper", () => {
 // ---------------------------------------------------------------------------
 
 describe("BaseDatasourceClient — deleteDirectory unsupported", () => {
-  it("throws Unsupported with raw='disabled-for-product-stability' and emits no event", async () => {
-    const { client, events } = makeHarness();
+  it("throws Unsupported with raw='disabled-for-product-stability'", async () => {
+    const { client } = makeHarness();
 
     let caught: unknown;
     try {
@@ -1081,8 +982,6 @@ describe("BaseDatasourceClient — deleteDirectory unsupported", () => {
     const err = caught as DatasourceError<FakeType>;
     expect(err.tag).toBe("unsupported");
     expect(err.raw).toBe("disabled-for-product-stability");
-    // No events emitted at all for the deleteDirectory attempt
-    expect(events).toHaveLength(0);
   });
 });
 
@@ -1093,7 +992,7 @@ describe("BaseDatasourceClient — deleteDirectory unsupported", () => {
 describe("BaseDatasourceClient — getQuota capability gating", () => {
   it("throws Unsupported when provider capability quota=false, without invoking doGetQuota", async () => {
     const harness = makeHarness({}, /* quotaCap */ false);
-    const { client, events } = harness;
+    const { client } = harness;
 
     let caught: unknown;
     try {
@@ -1107,7 +1006,6 @@ describe("BaseDatasourceClient — getQuota capability gating", () => {
     expect(err.tag).toBe("unsupported");
     expect(err.raw).toBe("not-supported-by-provider");
     expect(client.doGetQuotaSpy).not.toHaveBeenCalled();
-    expect(events).toHaveLength(0);
   });
 
   it("delegates to doGetQuota when provider capability quota=true", async () => {
@@ -1121,8 +1019,8 @@ describe("BaseDatasourceClient — getQuota capability gating", () => {
     expect(client.doGetQuotaSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("getQuota emits rate-limited on rate-limit error (routed through runReadOp)", async () => {
-    const { client, events } = makeHarness(
+  it("getQuota surfaces a normalized rate-limited error (routed through runReadOp)", async () => {
+    const { client } = makeHarness(
       {
         doGetQuota: async () => {
           throw { __tag: "rate-limited", __retryAfterMs: 1500 };
@@ -1138,15 +1036,12 @@ describe("BaseDatasourceClient — getQuota capability gating", () => {
       caught = e;
     }
 
+    // runReadOp normalizes and rethrows — the engine no longer emits a
+    // rate-limited event (migrate-engine-events-to-consumer); the thrown
+    // `rate-limited` tag IS the contract.
     expect(caught).toBeInstanceOf(DatasourceError);
-    expect((caught as DatasourceError).tag).toBe("rate-limited");
-
-    const rateLimited = events.filter((e) => e.event === "rate-limited");
-    expect(rateLimited).toHaveLength(1);
-    expect(rateLimited[0]?.datasourceType).toBe("amazon-s3");
-    // status-changed must NOT have been emitted for the rate-limit path —
-    // runReadOp branches on `rate-limited` first.
-    expect(events.some((e) => e.event === "status-changed")).toBe(false);
+    const err = caught as DatasourceError<FakeType>;
+    expect(err.tag).toBe("rate-limited");
   });
 });
 
@@ -1155,9 +1050,9 @@ describe("BaseDatasourceClient — getQuota capability gating", () => {
 // ---------------------------------------------------------------------------
 
 describe("BaseDatasourceClient — authenticate", () => {
-  it("returns the intent synchronously, emits `authenticated` only after completion (and after put)", async () => {
+  it("returns the intent synchronously; completion persists credentials BEFORE resolving (no put until completion)", async () => {
     const callOrder: string[] = [];
-    const { client, events, store } = makeHarness({
+    const { client, store } = makeHarness({
       doAuthenticate: async () => {
         const intent: CredentialsFormIntent = {
           kind: "credentials-form",
@@ -1177,10 +1072,11 @@ describe("BaseDatasourceClient — authenticate", () => {
     });
 
     const intent = await client.authenticate();
-    // At this point, the intent has been returned but no `authenticated` event
-    // must have been emitted yet — completion is host-driven.
+    // The intent is returned but completion is host-driven — no persistence
+    // has happened yet. (The engine no longer emits an `authenticated` event;
+    // completion is observed via the resolved AuthResult + the put call.)
     expect(intent.kind).toBe("credentials-form");
-    expect(events.map((e) => e.event)).not.toContain("authenticated");
+    expect(store.putMock).not.toHaveBeenCalled();
 
     // Host completes the intent.
     const credsIntent = intent as CredentialsFormIntent;
@@ -1190,15 +1086,13 @@ describe("BaseDatasourceClient — authenticate", () => {
     });
 
     expect(result.accessToken).toBe("fresh-token");
-    // After completion: put was called, then authenticated event emitted.
+    // After completion: submit ran then put persisted (before resolve).
     expect(callOrder).toEqual(["intent.submit", "put"]);
     expect(store.putMock).toHaveBeenCalledTimes(1);
-    const names = events.map((e) => e.event);
-    expect(names).toContain("authenticated");
   });
 
-  it("emits `authentication-failed` and rethrows when the intent completion rejects", async () => {
-    const { client, events, store } = makeHarness({
+  it("rethrows a normalized DatasourceError when the intent completion rejects; does NOT persist", async () => {
+    const { client, store } = makeHarness({
       doAuthenticate: async () => ({
         kind: "credentials-form",
         schema: "aws-access-key",
@@ -1209,33 +1103,18 @@ describe("BaseDatasourceClient — authenticate", () => {
     });
 
     const intent = (await client.authenticate()) as CredentialsFormIntent;
+    // The intent-completion reject path normalizes the raw submit() exception
+    // and rethrows it. The engine emits nothing
+    // (migrate-engine-events-to-consumer); the thrown error IS the contract.
     await expect(intent.submit({})).rejects.toBeInstanceOf(DatasourceError);
-
-    const names = events.map((e) => e.event);
-    expect(names).toContain("authentication-failed");
-    expect(names).not.toContain("authenticated");
-
-    // Decision 12.4: `authentication-failed` payload is the full
-    // SerializedDatasourceError shape — the intent-completion reject
-    // path normalizes the raw submit() exception and emits the full
-    // serialized error so consumers can reconstruct recovery UX.
-    const authFailed = events.find((e) => e.event === "authentication-failed");
-    expect(authFailed?.payload).toMatchObject({
-      tag: expect.any(String),
-      datasourceType: "amazon-s3",
-      datasourceId: "ds-1",
-      retryable: expect.any(Boolean),
-      message: expect.any(String),
-    });
 
     expect(store.putMock).not.toHaveBeenCalled();
   });
 
-  it("emits `authentication-failed` with the full SerializedDatasourceError when `authenticate()` itself throws (pre-intent)", async () => {
-    // Decision 12.4: the general catch path in `authenticate()` — where
-    // `doAuthenticateImpl()` throws BEFORE returning an intent — also
-    // emits the full serialized error, not a reason string.
-    const { client, events, store } = makeHarness({
+  it("rethrows the normalized DatasourceError when `authenticate()` itself throws (pre-intent); does NOT persist", async () => {
+    // The general catch path in `authenticate()` — where `doAuthenticateImpl()`
+    // throws BEFORE returning an intent — normalizes and rethrows.
+    const { client, store } = makeHarness({
       doAuthenticate: async () => {
         throw new DatasourceError<FakeType>({
           tag: "provider-error",
@@ -1248,18 +1127,17 @@ describe("BaseDatasourceClient — authenticate", () => {
       },
     });
 
-    await expect(client.authenticate()).rejects.toBeInstanceOf(DatasourceError);
+    let caught: unknown;
+    try {
+      await client.authenticate();
+    } catch (e) {
+      caught = e;
+    }
 
-    const authFailed = events.find((e) => e.event === "authentication-failed");
-    expect(authFailed).toBeDefined();
-    expect(authFailed?.payload).toMatchObject({
-      tag: "provider-error",
-      datasourceType: "amazon-s3",
-      datasourceId: "ds-1",
-      retryable: false,
-      message: "cannot build auth intent",
-      raw: { providerCode: "IntentBuildFailed" },
-    });
+    expect(caught).toBeInstanceOf(DatasourceError);
+    const err = caught as DatasourceError<FakeType>;
+    expect(err.tag).toBe("provider-error");
+    expect(err.message).toBe("cannot build auth intent");
 
     expect(store.putMock).not.toHaveBeenCalled();
   });
@@ -1269,12 +1147,12 @@ describe("BaseDatasourceClient — authenticate", () => {
 // dispose() — lifecycle hook
 // ---------------------------------------------------------------------------
 //
-// Phase 7 code-review finding: strategies that subscribe to the bus (e.g.,
-// OneDriveClient's path↔handle cache invalidation) leak the subscription if
-// the client is discarded. The base exposes `dispose(): void` as a no-op by
-// default; subclasses that hold resources (bus subscriptions, timers)
-// override it. The base contract is only that `dispose()` exists and may
-// be called idempotently.
+// The base exposes `dispose(): void` as a no-op by default; subclasses that
+// hold resources (timers, external handles) override it. No strategy
+// subscribes to any bus (the engine event bus was removed in
+// migrate-engine-events-to-consumer; path-cache invalidation is inline). The
+// base contract is only that `dispose()` exists and may be called
+// idempotently.
 
 describe("BaseDatasourceClient — dispose()", () => {
   it("exposes a public `dispose()` method as a no-op on the base", () => {
@@ -1313,28 +1191,23 @@ describe("BaseDatasourceClient — dispose()", () => {
 // proves the wrapper's contract behaviour for each policy branch.
 
 describe("BaseDatasourceClient — rename success path", () => {
-  it("emits exactly one `entry-renamed { from, to }` event and resolves with the strategy's renamed entry", async () => {
+  it("resolves with the strategy's renamed entry (no bus side effects)", async () => {
     const renamed = makeEntry("/welcome-v2.pdf");
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doRename: async () => renamed,
     });
 
     const from: Target = { kind: "path", path: "/welcome.pdf" };
     const result = await client.rename(from, "welcome-v2.pdf", "fail");
 
+    // The base returns the strategy's renamed entry unchanged. The engine
+    // emits no event (migrate-engine-events-to-consumer).
     expect(result).toEqual(renamed);
-    const renames = events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    expect(renames[0]?.payload).toEqual({ from, to: renamed });
-    // No `delete-failed` (failure path) and no `deleted` (overwrite-cleanup
-    // pseudo-emission) MUST appear on the success path.
-    expect(events.some((e) => e.event === "delete-failed")).toBe(false);
-    expect(events.some((e) => e.event === "deleted")).toBe(false);
   });
 });
 
 describe("BaseDatasourceClient — rename `fail` policy surfaces conflict tag", () => {
-  it("strategy throws conflict-tagged DatasourceError → base re-throws unchanged and emits one `delete-failed { via: rename, tag: conflict }`", async () => {
+  it("strategy throws conflict-tagged DatasourceError → base re-throws unchanged", async () => {
     const conflictErr = new DatasourceError<FakeType>({
       tag: "conflict",
       datasourceType: "amazon-s3",
@@ -1343,7 +1216,7 @@ describe("BaseDatasourceClient — rename `fail` policy surfaces conflict tag", 
       raw: { existingPath: "/parent/bar.pdf" },
       message: "name already exists at /parent/bar.pdf",
     });
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doRename: async () => {
         throw conflictErr;
       },
@@ -1360,6 +1233,9 @@ describe("BaseDatasourceClient — rename `fail` policy surfaces conflict tag", 
       caught = e;
     }
 
+    // The base normalizes and re-throws — the thrown `conflict` error IS the
+    // contract (the engine emits no `delete-failed` event post
+    // migrate-engine-events-to-consumer).
     expect(caught).toBeInstanceOf(DatasourceError);
     const err = caught as DatasourceError<FakeType>;
     expect(err.tag).toBe("conflict");
@@ -1367,44 +1243,28 @@ describe("BaseDatasourceClient — rename `fail` policy surfaces conflict tag", 
     // `raw` carries the colliding sibling path so the renderer's
     // ConflictResolutionDialog can prompt with the exact path.
     expect(err.raw).toEqual({ existingPath: "/parent/bar.pdf" });
-
-    // The base routes rename failures through the existing `delete-failed`
-    // taxonomy (per spec.md "Rename failure emits delete-failed with via:
-    // rename") with the `via: "rename"` discriminator.
-    const failures = events.filter((e) => e.event === "delete-failed");
-    expect(failures).toHaveLength(1);
-    expect(failures[0]?.payload).toMatchObject({
-      tag: "conflict",
-      via: "rename",
-    });
-    // No `entry-renamed` on the failure path.
-    expect(events.some((e) => e.event === "entry-renamed")).toBe(false);
   });
 });
 
 describe("BaseDatasourceClient — rename `overwrite` policy on a file delegates to the strategy", () => {
-  it("base passes `overwrite` through to doRenameImpl; strategy's internal `doDeleteFileImpl` cleanup does NOT leak a `deleted` event; bus observes one `entry-renamed` only", async () => {
+  it("base passes `overwrite` through to doRenameImpl; strategy's internal `doDeleteFileImpl` cleanup is invisible to the caller (single-step rename)", async () => {
     // Per design.md Decision 1 + tasks.md §4.6 ("lives in each strategy
     // since the sibling-detection is provider-specific"), the base does
     // NOT itself drive the overwrite-then-rename. It delegates by passing
     // `conflictPolicy` through to `doRenameImpl`. The base-side contract is:
     //   1. `doRenameImpl` is invoked with conflictPolicy === "overwrite"
     //   2. Whatever the strategy did internally — including a sibling
-    //      delete via the protected `doDeleteFileImpl` primitive — does
-    //      NOT cause the base to emit a `deleted` event for that internal
-    //      cleanup (the public `deleteFile` is the only path that emits;
-    //      strategies bypass it via the protected primitive precisely so
-    //      single-step rename UX holds, per spec.md "the deletion event
-    //      SHALL NOT be emitted to the bus")
-    //   3. On the strategy resolving the renamed entry, the base emits
-    //      exactly one `entry-renamed`
+    //      delete via the protected `doDeleteFileImpl` primitive — is
+    //      invisible to the caller (the engine emits no events at all post
+    //      migrate-engine-events-to-consumer; single-step rename UX holds).
+    //   3. On the strategy resolving the renamed entry, the base returns it.
     //
     // The mock simulates the strategy's overwrite path by invoking
     // `doDeleteFileImpl` (via the public `doDeleteFile` spy that the test
     // fixture wires it to) before returning the renamed entry — exercising
     // the actual property under test rather than just the policy passthrough.
     const renamed = makeEntry("/parent/bar.pdf");
-    const { client, events } = makeHarness();
+    const { client } = makeHarness();
     // Override doRename post-construction so the mock can close over
     // `client` and exercise the protected primitive via the public spy.
     client.doRename.mockImplementation(
@@ -1412,9 +1272,9 @@ describe("BaseDatasourceClient — rename `overwrite` policy on a file delegates
         // Sanity: the base MUST forward the policy unchanged.
         expect(conflictPolicy).toBe("overwrite");
         // Strategy's internal sibling-cleanup. doDeleteFileImpl resolves to
-        // doDeleteFile (the test spy), which is a no-op vi.fn — no provider
-        // call, no event emission. This mirrors a real strategy's overwrite
-        // path: call the protected primitive, then perform the rename.
+        // doDeleteFile (the test spy), which is a no-op vi.fn. This mirrors a
+        // real strategy's overwrite path: call the protected primitive, then
+        // perform the rename.
         await client["doDeleteFileImpl"]({
           kind: "path",
           path: "/parent/bar.pdf",
@@ -1433,27 +1293,17 @@ describe("BaseDatasourceClient — rename `overwrite` policy on a file delegates
       kind: "path",
       path: "/parent/bar.pdf",
     });
-    const renames = events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    expect(renames[0]?.payload).toEqual({ from, to: renamed });
-    // CRITICAL: no `deleted` event despite the actual `doDeleteFileImpl`
-    // call inside the strategy. The user-visible UX is single-step.
-    expect(events.some((e) => e.event === "deleted")).toBe(false);
   });
 });
 
 describe("BaseDatasourceClient — rename `overwrite` on a directory is refused", () => {
-  it("strategy throws `unsupported`; base re-throws; no `delete-failed` event (unsupported is silent on the bus per the existing convention)", async () => {
+  it("strategy throws `unsupported`; base re-throws unchanged", async () => {
     // Per design.md Decision 1 ("Directory-rename conflict-policy guard"),
     // the strategy detects kind === "folder" + policy === "overwrite" and
     // throws `DatasourceError { tag: "unsupported" }`. The base passes the
-    // policy through and re-throws the strategy-thrown error. Per the
-    // existing codebase convention (deleteFile, uploadFile), `*-failed`
-    // events are NOT emitted
-    // when `tag === "unsupported"` — the unsupported case stays silent on
-    // the bus. spec.md's "Directory rename with conflictPolicy 'overwrite'
-    // is refused" scenario confirms only "the call rejects ... no rename
-    // API call is issued" — no event-emission requirement.
+    // policy through and re-throws the strategy-thrown error. The engine
+    // emits no events (migrate-engine-events-to-consumer); the thrown
+    // `unsupported` error IS the contract.
     const refusal = new DatasourceError<FakeType>({
       tag: "unsupported",
       datasourceType: "amazon-s3",
@@ -1463,7 +1313,7 @@ describe("BaseDatasourceClient — rename `overwrite` on a directory is refused"
       message:
         "directory rename with conflictPolicy 'overwrite' is not supported (would require recursive replacement)",
     });
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doRename: async () => {
         throw refusal;
       },
@@ -1486,14 +1336,11 @@ describe("BaseDatasourceClient — rename `overwrite` on a directory is refused"
     expect(err.message).toContain(
       "directory rename with conflictPolicy 'overwrite' is not supported",
     );
-    // No event of any kind for the unsupported-refusal path.
-    expect(events.some((e) => e.event === "delete-failed")).toBe(false);
-    expect(events.some((e) => e.event === "entry-renamed")).toBe(false);
   });
 });
 
 describe("BaseDatasourceClient — rename `keep-both` policy delegates to the strategy", () => {
-  it("base passes `keep-both` through to doRenameImpl unchanged; strategy returns the auto-suffixed entry; bus observes one `entry-renamed`", async () => {
+  it("base passes `keep-both` through to doRenameImpl unchanged; strategy returns the auto-suffixed entry", async () => {
     // Per design.md Decision 1 + tasks.md §4.10 ("lives in each strategy
     // alongside its rename API call"), the keep-both retry loop is
     // strategy-side (provider-specific sibling-detection happens during
@@ -1501,10 +1348,10 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
     // `keep-both`, the strategy retries internally with `bar-2.pdf` /
     // `bar-3.pdf` / … until success or 99 attempts (terminal `tag: other`),
     // and resolves with the final renamed entry. Whatever number of
-    // internal retries occurred, the bus observes ONE `entry-renamed`
-    // (the terminal success).
+    // internal retries occurred, the base returns that single entry (the
+    // engine emits no events post migrate-engine-events-to-consumer).
     const renamed = makeEntry("/parent/bar-3.pdf");
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doRename: async (_target, _newName, conflictPolicy) => {
         expect(conflictPolicy).toBe("keep-both");
         return renamed;
@@ -1515,16 +1362,13 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
     const result = await client.rename(from, "bar.pdf", "keep-both");
 
     expect(result).toEqual(renamed);
-    const renames = events.filter((e) => e.event === "entry-renamed");
-    expect(renames).toHaveLength(1);
-    expect(renames[0]?.payload).toEqual({ from, to: renamed });
-    expect(events.some((e) => e.event === "delete-failed")).toBe(false);
   });
 
-  it("strategy exhausts keep-both attempts → base re-throws strategy's `tag: other` error and emits one `delete-failed { via: rename }`", async () => {
-    // Strategy's exhausted-retry path lives in the strategy (§4.10), but
-    // the base must still route the resulting error through the standard
-    // failure-emission path so the renderer can surface it.
+  it("strategy exhausts keep-both attempts → base re-throws strategy's `tag: other` error", async () => {
+    // Strategy's exhausted-retry path lives in the strategy (§4.10); the base
+    // normalizes and re-throws the resulting error so the renderer can
+    // surface it (the engine emits no `delete-failed` event post
+    // migrate-engine-events-to-consumer).
     const exhausted = new DatasourceError<FakeType>({
       tag: "other",
       datasourceType: "amazon-s3",
@@ -1532,7 +1376,7 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
       retryable: false,
       message: "exhausted keep-both attempts",
     });
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doRename: async () => {
         throw exhausted;
       },
@@ -1550,15 +1394,9 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
     }
 
     expect(caught).toBeInstanceOf(DatasourceError);
-    expect((caught as DatasourceError).tag).toBe("other");
-
-    const failures = events.filter((e) => e.event === "delete-failed");
-    expect(failures).toHaveLength(1);
-    expect(failures[0]?.payload).toMatchObject({
-      tag: "other",
-      message: "exhausted keep-both attempts",
-      via: "rename",
-    });
+    const err = caught as DatasourceError<FakeType>;
+    expect(err.tag).toBe("other");
+    expect(err.message).toBe("exhausted keep-both attempts");
   });
 });
 
@@ -1568,53 +1406,32 @@ describe("BaseDatasourceClient — rename `keep-both` policy delegates to the st
 //
 // The base calls the strategy's `doDownloadFileImpl` directly (per
 // migrate-engine-retry-policy-to-consumer Decision 1 — no auto-refresh on
-// `auth-expired`) and emits the
-// engine bus's four download lifecycle events: `downloading` (per chunk),
-// `file-downloaded` (on stream end), `download-failed` (on stream error),
-// `download-cancelled` (on AbortSignal). Per design.md Decision 3, the
-// engine does NOT mint a transaction ID, does NOT carry per-download
-// state across calls, and does NOT splice/retry mid-stream — those
-// orchestration responsibilities live in fs-sync.
-//
-// Per the user's task description: ONE byte-counting hook in the strategy
-// fires both the consumer's `onProgress` callback AND the bus emission.
-// The base provides a `protected emitDownloading(path, loaded, total)`
-// helper that strategies invoke from their progress hook; the helper
-// emits the bus event AND captures the latest counts so the
-// cancel-path event can populate `bytesDownloaded` / `bytesTotal`.
+// `auth-expired`) and returns the strategy's `{ stream, contentLength,
+// contentRange }` UNCHANGED. The engine emits NO download events and attaches
+// NO stream listeners (the event bus was removed in
+// migrate-engine-events-to-consumer): progress flows solely via the strategy's
+// `options.onProgress(loaded, total)` callback, and fs-sync's download handler
+// owns terminal handling (`file-downloaded` / `download-failed` /
+// `download-cancelled`) off its own synchronous pipe-to-disk path. Per
+// design.md Decision 3, the engine does NOT mint a transaction ID, does NOT
+// carry per-download state across calls, and does NOT splice/retry mid-stream.
 
 describe("BaseDatasourceClient — downloadFile success path", () => {
-  it("returns the strategy's shape unchanged; emits one or more `downloading` then exactly one `file-downloaded` on clean stream end; no `download-failed` or `download-cancelled`", async () => {
+  it("returns the strategy's shape unchanged; drives the consumer's onProgress as bytes flow", async () => {
     const target: Target = { kind: "path", path: "/folder/big.bin" };
     const stream = new Readable({ read() {} });
-    const { client, events } = makeHarness({
+    const { client } = makeHarness({
       doDownloadFile: async (_t, options) => {
-        // Simulate the strategy's byte-counting hook: emit two ticks via
-        // the base helper (which fires both bus emission + closure tracking)
-        // then deliver the stream's data + end events.
-        const callBaseHelper = (
-          loaded: number,
-          total: number | null,
-        ): void => {
-          (
-            client as unknown as {
-              emitDownloading: (
-                path: string,
-                loaded: number,
-                total: number | null,
-              ) => void;
-            }
-          ).emitDownloading("/folder/big.bin", loaded, total);
-        };
-        callBaseHelper(2048, 4096);
-        callBaseHelper(4096, 4096);
+        // Simulate the strategy's byte-counting hook firing onProgress as
+        // bytes flow, then deliver the stream's data + end events.
+        options.onProgress?.(2048, 4096);
+        options.onProgress?.(4096, 4096);
         // Defer chunk-push to after the consumer wires up listeners.
         setImmediate(() => {
           stream.push(Buffer.alloc(2048));
           stream.push(Buffer.alloc(2048));
           stream.push(null);
         });
-        void options;
         return {
           stream,
           contentLength: 4096,
@@ -1622,32 +1439,27 @@ describe("BaseDatasourceClient — downloadFile success path", () => {
       },
     });
 
-    const result = await client.downloadFile(target);
+    const progressTicks: Array<{ loaded: number; total: number | null }> = [];
+    const result = await client.downloadFile(target, {
+      onProgress: (loaded, total) => progressTicks.push({ loaded, total }),
+    });
     // Shape echoes what the strategy returned, unchanged.
     expect(result.contentLength).toBe(4096);
     expect(result.stream).toBe(stream);
-    // Drain the stream so the base's `end`-listener fires `file-downloaded`.
+    // Drain the stream.
     await new Promise<void>((resolve, reject) => {
-      const sink = new Readable({ read() {} });
-      void sink;
       result.stream.on("data", () => {});
       result.stream.on("end", () => resolve());
       result.stream.on("error", reject);
     });
 
-    const downloadings = events.filter((e) => e.event === "downloading");
-    const downloaded = events.filter((e) => e.event === "file-downloaded");
-    expect(downloadings.length).toBeGreaterThanOrEqual(1);
-    expect(downloaded).toHaveLength(1);
-    expect(downloaded[0]?.payload).toEqual({
-      path: "/folder/big.bin",
-      bytes: 4096,
-    });
-    expect(events.some((e) => e.event === "download-failed")).toBe(false);
-    expect(events.some((e) => e.event === "download-cancelled")).toBe(false);
-    // Envelope fields on the terminal event.
-    expect(downloaded[0]?.datasourceId).toBe("ds-1");
-    expect(downloaded[0]?.datasourceType).toBe("amazon-s3");
+    // onProgress fired with the strategy's byte counts; the final tick is the
+    // full content length. This is the only progress channel (the engine
+    // emits nothing).
+    expect(progressTicks).toEqual([
+      { loaded: 2048, total: 4096 },
+      { loaded: 4096, total: 4096 },
+    ]);
   });
 });
 
@@ -1726,395 +1538,3 @@ describe("BaseDatasourceClient — downloadFile onProgress propagation", () => {
     expect(onProgress).toHaveBeenNthCalledWith(2, 4096, 4096);
   });
 });
-
-describe("BaseDatasourceClient — downloadFile bus emission of `downloading` events", () => {
-  it("for each (loaded, total) the strategy reports, the bus observes a `downloading { path, loaded, total }` event with envelope-level datasourceType/datasourceId/ts; the consumer's onProgress fires from the same byte-flow source", async () => {
-    // The bus's streaming-event coalescer (event-bus.ts) suppresses rapid-
-    // succession emissions for the same `(datasourceId, transactionId)` key
-    // unless either (a) >= throttleMs have elapsed or (b) the progress-delta
-    // crosses progressDeltaPct. The `downloading` payload carries
-    // `(loaded, total)` rather than `progress`, so the progress-delta rule
-    // doesn't help — the test drives a controllable clock so each tick is
-    // time-eligible and delivers immediately, proving the contract that
-    // every `emitDownloading` call from the strategy reaches the bus.
-    const target: Target = { kind: "path", path: "/dual.bin" };
-    const onProgress = vi.fn<
-      (loaded: number, total: number | null) => void
-    >();
-    const stream = new Readable({ read() {} });
-
-    // Custom harness: identical to makeHarness() except the bus uses a
-    // controllable clock so the test can advance time between ticks.
-    let nowMs = 0;
-    const bus = createEventBus({
-      clock: {
-        now: () => nowMs,
-        setTimeout: (fn, ms) =>
-          globalThis.setTimeout(fn, ms) as unknown as ReturnType<
-            typeof globalThis.setTimeout
-          >,
-        clearTimeout: (timer) =>
-          globalThis.clearTimeout(
-            timer as unknown as ReturnType<typeof globalThis.setTimeout>,
-          ),
-      },
-    });
-    const events = collect(bus);
-    const store = makeStore();
-    const descriptor = makeProviderDescriptor();
-    const client = new FakeDatasourceClient(
-      {
-        datasourceId: "ds-1",
-        ctx: { bus, credentialStore: store, providerDescriptor: descriptor },
-      },
-      {
-        doDownloadFile: async (_t, options) => {
-          // ONE byte-counting hook in the strategy fires BOTH the consumer's
-          // onProgress AND the bus emission via the base's helper. Real
-          // strategies (§7-§9) attach this hook to their SDK stream's `data`
-          // events; the test fixture invokes it directly to assert the dual
-          // emission contract.
-          const tick = (loaded: number, total: number | null): void => {
-            options.onProgress?.(loaded, total);
-            (
-              client as unknown as {
-                emitDownloading: (
-                  path: string,
-                  loaded: number,
-                  total: number | null,
-                ) => void;
-              }
-            ).emitDownloading("/dual.bin", loaded, total);
-          };
-          tick(1024, 8192);
-          // Advance past the throttle window so the next tick is time-eligible.
-          nowMs += 1100;
-          tick(4096, 8192);
-          nowMs += 1100;
-          tick(8192, 8192);
-          setImmediate(() => stream.push(null));
-          return { stream, contentLength: 8192 };
-        },
-      },
-    );
-
-    await client.downloadFile(target, { onProgress });
-
-    // Three onProgress callbacks fired (synchronous from the same hook).
-    expect(onProgress).toHaveBeenCalledTimes(3);
-    expect(onProgress).toHaveBeenNthCalledWith(1, 1024, 8192);
-    expect(onProgress).toHaveBeenNthCalledWith(2, 4096, 8192);
-    expect(onProgress).toHaveBeenNthCalledWith(3, 8192, 8192);
-
-    // Three matching `downloading` bus events, in order, with matching counts.
-    const downloadings = events.filter((e) => e.event === "downloading");
-    expect(downloadings).toHaveLength(3);
-    const payloads = downloadings.map((e) => e.payload as {
-      path: string;
-      loaded: number;
-      total: number | null;
-    });
-    expect(payloads).toEqual([
-      { path: "/dual.bin", loaded: 1024, total: 8192 },
-      { path: "/dual.bin", loaded: 4096, total: 8192 },
-      { path: "/dual.bin", loaded: 8192, total: 8192 },
-    ]);
-    // Envelope-level fields set by the base for every emission.
-    for (const e of downloadings) {
-      expect(e.datasourceId).toBe("ds-1");
-      expect(e.datasourceType).toBe("amazon-s3");
-      expect(typeof e.ts).toBe("number");
-      // streaming flag set on every `downloading` emission so the bus's
-      // coalescer can do its job downstream.
-      expect(e.streaming).toBe(true);
-    }
-  });
-});
-
-describe("BaseDatasourceClient — downloadFile mid-stream error → `download-failed`", () => {
-  it("strategy resolves a stream that errors mid-flight; bus observes `downloading` events then exactly one `download-failed { ...SerializedDatasourceError<T> }`; no `file-downloaded` or `download-cancelled`", async () => {
-    const target: Target = { kind: "path", path: "/midflight.bin" };
-    const stream = new Readable({ read() {} });
-    const { client, events } = makeHarness({
-      doDownloadFile: async (_t, _options) => {
-        // Tick once, then schedule a stream error.
-        (
-          client as unknown as {
-            emitDownloading: (
-              path: string,
-              loaded: number,
-              total: number | null,
-            ) => void;
-          }
-        ).emitDownloading("/midflight.bin", 1024, 4096);
-        setImmediate(() => {
-          stream.destroy(
-            new DatasourceError<FakeType>({
-              tag: "network-error",
-              datasourceType: "amazon-s3",
-              datasourceId: "ds-1",
-              retryable: true,
-              message: "stream interrupted",
-            }),
-          );
-        });
-        return { stream, contentLength: 4096 };
-      },
-    });
-
-    const result = await client.downloadFile(target);
-    // Drive the stream — base attaches its error/end listeners. The error
-    // surfaces synchronously to the consumer's pipe via an `error` event.
-    let caught: unknown;
-    await new Promise<void>((resolve) => {
-      result.stream.on("data", () => {});
-      result.stream.on("end", () => resolve());
-      result.stream.on("error", (err) => {
-        caught = err;
-        resolve();
-      });
-    });
-
-    expect(caught).toBeInstanceOf(DatasourceError);
-    expect((caught as DatasourceError).tag).toBe("network-error");
-
-    const downloadings = events.filter((e) => e.event === "downloading");
-    const failed = events.filter((e) => e.event === "download-failed");
-    expect(downloadings.length).toBeGreaterThanOrEqual(1);
-    expect(failed).toHaveLength(1);
-    // Per contracts (`download-failed: SerializedDatasourceError<T>`), the
-    // payload IS the serialized error — no `error:` wrapper. `path` is NOT
-    // in the payload; subscribers correlate via the envelope's `datasourceId`.
-    expect(failed[0]?.payload).toMatchObject({
-      tag: "network-error",
-      datasourceType: "amazon-s3",
-      datasourceId: "ds-1",
-      retryable: true,
-      message: "stream interrupted",
-    });
-    expect(events.some((e) => e.event === "file-downloaded")).toBe(false);
-    expect(events.some((e) => e.event === "download-cancelled")).toBe(false);
-  });
-});
-
-describe("BaseDatasourceClient — downloadFile cancel via AbortSignal → `download-cancelled`", () => {
-  it("strategy stream aborts via options.signal; bus observes `downloading` then exactly one `download-cancelled { path, bytesDownloaded, bytesTotal }`; no `download-failed`", async () => {
-    const target: Target = { kind: "path", path: "/cancellable.bin" };
-    const controller = new AbortController();
-    const stream = new Readable({ read() {} });
-    const { client, events } = makeHarness({
-      doDownloadFile: async (_t, options) => {
-        // Tick a couple of times so the cancel event reflects real byte counts.
-        (
-          client as unknown as {
-            emitDownloading: (
-              path: string,
-              loaded: number,
-              total: number | null,
-            ) => void;
-          }
-        ).emitDownloading("/cancellable.bin", 1024, 16_384);
-        (
-          client as unknown as {
-            emitDownloading: (
-              path: string,
-              loaded: number,
-              total: number | null,
-            ) => void;
-          }
-        ).emitDownloading("/cancellable.bin", 4096, 16_384);
-        // Wire the abort listener so a `controller.abort()` after the call
-        // resolves causes the stream to error with AbortError.
-        options.signal?.addEventListener("abort", () => {
-          stream.destroy(
-            Object.assign(new Error("aborted"), { name: "AbortError" }),
-          );
-        });
-        return { stream, contentLength: 16_384 };
-      },
-    });
-
-    const result = await client.downloadFile(target, {
-      signal: controller.signal,
-    });
-    // Drive the stream and abort mid-flow.
-    const drained = new Promise<void>((resolve) => {
-      result.stream.on("data", () => {});
-      result.stream.on("end", () => resolve());
-      result.stream.on("error", () => resolve());
-    });
-    controller.abort();
-    await drained;
-
-    const downloadings = events.filter((e) => e.event === "downloading");
-    const cancelled = events.filter((e) => e.event === "download-cancelled");
-    expect(downloadings.length).toBeGreaterThanOrEqual(1);
-    expect(cancelled).toHaveLength(1);
-    expect(cancelled[0]?.payload).toEqual({
-      path: "/cancellable.bin",
-      bytesDownloaded: 4096,
-      bytesTotal: 16_384,
-    });
-    expect(events.some((e) => e.event === "download-failed")).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Concurrent downloads on the SAME client (different paths) must not
-// cross-contaminate per-call progress tracking. Regression for the
-// original single-slot `currentDownloadProgressHook` design: starting
-// a second concurrent call clobbered the first call's hook (the field
-// was a single instance slot, not keyed by path), so progress ticks
-// emitted via the strategy's `emitDownloading(path, …)` helper for
-// path A AFTER path B had set the slot would silently route to B's
-// closure — freezing A's `lastLoaded` at zero AND polluting B's.
-// On cancel of A, `download-cancelled.bytesDownloaded` would read 0
-// instead of A's actual progress. Refactor moved per-call tracking
-// into closure-local state with a `Map<path, recordProgress>` lookup
-// inside the protected `emitDownloading` helper so each tick routes
-// to the correct call's closure.
-// ---------------------------------------------------------------------------
-
-describe("BaseDatasourceClient — concurrent downloadFile calls on same client emit per-call byte counts on cancel", () => {
-  it("two concurrent calls on different paths each carry their own bytesDownloaded in `download-cancelled`; emitDownloading after both calls are in flight routes to the correct call's closure", async () => {
-    const targetA: Target = { kind: "path", path: "/concurrent/a.bin" };
-    const targetB: Target = { kind: "path", path: "/concurrent/b.bin" };
-    const streamA = new Readable({ read() {} });
-    const streamB = new Readable({ read() {} });
-    const controllerA = new AbortController();
-    const controllerB = new AbortController();
-
-    // Strategy mock returns the streams without ticking — the test
-    // ticks `emitDownloading` from the test body AFTER both calls are
-    // in flight, so under the buggy single-slot design the second
-    // call's hook-set has already overwritten the first's by the time
-    // a tick for path A arrives, and A's tick silently routes to B's
-    // closure. This is the regression-discriminator the per-instance
-    // slot design fails on.
-    const { client, events } = makeHarness({
-      doDownloadFile: async (t, options) => {
-        const path = t.kind === "path" ? t.path : t.handle;
-        const stream = path === targetA.path ? streamA : streamB;
-        options.signal?.addEventListener("abort", () => {
-          stream.destroy(
-            Object.assign(new Error("aborted"), { name: "AbortError" }),
-          );
-        });
-        return { stream, contentLength: 16_384 };
-      },
-    });
-
-    // Start both calls concurrently on the SAME client instance.
-    const [resultA, resultB] = await Promise.all([
-      client.downloadFile(targetA, { signal: controllerA.signal }),
-      client.downloadFile(targetB, { signal: controllerB.signal }),
-    ]);
-
-    // Both downloads are now in flight. Tick `emitDownloading` for
-    // each path — the helper MUST route each tick to the matching
-    // call's closure. Under the buggy single-slot design, the second
-    // `downloadFile` call had overwritten the instance hook with B's
-    // closure, so a tick for path A would update B's `lastLoaded`
-    // (not A's), leaving A's closure-captured `lastLoaded` at 0.
-    const helper = client as unknown as {
-      emitDownloading: (p: string, loaded: number, total: number | null) => void;
-    };
-    helper.emitDownloading(targetA.path, 1024, 16_384);
-    helper.emitDownloading(targetB.path, 4096, 16_384);
-
-    // Drain both streams so the base's listeners fire on cancel.
-    const drainedA = new Promise<void>((resolve) => {
-      resultA.stream.on("data", () => {});
-      resultA.stream.on("end", () => resolve());
-      resultA.stream.on("error", () => resolve());
-    });
-    const drainedB = new Promise<void>((resolve) => {
-      resultB.stream.on("data", () => {});
-      resultB.stream.on("end", () => resolve());
-      resultB.stream.on("error", () => resolve());
-    });
-
-    // Abort A first; assert A's cancel event carries A's own byte
-    // count (1024). Under the buggy single-slot design, A's
-    // closure-captured `lastLoaded` would be 0 (the tick for A had
-    // routed to B's closure), so A's cancel would emit
-    // `bytesDownloaded: 0`.
-    controllerA.abort();
-    await drainedA;
-
-    const cancelledA = events.filter(
-      (e) =>
-        e.event === "download-cancelled" &&
-        (e.payload as { path: string }).path === targetA.path,
-    );
-    expect(cancelledA).toHaveLength(1);
-    expect(cancelledA[0]?.payload).toEqual({
-      path: targetA.path,
-      bytesDownloaded: 1024,
-      bytesTotal: 16_384,
-    });
-
-    // Now abort B; B's cancel event must carry B's own byte count
-    // (4096). Under the buggy single-slot design, B's closure would
-    // have ALSO captured A's tick (since A's tick routed to B's
-    // closure), so B's `lastLoaded` would be 4096 — but A's tick
-    // would have first set it to 1024 then B's tick overwrote to
-    // 4096, so B happens to land on the correct value here. The
-    // distinguishing assertion is A's, above; B's is included for
-    // completeness so the test exercises both cancel paths.
-    controllerB.abort();
-    await drainedB;
-
-    const cancelledB = events.filter(
-      (e) =>
-        e.event === "download-cancelled" &&
-        (e.payload as { path: string }).path === targetB.path,
-    );
-    expect(cancelledB).toHaveLength(1);
-    expect(cancelledB[0]?.payload).toEqual({
-      path: targetB.path,
-      bytesDownloaded: 4096,
-      bytesTotal: 16_384,
-    });
-
-    // Sanity: no cross-contamination produces a stray `download-failed`.
-    expect(events.some((e) => e.event === "download-failed")).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Strategies cannot emit events directly
-// ---------------------------------------------------------------------------
-
-describe("BaseDatasourceClient — no direct bus.emit in strategies", () => {
-  it("only base-client.ts references bus.emit in packages/fs-datasource-engine/src/", () => {
-    const root = join(__dirname);
-    const files = walkTs(root);
-    const offenders: string[] = [];
-    for (const file of files) {
-      const base = file.split(/[\\/]/).pop() ?? "";
-      if (base === "base-client.ts") continue;
-      if (base === "event-bus.ts") continue; // the bus itself
-      if (base.endsWith(".test.ts")) continue;
-      const content = readFileSync(file, "utf8");
-      if (/\.emit\s*\(/.test(content) || /bus\.emit/.test(content)) {
-        offenders.push(file);
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-});
-
-function walkTs(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    const st = statSync(full);
-    if (st.isDirectory()) {
-      out.push(...walkTs(full));
-    } else if (full.endsWith(".ts")) {
-      out.push(full);
-    }
-  }
-  return out;
-}

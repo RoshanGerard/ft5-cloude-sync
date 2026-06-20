@@ -9,17 +9,16 @@
 // 3. Mints a `downloadJobId` UUID + creates an AbortController.
 // 4. Inserts a registry entry (the registry's reverse-index is updated
 //    in lockstep so `findByKey` resolves immediately).
-// 5. Subscribes to the engine bus's four download lifecycle events for
-//    the lifetime of the call (per-handler-call subscription — the
-//    file-touch constraint resolves the §13.21-§13.22 spec ambiguity in
-//    favour of handler-local; the bus subscription is also the canonical
-//    source for the `derived-not-relayed` IPC event emission per
-//    §13.25-§13.26).
+// 5. Constructs a handler-local progress coalescer that governs the
+//    `downloading` IPC emit (migrate-engine-events-to-consumer §1,
+//    Decision 2). The engine bus is gone; the handler owns the throttle
+//    (1s OR 10% delta, flush-before-terminal) over `options.onProgress`.
 // 6. Runs the retry loop calling `engine.downloadFile(target,
-//    { rangeStart, signal, onProgress })` repeatedly. The `onProgress`
-//    callback is the low-overhead inline path; the bus subscription is
-//    the cross-cutting observation path. Both converge on the same
-//    registry state.
+//    { rangeStart, signal, onProgress })` repeatedly. Each `onProgress`
+//    tick writes the registry per-tick (unthrottled) AND feeds the
+//    coalescer, which emits the throttled `downloading` IPC event. The
+//    terminal `file-downloaded` / `download-failed` / `download-cancelled`
+//    events are emitted by the handler's own synchronous path.
 // 7. Validates `contentRange.start === rangeStart` (range-not-honored /
 //    range-mismatch detection — Decision 3 safeguards).
 // 8. On stream end, asserts `fs.stat(toPath).size === contentLength`.
@@ -68,15 +67,18 @@
 //     intact per its scope (auth refresh moves layers; the env-retry /
 //     cycle-budget structure does not).
 //
-// Subscription scope. The reconciliation: tasks.md §13.22 says
-// "service-bootstrap level"; user brief says "handler-local". The
-// file-touch constraint forbids touching `bootstrap.ts`. The
-// per-handler-call form satisfies the spec's invariant ("fs-sync
-// subscribes to the engine bus for download lifecycle observation") —
-// the subscription is taken when the handler runs, released in a
-// `finally` when it completes. Multiple concurrent downloads each take
-// their own subscription; the engine bus does its own
-// 1-second-or-10-percentage-points coalescing.
+// Progress throttle. Historically the `downloading` IPC stream was
+// throttled by the engine bus's 1s/10pct coalescer, which the handler
+// subscribed to. migrate-engine-events-to-consumer §1 (Decision 2)
+// removed the engine bus; the throttle is now a handler-LOCAL coalescer
+// over `options.onProgress`: it emits on a tick when ≥1s elapsed since
+// the last emit OR the progress pct crossed a 10-point boundary, holds
+// the rest as `pending`, and `flush()` emits the pending before each
+// terminal emit (so the final 100% lands before `file-downloaded` and
+// never after). The throttle governs the IPC emit ONLY — the registry's
+// `bytesDownloaded` updates on EVERY tick (cancel/failure payloads +
+// `downloads:list-active` read the latest count). Multiple concurrent
+// downloads each own their own coalescer (handler-local closure state).
 
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
@@ -113,24 +115,6 @@ import {
 } from "../util/path-validator.js";
 import { resolveKeepBothSuffix } from "../util/keep-both-suffix.js";
 import { isEnvironmentallyRetryable } from "../util/retry-classification.js";
-
-// ---------------------------------------------------------------------------
-// Engine bus — minimal interface fs-sync subscribes to. The real engine
-// bus comes from `@ft5/fs-datasource-engine`; the handler accepts the
-// minimal subscribe surface so tests can drive a fake without wiring the
-// full coalescer.
-// ---------------------------------------------------------------------------
-
-export interface EngineBusEvent {
-  readonly event: string;
-  readonly datasourceId: string;
-  readonly streaming?: boolean;
-  readonly payload: unknown;
-}
-
-export interface EngineBusSubscriber {
-  subscribe(handler: (event: EngineBusEvent) => void): () => void;
-}
 
 // ---------------------------------------------------------------------------
 // Filesystem boundary — the handler injects these so tests do not have to
@@ -402,7 +386,6 @@ export interface FilesDownloadDeps {
   ) => Promise<DatasourceClient<DatasourceType>>;
   readonly registry: DownloadRegistry;
   readonly fsSyncBus: EventBus;
-  readonly engineBus: EngineBusSubscriber;
   readonly fs: FsBoundary;
   readonly hash: HashComputer;
   readonly randomUUID: () => string;
@@ -492,7 +475,6 @@ export function createDefaultFilesDownloadDeps(deps: {
   resolveClient: FilesDownloadDeps["resolveClient"];
   registry: DownloadRegistry;
   fsSyncBus: EventBus;
-  engineBus: EngineBusSubscriber;
   hash: HashComputer;
 }): FilesDownloadDeps {
   const fsBoundary: FsBoundary = {
@@ -734,73 +716,106 @@ export function makeFilesDownloadHandler(
     };
     deps.registry.set(initialEntry);
 
-    // 5. Engine-bus subscription — handler-local lifetime. Drives the
-    // §13.25-§13.26 derived-not-relayed IPC event emission for the four
-    // download lifecycle events. Reverse-index lookup correlates engine
-    // `(datasourceId, path)` to fs-sync's `downloadJobId`.
+    // 5. Handler-local progress coalescer — governs the `downloading` IPC
+    // EMIT (per migrate-engine-events-to-consumer §1, Decision 2). The
+    // engine bus (and its coalescer) is gone; `onProgress` fires at raw
+    // SDK-chunk frequency, so the handler now owns the throttle. NOTE: the
+    // removed engine-bus coalescer threw out the 10%-delta rule for
+    // `downloading` (its payload carried no `progress` field, so only the
+    // 1-second window ever fired); this handler honors the full documented
+    // 1s-OR-10% envelope — a benign, more-responsive improvement on fast
+    // downloads, within the throttle the spec always prescribed. The
+    // coalescer is TICK-DRIVEN (no background timer): each onProgress tick
+    // calls `progress.report(loaded, total)` with the engine's WITHIN-CYCLE
+    // `loaded` (the value the old bus path forwarded — wire-identical),
+    // which emits NOW when ≥1000ms elapsed since the last emit OR the
+    // progress pct crossed a 10-point boundary; otherwise the tick is HELD
+    // as `pending`.
+    // `progress.flush()` emits the pending update and is called before each
+    // terminal emit so the final progress (e.g. 100%) lands BEFORE the
+    // terminal `file-downloaded` / `download-failed` / `download-cancelled`
+    // and never after it.
     //
-    // `inflightId.current` lets the callback distinguish events for THIS
-    // download from a re-claimed (datasourceId, path) after the entry
-    // was removed. Declared as a ref so the closure observes its mutation
-    // when the handler clears it on terminal.
+    // The throttle governs the IPC emit ONLY — the registry's
+    // `bytesDownloaded` continues to update on EVERY tick (see the
+    // `onProgress` callback below), unthrottled, because the cancel/failure
+    // terminal payloads + `downloads:list-active` read the latest count.
+    //
+    // `inflightId.current` lets the coalescer distinguish THIS download from
+    // a re-claimed (datasourceId, path) after the entry was removed. Declared
+    // as a ref so the closure observes its mutation when the handler clears it
+    // on terminal. (Belt-and-suspenders here — `onProgress` is a direct
+    // callback from THIS download's engine call, not a broadcast bus, so the
+    // guard is not expected to fire — but it mirrors the prior bus
+    // subscription's re-claim guard.)
     const inflightId: { current: string | null } = { current: downloadJobId };
     // §12.7 (Decision 17) — handler-scoped prefetched size. Captured by
     // the pre-cycle metadata prefetch (below); used as the bytesTotal
     // fallback in `transformDownloadingEvent` when the engine response
     // omits Content-Length, AND as the contentLength preservation
-    // anchor in the registry-update sites (Decision 17d).
+    // anchor in the registry-update sites (Decision 17d). The coalescer
+    // reads it LAZILY (closure over the `let`) — it is assigned after the
+    // coalescer is constructed.
     let prefetchedSize: number | null = null;
-    const unsubscribe = deps.engineBus.subscribe((event) => {
-      if (event.datasourceId !== params.datasourceId) return;
-      const payload = event.payload as { path?: string };
-      if (payload.path !== params.path) return;
-      const id = deps.registry.findByKey(
-        params.datasourceId,
-        params.path,
-      );
-      if (id !== inflightId.current) return;
-      switch (event.event) {
-        case "downloading": {
-          const ep = event.payload as DownloadingEnginePayload;
-          // §12.7 (Decision 17d) — registry contentLength preservation
-          // rule: when the engine reports `total: null`, MUST NOT
-          // overwrite the registry's existing contentLength with null.
-          // The prefetch may have seeded it; subsequent null-total
-          // updates would defeat the prefetch. Engine-reported total
-          // (when non-null) takes priority — a resume cycle that
-          // surfaces a freshly-advertised Content-Length WILL update
-          // the value.
-          const existingForBus = deps.registry.get(id);
-          // Update registry from the bus stream too — it is throttled by
-          // the engine bus's 1s/10pct coalescer, so writes are bounded.
-          deps.registry.update(id, {
-            bytesDownloaded: ep.loaded,
-            contentLength:
-              ep.total !== null
-                ? ep.total
-                : (existingForBus?.contentLength ?? null),
-          });
-          deps.fsSyncBus.emit(
-            "downloading",
-            transformDownloadingEvent(ep, {
-              downloadJobId: id,
-              datasourceId: params.datasourceId,
-              prefetchedSize,
-            }),
-          );
-          break;
-        }
-        // file-downloaded / download-failed / download-cancelled are
-        // emitted from the synchronous code path below — the bus
-        // subscription's role for terminals is observation. Emitting
-        // from both would double-emit; the synchronous path is
-        // authoritative because it has access to the post-pipe
-        // savedPath / bytes / integrity-check decision the engine bus
-        // does not.
-        default:
-          break;
+    // Sentinel so the FIRST tick always emits: any real `deps.now()` minus
+    // `-Infinity` is `Infinity >= 1000`.
+    const PROGRESS_THROTTLE_MS = 1000;
+    const PROGRESS_THROTTLE_PCT = 10;
+    let lastEmitMs = -Infinity;
+    let lastEmitPct = 0;
+    let pending: { loaded: number; total: number | null } | null = null;
+    // Compute progress pct exactly as `transformDownloadingEvent` does:
+    // best-known total = engine total (when non-null) else prefetchedSize
+    // else null; pct = floor(loaded/total*100) clamped [0,100], or 0 when
+    // total unknown. Kept in lockstep so the throttle decision matches the
+    // pct on the wire.
+    const computePct = (loaded: number, total: number | null): number => {
+      const best = total ?? prefetchedSize ?? null;
+      if (best === null || best <= 0) return 0;
+      return Math.min(100, Math.max(0, Math.floor((loaded / best) * 100)));
+    };
+    const emitDownloading = (loaded: number, total: number | null): void => {
+      // Re-claim guard: only emit for THIS in-flight job.
+      if (
+        deps.registry.findByKey(params.datasourceId, params.path) !==
+        inflightId.current
+      ) {
+        return;
       }
-    });
+      deps.fsSyncBus.emit(
+        "downloading",
+        transformDownloadingEvent(
+          { path: params.path, loaded, total },
+          {
+            downloadJobId,
+            datasourceId: params.datasourceId,
+            prefetchedSize,
+          },
+        ),
+      );
+      lastEmitMs = deps.now();
+      lastEmitPct = computePct(loaded, total);
+      pending = null;
+    };
+    const progress = {
+      report(loaded: number, total: number | null): void {
+        const pct = computePct(loaded, total);
+        const elapsed = deps.now() - lastEmitMs;
+        if (
+          elapsed >= PROGRESS_THROTTLE_MS ||
+          Math.abs(pct - lastEmitPct) >= PROGRESS_THROTTLE_PCT
+        ) {
+          emitDownloading(loaded, total);
+        } else {
+          pending = { loaded, total };
+        }
+      },
+      flush(): void {
+        if (pending !== null) {
+          emitDownloading(pending.loaded, pending.total);
+        }
+      },
+    };
 
     // 6. Retry loop (per design.md Decision 3 pseudocode + add-download-
     // resilience §4 environmental-retry layer). Each outer iteration runs
@@ -987,26 +1002,39 @@ export function makeFilesDownloadHandler(
             rangeStart: effectiveRangeStart,
             signal: composedSignal,
             onProgress: (loaded, total) => {
-              // Inline, low-overhead path: update registry every tick.
-              // The engine-bus subscription path also updates the
-              // registry but is throttled; both converge so the latest
-              // wins regardless of arrival order.
-              //
+              // `loaded` is WITHIN-CYCLE (relative to this request's
+              // rangeStart). The REGISTRY tracks the ABSOLUTE byte count
+              // on disk (`effectiveRangeStart + loaded`) — unchanged from
+              // before this migration; the cancel/failure terminal
+              // payloads and `downloads:list-active` read it.
+              const absoluteLoaded = effectiveRangeStart + loaded;
+              // Per-tick registry write (NOT throttled — see Decision 2).
               // §12.7 (Decision 17d) — contentLength preservation rule:
               // when the engine callback reports `total: null`, MUST
               // NOT overwrite the registry's existing contentLength
               // with null. Read the existing entry first, then prefer
               // engine's `total` (when non-null), else preserve the
-              // existing value, else null. Symmetric with the
-              // engine-bus subscription's `case "downloading"` write.
+              // existing value, else null.
               const existing = deps.registry.get(downloadJobId);
               deps.registry.update(downloadJobId, {
-                bytesDownloaded: effectiveRangeStart + loaded,
+                bytesDownloaded: absoluteLoaded,
                 contentLength:
                   total !== null
                     ? total
                     : (existing?.contentLength ?? null),
               });
+              // Throttled `downloading` IPC emit (1s OR 10% delta) — the
+              // handler-local coalescer governs the renderer-facing stream
+              // so it is not flooded at chunk frequency. It emits the
+              // engine's WITHIN-CYCLE `loaded` verbatim — EXACTLY the value
+              // the removed engine-bus path forwarded via
+              // `transformDownloadingEvent(ep)` — so the wire `downloading`
+              // payload is unchanged by this migration (non-goal: download
+              // progress wire identical). Reconciling resume-cycle progress
+              // (relative emit vs absolute registry) is a pre-existing
+              // concern, out of scope here. The pending tick is flushed
+              // before each terminal emit.
+              progress.report(loaded, total);
             },
           };
           let result: DownloadResult;
@@ -1396,7 +1424,14 @@ export function makeFilesDownloadHandler(
         }
       }
     } catch (err) {
-      // Terminal — figure out which event to emit.
+      // Terminal — figure out which event to emit. Flush any pending
+      // (held) progress as a `downloading` BEFORE the terminal emit so the
+      // final byte count is never dropped or reordered ahead of the
+      // terminal (Decision 2). Flushing once here covers BOTH the cancel
+      // branch and every `download-failed` branch below. Non-terminal
+      // `download-retrying` emits are mid-loop (not here) and are NOT
+      // flushed before.
+      progress.flush();
       const datasourceId = params.datasourceId;
       try {
         if (err instanceof CancelledError || abortController.signal.aborted) {
@@ -1559,14 +1594,16 @@ export function makeFilesDownloadHandler(
       } finally {
         deps.registry.delete(downloadJobId);
         inflightId.current = null;
-        unsubscribe();
       }
     }
 
-    // Success path. Emit terminal `file-downloaded` event with the
-    // post-pipe savedPath + verified byte count. Per §13.25-§13.26 this
-    // is fs-sync's downloadJobId-keyed shape (not a relay of the engine
-    // bus's `(datasourceId, path)` shape).
+    // Success path. Flush any pending (held) progress as a `downloading`
+    // BEFORE the terminal `file-downloaded` so the final byte count
+    // (typically 100%) is emitted before the terminal and never after it
+    // (Decision 2).
+    progress.flush();
+    // Emit terminal `file-downloaded` event with the post-pipe savedPath +
+    // verified byte count. This is fs-sync's downloadJobId-keyed shape.
     deps.fsSyncBus.emit("file-downloaded", {
       downloadJobId,
       datasourceId: params.datasourceId,
@@ -1575,7 +1612,6 @@ export function makeFilesDownloadHandler(
     });
     deps.registry.delete(downloadJobId);
     inflightId.current = null;
-    unsubscribe();
     return {
       ok: true,
       result: { savedPath: effectiveTargetPath, bytes: bytesWritten },

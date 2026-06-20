@@ -38,11 +38,13 @@
 //     the chunk-upload path). Chunk size is fixed at 320 KiB × 32 ≈ 10 MiB
 //     (Graph requires chunk sizes that are multiples of 320 KiB, max 60 MiB).
 //
-//   - Event-driven LRU invalidation. The base class owns the bus; strategies
-//     MUST NOT emit directly. But a strategy MAY subscribe — and we do, to
-//     hook `deleted` events for path-cache invalidation. Upload-completion
-//     LRU population happens inside `doUploadFileImpl`'s success branch
-//     directly (per migrate-upload-orchestration-out-of-engine).
+//   - Path-cache (LRU) invalidation. There is no bus and no subscription:
+//     the engine event bus was removed in
+//     migrate-engine-events-to-consumer, and inline path-cache eviction
+//     (per migrate-engine-cache-invalidation) already runs directly inside
+//     `doDeleteFileImpl` / `doRenameImpl`. Upload-completion LRU population
+//     happens inside `doUploadFileImpl`'s success branch directly (per
+//     migrate-upload-orchestration-out-of-engine).
 //
 //   - `refreshToken`. OAuth refresh posts `grant_type=refresh_token` to
 //     `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`. This is
@@ -1342,8 +1344,9 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
   // The byte-counting wrapper is a `Transform` (NOT a PassThrough +
   // `data` listener) — the same timing-race avoidance Drive's §7.7
   // describes. The Transform's `_transform` invokes
-  // `options.onProgress?.(...)` AND `this.emitDownloading(path, loaded,
-  // total)` per chunk so consumer callback + bus stay in lockstep.
+  // `options.onProgress?.(...)` per chunk — the sole progress channel
+  // (the engine emits no `downloading` events post
+  // migrate-engine-events-to-consumer).
   //
   // Auth-expired surfacing: a 401 surfaced before the body opens is
   // mapped by `normalizeErrorImpl` (Graph 401 → `tag: "auth-expired"`)
@@ -1360,7 +1363,6 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
     // through directly. The download URL itself uses item-id form so
     // path renames mid-flight do not invalidate the URL.
     const itemId = await this.resolveTargetItemId(target);
-    const path = target.kind === "path" ? target.path : target.handle;
 
     const downloadUrl = `https://graph.microsoft.com/v1.0/me/drive/items/${itemId}/content`;
     const headers: Record<string, string> = {
@@ -1437,7 +1439,6 @@ export class OneDriveClient extends BaseDatasourceClient<"onedrive"> {
         } catch {
           // Consumer-callback errors must not break the stream pipeline.
         }
-        this.emitDownloading(path, loaded, total);
         cb(null, chunk);
       },
     });

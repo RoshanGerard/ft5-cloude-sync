@@ -2,7 +2,6 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "ele
 
 import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
 import type {
-  AnyDatasourceEvent,
   DatasourcesActionRequest,
   DatasourcesActionResponse,
   DatasourcesAddRequest,
@@ -143,29 +142,11 @@ const api = {
     // kinds (`uploading` / `file-created` / `upload-failed` /
     // `upload-cancelled`). See `upload-job-toast.ts`'s
     // `resolveEventApi` for the production fallback.
-    // Broad subscription to the engine's event stream over
-    // `DATASOURCES_CHANNELS.event`. Unlike `onUploadProgress`, there is no
-    // filter here — every `DatasourceEvent<T, K>` that crosses the main →
-    // renderer bridge is delivered to the callback, and the caller narrows
-    // via `switch (e.datasourceType)` / `switch (e.event)`.
     //
-    // Each invocation registers its own listener, so multiple subscribers
-    // can coexist independently; the returned dispose function removes that
-    // specific listener (not all listeners on the channel).
-    onEvent: (
-      callback: (event: AnyDatasourceEvent) => void,
-    ): (() => void) => {
-      const listener = (
-        _event: IpcRendererEvent,
-        payload: AnyDatasourceEvent,
-      ): void => {
-        callback(payload);
-      };
-      ipcRenderer.on(DATASOURCES_CHANNELS.event, listener);
-      return () => {
-        ipcRenderer.removeListener(DATASOURCES_CHANNELS.event, listener);
-      };
-    },
+    // migrate-engine-events-to-consumer §4 — the broad `onEvent`
+    // subscription over `DATASOURCES_CHANNELS.event` is REMOVED. The dead
+    // engine `datasources:event` bridge had no production emitter or
+    // consumer; datasource-facing events flow on `window.api.sync.onEvent`.
   },
   files: {
     list: (req: FilesListRequest): Promise<FilesListResponse> =>
@@ -200,9 +181,9 @@ const api = {
     // sync-service registry and forwards the response so the renderer
     // can spawn one Sonner toast per in-flight download (Decision 4).
     // Reconnects mid-session do NOT re-fire; the renderer's existing
-    // event subscriptions resume. Mirrors `datasources.onEvent` and
-    // `sync.onEvent` in shape: each invocation registers its own
-    // listener, the returned dispose function removes that specific
+    // event subscriptions resume. Mirrors `sync.onEvent` in shape: each
+    // invocation registers its own listener, the returned dispose
+    // function removes that specific
     // listener (not all listeners on the channel).
     onActiveDownloadsHydrate: (
       callback: (jobs: readonly DownloadJob[]) => void,
@@ -320,10 +301,10 @@ const api = {
       req: SyncSetRetryPolicyRequest,
     ): Promise<SyncSetRetryPolicyResponse> =>
       ipcRenderer.invoke(SYNC_CHANNELS.setRetryPolicy, req),
-    // One-way main → renderer event stream. Mirrors the `datasources.onEvent`
-    // pattern: each invocation registers its own listener, so multiple
-    // subscribers can coexist independently; the returned dispose function
-    // removes that specific listener (not all listeners on the channel).
+    // One-way main → renderer event stream. Each invocation registers its
+    // own listener, so multiple subscribers can coexist independently; the
+    // returned dispose function removes that specific listener (not all
+    // listeners on the channel).
     onEvent: (
       callback: (event: SyncEvent) => void,
     ): (() => void) => {

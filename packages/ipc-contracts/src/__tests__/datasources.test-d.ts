@@ -247,7 +247,7 @@ describe("ipc-contracts datasources request/response pairs", () => {
 });
 
 describe("ipc-contracts datasources channel names", () => {
-  it("DATASOURCES_CHANNELS exposes exactly the expected channels, excludes retired consent + upload + uploadProgress", () => {
+  it("DATASOURCES_CHANNELS exposes exactly the expected channels, excludes retired consent + upload + uploadProgress + event", () => {
     // Retired channel slots (do NOT reappear):
     //   - `upload` (`add-file-explorer-drag-drop-upload`): dispatch
     //     moved to `files.upload`.
@@ -258,6 +258,10 @@ describe("ipc-contracts datasources channel names", () => {
     //     §7.5 / §13.4): upload events moved to the unified
     //     `sync:event-stream` (channel `sync:event`) keyed by
     //     `uploadJobId`.
+    //   - `event` (`migrate-engine-events-to-consumer` Decision 4): the
+    //     `datasources:event` channel was removed with the engine
+    //     EventBus; it had no production emitter or consumer. Datasource-
+    //     facing events flow as `auth-*` / `job-*` on `sync:event`.
     expect(DATASOURCES_CHANNELS.list).toBe("datasources:list");
     expect(DATASOURCES_CHANNELS.add).toBe("datasources:add");
     expect(DATASOURCES_CHANNELS.remove).toBe("datasources:remove");
@@ -265,12 +269,10 @@ describe("ipc-contracts datasources channel names", () => {
     expect(DATASOURCES_CHANNELS.pickFilesToUpload).toBe(
       "datasources:pick-files-to-upload",
     );
-    expect(DATASOURCES_CHANNELS.event).toBe("datasources:event");
     expect(Object.keys(DATASOURCES_CHANNELS).sort()).toEqual(
       [
         "action",
         "add",
-        "event",
         "list",
         "pickFilesToUpload",
         "remove",
@@ -282,6 +284,7 @@ describe("ipc-contracts datasources channel names", () => {
       "startConsent",
       "cancelConsent",
       "uploadProgress",
+      "event",
     ]) {
       expect(
         Object.prototype.hasOwnProperty.call(DATASOURCES_CHANNELS, removed),
@@ -289,12 +292,17 @@ describe("ipc-contracts datasources channel names", () => {
     }
   });
 
-  it("DATASOURCES_CHANNELS key set (type-level) excludes 'upload', 'startConsent', 'cancelConsent', 'uploadProgress'", () => {
+  it("DATASOURCES_CHANNELS key set (type-level) excludes 'upload', 'startConsent', 'cancelConsent', 'uploadProgress', 'event'", () => {
     // Type-level guard: removed keys must NOT be assignable to the key union.
     type HasUpload = "upload" extends keyof typeof DATASOURCES_CHANNELS
       ? true
       : never;
     expectTypeOf<HasUpload>().toEqualTypeOf<never>();
+
+    type HasEvent = "event" extends keyof typeof DATASOURCES_CHANNELS
+      ? true
+      : never;
+    expectTypeOf<HasEvent>().toEqualTypeOf<never>();
 
     type HasStartConsent =
       "startConsent" extends keyof typeof DATASOURCES_CHANNELS ? true : never;

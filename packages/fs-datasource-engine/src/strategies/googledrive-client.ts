@@ -1838,11 +1838,6 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
     options: DownloadOptions,
   ): Promise<DownloadResult> {
     const { fileId } = await this.resolveTarget(target);
-    // The bus's `downloading` / `file-downloaded` events carry an
-    // engine-facing path string. Path-form targets supply it directly;
-    // handle-form targets fall back to the handle so the event still
-    // identifies the file.
-    const path = target.kind === "path" ? target.path : target.handle;
 
     // Post-archive smoke (2026-04-28): pre-fetch metadata to detect
     // Google Apps native files (Docs / Sheets / Slides / Drawings /
@@ -1938,7 +1933,6 @@ export class GoogleDriveClient extends BaseDatasourceClient<"google-drive"> {
         } catch {
           // Consumer-callback errors must not break the stream pipeline.
         }
-        this.emitDownloading(path, loaded, total);
         cb(null, chunk);
       },
     });

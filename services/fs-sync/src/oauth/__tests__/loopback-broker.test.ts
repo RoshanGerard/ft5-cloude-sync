@@ -35,7 +35,6 @@ import type {
   ClientFactory,
   CredentialStore,
   EngineContext,
-  EventBus as EngineEventBus,
   OAuthAppConfig,
   OAuthIntent,
 } from "@ft5/fs-datasource-engine";
@@ -64,10 +63,6 @@ function makeBusSpy(bus: EventBus): {
   });
   return { events, unsubscribe };
 }
-
-/** Empty engine bus stub — broker doesn't emit on the engine bus, but
- *  factory.createForAuth needs one in EngineContext. */
-const fakeEngineBus = {} as EngineEventBus;
 
 /** Empty credential-store stub — the engine writes through this on
  *  `intent.completeWith`; tests that do NOT exercise completeWith can pass
@@ -181,7 +176,7 @@ describe("OAuthLoopbackBroker", () => {
   beforeEach(() => {
     bus = createEventBus();
     credentialStore = makeFakeCredentialStore();
-    engineContext = { bus: fakeEngineBus, credentialStore };
+    engineContext = { credentialStore };
   });
 
   afterEach(() => {

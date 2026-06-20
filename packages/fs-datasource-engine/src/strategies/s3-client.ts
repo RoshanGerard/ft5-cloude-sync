@@ -957,7 +957,6 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
     options: DownloadOptions,
   ): Promise<DownloadResult> {
     const key = targetToKey(target);
-    const path = target.kind === "path" ? target.path : target.handle;
     const range =
       options.rangeStart !== undefined && options.rangeStart > 0
         ? `bytes=${options.rangeStart}-`
@@ -1002,7 +1001,6 @@ export class S3Client extends BaseDatasourceClient<"amazon-s3"> {
         } catch {
           // Consumer-callback errors must not break the pipeline.
         }
-        this.emitDownloading(path, loaded, total);
         cb(null, chunk);
       },
     });

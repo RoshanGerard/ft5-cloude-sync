@@ -16,10 +16,6 @@ vi.mock("electron", () => ({
 import { contextBridge, ipcRenderer } from "electron";
 
 import { DATASOURCES_CHANNELS, FILES_CHANNELS } from "@ft5/ipc-contracts";
-import type {
-  AnyDatasourceEvent,
-  DatasourceEvent,
-} from "@ft5/ipc-contracts";
 
 type ExposedApi = {
   ping: () => Promise<unknown>;
@@ -29,9 +25,6 @@ type ExposedApi = {
     remove: (req: unknown) => Promise<unknown>;
     action: (req: unknown) => Promise<unknown>;
     pickFilesToUpload: () => Promise<unknown>;
-    onEvent: (
-      callback: (event: AnyDatasourceEvent) => void,
-    ) => () => void;
   };
   files: {
     list: (req: unknown) => Promise<unknown>;
@@ -124,7 +117,7 @@ describe("preload exposed api", () => {
   });
 
   describe("datasources surface", () => {
-    it("exposes list/add/remove/action/pickFilesToUpload/onEvent as functions; onUploadProgress is REMOVED post migrate-upload-orchestration-out-of-engine §7.9", async () => {
+    it("exposes list/add/remove/action/pickFilesToUpload as functions; onUploadProgress is REMOVED post migrate-upload-orchestration-out-of-engine §7.9; onEvent is REMOVED post migrate-engine-events-to-consumer §4", async () => {
       const exposed = await loadExposed();
 
       expect(typeof exposed.datasources.list).toBe("function");
@@ -132,7 +125,17 @@ describe("preload exposed api", () => {
       expect(typeof exposed.datasources.remove).toBe("function");
       expect(typeof exposed.datasources.action).toBe("function");
       expect(typeof exposed.datasources.pickFilesToUpload).toBe("function");
-      expect(typeof exposed.datasources.onEvent).toBe("function");
+      // migrate-engine-events-to-consumer §4 — `onEvent` is gone. The dead
+      // engine `datasources:event` bridge had no production emitter or
+      // consumer; datasource-facing events flow on `window.api.sync.onEvent`.
+      const dsForOnEvent = exposed.datasources as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(dsForOnEvent.onEvent).toBeUndefined();
+      expect(
+        Object.prototype.hasOwnProperty.call(dsForOnEvent, "onEvent"),
+      ).toBe(false);
       // §7.9 — `onUploadProgress` is gone. The renderer's upload toaster
       // now subscribes to `window.api.sync.onEvent` filtered to the four
       // upload event kinds keyed by service-minted `uploadJobId`.
@@ -271,109 +274,6 @@ describe("preload exposed api", () => {
     // `sync:event-stream` to the four upload event kinds keyed by
     // `uploadJobId`).
 
-    it("onEvent subscribes to DATASOURCES_CHANNELS.event without filtering and returns an unsubscribe that removes the SAME listener", async () => {
-      // Unlike `onUploadProgress`, `onEvent` is a broad subscription: every
-      // DatasourceEvent crossing the bridge is delivered to the callback
-      // unfiltered. Consumers narrow client-side via
-      // `switch (e.datasourceType)` / `switch (e.event)`.
-      const onMock = ipcRenderer.on as unknown as ReturnType<typeof vi.fn>;
-      const removeListenerMock =
-        ipcRenderer.removeListener as unknown as ReturnType<typeof vi.fn>;
-
-      const exposed = await loadExposed();
-      const callback = vi.fn();
-
-      const unsubscribe = exposed.datasources.onEvent(callback);
-
-      // Registered exactly one listener on the broadcast channel.
-      expect(onMock).toHaveBeenCalledTimes(1);
-      const [channel, listener] = onMock.mock.calls[0]!;
-      expect(channel).toBe(DATASOURCES_CHANNELS.event);
-      expect(typeof listener).toBe("function");
-
-      // Simulate delivery of a representative DatasourceEvent. The preload
-      // listener must strip the IpcRendererEvent and pass only the payload
-      // through to the caller's callback.
-      const sampleEvent: DatasourceEvent<"amazon-s3", "file-created"> = {
-        event: "file-created",
-        datasourceType: "amazon-s3",
-        datasourceId: "ds-1",
-        ts: 1_700_000_000_000,
-        // The payload's static shape is `unknown` in Phase 1; the test only
-        // asserts identity-through-delivery, not payload shape.
-        payload: { bucket: "b", key: "k" } as unknown,
-      };
-      (listener as (
-        ev: unknown,
-        payload: AnyDatasourceEvent,
-      ) => void)({}, sampleEvent);
-      expect(callback).toHaveBeenCalledTimes(1);
-      expect(callback).toHaveBeenCalledWith(sampleEvent);
-
-      // A second event — for a different provider — must also pass through
-      // without any filtering (contrast with onUploadProgress's tx-id gate).
-      const otherEvent: DatasourceEvent<"google-drive", "uploading"> = {
-        event: "uploading",
-        datasourceType: "google-drive",
-        datasourceId: "ds-2",
-        ts: 1_700_000_000_001,
-        streaming: true,
-        payload: { progress: 0.5 } as unknown,
-      };
-      (listener as (
-        ev: unknown,
-        payload: AnyDatasourceEvent,
-      ) => void)({}, otherEvent);
-      expect(callback).toHaveBeenCalledTimes(2);
-      expect(callback).toHaveBeenNthCalledWith(2, otherEvent);
-
-      // Unsubscribe must remove the SAME listener instance from the SAME
-      // channel (no partial re-registration tricks).
-      expect(typeof unsubscribe).toBe("function");
-      unsubscribe();
-      expect(removeListenerMock).toHaveBeenCalledTimes(1);
-      expect(removeListenerMock.mock.calls[0]).toEqual([
-        DATASOURCES_CHANNELS.event,
-        listener,
-      ]);
-    });
-
-    it("onEvent supports multiple independent subscribers, each with its own listener registration", async () => {
-      // Two subscribers must each get their own registration so one's
-      // unsubscribe cannot silently knock out the other.
-      const onMock = ipcRenderer.on as unknown as ReturnType<typeof vi.fn>;
-      const removeListenerMock =
-        ipcRenderer.removeListener as unknown as ReturnType<typeof vi.fn>;
-
-      const exposed = await loadExposed();
-      const cb1 = vi.fn();
-      const cb2 = vi.fn();
-
-      const unsub1 = exposed.datasources.onEvent(cb1);
-      const unsub2 = exposed.datasources.onEvent(cb2);
-
-      expect(onMock).toHaveBeenCalledTimes(2);
-      const listener1 = onMock.mock.calls[0]![1] as (
-        ev: unknown,
-        payload: AnyDatasourceEvent,
-      ) => void;
-      const listener2 = onMock.mock.calls[1]![1] as (
-        ev: unknown,
-        payload: AnyDatasourceEvent,
-      ) => void;
-      expect(listener1).not.toBe(listener2);
-
-      unsub1();
-      expect(removeListenerMock).toHaveBeenCalledWith(
-        DATASOURCES_CHANNELS.event,
-        listener1,
-      );
-      unsub2();
-      expect(removeListenerMock).toHaveBeenCalledWith(
-        DATASOURCES_CHANNELS.event,
-        listener2,
-      );
-    });
   });
 
   describe("files surface", () => {
@@ -541,7 +441,7 @@ describe("preload exposed api", () => {
     // session with the snapshot returned by `downloads:list-active`. The
     // preload registers ONE listener per call and returns an unsubscribe
     // that removes that exact listener — same pattern as the existing
-    // `datasources.onEvent` and `sync.onEvent` exposures.
+    // `sync.onEvent` exposure.
     it("onActiveDownloadsHydrate registers a listener on 'files:hydrate-active-downloads' and returns an unsubscribe that removes that listener", async () => {
       const onMock = ipcRenderer.on as unknown as ReturnType<typeof vi.fn>;
       const removeListenerMock =

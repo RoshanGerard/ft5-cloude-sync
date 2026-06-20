@@ -36,7 +36,6 @@ import { DatasourceError } from "@ft5/ipc-contracts";
 import { describe, expect, it } from "vitest";
 
 import type { DatasourceClient } from "../base-client.js";
-import { createEventBus, type EventBus } from "../event-bus.js";
 import type { CredentialStore } from "../credential-store.js";
 
 // ---------------------------------------------------------------------------
@@ -199,12 +198,15 @@ export interface StrategyContractFixture {
    * Prime a successful end-to-end download. The fixture's SDK / fetch
    * mock returns a stream containing exactly `bytes` bytes plus a
    * `Content-Length` advertising the same. The shared scenario invokes
-   * `client.downloadFile({ kind: "path", path })`, drains the stream,
-   * and asserts:
+   * `client.downloadFile({ kind: "path", path }, { onProgress })`, drains
+   * the stream, and asserts:
    *   - the bytes flowing through are byte-equal to the supplied buffer
    *   - `result.contentLength === bytes.length`
-   *   - bus emits ≥1 `downloading` then exactly one `file-downloaded`
-   *   - no `download-failed` / `download-cancelled`
+   *   - `onProgress` fired ≥1 time with a final `loaded === bytes.length`
+   *
+   * The engine emits no events (the event bus was removed in
+   * migrate-engine-events-to-consumer); progress is observed solely via
+   * `onProgress`.
    */
   primeDownloadOk(opts: { path: string; bytes: Buffer }): void;
 
@@ -214,13 +216,15 @@ export interface StrategyContractFixture {
    * underlying source errors with an `AbortError`. The shared scenario
    * starts the download, drains until `firstChunkBytes` have been
    * observed, calls `controller.abort()`, and asserts:
-   *   - bus emits exactly one `download-cancelled
-   *     { path, bytesDownloaded: firstChunkBytes }`
-   *   - no `download-failed` and no `file-downloaded`
+   *   - the stream surfaces an error after the abort
+   *   - `onProgress`'s last `loaded` reached `firstChunkBytes` but stayed
+   *     below `totalBytes` (the source blocked on the abort)
    *
-   * Each provider's fake stream wires abort-to-error differently; the
-   * fixture owns that wiring so the shared scenario reads the same
-   * across providers.
+   * The engine emits no events (the bus was removed in
+   * migrate-engine-events-to-consumer); the consumer (fs-sync) classifies
+   * the cancel from its own AbortController state. Each provider's fake
+   * stream wires abort-to-error differently; the fixture owns that wiring
+   * so the shared scenario reads the same across providers.
    */
   primeDownloadCancellable(opts: {
     path: string;
@@ -273,9 +277,12 @@ export interface StrategyContractFixture {
 export interface StrategyContractSuiteParams<T extends DatasourceType> {
   /** Human-readable provider label used in `describe` blocks. */
   providerName: string;
-  /** Returns a fresh client wired to the supplied bus + credential store. */
+  /** Returns a fresh client wired to the supplied credential store. The
+   * engine no longer owns an event bus (migrate-engine-events-to-consumer),
+   * so the client is constructed with `{ credentialStore, providerDescriptor }`
+   * only — outcomes are asserted via return values, thrown errors,
+   * `onProgress`, or strategy cache state, never captured bus events. */
   buildClient(
-    bus: EventBus,
     credentialStore: CredentialStore,
     credentials: StoredCredentials,
   ): DatasourceClient<T>;
@@ -289,7 +296,7 @@ export interface StrategyContractSuiteParams<T extends DatasourceType> {
  *
  *     runStrategyContractSuite({
  *       providerName: "S3Client",
- *       buildClient: (bus, store, creds) => createS3Client("ds-1", creds, { bus, credentialStore: store, providerDescriptor: providers["amazon-s3"] }),
+ *       buildClient: (store, creds) => createS3Client("ds-1", creds, { credentialStore: store, providerDescriptor: providers["amazon-s3"] }),
  *       fixture: s3Fixture,
  *     });
  */
@@ -299,22 +306,15 @@ export function runStrategyContractSuite<T extends DatasourceType>(
   const { providerName, buildClient, fixture } = params;
 
   function makeHarness(): {
-    bus: EventBus;
-    events: Array<{ event: string; payload: unknown }>;
     client: DatasourceClient<T>;
   } {
-    const bus = createEventBus();
-    const events: Array<{ event: string; payload: unknown }> = [];
-    bus.subscribe((e) => {
-      events.push({ event: e.event as string, payload: e.payload });
-    });
     const store: CredentialStore = {
       get: async () => null,
       put: async () => undefined,
       delete: async () => undefined,
     };
-    const client = buildClient(bus, store, fixture.credentials);
-    return { bus, events, client };
+    const client = buildClient(store, fixture.credentials);
+    return { client };
   }
 
   describe(`strategy contract suite — ${providerName}`, () => {
@@ -394,10 +394,10 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       ).toBe(true);
     });
 
-    it("uploadFile(parent, { path }) resolves with the entry, emits NO upload events on the engine bus, drives onProgress monotonically, and (where applicable) populates the strategy's path-handle LRU", async () => {
+    it("uploadFile(parent, { path }) resolves with the entry, drives onProgress monotonically, and (where applicable) populates the strategy's path-handle LRU", async () => {
       fixture.resetMock();
       fixture.primeUploadOk({ parentPath: "/" });
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       const localPath = fixture.buildLocalFile();
 
       // onProgress invocations are captured for the per-call assertion
@@ -419,14 +419,11 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       expect(typeof entry.path).toBe("string");
       expect(typeof entry.handle).toBe("string");
 
-      // Per migrate-upload-orchestration-out-of-engine, the engine bus
-      // observes ZERO upload-related events; the consumer (fs-sync handler)
-      // emits these on `sync:event-stream` keyed by `uploadJobId`.
-      const names = events.map((e) => e.event);
-      expect(names).not.toContain("uploading");
-      expect(names).not.toContain("file-created");
-      expect(names).not.toContain("upload-failed");
-      expect(names).not.toContain("upload-cancelled");
+      // The engine emits no events at all (the event bus was removed in
+      // migrate-engine-events-to-consumer); upload progress / completion is
+      // observed by the consumer (fs-sync handler) on `sync:event-stream`
+      // keyed by `uploadJobId`, driven off `onProgress` + the handler's own
+      // synchronous path.
 
       // onProgress contract: at least one invocation, non-decreasing
       // `loaded`, and `loaded === total` at the final call when the
@@ -468,7 +465,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         controller,
         firstChunkBytes: 256,
       });
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       const localPath = fixture.buildLocalFile();
 
       const inflight = client.uploadFile(
@@ -495,12 +492,9 @@ export function runStrategyContractSuite<T extends DatasourceType>(
           e instanceof DatasourceError && e.tag === "cancelled",
       );
 
-      // No upload events on the engine bus — cancellation is consumer-
-      // visible only via the `sync:event-stream` channel which the
-      // engine bus is not (and never was) wired to in this test.
-      const names = events.map((e) => e.event);
-      expect(names).not.toContain("upload-cancelled");
-      expect(names).not.toContain("upload-failed");
+      // The engine emits no events — cancellation surfaces solely as the
+      // thrown `cancelled` tag (asserted above); the consumer maps it onto
+      // `sync:event-stream`.
 
       // Provider-native cleanup SHALL run on a separate signal (Decision
       // 3) — fresh AbortController.timeout(5000) for Drive/OneDrive's
@@ -513,53 +507,47 @@ export function runStrategyContractSuite<T extends DatasourceType>(
       ).toBe(true);
     });
 
-    it("deleteFile emits `deleted` and resolves to void", async () => {
+    it("deleteFile resolves to void", async () => {
       fixture.resetMock();
       fixture.primeDeleteOk("/contract-delete.txt");
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       const result = await client.deleteFile({
         kind: "path",
         path: "/contract-delete.txt",
       });
       expect(result).toBeUndefined();
-      const names = events.map((e) => e.event);
-      expect(names).toContain("deleted");
     });
 
-    it("deleteDirectory throws Unsupported immediately and emits nothing", async () => {
+    it("deleteDirectory throws Unsupported immediately", async () => {
       fixture.resetMock();
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       await expect(
         client.deleteDirectory({ kind: "path", path: "/any" }),
       ).rejects.toSatisfy(
         (e: unknown) =>
           e instanceof DatasourceError && e.tag === "unsupported",
       );
-      expect(events).toHaveLength(0);
     });
 
-    it("getMetadata(404) throws `not-found` and does NOT emit a `*-failed` event", async () => {
+    it("getMetadata(404) throws `not-found`", async () => {
       fixture.resetMock();
       fixture.primeGetMetadata404("/missing.txt");
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       await expect(
         client.getMetadata({ kind: "path", path: "/missing.txt" }),
       ).rejects.toSatisfy(
         (e: unknown) =>
           e instanceof DatasourceError && e.tag === "not-found",
       );
-      const names = events.map((e) => e.event);
-      expect(names.filter((n) => n.endsWith("-failed"))).toHaveLength(0);
     });
 
     it("getQuota: if provider capability quota=false throws Unsupported; otherwise resolves", async () => {
       fixture.resetMock();
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       if (fixture.supportsQuota) {
         // The default fixture SHOULD not prime a quota response unless needed;
         // providers that support quota may have their own dedicated tests.
-        // Here we just assert the method is at least callable and does not
-        // emit `upload-failed` / `delete-failed` style events.
+        // Here we just assert the method is at least callable.
         try {
           await client.getQuota();
         } catch {
@@ -570,22 +558,19 @@ export function runStrategyContractSuite<T extends DatasourceType>(
           (e: unknown) =>
             e instanceof DatasourceError && e.tag === "unsupported",
         );
-        expect(events).toHaveLength(0);
       }
     });
 
-    it("rate-limit error on listDirectory surfaces `rate-limited` tag AND emits `rate-limited` event", async () => {
+    it("rate-limit error on listDirectory surfaces the `rate-limited` tag", async () => {
       fixture.resetMock();
       fixture.primeRateLimitOnList();
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       await expect(
         client.listDirectory({ kind: "path", path: "/" }),
       ).rejects.toSatisfy(
         (e: unknown) =>
           e instanceof DatasourceError && e.tag === "rate-limited",
       );
-      const names = events.map((e) => e.event);
-      expect(names).toContain("rate-limited");
     });
 
     it("auth failure on listDirectory surfaces the provider's expected auth tag", async () => {
@@ -616,30 +601,25 @@ export function runStrategyContractSuite<T extends DatasourceType>(
     // fixture; the shared assertions below pin the cross-provider
     // contract.
 
-    it("rename(file) returns the renamed entry; bus emits exactly one entry-renamed; no other events", async () => {
+    it("rename(file) returns the renamed entry", async () => {
       fixture.resetMock();
       fixture.primeRenameFileOk({
         fromPath: "/contract-old.txt",
         newName: "contract-new.txt",
       });
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       const entry = await client.rename(
         { kind: "path", path: "/contract-old.txt" },
         "contract-new.txt",
         "fail",
       );
+      // Rename returns the single renamed entry regardless of how many
+      // provider-side calls the strategy made (Decision 2) — e.g. S3's
+      // internal copy+delete is invisible to the caller. The engine emits no
+      // events (the event bus was removed in
+      // migrate-engine-events-to-consumer).
       expect(entry.kind).toBe("file");
       expect(entry.name).toBe("contract-new.txt");
-      const renames = events.filter((e) => e.event === "entry-renamed");
-      expect(renames).toHaveLength(1);
-      // No other lifecycle events should fire — rename is one normalized
-      // event regardless of how many provider-side calls the strategy
-      // made (Decision 2). In particular S3's internal copy+delete must
-      // NOT surface a `deleted` event.
-      const otherNames = events
-        .map((e) => e.event)
-        .filter((n) => n !== "entry-renamed");
-      expect(otherNames).toHaveLength(0);
     });
 
     it("rename(directory) succeeds on Drive/OneDrive OR refuses with `unsupported` on S3 (per Decision 1)", async () => {
@@ -648,7 +628,7 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         fromPath: "/contract-folder",
         newName: "contract-folder-renamed",
       });
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
       if (fixture.supportsFolderRename) {
         const entry = await client.rename(
           { kind: "path", path: "/contract-folder" },
@@ -657,8 +637,6 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         );
         expect(entry.kind).toBe("folder");
         expect(entry.name).toBe("contract-folder-renamed");
-        const renames = events.filter((e) => e.event === "entry-renamed");
-        expect(renames).toHaveLength(1);
       } else {
         await expect(
           client.rename(
@@ -670,25 +648,28 @@ export function runStrategyContractSuite<T extends DatasourceType>(
           (e: unknown) =>
             e instanceof DatasourceError && e.tag === "unsupported",
         );
-        // Refusal must not emit entry-renamed.
-        expect(events.some((e) => e.event === "entry-renamed")).toBe(false);
       }
     });
 
-    it("downloadFile streams a small fixture end-to-end; bus emits downloading then file-downloaded; bytes are intact", async () => {
+    it("downloadFile streams a small fixture end-to-end; onProgress fires; bytes are intact", async () => {
       const fixtureBytes = Buffer.from("contract-download-bytes-payload");
       fixture.resetMock();
       fixture.primeDownloadOk({
         path: "/contract-download.txt",
         bytes: fixtureBytes,
       });
-      const { client, events } = makeHarness();
-      const result = await client.downloadFile({
-        kind: "path",
-        path: "/contract-download.txt",
-      });
+      const { client } = makeHarness();
+      // The engine emits no download events (the bus was removed in
+      // migrate-engine-events-to-consumer) — progress flows solely via
+      // `options.onProgress`, and the consumer (fs-sync) owns terminal
+      // handling off its own pipe-to-disk path.
+      const progressTicks: Array<{ loaded: number; total: number | null }> = [];
+      const result = await client.downloadFile(
+        { kind: "path", path: "/contract-download.txt" },
+        { onProgress: (loaded, total) => progressTicks.push({ loaded, total }) },
+      );
       expect(result.contentLength).toBe(fixtureBytes.length);
-      // Drain the stream so the base's terminal listeners fire.
+      // Drain the stream.
       const chunks: Buffer[] = [];
       await new Promise<void>((resolve, reject) => {
         result.stream.on("data", (c: Buffer) => chunks.push(c));
@@ -696,16 +677,14 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         result.stream.on("error", reject);
       });
       expect(Buffer.concat(chunks).equals(fixtureBytes)).toBe(true);
-      const names = events.map((e) => e.event);
-      expect(
-        names.filter((n) => n === "downloading").length,
-      ).toBeGreaterThanOrEqual(1);
-      expect(names.filter((n) => n === "file-downloaded")).toHaveLength(1);
-      expect(names).not.toContain("download-failed");
-      expect(names).not.toContain("download-cancelled");
+      // onProgress fired ≥1 time and the final loaded equals the byte count.
+      expect(progressTicks.length).toBeGreaterThanOrEqual(1);
+      expect(progressTicks[progressTicks.length - 1]!.loaded).toBe(
+        fixtureBytes.length,
+      );
     });
 
-    it("downloadFile mid-flight abort: bus emits exactly one download-cancelled with bytesDownloaded; no download-failed", async () => {
+    it("downloadFile mid-flight abort: stream errors after abort; onProgress reports up to firstChunkBytes", async () => {
       const controller = new AbortController();
       const firstChunkBytes = 2048;
       const totalBytes = 16384;
@@ -716,27 +695,41 @@ export function runStrategyContractSuite<T extends DatasourceType>(
         totalBytes,
         controller,
       });
-      const { client, events } = makeHarness();
+      const { client } = makeHarness();
+      const progressTicks: Array<{ loaded: number; total: number | null }> = [];
       const result = await client.downloadFile(
         { kind: "path", path: "/contract-cancel.txt" },
-        { signal: controller.signal },
+        {
+          signal: controller.signal,
+          onProgress: (loaded, total) =>
+            progressTicks.push({ loaded, total }),
+        },
       );
       let bytesSeen = 0;
+      let streamErrored = false;
       await new Promise<void>((resolve) => {
         result.stream.on("data", (c: Buffer) => {
           bytesSeen += c.length;
           if (bytesSeen >= firstChunkBytes) controller.abort();
         });
-        result.stream.on("error", () => resolve());
+        result.stream.on("error", () => {
+          streamErrored = true;
+          resolve();
+        });
         result.stream.on("end", () => resolve());
       });
-      const cancelled = events.filter((e) => e.event === "download-cancelled");
-      expect(cancelled).toHaveLength(1);
-      expect(cancelled[0]!.payload).toMatchObject({
-        bytesDownloaded: firstChunkBytes,
-      });
-      expect(events.some((e) => e.event === "download-failed")).toBe(false);
-      expect(events.some((e) => e.event === "file-downloaded")).toBe(false);
+      // The aborted stream surfaces the abort as a stream error (each
+      // fixture wires abort-to-error per its provider). The consumer
+      // (fs-sync) classifies this as a user cancel from its own
+      // AbortController state and emits `download-cancelled`; the engine
+      // itself emits nothing.
+      expect(streamErrored).toBe(true);
+      // onProgress observed at least the first chunk and never exceeded it
+      // (the source blocked on the abort after firstChunkBytes).
+      expect(progressTicks.length).toBeGreaterThanOrEqual(1);
+      const lastTick = progressTicks[progressTicks.length - 1]!;
+      expect(lastTick.loaded).toBeGreaterThanOrEqual(firstChunkBytes);
+      expect(lastTick.loaded).toBeLessThan(totalBytes);
     });
 
     // -----------------------------------------------------------------------

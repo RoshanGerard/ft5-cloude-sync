@@ -32,12 +32,11 @@ describe("engine singleton (Phase 9c)", () => {
     expect(() => getEngine()).toThrow(/initEngine/i);
   });
 
-  it("initEngine(db) then getEngine() returns an engine with bus, registry, factory", () => {
+  it("initEngine(db) then getEngine() returns an engine with registry, factory", () => {
     const db = openDatabase(":memory:");
     runMigrations(db, DEFAULT_MIGRATIONS);
     initEngine(db);
     const engine = getEngine();
-    expect(engine.bus).toBeDefined();
     expect(engine.registry).toBeDefined();
     expect(engine.factory).toBeDefined();
   });

@@ -21,7 +21,6 @@ import { DatasourceError, providers } from "@ft5/ipc-contracts";
 
 import type { PreAuthConfig } from "../../auth-types.js";
 import type { BaseClientContext, CredentialStore } from "../../base-client.js";
-import { createEventBus } from "../../event-bus.js";
 import {
   GoogleDriveClient,
   type GoogleDriveClientLike,
@@ -32,14 +31,12 @@ import {
 // ---------------------------------------------------------------------------
 
 function makeContext(): BaseClientContext {
-  const bus = createEventBus();
   const credentialStore: CredentialStore = {
     get: async () => null,
     put: async () => undefined,
     delete: async () => undefined,
   };
   return {
-    bus,
     credentialStore,
     providerDescriptor: providers["google-drive"],
   };

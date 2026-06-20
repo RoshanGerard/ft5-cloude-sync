@@ -9,7 +9,6 @@ import {
   type ClientFactory,
   type CredentialStore,
   type DatasourceClient,
-  type EventBus as EngineEventBus,
 } from "@ft5/fs-datasource-engine";
 import {
   DatasourceError,
@@ -21,7 +20,6 @@ import {
 export interface ResolveClientDeps {
   readonly credentialStore: CredentialStore;
   readonly factory: ClientFactory;
-  readonly engineBus: EngineEventBus;
 }
 
 export type ResolveClient = (
@@ -54,7 +52,7 @@ export function createResolveClient(deps: ResolveClientDeps): ResolveClient {
       creds.providerId as ProviderId,
       datasourceId,
       creds,
-      { bus: deps.engineBus, credentialStore: deps.credentialStore },
+      { credentialStore: deps.credentialStore },
     ) as DatasourceClient<DatasourceType>;
   };
 }

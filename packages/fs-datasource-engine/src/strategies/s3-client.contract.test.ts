@@ -296,9 +296,8 @@ const fixture: StrategyContractFixture = {
 
 runStrategyContractSuite({
   providerName: "S3Client",
-  buildClient: (bus, credentialStore, creds) => {
+  buildClient: (credentialStore, creds) => {
     const ctx: BaseClientContext = {
-      bus,
       credentialStore,
       providerDescriptor: providers["amazon-s3"],
     };

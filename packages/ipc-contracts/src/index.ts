@@ -87,18 +87,15 @@ export type { ConflictPolicy } from "./sync-service/commands.js";
 // the two serve different domains (UI display vs. provider abstraction) and
 // carry different fields. Shipped by `add-fs-datasource-engine`.
 export type {
-  AnyDatasourceEvent,
   AuthIntent,
   AuthResult,
   CredentialsFormIntent,
   DatasourceErrorInit,
-  DatasourceEvent,
   DatasourceFileEntry,
   DatasourceMimeFamily,
   DatasourceType,
   FileMetadata,
   OAuthIntent,
-  PayloadMap,
   ProviderMetadata,
   ProviderMetadataMap,
   Quota,

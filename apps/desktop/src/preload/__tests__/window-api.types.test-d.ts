@@ -1,6 +1,5 @@
 import { describe, expectTypeOf, it } from "vitest";
 
-import type { AnyDatasourceEvent } from "@ft5/ipc-contracts";
 import type {
   SyncEvent,
   SyncListJobsResponse,
@@ -81,13 +80,10 @@ describe("window.api.datasources surface (post-§19)", () => {
     expectTypeOf<keyof DatasourcesSurface>().not.toEqualTypeOf<"cancelConsent">();
   });
 
-  it("onEvent only receives AnyDatasourceEvent (consent variants moved to sync.onEvent)", () => {
-    // Authentication lifecycle events (auth-*) flow exclusively on the sync
-    // event stream now per design Decision 7. The datasources onEvent
-    // callback's parameter is plain `AnyDatasourceEvent` with no
-    // `| ConsentEvent` widening.
-    expectTypeOf<DatasourcesSurface["onEvent"]>().toEqualTypeOf<
-      (cb: (event: AnyDatasourceEvent) => void) => () => void
-    >();
+  it("onEvent is absent from window.api.datasources (dead datasources:event path removed in migrate-engine-events-to-consumer §4)", () => {
+    // The engine `datasources:event` bridge had no production emitter or
+    // consumer; datasource-facing events flow on `window.api.sync.onEvent`.
+    // A compile-time absence assertion catches accidental re-additions.
+    expectTypeOf<keyof DatasourcesSurface>().not.toEqualTypeOf<"onEvent">();
   });
 });
