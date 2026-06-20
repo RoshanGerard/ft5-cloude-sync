@@ -24,6 +24,9 @@ playwright-report/
 .DS_Store
 Thumbs.db
 
+# JetBrains IDE (per-machine project config)
+.idea/
+
 # Local environment overrides (contain secrets — never commit)
 .env.local
 *.env.local
