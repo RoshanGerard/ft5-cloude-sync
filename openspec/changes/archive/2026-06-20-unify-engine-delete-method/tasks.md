@@ -31,8 +31,8 @@
 
 ## 5. Verification + spec sync
 
-- [ ] 5.1 Full suite: `pnpm abi:node` + `pnpm --filter @ft5/desktop build` + `pnpm test` — green.
-- [ ] 5.2 `pnpm typecheck` (tsc -b) EXIT 0; `pnpm lint` clean.
-- [ ] 5.3 `openspec validate unify-engine-delete-method --strict` — VALID.
-- [ ] 5.4 Advisor checkpoint #2 (before `/opsx:archive`) — verify the as-built matches the design (base-enforced refusal, identical `unsupported` tag/raw, `doDeleteFileImpl` + eviction untouched, EntryKind const-ref non-breaking).
-- [ ] 5.5 After archive sync: `openspec validate fs-datasource-engine --type spec` green; confirm the `getQuota` scenarios survived the Decision-10 REMOVE+ADD and no scenario was dropped.
+- [x] 5.1 Full suite (`pnpm abi:node` + `pnpm --filter @ft5/desktop build` + `pnpm test`): 2772 passed / 9 skipped / 1 failed — the failure is the documented main-checkout `authenticate-flow` `vi.mock @aws-sdk/client-s3` flake (fails in isolation; branch touches zero auth/s3/aws files; recorded across 3 prior changes), NOT a regression.
+- [x] 5.2 `pnpm typecheck` (tsc -b) EXIT 0 (on committed HEAD); `pnpm lint` clean (0 errors).
+- [x] 5.3 `openspec validate unify-engine-delete-method --strict` — VALID.
+- [x] 5.4 Advisor checkpoint #2 cleared — as-built matches the design (base-enforced refusal, identical `unsupported` tag/raw, `doDeleteFileImpl` + eviction untouched, EntryKind const-ref non-breaking) + 3 follow-up checks: #2 expanded the delta to fs-sync-service + remaining engine refs; #3 typecheck-on-HEAD; #1 deferred to post-sync.
+- [x] 5.5 After archive sync: `openspec validate fs-datasource-engine --type spec` + `fs-sync-service --type spec` both VALID; advisor check #1 (canonical diff) confirms only the intended method-name refreshes landed and the two `getQuota` scenarios survived the Decision-10 REMOVE+ADD (no scenario dropped).

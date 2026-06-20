@@ -20,12 +20,12 @@ The FS Datasource Engine SHALL live at `packages/fs-datasource-engine` as a pnpm
 
 ### Requirement: Public contract is the generic `DatasourceClient<T>` Strategy interface
 
-The engine SHALL export a public interface `DatasourceClient<T extends DatasourceType>` with the methods `status`, `testConnection`, `authenticate`, `listDirectory`, `search`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `getQuota`, `rename`, and `downloadFile`. The methods `createFile` and `cancelUpload` are NOT present (deleted by this change). The type parameter `T` SHALL flow into every generic return payload (`FileEntry<T>`, `FileMetadata<T>`). Concrete implementations (`S3Client`, `OneDriveClient`, `GoogleDriveClient`) SHALL conform to this interface and SHALL be constructible only via the engine's factory — not via `new` directly by consumers.
+The engine SHALL export a public interface `DatasourceClient<T extends DatasourceType>` with the methods `status`, `testConnection`, `authenticate`, `listDirectory`, `search`, `getMetadata`, `uploadFile`, `delete`, `getQuota`, `rename`, and `downloadFile`. The delete surface is the single method `delete(target: Target, entryKind: EntryKind): Promise<void>`; the methods `createFile`, `cancelUpload`, `deleteFile`, and `deleteDirectory` are NOT present (`createFile`/`cancelUpload` deleted by prior changes; `deleteFile`/`deleteDirectory` collapsed into the unified `delete`). The type parameter `T` SHALL flow into every generic return payload (`FileEntry<T>`, `FileMetadata<T>`). Concrete implementations (`S3Client`, `OneDriveClient`, `GoogleDriveClient`) SHALL conform to this interface and SHALL be constructible only via the engine's factory — not via `new` directly by consumers.
 
 #### Scenario: Every concrete client conforms to the shared interface
 
 - **WHEN** a contract test in `packages/fs-datasource-engine/src/__tests__/strategy-contract.ts` enumerates every exported client class
-- **THEN** each class is `assignable` to `DatasourceClient<its provider type>`, every method on the interface is present with the correct signature (no `createFile`, no `cancelUpload`), and a shared suite of scenarios (list, search, upload via signal-driven cancel, delete, error, rename, download with rangeStart, AbortSignal-driven download cancel) passes against each
+- **THEN** each class is `assignable` to `DatasourceClient<its provider type>`, every method on the interface is present with the correct signature (no `createFile`, no `cancelUpload`, no `deleteFile`/`deleteDirectory` — replaced by `delete`), and a shared suite of scenarios (list, search, upload via signal-driven cancel, delete, error, rename, download with rangeStart, AbortSignal-driven download cancel) passes against each
 
 #### Scenario: Consumers program to the interface, not the concrete class
 
@@ -34,10 +34,10 @@ The engine SHALL export a public interface `DatasourceClient<T extends Datasourc
 
 ### Requirement: Hybrid `Target` type supports both path and handle addressing
 
-The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: "handle"; handle: string }` in `packages/ipc-contracts`. Every method that addresses a filesystem location (`listDirectory`, `getMetadata`, `uploadFile`, `deleteFile`, `deleteDirectory`, `search` scope) SHALL accept `Target` as its location parameter. `FileEntry<T>` SHALL always carry both `path: string` and `handle: string` so any entry returned by a list call can be re-addressed by either mechanism. Internally, each concrete strategy SHALL maintain an LRU path↔handle cache. Cache invalidation SHALL be **internal to each mutating op** — the strategy evicts inline within the operation's success branch, before returning; invalidation is purely inline (the engine has no event bus):
+The engine SHALL define `type Target = { kind: "path"; path: string } | { kind: "handle"; handle: string }` in `packages/ipc-contracts`. Every method that addresses a filesystem location (`listDirectory`, `getMetadata`, `uploadFile`, `delete`, `search` scope) SHALL accept `Target` as its location parameter. `FileEntry<T>` SHALL always carry both `path: string` and `handle: string` so any entry returned by a list call can be re-addressed by either mechanism. Internally, each concrete strategy SHALL maintain an LRU path↔handle cache. Cache invalidation SHALL be **internal to each mutating op** — the strategy evicts inline within the operation's success branch, before returning; invalidation is purely inline (the engine has no event bus):
 
 - On successful `uploadFile`: `doUploadFileImpl` populates the LRU directly inside its success branch.
-- On successful `deleteFile`: `doDeleteFileImpl` evicts the deleted entry's path (path-form target) or handle (handle-form target) from the LRU inside its success branch.
+- On successful `delete` of a file (`entryKind === "file"`): `doDeleteFileImpl` evicts the deleted entry's path (path-form target) or handle (handle-form target) from the LRU inside its success branch.
 - On successful `rename`: `doRenameImpl` evicts the old path from the LRU inside its success branch; for a directory rename it ALSO evicts every cached descendant under the old-path prefix. When an `overwrite` rename internally deletes a colliding sibling at the destination, that sibling's cached path is evicted too. Eviction is evict-only — the new path resolves fresh on next access.
 - The `createFile` invalidation path is not relevant: `createFile` does not exist on the engine surface.
 
@@ -86,7 +86,7 @@ A strategy with no path cache (e.g., S3, whose keys are paths) satisfies this re
 #### Scenario: Every cached strategy honors the invalidation invariant (shared contract)
 
 - **WHEN** the shared strategy-contract suite runs against a concrete strategy whose fixture declares `hasPathHandleCache: true`
-- **THEN** after a successful `deleteFile` of a cached path the cache no longer holds that path, and after a successful `rename` the old path is evicted — so every present and future cached strategy is held to the invariant (a strategy whose fixture declares `hasPathHandleCache: false` satisfies it vacuously)
+- **THEN** after a successful `delete` of a cached file path the cache no longer holds that path, and after a successful `rename` the old path is evicted — so every present and future cached strategy is held to the invariant (a strategy whose fixture declares `hasPathHandleCache: false` satisfies it vacuously)
 
 #### Scenario: Path ambiguity surfaces via providerMetadata
 
@@ -174,13 +174,13 @@ Every concrete strategy's `normalizeError(e: unknown)` SHALL return an instance 
 - **WHEN** a contract test enumerates each strategy's `normalizeError` mapping
 - **THEN** no path in any strategy returns `tag === "invalid-datasource"`; the tag is reserved for the engine factory and the service-side `resolveClient` adapter
 
-### Requirement: `deleteDirectory` and unsupported `getQuota` throw `Unsupported`
+### Requirement: Directory delete and unsupported `getQuota` throw `Unsupported`
 
-`deleteDirectory(target: Target)` SHALL throw `DatasourceError` with `tag === "unsupported"` for every provider in this change regardless of the target. `getQuota()` SHALL throw the same when called on a client whose `providerDescriptor.capabilities.quota === false`. The thrown error's `raw` field MAY carry a human-readable reason (e.g., `"disabled-for-product-stability"` vs `"not-supported-by-provider"`) but the `tag` SHALL be identical in both cases.
+`delete(target: Target, entryKind: EntryKind)` SHALL throw `DatasourceError` with `tag === "unsupported"` when `entryKind === "directory"`, for every provider in this change regardless of the target. `getQuota()` SHALL throw the same when called on a client whose `providerDescriptor.capabilities.quota === false`. The thrown error's `raw` field MAY carry a human-readable reason (e.g., `"disabled-for-product-stability"` vs `"not-supported-by-provider"`) but the `tag` SHALL be identical in both cases.
 
-#### Scenario: deleteDirectory always throws Unsupported
+#### Scenario: delete with entryKind "directory" throws Unsupported
 
-- **WHEN** any concrete client's `deleteDirectory({ kind: "path", path: "/anything" })` is invoked
+- **WHEN** any concrete client's `delete({ kind: "path", path: "/anything" }, "directory")` is invoked
 - **THEN** the method throws a `DatasourceError` with `tag === "unsupported"` (the engine emits no event)
 
 #### Scenario: getQuota throws Unsupported on S3
@@ -303,7 +303,7 @@ If `tokeninfo` returns a non-2xx response with `error: "invalid_token"` (or equi
 
 ### Requirement: Google Drive status / testConnection fail-fast on insufficient scope
 
-When `status()` or `testConnection()` is invoked on a `GoogleDriveClient`, the strategy SHALL — before issuing the existing `about.get` probe — assert that the credential's stored scope grants the engine's mutating operations. The check is satisfied if and only if the space-separated `meta.scope` string contains the literal token `https://www.googleapis.com/auth/drive` (string equality on a space-tokenized split, NOT a prefix match). Other Drive scopes (`drive.file`, `drive.readonly`, `drive.metadata.readonly`, `drive.appdata`) SHALL be considered insufficient on their own, even if combined with each other, because the engine performs `createFile`, `uploadFile`, and `deleteFile` operations.
+When `status()` or `testConnection()` is invoked on a `GoogleDriveClient`, the strategy SHALL — before issuing the existing `about.get` probe — assert that the credential's stored scope grants the engine's mutating operations. The check is satisfied if and only if the space-separated `meta.scope` string contains the literal token `https://www.googleapis.com/auth/drive` (string equality on a space-tokenized split, NOT a prefix match). Other Drive scopes (`drive.file`, `drive.readonly`, `drive.metadata.readonly`, `drive.appdata`) SHALL be considered insufficient on their own, even if combined with each other, because the engine performs `uploadFile` and `delete` operations.
 
 When the check fails, the strategy SHALL throw a `DatasourceError` constructed with:
 - `tag: "auth-revoked"`
@@ -495,7 +495,7 @@ parent path, the call SHALL reject with
 { existingPath: string } }`.
 
 When `conflictPolicy: "overwrite"`, the engine SHALL delete the colliding
-sibling (via the existing `deleteFile` path) before performing the rename;
+sibling (via a direct provider delete) before performing the rename;
 the operation SHALL resolve with the new entry; the internal delete of the
 colliding sibling is not surfaced separately (the engine emits no event).
 
@@ -607,9 +607,9 @@ Drive and OneDrive strategies maintain a path-handle LRU cache. After this migra
 - **WHEN** an upload to OneDrive resolves successfully and returns an entry whose `path` was not previously in the strategy's LRU
 - **THEN** the LRU contains `entry.path → entry.handle` after the call resolves; no event is emitted (the engine has no event bus)
 
-#### Scenario: Drive LRU is invalidated inline by deleteFile
+#### Scenario: Drive LRU is invalidated inline by delete of a file
 
-- **WHEN** `deleteFile` succeeds for a path present in the strategy's LRU
+- **WHEN** `delete` of a file (`entryKind === "file"`) succeeds for a path present in the strategy's LRU
 - **THEN** the strategy evicts that path's LRU entry inline within `doDeleteFileImpl` (there is no bus subscription; the engine has no event bus)
 
 ### Requirement: Engine exports a `withAuthRefresh` retry helper
@@ -689,7 +689,7 @@ continuation token (forwarded unchanged) otherwise.
 
 ### Requirement: Template base class wraps every operation with refresh coordination and error normalization
 
-The engine SHALL provide `abstract class BaseDatasourceClient<T extends DatasourceType>` that concrete strategies extend. The base SHALL wrap deleteFile, rename, downloadFile, uploadFile, status, testConnection, and the read operations so that it (a) calls `normalizeError(e)` to convert any raw exception to a typed `DatasourceError<T>` before throwing, and (b) returns the typed result on success. The base SHALL NOT emit any event and SHALL NOT define, hold, or inject an event bus. The base SHALL NOT auto-refresh credentials on `auth-expired`; a normalized `auth-expired` error surfaces to the caller unchanged. Token refresh is exposed as the public single-flight `refreshCredentials()` primitive (see Requirement: Token refresh is single-flight per datasource), invoked explicitly by callers (typically via the exported `withAuthRefresh` helper). Concrete strategies SHALL implement only the `protected abstract doX(...)` methods plus `refreshTokenImpl()` and `normalizeError(raw)`. Strategies SHALL NOT emit events and SHALL NOT reference an event bus.
+The engine SHALL provide `abstract class BaseDatasourceClient<T extends DatasourceType>` that concrete strategies extend. The base SHALL wrap delete, rename, downloadFile, uploadFile, status, testConnection, and the read operations so that it (a) calls `normalizeError(e)` to convert any raw exception to a typed `DatasourceError<T>` before throwing, and (b) returns the typed result on success. The base SHALL NOT emit any event and SHALL NOT define, hold, or inject an event bus. The base SHALL NOT auto-refresh credentials on `auth-expired`; a normalized `auth-expired` error surfaces to the caller unchanged. Token refresh is exposed as the public single-flight `refreshCredentials()` primitive (see Requirement: Token refresh is single-flight per datasource), invoked explicitly by callers (typically via the exported `withAuthRefresh` helper). Concrete strategies SHALL implement only the `protected abstract doX(...)` methods plus `refreshTokenImpl()` and `normalizeError(raw)`. Strategies SHALL NOT emit events and SHALL NOT reference an event bus.
 
 #### Scenario: Base reports operation outcome via return value or thrown error
 
